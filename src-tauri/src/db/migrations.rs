@@ -170,4 +170,26 @@ pub const MIGRATIONS: &[Migration] = &[
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
               );",
     },
+    // Phase 7: お気に入りとカスタムプレイリスト（設計書 §8 の DDL から該当分、FR-7）。
+    // 動画のメタ情報は videos を台帳として JOIN で取り、
+    // favorites / playlist_items は video_id と並びだけを持つ。
+    Migration {
+        version: 6,
+        name: "localdata",
+        sql: "CREATE TABLE favorites (
+                video_id TEXT PRIMARY KEY,
+                added_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+              CREATE TABLE playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0
+              );
+              CREATE TABLE playlist_items (
+                playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+                video_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (playlist_id, video_id)
+              );",
+    },
 ];

@@ -14,6 +14,7 @@ const ja = {
   "nav.player": "再生",
   "nav.feed": "フィード",
   "nav.search": "検索",
+  "nav.library": "ライブラリ",
   "nav.settings": "設定",
 
   // Phase 1: mpv 再生の最小 UI
@@ -188,6 +189,53 @@ const ja = {
   "settings.chatSearch.empty": "結果がありません",
   "settings.chatSearch.failed": "検索に失敗: {message}",
   "settings.chatSearch.count": "{count} 件",
+
+  // Phase 7: ローカルデータ（履歴・お気に入り・プレイリスト）
+  "library.title": "ライブラリ",
+  "library.tab.history": "履歴",
+  "library.tab.favorites": "お気に入り",
+  "library.tab.playlists": "プレイリスト",
+  "library.play": "再生",
+  "library.playFromStart": "先頭から再生",
+  "library.remove": "削除",
+  "library.failed": "操作に失敗: {message}",
+  "library.history.empty": "視聴履歴はありません",
+  "library.history.progress": "{percent}% 視聴済み",
+  "library.history.completed": "視聴済み",
+  "library.history.lastWatched": "最終視聴 {at}",
+  "library.favorite.add": "お気に入りに追加",
+  "library.favorite.remove": "お気に入りを解除",
+  "library.favorite.added": "お気に入りに追加しました",
+  "library.favorite.removed": "お気に入りを解除しました",
+  "library.favorite.failed": "お気に入り操作に失敗: {message}",
+  "library.favorite.empty": "お気に入りはありません",
+  "library.playlist.addTo": "プレイリストに追加",
+  "library.playlist.added": "「{name}」に追加しました",
+  "library.playlist.addFailed": "プレイリストへの追加に失敗: {message}",
+  "library.playlist.none": "プレイリストがありません",
+  "library.playlist.newPlaceholder": "新しいプレイリスト名",
+  "library.playlist.createAdd": "作成して追加",
+  "library.playlist.create": "作成",
+  "library.playlist.created": "プレイリスト「{name}」を作成しました",
+  "library.playlist.createFailed": "プレイリストの作成に失敗: {message}",
+  "library.playlist.rename": "名前を変更",
+  "library.playlist.renamed": "名前を変更しました",
+  "library.playlist.delete": "削除",
+  "library.playlist.deleted": "プレイリストを削除しました",
+  "library.playlist.deleteFailed": "削除に失敗: {message}",
+  "library.playlist.items": "{count} 件",
+  "library.playlist.empty": "動画が登録されていません",
+  "library.playlist.selectHint": "左の一覧からプレイリストを選んでください",
+  "library.playlists.empty": "プレイリストはありません",
+  "library.removed": "削除しました",
+  "library.removeFailed": "削除に失敗: {message}",
+  "library.thumbnailAlt": "サムネイル",
+
+  // Phase 7: ホイール割り当て（決定記録: script-opts 注入のため次回再生から有効）
+  "settings.wheel.title": "ホイール割り当て",
+  "settings.wheel.desc":
+    "mpv のホイール操作は「一時停止中＝コマ送り、再生中＝音量」。ここでは再生中の 1 ノッチあたりの音量変化量を設定する。mpv 起動オプションで渡すため、変更は次回の再生から有効",
+  "settings.wheel.volumeDelta": "音量変化量（ノッチあたり）",
 } as const;
 
 export type MessageKey = keyof typeof ja;

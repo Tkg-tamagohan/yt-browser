@@ -61,6 +61,9 @@
   // DB に最後に書き込んだ画質式（読込時点では読み取った値）。
   // 書込み済みと適用完了を分けて追うため、即時適用の成否とは独立に進める
   let persistedFormat = $state("");
+  // ホイール 1 ノッチの音量変化量（mpv script-opts の wheel-volume_delta。
+  // 次回再生から有効。既定 2、空文字なら Lua 既定のまま）
+  let wheelDelta = $state("2");
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -216,6 +219,24 @@
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
       });
+      // wheel.volume_delta: 数値として解釈できる値だけ保存する
+      // （mpv 側が文字列のまま script-opts に渡すため、ここで弾く）
+      const delta = wheelDelta.trim();
+      if (delta !== "") {
+        const n = Number(delta);
+        if (!Number.isFinite(n) || Math.abs(n) > 100) {
+          notify(
+            t("settings.failed", {
+              message: `wheel.volume_delta: ${delta}`,
+            }),
+          );
+        } else {
+          await invoke("settings_set", {
+            key: "wheel.volume_delta",
+            value: delta,
+          });
+        }
+      }
       if (!format || pendingApply !== format) {
         notify(
           format
@@ -280,6 +301,10 @@
       const sponsorRaw = await invoke<string | null>("settings_get", {
         key: "sponsor.categories",
       });
+      const wheelRaw = await invoke<string | null>("settings_get", {
+        key: "wheel.volume_delta",
+      });
+      if (wheelRaw !== null) wheelDelta = wheelRaw;
       if (sponsorRaw) {
         try {
           const parsed = JSON.parse(sponsorRaw) as Record<string, string>;
@@ -337,6 +362,26 @@
           />
         {/if}
       </div>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.wheel.title")}</h2>
+    <p class="subtle desc">{t("settings.wheel.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <label class="wheel-row">
+        {t("settings.wheel.volumeDelta")}
+        <input
+          type="number"
+          class="wheel-input"
+          bind:value={wheelDelta}
+          min="-100"
+          max="100"
+          step="1"
+        />
+      </label>
     {/if}
   </section>
 
@@ -527,6 +572,18 @@
     width: 100%;
     margin-top: 4px;
     font-family: monospace;
+  }
+
+  .wheel-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0;
+    font-size: 0.95rem;
+  }
+
+  .wheel-input {
+    width: 80px;
   }
 
   .panel + .panel {

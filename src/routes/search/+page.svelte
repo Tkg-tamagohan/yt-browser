@@ -1,14 +1,57 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
-  import type { SearchResult, UiError } from "$lib/players.svelte";
+  import { loadLibrary } from "$lib/library";
+  import VideoActions from "$lib/VideoActions.svelte";
+  import type {
+    Playlist,
+    SearchResult,
+    UiError,
+    VideoRef,
+  } from "$lib/players.svelte";
 
   let query = $state("");
   let results = $state<SearchResult[]>([]);
   let searching = $state(false);
   let searchedOnce = $state(false);
+
+  // お気に入り・プレイリスト行アクション用（FR-7）
+  let favIds = $state<Set<string>>(new Set());
+  let playlists = $state<Playlist[]>([]);
+
+  function videoRefOf(r: SearchResult): VideoRef {
+    return {
+      videoId: r.videoId,
+      title: r.title,
+      channelId: r.channelId,
+      channelTitle: r.channelTitle,
+      thumbnailUrl: r.thumbnailUrl,
+    };
+  }
+
+  function onFavChange(videoId: string, faved: boolean): void {
+    const next = new Set(favIds);
+    if (faved) next.add(videoId);
+    else next.delete(videoId);
+    favIds = next;
+  }
+
+  function onPlaylistCreated(pl: Playlist): void {
+    playlists = [...playlists, pl];
+  }
+
+  onMount(async () => {
+    try {
+      const lib = await loadLibrary();
+      favIds = lib.favIds;
+      playlists = lib.playlists;
+    } catch {
+      // 行アクションが出せなくても検索は使えるため静かに握る
+    }
+  });
 
   function asErrorMessage(e: unknown): string {
     if (typeof e === "object" && e !== null && "message" in e) {
@@ -134,6 +177,13 @@
                 {t("search.block")}
               </button>
             {/if}
+            <VideoActions
+              video={videoRefOf(r)}
+              faved={favIds.has(r.videoId)}
+              {playlists}
+              onfavchange={onFavChange}
+              onplaylistcreated={onPlaylistCreated}
+            />
           </div>
         </div>
       </li>
