@@ -65,10 +65,12 @@ pub fn settings_set(db: State<'_, Db>, key: String, value: String) -> Result<(),
 
 /// `play_video`（設計書 §3.1）。`video_id` は URL 各形式も受け取り正規化する。
 /// `resume` が true のとき、未完了の履歴位置から再開する。
+/// `pip` が true のとき、最前面・枠なしの小窓で起動する（設計書 §4.5）。
 #[tauri::command]
 pub async fn play_video(
     video_id: String,
     resume: bool,
+    pip: Option<bool>,
     players: State<'_, PlayerManager>,
     db: State<'_, Db>,
 ) -> Result<u32, UiError> {
@@ -83,7 +85,7 @@ pub async fn play_video(
     };
     let ytdl_format = db.setting_get(yt::SETTING_QUALITY_FORMAT)?;
     players
-        .play(&id, start_sec, ytdl_format)
+        .play(&id, start_sec, ytdl_format, pip.unwrap_or(false))
         .await
         .map_err(UiError::from)
 }

@@ -117,9 +117,13 @@
     }
   }
 
-  async function play(resume: boolean): Promise<void> {
+  async function play(resume: boolean, pip = false): Promise<void> {
     try {
-      await invoke<number>("play_video", { videoId: input.trim(), resume });
+      await invoke<number>("play_video", {
+        videoId: input.trim(),
+        resume,
+        pip,
+      });
       if (resume && resumeHint) {
         notify(t("player.resumeApplied", { position: fmt(resumeHint.positionSec) }));
       }
@@ -464,6 +468,13 @@
     <button onclick={() => play(true)} disabled={!resumeHint}>
       {t("player.playResume")}
     </button>
+    <button
+      title={t("player.pip.hint")}
+      onclick={() => play(false, true)}
+      disabled={!input.trim()}
+    >
+      {t("player.playPip")}
+    </button>
   </div>
   {#if resumeHint}
     <p class="hint">
@@ -553,6 +564,13 @@
             {/each}
           </select>
         </label>
+        <button
+          title={t("player.pip.hint")}
+          onclick={() =>
+            control(p.instanceId, { type: "pip", enabled: !p.pip })}
+        >
+          {p.pip ? t("player.unpip") : t("player.pip")}
+        </button>
         <button class="danger" onclick={() => closePlayer(p.instanceId)}>
           {t("player.close")}
         </button>

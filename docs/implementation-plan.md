@@ -69,9 +69,9 @@
 
 ### Phase 8：PiP、マルチビュー、配布
 
-- [ ] 複数 mpv インスタンスの並行制御と PiP 起動
-- [ ] AppImage / MSI のビルドと Tauri updater の検討
-- [ ] 受け入れ：2 窓同時再生と小窓 PiP が動き、配布物が生成される
+- [x] 複数 mpv インスタンスの並行制御と PiP 起動（起動時 PiP ＋稼働中の PiP 切り替え。マルチインスタンス制御は Phase 1 の PlayerManager で実装済み）
+- [x] AppImage / MSI のビルドと Tauri updater の検討（AppImage は `pnpm tauri build` で生成確認。MSI は Windows 環境へ移管、updater の方針は決定記録に記録）
+- [x] 受け入れ：2 窓同時再生と小窓 PiP が動き、配布物が生成される
 
 ## 引き継ぎ手順
 

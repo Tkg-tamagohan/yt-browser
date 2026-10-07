@@ -64,6 +64,9 @@
   // ホイール 1 ノッチの音量変化量（mpv script-opts の wheel-volume_delta。
   // 次回再生から有効。既定 2、undefined は「Lua 既定のまま」＝保存スキップ）
   let wheelDelta = $state<number | undefined>(2);
+  // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する
+  let pipGeometry = $state("480x270-40-40");
+  const PIP_GEOMETRY_RE = /^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$/;
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -235,6 +238,13 @@
           });
         }
       }
+      // pip.geometry: mpv の geometry 形式だけ保存する（ここで弾く）
+      const geo = pipGeometry.trim();
+      if (geo && PIP_GEOMETRY_RE.test(geo)) {
+        await invoke("settings_set", { key: "pip.geometry", value: geo });
+      } else if (geo) {
+        notify(t("settings.failed", { message: `pip.geometry: ${geo}` }));
+      }
       if (!format || pendingApply !== format) {
         notify(
           format
@@ -302,6 +312,12 @@
       const wheelRaw = await invoke<string | null>("settings_get", {
         key: "wheel.volume_delta",
       });
+      const pipGeoRaw = await invoke<string | null>("settings_get", {
+        key: "pip.geometry",
+      });
+      if (pipGeoRaw !== null && PIP_GEOMETRY_RE.test(pipGeoRaw.trim())) {
+        pipGeometry = pipGeoRaw.trim();
+      }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
         if (Number.isFinite(n)) wheelDelta = n;
@@ -381,6 +397,24 @@
           min="-100"
           max="100"
           step="1"
+        />
+      </label>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.pip.title")}</h2>
+    <p class="subtle desc">{t("settings.pip.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <label class="wheel-row">
+        {t("settings.pip.geometry")}
+        <input
+          type="text"
+          class="format-input"
+          bind:value={pipGeometry}
+          placeholder="480x270-40-40"
         />
       </label>
     {/if}

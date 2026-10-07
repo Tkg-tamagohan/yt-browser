@@ -36,6 +36,13 @@ const ja = {
   "player.frameStep": "1 コマ進み",
   "player.frameBackStep": "1 コマ戻り",
 
+  // Phase 8: PiP（設計書 §4.5: 最前面・枠なしの小窓）
+  "player.playPip": "PiP で再生",
+  "player.pip": "PiP",
+  "player.unpip": "PiP 解除",
+  "player.pip.hint":
+    "最前面・枠なしの小窓で再生。mpv のショートカット（q で終了、m でミュート）は小窓上でも使えます",
+
   "ytdlp.checking": "yt-dlp を確認中…",
   "ytdlp.ok": "yt-dlp {version}（{path}）",
   "ytdlp.missing":
@@ -236,6 +243,12 @@ const ja = {
   "settings.wheel.desc":
     "mpv のホイール操作は「一時停止中＝コマ送り、再生中＝音量」。ここでは再生中の 1 ノッチあたりの音量変化量を設定する。mpv 起動オプションで渡すため、変更は次回の再生から有効",
   "settings.wheel.volumeDelta": "音量変化量（ノッチあたり）",
+
+  // Phase 8: PiP 小窓の位置（次回の PiP 化から有効）
+  "settings.pip.title": "PiP",
+  "settings.pip.desc":
+    "PiP（最前面・枠なしの小窓）の位置とサイズ。mpv の --geometry 形式（例: 480x270-40-40 は幅480・高さ270・右下から 40px 内側）。次回の PiP 化から有効",
+  "settings.pip.geometry": "小窓の位置とサイズ（WxH+±x±y）",
 } as const;
 
 export type MessageKey = keyof typeof ja;
