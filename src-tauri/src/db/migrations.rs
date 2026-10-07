@@ -73,4 +73,26 @@ pub const MIGRATIONS: &[Migration] = &[
               CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC);
               CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);",
     },
+    // Phase 4 修正: 初期実装が feed 直下の UC プレフィックスなし channelId を
+    // 保存していた環境の修復。UC 無しの channel_id を UC 付きに揃える
+    // （PK 衝突する側は既存の UC 付き行へ寄せて重複を消す）。
+    Migration {
+        version: 4,
+        name: "channel_id_uc_normalize",
+        sql: "DELETE FROM channels
+              WHERE channel_id NOT LIKE 'UC%'
+                AND EXISTS (
+                  SELECT 1 FROM channels c2
+                  WHERE c2.channel_id = 'UC' || channels.channel_id
+                );
+              UPDATE channels SET channel_id = 'UC' || channel_id
+              WHERE channel_id NOT LIKE 'UC%';
+              UPDATE OR IGNORE blocked_channels SET channel_id = 'UC' || channel_id
+              WHERE channel_id NOT LIKE 'UC%';
+              DELETE FROM blocked_channels WHERE channel_id NOT LIKE 'UC%';
+              UPDATE videos SET channel_id = 'UC' || channel_id
+              WHERE channel_id NOT LIKE 'UC%';
+              UPDATE watch_history SET channel_id = 'UC' || channel_id
+              WHERE channel_id NOT LIKE 'UC%';",
+    },
 ];
