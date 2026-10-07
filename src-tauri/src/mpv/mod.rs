@@ -95,6 +95,23 @@ impl TerminalTracker {
             self.pending_replaces.fetch_sub(1, Ordering::SeqCst);
             return false;
         }
+        self.record(reason)
+    }
+
+    /// `eof-reached=true`（keep-open 下で end-file が来ない経路の終端）。
+    /// replace 予約を消化しない: キュー済みの旧ファイル EOF 通知が予約を消して
+    /// 続く replace 由来の end-file を終端にしてしまう競合を防ぐ。
+    /// 予約中に無視した EOF は、新ファイルが同じ末尾位置から再開されて
+    /// すぐ再度 eof-reached になるため、最終的には終端として受理される。
+    fn on_eof(&self) -> bool {
+        if self.pending_replaces.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
+        self.record("eof")
+    }
+
+    /// 終端理由を一度だけ記録する。既に記録済みなら false。
+    fn record(&self, reason: &str) -> bool {
         let mut ended = lock(&self.ended_reason);
         if ended.is_some() {
             return false;
@@ -105,12 +122,7 @@ impl TerminalTracker {
 
     /// ソケット切断。まだ終端が記録されていなければ "process_exit" で記録して true。
     fn on_disconnect(&self) -> bool {
-        let mut ended = lock(&self.ended_reason);
-        if ended.is_some() {
-            return false;
-        }
-        *ended = Some("process_exit".to_string());
-        true
+        self.record("process_exit")
     }
 
     /// 履歴保存用の completed 判定。終端理由が eof のときのみ true。
@@ -408,7 +420,7 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                 // observe 済みの eof-reached を終端（reason=eof）として扱う
                 if name == "eof-reached"
                     && data.as_bool().unwrap_or(false)
-                    && player.terminal.on_end_file("eof")
+                    && player.terminal.on_eof()
                 {
                     let _ = player.ended_tx.send("eof".to_string());
                 }
@@ -732,5 +744,22 @@ mod tests {
         t.on_file_loaded();
         // 予約が残っていないので次の end-file は終端になる
         assert!(t.on_end_file("eof"));
+    }
+
+    /// 終端判定: replace 予約中に届いた旧ファイルの eof-reached は
+    /// 予約を消費しない（続く replace 由来の end-file が終端になる競合の防止）。
+    /// begin_replace → 旧 eof-reached → 旧 end-file(stop) → file-loaded の順を検証する。
+    #[test]
+    fn stale_eof_during_replace_does_not_consume_reservation() {
+        let t = TerminalTracker::default();
+        t.begin_replace();
+        // 旧ファイルの EOF 通知がキュー残りで到着しても予約を消化しない
+        assert!(!t.on_eof());
+        // replace 由来の end-file は引き続き予約を消費して無視される
+        assert!(!t.on_end_file("stop"));
+        t.on_file_loaded();
+        // 新ファイルが同じ末尾位置から再度 EOF になれば終端として受理される
+        assert!(t.on_eof());
+        assert!(t.completed());
     }
 }
