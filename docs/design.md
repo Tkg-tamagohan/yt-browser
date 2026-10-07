@@ -63,8 +63,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | コマンド | 引数 | 戻り値 |
 |---|---|---|
-| `play_video` | `video_id`, `resume` | `Result<()>` |
-| `player_control` | `action`（pause / resume / seek / volume / speed / quality / frame_step / frame_back_step） | `Result<()>` |
+| `play_video` | `video_id`, `resume` | `Result<instance_id>` |
+| `player_control` | `instance_id`, `action`（pause / resume / seek / volume / speed / quality / frame_step / frame_back_step） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
 | `subscribe_channel` | `channel_id`, `category_id?` | `Result<()>` |
 | `list_feed` | `filter`（未読のみ、カテゴリ、期間） | `Vec<FeedItem>` |
@@ -77,6 +77,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `filter_add` / `filter_remove` / `filter_list` | `Filter` または `id` | `Result<()>` / `Vec<Filter>` |
 | `history_list` / `playlist_*` / `settings_get` / `settings_set` | 略 | 略 |
 
+`play_video` が返す `instance_id` が制御対象の識別子で、UI はアクティブな窓の ID を保持して全操作に付ける。
+単一再生でも必須引数に揃え、マルチビュー時の操作経路を初期から担保する（FR-1）。
 `player_control` に操作を集約するのは、mpv 側への転送層を一箇所に保つためである。
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
 
@@ -150,8 +152,8 @@ local function wheel(ev, paused_cmd, playing_delta)
     mp.commandv("add", "volume", playing_delta)
   end
 end
-mp.add_key_binding("WHEEL_UP",   "yb_wheel_up",   function(e) wheel(e, "frame-step",      2) end)
-mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-back-step", -2) end)
+mp.add_key_binding("WHEEL_UP",   "yb_wheel_up",   function(e) wheel(e, "frame-step",      2) end, {complex=true})
+mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-back-step", -2) end, {complex=true})
 ```
 
 アプリ側 UI ボタンとキーバインドは `player_control` 経由で同じコマンドを叩く。
@@ -168,7 +170,7 @@ mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-ba
 | プリセット | 式 |
 |---|---|
 | 1080p 上限 | `bv*[height<=1080]+ba/b[height<=1080]` |
-| 1080p60 優先 | `bv*[height<=1080][fps>30]+ba/bv*[height<=1080]+ba/b` |
+| 1080p60 優先 | `bv*[height<=1080][fps>30]+ba/bv*[height<=1080]+ba/b[height<=1080]` |
 | AV1 優先 | `bv*[vcodec^=av01][height<=1080]+ba/bv*[vcodec^=vp9][height<=1080]+ba/b[height<=1080]` |
 | 最高画質 | `bv*+ba/b` |
 
@@ -199,7 +201,8 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 
 運用上の論点を次に置く。
 
-- **更新機構**：同梱バイナリ＋アプリ内更新ボタン＋起動時の定期チェックを基本とし、システムインストール優先のフォールバックを設定で切り替える
+- **更新機構**：暫定案は同梱バイナリ＋アプリ内更新ボタン＋起動時の定期チェックで、システムインストール優先のフォールバックも設計に含める
+  最終選択は未決事項として Phase 1 で確定する（要件定義 §8）
 - **JS ランタイム**：YouTube 解読に Deno 等を要求する環境では、同梱 Deno か手順ドキュメントで補う（Phase 1 時点の要件で確定）
 - **PO Token**：必要になる環境向けに、外部プロバイダの設定手順をドキュメント化する
 - **失敗の扱い**：タイムアウト、非ゼロ終了、JSON パース失敗を区別して記録し、解析失敗は生の先頭部分をログに残す
@@ -395,7 +398,7 @@ END;
 ### 9.3 ログ
 
 `tracing` + ローリングファイル出力を標準とし、リリースビルドは INFO、開発は DEBUG を既定にする。
-レスポンス原文の保存はデバッグ用途に限定し、本文をそのまま残さない設計にはしない（golden fixture は許可）。
+レスポンス原文の保存はデバッグ用途に限定し、継続トークンなど再送可能な値はマスクしてから残す（golden fixture も同様に匿名化する）。
 
 ## 10. セキュリティと権限
 
