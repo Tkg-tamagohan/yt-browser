@@ -4,6 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
+  import { notify } from "$lib/notices.svelte";
 
   interface Channel {
     channelId: string;
@@ -50,23 +51,8 @@
   let unreadOnly = $state(true);
   // null=すべて / 0=未分類 / n=カテゴリ id
   let filterCat = $state<number | null>(null);
-  interface Notice {
-    id: number;
-    msg: string;
-  }
-
   let busy = $state(false);
-  let notices = $state<Notice[]>([]);
-  let noticeSeq = 0;
   let unlistens: UnlistenFn[] = [];
-
-  function notify(msg: string): void {
-    const id = ++noticeSeq;
-    notices = [...notices.slice(-4), { id, msg }];
-    setTimeout(() => {
-      notices = notices.filter((n) => n.id !== id);
-    }, 6000);
-  }
 
   function asErrorMessage(e: unknown): string {
     if (typeof e === "object" && e !== null && "message" in e) {
@@ -343,10 +329,6 @@
       </ul>
     {/if}
   </section>
-
-  {#each notices as n (n.id)}
-    <div class="notice">{n.msg}</div>
-  {/each}
 </main>
 
 <style>
