@@ -202,36 +202,37 @@
     }
   }
 
-  // 一覧の再取得は常に一つの呼び出しだけが所有する。複数の呼び出しが
-  // 並んで互いの listsReq を失効させ合わないよう、飛行中は要求だけを
-  // 記録して合流させる
-  let listInFlight = false;
+  // 一覧の再取得は常に一つの実行だけが所有し、並行する呼び出しは
+  // 同じ Promise に合流する。互いの listsReq を失効させ合う再送や、
+  // 監視者のいない再試行が発生しないようにする
+  let listRun: Promise<void> | null = null;
   let listAgain = false;
 
   /// プレイリスト一覧の再取得（件数の最新化）。
   /// 取得中に他の更新が listsReq を進めたり新たな再取得要求が来たりしたら
   /// 取り直す。失効したまま放置すると追加した動画の件数が古いまま残るため。
+  /// 失敗はこの呼び出しに合流した全員へ伝搬する（呼び出し側の catch で通知）。
   async function refreshPlaylists(): Promise<void> {
-    if (listInFlight) {
+    if (listRun) {
       listAgain = true;
-      return;
+      return listRun;
     }
-    listInFlight = true;
-    try {
-      for (;;) {
-        listAgain = false;
-        const req = ++listsReq;
-        const list = await invoke<Playlist[]>("playlist_list");
-        if (req === listsReq) playlists = list;
-        // 最新の応答を反映でき、かつ飛行中に新しい要求も無ければ終了。
-        // どちらかが成り立たなければもう一周する
-        if (req === listsReq && !listAgain) return;
+    listRun = (async () => {
+      try {
+        for (;;) {
+          listAgain = false;
+          const req = ++listsReq;
+          const list = await invoke<Playlist[]>("playlist_list");
+          if (req === listsReq) playlists = list;
+          // 最新の応答を反映でき、かつ飛行中に新しい要求も無ければ終了。
+          // どちらかが成り立たなければもう一周する
+          if (req === listsReq && !listAgain) return;
+        }
+      } finally {
+        listRun = null;
       }
-    } finally {
-      listInFlight = false;
-      // 終了判定の直後に立った要求も取りこぼさない
-      if (listAgain) void refreshPlaylists();
-    }
+    })();
+    return listRun;
   }
 
   /// VideoActions からのプレイリスト追加通知（FR-7）。

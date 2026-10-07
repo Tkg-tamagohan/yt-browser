@@ -1406,9 +1406,9 @@ mod tests {
             )
             .unwrap();
         }
-        // 投稿日あり → 投入済み(1)。投稿日なしは日付欠けのフィード行と
-        // プレースホルダ（参照解除済みを含む）を区別できないため一律 0。
-        // 次回の無条件再取得でフィード由来行は ingested=1 に確定する
+        // 投稿日あり or 未読 → 投入済み確定(1)。is_read は ingest 以外で
+        // 0 にならないため。残る「投稿日なし＋既読」行は出自を確定
+        // できないので 0 に揃え、無条件再取得でフィード由来行を復旧する
         conn.execute(
             "INSERT INTO channels (channel_id, title, rss_etag, rss_last_modified)
              VALUES ('UCfeedchan00000000001', 'CH', 'ETAG', 'Wed, 01 Oct 2026')",
@@ -1451,7 +1451,8 @@ mod tests {
                 ("dated_ref".to_string(), 1),
                 ("dated_unref".to_string(), 1),
                 ("undated_ref".to_string(), 0),
-                ("undated_unref".to_string(), 0)
+                // 未読のまま残る行は ingest を一度通っているため投入済み
+                ("undated_unref".to_string(), 1)
             ]
         );
         // 曖昧な行を次回ポーリングで確定させるため、条件付き取得の状態は消える
