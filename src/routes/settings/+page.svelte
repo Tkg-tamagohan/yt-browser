@@ -85,14 +85,17 @@
     try {
       if (qualityChanged) {
         await invoke("settings_set", { key: "quality.format", value: format });
-        savedFormat = format;
       }
       await invoke("settings_set", {
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
       });
       if (!qualityChanged) {
-        notify(t("settings.saved"));
+        notify(
+          format
+            ? t("settings.saved")
+            : t("settings.savedQualitySkipped"),
+        );
         return;
       }
       // 再生中のインスタンスへ即時適用（設計書 §4.3: set_property + loadfile replace）
@@ -117,11 +120,15 @@
         }
       }
       if (failed.length > 0) {
+        // 未適用の台が残るため savedFormat は進めず、次回保存で適用を再試行できるようにする
         notify(t("settings.applyPartial", { count: failed.length }));
-      } else if (applied > 0) {
-        notify(t("settings.applied", { count: applied }));
       } else {
-        notify(t("settings.saved"));
+        savedFormat = format;
+        notify(
+          applied > 0
+            ? t("settings.applied", { count: applied })
+            : t("settings.saved"),
+        );
       }
     } catch (e) {
       notify(t("settings.failed", { message: asErrorMessage(e) }));

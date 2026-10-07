@@ -60,6 +60,8 @@ const ja = {
   "settings.applyPartial":
     "保存しましたが、再生中の {count} 台への即時適用に失敗しました（その台は次回再生時から有効）",
   "settings.failed": "保存に失敗: {message}",
+  "settings.savedQualitySkipped":
+    "保存しました（画質式が空のため、画質は変更していません）",
 
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",
