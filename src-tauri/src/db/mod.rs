@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use rusqlite::Connection;
 use thiserror::Error;
 
-use crate::model::{Category, Channel, FeedFilter, FeedItem, WatchHistory};
+use crate::model::{BlockedChannel, Category, Channel, FeedFilter, FeedItem, WatchHistory};
 
 /// `videos` への新規挿入 1 件分（`video_insert_new` の引数）。
 #[derive(Debug, Clone)]
@@ -398,6 +398,58 @@ impl Db {
         Ok(())
     }
 
+    /// ブロック登録（FR-5）。既に登録済みならタイトルを更新する。
+    pub fn blocked_add(&self, channel_id: &str, title: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO blocked_channels (channel_id, title) VALUES (?1, ?2)
+             ON CONFLICT(channel_id) DO UPDATE SET title = excluded.title",
+            rusqlite::params![channel_id, title],
+        )?;
+        Ok(())
+    }
+
+    /// ブロック解除。
+    pub fn blocked_remove(&self, channel_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM blocked_channels WHERE channel_id = ?1",
+            [channel_id],
+        )?;
+        Ok(())
+    }
+
+    /// ブロック中チャンネルの一覧（設定画面の解除 UI 用）。
+    pub fn blocked_list(&self) -> Result<Vec<BlockedChannel>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT channel_id, title, created_at FROM blocked_channels
+             ORDER BY created_at DESC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(BlockedChannel {
+                channel_id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// ブロック中チャンネル ID の集合。検索・関連動画の結果絞り込みに使う。
+    pub fn blocked_ids(&self) -> Result<std::collections::HashSet<String>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare("SELECT channel_id FROM blocked_channels")?;
+        let mut rows = stmt.query([])?;
+        let mut out = std::collections::HashSet::new();
+        while let Some(row) = rows.next()? {
+            out.insert(row.get::<_, String>(0)?);
+        }
+        Ok(out)
+    }
+
     /// `list_feed`（設計書 §3.1）。ブロックチャンネルの動画は常に除外する（FR-5）。
     pub fn feed_list(&self, filter: &FeedFilter) -> Result<Vec<FeedItem>, DbError> {
         let conn = self.lock()?;
@@ -737,9 +789,11 @@ mod tests {
             .is_none()); // v3 は channels 行を持たないので videos 側だけ
         let conn = db.lock().unwrap();
         let v3_channel: String = conn
-            .query_row("SELECT channel_id FROM videos WHERE video_id = 'v3'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT channel_id FROM videos WHERE video_id = 'v3'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(v3_channel, "UCUCzzzzzzzzzzzzzzzzzzzz");
         // blocked_channels は 22 文字の旧 id が UC 付きに正規化される
