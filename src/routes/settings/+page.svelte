@@ -247,24 +247,29 @@
       // 空欄は既定値へのリセットとして扱い、不正形式は失敗通知のみ
       const geo = pipGeometry.trim();
       if (!geo) {
-        pipGeometry = PIP_GEOMETRY_DEFAULT;
+        // 空欄は既定値へのリセット。保存に成功してから画面値を戻す
+        // （失敗時に表示と DB の値がずれないようにする）
         await invoke("settings_set", {
           key: "pip.geometry",
-          value: pipGeometry,
+          value: PIP_GEOMETRY_DEFAULT,
         });
+        pipGeometry = PIP_GEOMETRY_DEFAULT;
       } else if (PIP_GEOMETRY_RE.test(geo)) {
         await invoke("settings_set", { key: "pip.geometry", value: geo });
       } else {
         invalid = true;
         notify(t("settings.failed", { message: `pip.geometry: ${geo}` }));
       }
-      if (invalid) return;
+      // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
+      // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       if (!format || pendingApply !== format) {
-        notify(
-          format
-            ? t("settings.saved")
-            : t("settings.savedQualitySkipped"),
-        );
+        if (!invalid) {
+          notify(
+            format
+              ? t("settings.saved")
+              : t("settings.savedQualitySkipped"),
+          );
+        }
         return;
       }
       // 再生中のインスタンスへ即時適用（設計書 §4.3: set_property + loadfile replace）
@@ -293,11 +298,13 @@
         notify(t("settings.applyPartial", { count: failed.length }));
       } else {
         pendingApply = null;
-        notify(
-          applied > 0
-            ? t("settings.applied", { count: applied })
-            : t("settings.saved"),
-        );
+        if (!invalid) {
+          notify(
+            applied > 0
+              ? t("settings.applied", { count: applied })
+              : t("settings.saved"),
+          );
+        }
       }
     } catch (e) {
       notify(t("settings.failed", { message: asErrorMessage(e) }));
