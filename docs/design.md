@@ -63,8 +63,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | コマンド | 引数 | 戻り値 |
 |---|---|---|
-| `play_video` | `video_id`, `resume` | `Result<instance_id>` |
-| `player_control` | `instance_id`, `action`（pause / resume / seek / volume / speed / quality / frame_step / frame_back_step） | `Result<()>` |
+| `play_video` | `video_id`, `resume`, `pip?` | `Result<instance_id>` |
+| `player_control` | `instance_id`, `action`（pause / resume / seek / volume / speed / quality / frame_step / frame_back_step / pip） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
 | `subscribe_channel` | `input`（UC ID・channel URL・`@handle`）, `category_id?` | `Result<Channel>` |
 | `unsubscribe_channel` / `list_channels` / `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` / `Vec<Channel>` |
@@ -90,7 +90,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
-| `player://state` | `{ instance_id, pause, position, duration, fps, state }` | observe_property の変化を間引いて発火 |
+| `player://state` | `{ instance_id, pause, position, duration, fps, state, pip }` | observe_property の変化を間引いて発火 |
 | `player://ended` | `{ instance_id, reason }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーが新着を検出 |
 | `feed://status` | `{ channel_id?, level, message }` | 取得失敗と復帰 |
@@ -193,6 +193,7 @@ mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-ba
 マルチビューは mpv インスタンスを複数立てるだけで成立する。
 PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動したものを指す。
 アプリのウィンドウにはピクセルを持ち込まないので、WebView との合成は発生しない。
+`ontop`・`border`・`geometry` はいずれも起動後に `set_property` で変更できるため、稼働中インスタンスを後から PiP 化・解除できる（`player_control` の `pip` アクション、`PlayerState.pip` で状態を伝える）。小窓の位置とサイズは設定 `pip.geometry`（mpv の `WxH±x±y` 形式のみ受理、既定 `480x270-40-40`）で変更する。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

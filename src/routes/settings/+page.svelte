@@ -64,8 +64,10 @@
   // ホイール 1 ノッチの音量変化量（mpv script-opts の wheel-volume_delta。
   // 次回再生から有効。既定 2、undefined は「Lua 既定のまま」＝保存スキップ）
   let wheelDelta = $state<number | undefined>(2);
-  // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する
-  let pipGeometry = $state("480x270-40-40");
+  // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する。
+  // 空欄での保存は「既定値へ戻す」操作として扱い、UI 表示も既定に戻す
+  const PIP_GEOMETRY_DEFAULT = "480x270-40-40";
+  let pipGeometry = $state(PIP_GEOMETRY_DEFAULT);
   const PIP_GEOMETRY_RE = /^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$/;
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
@@ -222,10 +224,13 @@
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
       });
+      // 不正値があっても他キーの保存自体は行うが、全体の成功通知は出さない
+      let invalid = false;
       // wheel.volume_delta: 有限数値・±100 以内だけ保存する
       // （mpv 側がそのまま script-opts に渡すため、ここで弾く）
       if (wheelDelta !== undefined) {
         if (!Number.isFinite(wheelDelta) || Math.abs(wheelDelta) > 100) {
+          invalid = true;
           notify(
             t("settings.failed", {
               message: `wheel.volume_delta: ${wheelDelta}`,
@@ -238,13 +243,22 @@
           });
         }
       }
-      // pip.geometry: mpv の geometry 形式だけ保存する（ここで弾く）
+      // pip.geometry: mpv の geometry 形式だけ保存する（ここで弾く）。
+      // 空欄は既定値へのリセットとして扱い、不正形式は失敗通知のみ
       const geo = pipGeometry.trim();
-      if (geo && PIP_GEOMETRY_RE.test(geo)) {
+      if (!geo) {
+        pipGeometry = PIP_GEOMETRY_DEFAULT;
+        await invoke("settings_set", {
+          key: "pip.geometry",
+          value: pipGeometry,
+        });
+      } else if (PIP_GEOMETRY_RE.test(geo)) {
         await invoke("settings_set", { key: "pip.geometry", value: geo });
-      } else if (geo) {
+      } else {
+        invalid = true;
         notify(t("settings.failed", { message: `pip.geometry: ${geo}` }));
       }
+      if (invalid) return;
       if (!format || pendingApply !== format) {
         notify(
           format

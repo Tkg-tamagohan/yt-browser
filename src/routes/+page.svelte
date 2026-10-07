@@ -140,6 +140,25 @@
     }
   }
 
+  // PiP 切り替え中のインスタンス。p.pip は 300ms 間隔の状態イベントでしか
+  // 更新されないため、連打されると古い状態から同じ値を二度送ってしまう。
+  // 応答後も次の状態イベントが届く猶予を置いてから再有効化する
+  let pipBusy = $state<Set<number>>(new Set());
+
+  async function togglePip(id: number, next: boolean): Promise<void> {
+    if (pipBusy.has(id)) return;
+    pipBusy = new Set(pipBusy).add(id);
+    try {
+      await control(id, { type: "pip", enabled: next });
+    } finally {
+      setTimeout(() => {
+        const s = new Set(pipBusy);
+        s.delete(id);
+        pipBusy = s;
+      }, 400);
+    }
+  }
+
   async function closePlayer(id: number): Promise<void> {
     try {
       const videoId = playerStates.list.get(id)?.videoId;
@@ -566,8 +585,8 @@
         </label>
         <button
           title={t("player.pip.hint")}
-          onclick={() =>
-            control(p.instanceId, { type: "pip", enabled: !p.pip })}
+          disabled={pipBusy.has(p.instanceId)}
+          onclick={() => togglePip(p.instanceId, !p.pip)}
         >
           {p.pip ? t("player.unpip") : t("player.pip")}
         </button>
