@@ -196,11 +196,15 @@
 
   /// VideoActions からのプレイリスト追加通知（FR-7）。
   /// 追加先が表示中なら項目一覧も読み直す（重複追加は冪等なので再取得で吸収）。
+  /// 再取得も世代番号を進め、連続追加で遅れた古い応答が新しい一覧を
+  /// 上書きしないようにする（選択時の取得と同じ世代に載せる）
   async function onPlaylistAdd(playlistId: number): Promise<void> {
+    const req = ++itemsReq;
     try {
-      playlists = await invoke<Playlist[]>("playlist_list");
+      const list = await invoke<Playlist[]>("playlist_list");
+      if (req !== itemsReq) return;
+      playlists = list;
       if (selectedId === playlistId) {
-        const req = itemsReq;
         const items = await invoke<PlaylistEntry[]>("playlist_items", {
           playlistId,
         });

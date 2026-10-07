@@ -211,12 +211,14 @@ impl Db {
 
     /// 再生開始時に履歴行を確保する。既存行は位置や完了状態を壊さない。
     /// 明示的な再生開始なので、手動削除による保存抑止をここで解除する。
+    /// 抑止の解除と挿入は conn ロック内で行い、`history_remove` や
+    /// `history_update_progress` と同じ排他区間に載せて交錯を防ぐ。
     pub fn history_upsert(&self, video_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
         self.history_suppressed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(video_id);
-        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO watch_history (video_id, title) VALUES (?1, '')
              ON CONFLICT (video_id) DO NOTHING",
@@ -236,8 +238,15 @@ impl Db {
         duration_sec: Option<i64>,
         completed: bool,
     ) -> Result<(), DbError> {
-        // 手動削除済みの動画は再生中の定期・終了保存で復活させない
-        // （FR-7 履歴削除の確定。再び明示的に再生されれば history_upsert で解除済み）
+        let position = if completed {
+            0
+        } else {
+            position_sec.max(0.0) as i64
+        };
+        // 抑止確認と書き込みは conn ロックの同一排他区間に置く。
+        // ここで先に確認してからロックを取ると、間に割り込んだ削除が
+        // 抑止登録を済ませてもこの保存が削除済み行を再作成してしまう
+        let conn = self.lock()?;
         if self
             .history_suppressed
             .lock()
@@ -246,12 +255,6 @@ impl Db {
         {
             return Ok(());
         }
-        let position = if completed {
-            0
-        } else {
-            position_sec.max(0.0) as i64
-        };
-        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO watch_history
                (video_id, title, position_sec, duration_sec, last_watched_at, completed)
@@ -499,7 +502,8 @@ impl Db {
                     v.thumbnail_url, v.published_at, v.kind, v.is_read
              FROM videos v
              JOIN channels c ON c.channel_id = v.channel_id
-             WHERE v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+             WHERE v.ingested = 1
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
                AND (?1 = 0 OR v.is_read = 0)
                AND (?2 IS NULL
                     OR (?2 = 0 AND c.category_id IS NULL)
@@ -634,10 +638,11 @@ impl Db {
     /// 再生中の同じ動画に対する以後の `history_update_progress` を抑止する
     /// （再生中の削除で直後に履歴が復活しないようにする）。
     /// 抑止はセッション内のみ有効で、明示的な再生開始で解除される。
+    /// 削除と抑止登録は conn ロックの同一排他区間で行う
+    /// （保存側の「確認→書き込み」と直列化される順序を一致させるため）。
     pub fn history_remove(&self, video_id: &str) -> Result<(), DbError> {
         let conn = self.lock()?;
         conn.execute("DELETE FROM watch_history WHERE video_id = ?1", [video_id])?;
-        drop(conn);
         self.history_suppressed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -985,18 +990,18 @@ fn ingest_rows(
 ) -> Result<IngestOutcome, DbError> {
     let mut out = IngestOutcome::default();
     for v in entries {
-        // 新規行は is_read=0 で未読投入。既存行は通常はそのままだが、
+        // 新規行は is_read=0・ingested=1 で未読投入。既存行は通常はそのままだが、
         // お気に入り・プレイリスト登録で先にできたプレースホルダ
-        // （published_at が NULL = まだフィードへ現れていない行）には
-        // 初回 RSS 到達の時点で投稿日・種別を埋めて未読へ戻す。
-        // 既にフィード行として存在するもの（published_at 非 NULL）は
-        // WHERE で除外して既読状態を保つ（既読→未読への戻しは初回購読時
-        // の reset_unread 経路だけが担う）。
+        // （ingested=0 = まだフィードへ現れていない行）には初回 RSS 到達の
+        // 時点で投稿日・種別を埋めて未読へ戻す。フィード投入済みの行は
+        // WHERE で除外して既読状態を保つ（既読→未読への戻しは初回購読時の
+        // reset_unread 経路だけが担う）。published_at を判定に使わないのは、
+        // 投稿日なしの RSS エントリを毎回プレースホルダと誤認しないため。
         out.inserted += tx.execute(
             "INSERT INTO videos
                (video_id, channel_id, channel_title, title, thumbnail_url,
-                published_at, kind, is_read)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+                published_at, kind, is_read, ingested)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 1)
              ON CONFLICT (video_id) DO UPDATE SET
                channel_id = excluded.channel_id,
                channel_title = COALESCE(excluded.channel_title, videos.channel_title),
@@ -1005,8 +1010,9 @@ fn ingest_rows(
                thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
                published_at = excluded.published_at,
                kind = excluded.kind,
-               is_read = 0
-             WHERE videos.published_at IS NULL",
+               is_read = 0,
+               ingested = 1
+             WHERE videos.ingested = 0",
             rusqlite::params![
                 v.video_id,
                 v.channel_id,
@@ -1504,6 +1510,21 @@ mod tests {
             .unwrap();
         let h = db.history_get("abc123def45").unwrap().unwrap();
         assert_eq!(h.position_sec, 5);
+
+        // 削除と進捗保存が並行しても、remove 完了後に履歴は復活しない
+        // （抑止確認と書き込みが conn ロック内で直列化されていることの検証）
+        let db2 = db.clone();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..50 {
+                let _ = db2.history_update_progress("conc1234567", "t", 1.0, None, false);
+            }
+        });
+        db.history_upsert("conc1234567").unwrap();
+        db.history_remove("conc1234567").unwrap();
+        writer.join().unwrap();
+        db.history_update_progress("conc1234567", "t", 1.0, None, false)
+            .unwrap();
+        assert!(db.history_get("conc1234567").unwrap().is_none());
     }
 
     /// DB-LD-06: ライブラリ登録で先に作ったプレースホルダ行に、
@@ -1555,11 +1576,38 @@ mod tests {
 
         // 既読にしても再投入で既読状態は保つ（プレースホルダではないため）
         db.videos_mark_read(&["dQw4w9WgXcQ".to_string()]).unwrap();
-        db.feed_ingest(ch, &[entry], None, None).unwrap();
+        let out = db.feed_ingest(ch, &[entry], None, None).unwrap().unwrap();
+        assert_eq!(out.inserted, 0);
         let feed = db
             .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
             .unwrap();
         let item = feed.iter().find(|i| i.video_id == "dQw4w9WgXcQ").unwrap();
         assert!(item.is_read);
+
+        // 投稿日なしのエントリも最初の投入で ingested=1 となり、
+        // 再投入で未読に戻ったり inserted が増えたりしない
+        let no_date = NewVideo {
+            video_id: "nodate12345",
+            channel_id: ch,
+            channel_title: "テストCH",
+            title: "投稿日なし",
+            thumbnail_url: None,
+            published_at: None,
+            kind: "video",
+        };
+        let out = db
+            .feed_ingest(ch, std::slice::from_ref(&no_date), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.inserted, 1);
+        db.videos_mark_read(&["nodate12345".to_string()]).unwrap();
+        let out = db.feed_ingest(ch, &[no_date], None, None).unwrap().unwrap();
+        assert_eq!(out.inserted, 0);
+        let feed = db
+            .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+            .unwrap();
+        let item = feed.iter().find(|i| i.video_id == "nodate12345").unwrap();
+        assert!(item.is_read);
+        assert_eq!(item.published_at, None);
     }
 }

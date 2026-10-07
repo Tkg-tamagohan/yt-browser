@@ -192,4 +192,15 @@ pub const MIGRATIONS: &[Migration] = &[
                 PRIMARY KEY (playlist_id, video_id)
               );",
     },
+    // Phase 7 レビュー対応: ライブラリ登録で先にできた videos 行（プレースホルダ）と
+    // フィード投入済みの行を published_at の有無では判別できない（投稿日なしの
+    // RSS エントリが毎回新着扱いになる）。独立したフラグ列を追加し、
+    // 既存行はすべてフィード由来なので 1 に初期化する。
+    Migration {
+        version: 7,
+        name: "videos_ingested_flag",
+        sql: "ALTER TABLE videos
+                ADD COLUMN ingested INTEGER NOT NULL DEFAULT 0;
+              UPDATE videos SET ingested = 1;",
+    },
 ];
