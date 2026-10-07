@@ -4,7 +4,7 @@
 
 mod ipc;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -151,6 +151,18 @@ pub struct MpvPlayer {
     ended_tx: broadcast::Sender<String>,
     /// 終端判定と意図的リロードの区別。
     terminal: TerminalTracker,
+    /// `sponsor://skipped` の送出に使う（設計書 §3.2）。
+    app: AppHandle,
+    /// SponsorBlock の区間と発火済みフラグ（設計書 §4.4）。
+    sponsor: Mutex<SponsorState>,
+}
+
+/// SponsorBlock の判定状態。区間は再生開始後のバックグラウンド取得で差し込まれる。
+#[derive(Default)]
+pub struct SponsorState {
+    pub segments: Vec<crate::sponsor::ActiveSegment>,
+    /// 各区間につき 1 回だけ発火させるための消化済みインデックス。
+    fired: HashSet<usize>,
 }
 
 /// `PlayerManager::play` に渡す起動条件。
@@ -176,6 +188,7 @@ impl MpvPlayer {
         instance_id: u32,
         socket_dir: &Path,
         opts: SpawnOptions,
+        app: AppHandle,
     ) -> Result<(Arc<Self>, JoinHandle<()>), MpvError> {
         let socket_path = socket_dir.join(format!("mpv-{instance_id}.sock"));
         // 同名ソケットが残っていれば掃除する（前回プロセスの残骸対策）
@@ -260,6 +273,8 @@ impl MpvPlayer {
             }),
             ended_tx,
             terminal: TerminalTracker::default(),
+            app,
+            sponsor: Mutex::new(SponsorState::default()),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -307,6 +322,11 @@ impl MpvPlayer {
     /// 終端理由が eof（最後まで再生）なら true。close 時の保存判定に使う。
     fn terminal_completed(&self) -> bool {
         self.terminal.completed()
+    }
+
+    /// バックグラウンドで取得した SponsorBlock 区間を差し込む（設計書 §4.4）。
+    pub fn set_sponsor_segments(&self, segments: Vec<crate::sponsor::ActiveSegment>) {
+        lock(&self.sponsor).segments = segments;
     }
 
     /// `player_control` の操作を mpv コマンドへ変換して送る。
@@ -446,7 +466,15 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                 {
                     let _ = player.ended_tx.send("eof".to_string());
                 }
+                let pos = if name == "time-pos" {
+                    data.as_f64()
+                } else {
+                    None
+                };
                 player.apply_property(&name, data);
+                if let Some(pos) = pos {
+                    sponsor_check(&player, pos).await;
+                }
             }
             IpcEvent::Event { name, data } => match name.as_str() {
                 "end-file" => {
@@ -480,6 +508,45 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                 let _ = player.ended_tx.send("process_exit".to_string());
             }
         }
+    }
+}
+
+/// time-pos が SponsorBlock 区間に入ったときの処理（設計書 §4.4）。
+/// Skip は区間末尾へ seek して `sponsor://skipped`、Notify は同イベントを通知だけ送る。
+/// 各区間は再生ごとに 1 回だけ発火する（戻って再侵入しても再発火しない）。
+async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
+    let seg = {
+        let mut sp = lock(&player.sponsor);
+        match crate::sponsor::hit_index(&sp.segments, pos) {
+            Some(i) if !sp.fired.contains(&i) => {
+                sp.fired.insert(i);
+                Some(sp.segments[i].clone())
+            }
+            _ => None,
+        }
+    };
+    let Some(seg) = seg else { return };
+    if seg.action == crate::sponsor::CategoryAction::Skip {
+        if let Err(e) = player
+            .control(&PlayerAction::Seek { seconds: seg.end })
+            .await
+        {
+            tracing::warn!(error = %e, "SponsorBlock スキップの seek に失敗");
+        }
+    }
+    let payload = crate::sponsor::SkippedPayload {
+        instance_id: player.instance_id(),
+        video_id: player.video_id(),
+        category: seg.category,
+        segment: [seg.start, seg.end],
+        action: if seg.action == crate::sponsor::CategoryAction::Skip {
+            "skip"
+        } else {
+            "notify"
+        },
+    };
+    if let Err(e) = player.app.emit("sponsor://skipped", payload) {
+        tracing::warn!(error = %e, "sponsor://skipped の送出に失敗");
     }
 }
 
@@ -529,6 +596,8 @@ pub struct PlayerManager {
     ytdlp_resolver: crate::yt::YtDlpResolver,
     /// `--script` で読ませる wheel.lua のパス。書き出しに失敗した環境では None。
     wheel_script: Option<PathBuf>,
+    /// SponsorBlock API 呼び出し用の HTTP クライアント（設計書 §4.4）。
+    http: reqwest::Client,
 }
 
 struct PlayerEntry {
@@ -555,6 +624,7 @@ impl PlayerManager {
             socket_dir,
             ytdlp_resolver,
             wheel_script,
+            http: reqwest::Client::new(),
         }
     }
 
@@ -583,8 +653,29 @@ impl PlayerManager {
             wheel_script: self.wheel_script.clone(),
             wheel_volume_delta,
         };
-        let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts).await?;
+        let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
         let emitter = self.spawn_emitter(player.clone());
+
+        // SponsorBlock の区間取得をバックグラウンドで行い、判定用にプレイヤーへ差し込む。
+        // 取得失敗は再生を阻害しない（スキップが動かないだけ）。
+        {
+            let player = player.clone();
+            let http = self.http.clone();
+            let video_id = video_id.to_string();
+            let categories = self
+                .db
+                .setting_get(crate::sponsor::SETTING_CATEGORIES)
+                .ok()
+                .flatten();
+            tokio::spawn(async move {
+                let cats = crate::sponsor::parse_categories(categories.as_deref());
+                match crate::sponsor::fetch_segments(&http, &video_id, &cats).await {
+                    Ok(segs) => player.set_sponsor_segments(segs),
+                    Err(e) => tracing::warn!(video_id, error = %e, "SponsorBlock の区間取得に失敗"),
+                }
+            });
+        }
+
         lock(&self.players).insert(
             id,
             PlayerEntry {

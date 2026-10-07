@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod model;
 mod mpv;
+mod sponsor;
 mod yt;
 
 use std::path::PathBuf;

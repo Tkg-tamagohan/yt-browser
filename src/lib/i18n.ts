@@ -60,6 +60,26 @@ const ja = {
   "settings.applyPartial":
     "保存しましたが、再生中の {count} 台への即時適用に失敗しました（その台は次回再生時から有効）",
   "settings.failed": "保存に失敗: {message}",
+
+  // Phase 3: SponsorBlock のカテゴリ設定
+  "settings.sponsor.title": "SponsorBlock",
+  "settings.sponsor.desc":
+    "カテゴリごとに区間へ入ったときの動作を選ぶ。変更は次回の再生から有効",
+  "settings.sponsor.action.skip": "スキップ",
+  "settings.sponsor.action.notify": "通知のみ",
+  "settings.sponsor.action.off": "無効",
+  "sponsor.cat.sponsor": "広告・提供読み",
+  "sponsor.cat.selfpromo": "自社宣伝・無料宣伝",
+  "sponsor.cat.interaction": "登録・高評価の呼びかけ",
+  "sponsor.cat.intro": "イントロ（開始演出）",
+  "sponsor.cat.outro": "アウトロ（終了カード）",
+  "sponsor.cat.preview": "プレビュー・まとめ・フック",
+  "sponsor.cat.poi_highlight": "見どころ（ハイライト）",
+  "sponsor.cat.music_offtopic": "音楽動画の本題でない部分",
+  "sponsor.cat.filler": "余談・フィラー",
+
+  "sponsor.skipped": "SponsorBlock: {category} 区間をスキップしました",
+  "sponsor.notified": "SponsorBlock: {category} 区間を検出しました（通知のみ）",
 } as const;
 
 export type MessageKey = keyof typeof ja;

@@ -10,6 +10,7 @@
     type PlayerAction,
     type PlayerEnded,
     type PlayerState,
+    type SponsorSkipped,
     type UiError,
     type WatchHistory,
     type YtDlpStatus,
@@ -147,6 +148,11 @@
         notify(t("player.ended", { reason: ev.payload.reason }));
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直す
         void refreshResumeHint();
+      }),
+      await listen<SponsorSkipped>("sponsor://skipped", (ev) => {
+        const key =
+          ev.payload.action === "skip" ? "sponsor.skipped" : "sponsor.notified";
+        notify(t(key, { category: ev.payload.category }));
       }),
     );
   });

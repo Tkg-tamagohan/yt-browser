@@ -37,8 +37,8 @@
 
 ### Phase 3：SponsorBlock
 
-- [ ] `sponsor` モジュール：API 取得、カテゴリ設定、位置監視によるスキップ
-- [ ] `sponsor://skipped` の一時通知 UI
+- [x] `sponsor` モジュール：API 取得、カテゴリ設定、位置監視によるスキップ
+- [x] `sponsor://skipped` の一時通知 UI
 - [ ] 受け入れ：区間を持つ動画で自動スキップが発火し、設定でカテゴリを切り替えられる
 
 ### Phase 4：購読フィード
