@@ -28,11 +28,38 @@
   ];
   const CUSTOM = "custom";
 
+  // SponsorBlock のカテゴリ一覧（src-tauri/src/sponsor/mod.rs の設定キーに対応）
+  const SPONSOR_CATEGORIES = [
+    "sponsor",
+    "selfpromo",
+    "interaction",
+    "intro",
+    "outro",
+    "preview",
+    "poi_highlight",
+    "music_offtopic",
+    "filler",
+  ] as const;
+  type SponsorCategory = (typeof SPONSOR_CATEGORIES)[number];
+
   let selected = $state<string>(PRESETS[0].format);
   let customFormat = $state("");
+  // カテゴリごとの動作（"skip" | "notify" | "off"）。既定は sponsor のみ skip
+  let sponsorActions = $state<Record<SponsorCategory, string>>({
+    ...(Object.fromEntries(SPONSOR_CATEGORIES.map((c) => [c, "off"])) as Record<
+      SponsorCategory,
+      string
+    >),
+    sponsor: "skip",
+  });
   let loading = $state(true);
   let saving = $state(false);
   let notices = $state<string[]>([]);
+  // DB に最後に書き込んだ画質式（読込時点では読み取った値）。
+  // 書込み済みと適用完了を分けて追うため、即時適用の成否とは独立に進める
+  let persistedFormat = $state("");
+  // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
+  let pendingApply = $state<string | null>(null);
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -53,11 +80,30 @@
   }
 
   async function save(): Promise<void> {
+    // 画質式が前回保存値から変わったときだけ適用する（カテゴリだけの保存で
+    // 再生中インスタンスが再読込されないようにする。loadfile replace は再生を中断させる）
     const format = effectiveFormat;
-    if (!format) return;
     saving = true;
     try {
-      await invoke("settings_set", { key: "quality.format", value: format });
+      // DB の値と違うときだけ書き込む。書いた値は必ず pendingApply にして
+      // 適用成功まで追跡する（書き戻し時も適用が残る形になる）
+      if (format && format !== persistedFormat) {
+        await invoke("settings_set", { key: "quality.format", value: format });
+        persistedFormat = format;
+        pendingApply = format;
+      }
+      await invoke("settings_set", {
+        key: "sponsor.categories",
+        value: JSON.stringify(sponsorActions),
+      });
+      if (!format || pendingApply !== format) {
+        notify(
+          format
+            ? t("settings.saved")
+            : t("settings.savedQualitySkipped"),
+        );
+        return;
+      }
       // 再生中のインスタンスへ即時適用（設計書 §4.3: set_property + loadfile replace）
       let applied = 0;
       const failed: number[] = [];
@@ -80,16 +126,21 @@
         }
       }
       if (failed.length > 0) {
+        // 未適用の台が残るため pendingApply を残し、次回保存で適用を再試行できるようにする
         notify(t("settings.applyPartial", { count: failed.length }));
-      } else if (applied > 0) {
-        notify(t("settings.applied", { count: applied }));
       } else {
-        notify(t("settings.saved"));
+        pendingApply = null;
+        notify(
+          applied > 0
+            ? t("settings.applied", { count: applied })
+            : t("settings.saved"),
+        );
       }
     } catch (e) {
       notify(t("settings.failed", { message: asErrorMessage(e) }));
+    } finally {
+      saving = false;
     }
-    saving = false;
   }
 
   onMount(async () => {
@@ -106,9 +157,30 @@
           customFormat = stored;
         }
       }
+      const sponsorRaw = await invoke<string | null>("settings_get", {
+        key: "sponsor.categories",
+      });
+      if (sponsorRaw) {
+        try {
+          const parsed = JSON.parse(sponsorRaw) as Record<string, string>;
+          sponsorActions = {
+            ...sponsorActions,
+            ...Object.fromEntries(
+              SPONSOR_CATEGORIES.filter((c) => c in parsed).map((c) => [
+                c,
+                parsed[c],
+              ]),
+            ),
+          };
+        } catch {
+          // JSON 壊れは既定のままにする
+        }
+      }
     } catch {
       // 読み取り失敗時はプリセット既定のままにする
     }
+    persistedFormat =
+      selected === CUSTOM ? customFormat.trim() : selected;
     loading = false;
   });
 </script>
@@ -143,14 +215,39 @@
           />
         {/if}
       </div>
-      <button
-        onclick={save}
-        disabled={saving || !effectiveFormat}
-      >
-        {saving ? t("settings.saving") : t("settings.save")}
-      </button>
     {/if}
   </section>
+
+  <section class="panel">
+    <h2>{t("settings.sponsor.title")}</h2>
+    <p class="subtle desc">{t("settings.sponsor.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <div class="sponsor-table">
+        {#each SPONSOR_CATEGORIES as cat}
+          <label>
+            <span class="cat-label">{t(`sponsor.cat.${cat}`)}</span>
+            <select bind:value={sponsorActions[cat]}>
+              <option value="skip">{t("settings.sponsor.action.skip")}</option>
+              <option value="notify">
+                {t("settings.sponsor.action.notify")}
+              </option>
+              <option value="off">{t("settings.sponsor.action.off")}</option>
+            </select>
+          </label>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
+  <button
+    class="save-btn"
+    onclick={save}
+    disabled={loading || saving}
+  >
+    {saving ? t("settings.saving") : t("settings.save")}
+  </button>
 
   {#each notices as n}
     <p class="notice">{n}</p>
@@ -204,5 +301,33 @@
     width: 100%;
     margin-top: 4px;
     font-family: monospace;
+  }
+
+  .panel + .panel {
+    margin-top: 16px;
+  }
+
+  .sponsor-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 12px 0;
+  }
+
+  .sponsor-table label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-size: 0.95rem;
+  }
+
+  .cat-label {
+    flex: 1;
+  }
+
+  .save-btn {
+    align-self: flex-start;
+    margin-top: 16px;
   }
 </style>

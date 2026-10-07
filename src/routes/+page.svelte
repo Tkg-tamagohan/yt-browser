@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { t } from "$lib/i18n";
+  import { t, type MessageKey } from "$lib/i18n";
   import {
     initPlayerEvents,
     playerStates,
@@ -10,6 +10,7 @@
     type PlayerAction,
     type PlayerEnded,
     type PlayerState,
+    type SponsorSkipped,
     type UiError,
     type WatchHistory,
     type YtDlpStatus,
@@ -147,6 +148,16 @@
         notify(t("player.ended", { reason: ev.payload.reason }));
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直す
         void refreshResumeHint();
+      }),
+      await listen<SponsorSkipped>("sponsor://skipped", (ev) => {
+        const key =
+          ev.payload.action === "skip" ? "sponsor.skipped" : "sponsor.notified";
+        // 設定画面と同じ日本語ラベルに揃える。未定義カテゴリは API の値のまま
+        const catKey = `sponsor.cat.${ev.payload.category}` as MessageKey;
+        const localized = t(catKey);
+        const category =
+          localized === catKey ? ev.payload.category : localized;
+        notify(t(key, { category }));
       }),
     );
   });

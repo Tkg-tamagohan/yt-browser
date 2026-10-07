@@ -20,6 +20,15 @@ export type PlayerState = {
 
 export type PlayerEnded = { instanceId: number; videoId: string; reason: string };
 
+/// `sponsor://skipped` イベント（設計書 §3.2）。action は "skip" | "notify"。
+export type SponsorSkipped = {
+  instanceId: number;
+  videoId: string;
+  category: string;
+  segment: [number, number];
+  action: "skip" | "notify";
+};
+
 export type WatchHistory = {
   videoId: string;
   title: string;
