@@ -404,6 +404,14 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
     while let Some(ev) = rx.recv().await {
         match ev {
             IpcEvent::PropertyChange { name, data, .. } => {
+                // --keep-open=yes では EOF で end-file が発生せず mpv が pause で残るため、
+                // observe 済みの eof-reached を終端（reason=eof）として扱う
+                if name == "eof-reached"
+                    && data.as_bool().unwrap_or(false)
+                    && player.terminal.on_end_file("eof")
+                {
+                    let _ = player.ended_tx.send("eof".to_string());
+                }
                 player.apply_property(&name, data);
             }
             IpcEvent::Event { name, data } => match name.as_str() {
