@@ -158,7 +158,11 @@ pub struct FeedNewItems {
 pub struct SearchResult {
     pub video_id: String,
     pub title: String,
+    /// UC 形チャンネル ID。ブロック・購読の判定キーとして使えるのはこの値だけ。
     pub channel_id: Option<String>,
+    /// `@handle` 形の投稿者 ID。ブロックキーには使えないが、
+    /// `subscribe_channel` は @handle を解決できるため購読導線の代替入力として露出する。
+    pub uploader_id: Option<String>,
     pub channel_title: Option<String>,
     pub duration_sec: Option<i64>,
     pub view_count: Option<i64>,

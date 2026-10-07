@@ -265,6 +265,13 @@ fn parse_search_jsonl(bytes: &[u8]) -> Vec<crate::model::SearchResult> {
             .filter_map(|k| v.get(*k).and_then(|s| s.as_str()))
             .find(|s| is_uc_channel_id(s))
             .map(|s| s.to_string());
+        // @handle はブロックキーに使えないが subscribe_channel の入力には使えるため、
+        // UC ID が取れなかった結果でも購読導線を残せるよう別フィールドで露出する。
+        let uploader_id = v
+            .get("uploader_id")
+            .and_then(|s| s.as_str())
+            .filter(|s| s.starts_with('@'))
+            .map(|s| s.to_string());
         let channel_title = v
             .get("channel")
             .or_else(|| v.get("uploader"))
@@ -274,6 +281,7 @@ fn parse_search_jsonl(bytes: &[u8]) -> Vec<crate::model::SearchResult> {
             video_id: id.to_string(),
             title,
             channel_id,
+            uploader_id,
             channel_title,
             duration_sec: v.get("duration").and_then(|d| d.as_i64()),
             view_count: v.get("view_count").and_then(|c| c.as_i64()),
@@ -328,6 +336,8 @@ mod tests {
         let out = parse_search_jsonl(input);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].channel_id, None);
+        // @handle はブロックキーにはしないが、購読参照として uploader_id に残す
+        assert_eq!(out[0].uploader_id.as_deref(), Some("@SomeHandle"));
         assert_eq!(out[0].channel_title.as_deref(), Some("Some Uploader"));
         assert_eq!(
             out[1].channel_id.as_deref(),

@@ -58,10 +58,13 @@
   }
 
   async function subscribe(r: SearchResult): Promise<void> {
-    if (!r.channelId) return;
+    // subscribe_channel は UC ID だけでなく @handle も解決できる。
+    // UC が取れない結果でも @handle があれば購読導線を出す。
+    const input = r.channelId ?? r.uploaderId;
+    if (!input) return;
     try {
-      await invoke("subscribe_channel", { input: r.channelId, categoryId: null });
-      notify(t("feed.subscribed", { title: r.channelTitle ?? r.channelId }));
+      await invoke("subscribe_channel", { input, categoryId: null });
+      notify(t("feed.subscribed", { title: r.channelTitle ?? input }));
     } catch (e) {
       notify(t("feed.subscribeFailed", { message: asErrorMessage(e) }));
     }
@@ -123,8 +126,10 @@
           </div>
           <div class="actions">
             <button onclick={() => playItem(r)}>{t("search.play")}</button>
-            {#if r.channelId}
+            {#if r.channelId || r.uploaderId}
               <button onclick={() => subscribe(r)}>{t("search.subscribe")}</button>
+            {/if}
+            {#if r.channelId}
               <button class="danger" onclick={() => blockChannel(r)}>
                 {t("search.block")}
               </button>

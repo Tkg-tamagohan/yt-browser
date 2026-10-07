@@ -180,6 +180,7 @@ fn renderer_to_result(r: &Value) -> Option<SearchResult> {
         video_id: video_id.clone(),
         title,
         channel_id,
+        uploader_id: None,
         channel_title,
         duration_sec: r
             .get("lengthText")
@@ -243,6 +244,7 @@ fn lockup_to_result(r: &Value) -> Option<SearchResult> {
         video_id,
         title,
         channel_id,
+        uploader_id: None,
         channel_title: part_text(0, 0),
         duration_sec: find_thumbnail_badge_text(r).and_then(|s| parse_length_text(&s)),
         view_count: part_text(1, 0).and_then(|s| parse_compact_count(&s)),

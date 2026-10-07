@@ -29,7 +29,10 @@
   let notices = $state<string[]>([]);
   // 関連動画パネルの開閉と内容（インスタンス ID ごと）
   let related = $state<
-    Map<number, { open: boolean; loading: boolean; items: SearchResult[] }>
+    Map<
+      number,
+      { open: boolean; loading: boolean; items: SearchResult[]; req: number }
+    >
   >(new Map());
   let ytdlp = $state<YtDlpStatus | null>(null);
   let ytdlpChecking = $state(true);
@@ -152,21 +155,25 @@
       return;
     }
     // 開くたびに必ず再取得する（ブロック状態の変化と前回失敗の再試行に対応するため
-    // キャッシュでショートカットしない。前回の items は取得中の表示にだけ使う）
+    // キャッシュでショートカットしない）。req は開き直しごとに増やす世代番号で、
+    // 古いリクエストの応答が新しい開き直しの結果を上書きしないよう照合する。
+    const req = (cur?.req ?? 0) + 1;
     const next = new Map(related);
-    next.set(id, { open: true, loading: true, items: cur?.items ?? [] });
+    next.set(id, { open: true, loading: true, items: [], req });
     related = next;
     try {
       const items = await invoke<SearchResult[]>("get_related", { videoId });
-      // 応答までにパネルが閉じられた/消えた場合は結果を捨てる
-      if (!related.get(id)?.open) return;
+      // 応答までに閉じられた・別の開き直しが始まった場合は結果を捨てる
+      const now = related.get(id);
+      if (!now?.open || now.req !== req) return;
       const m = new Map(related);
-      m.set(id, { open: true, loading: false, items });
+      m.set(id, { ...now, loading: false, items });
       related = m;
     } catch (e) {
-      if (!related.get(id)?.open) return;
+      const now = related.get(id);
+      if (!now?.open || now.req !== req) return;
       const m = new Map(related);
-      m.set(id, { open: true, loading: false, items: [] });
+      m.set(id, { ...now, loading: false, items: [] });
       related = m;
       notify(t("related.failed", { message: asErrorMessage(e) }));
     }
