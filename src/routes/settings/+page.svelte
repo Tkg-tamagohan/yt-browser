@@ -60,6 +60,7 @@
       await invoke("settings_set", { key: "quality.format", value: format });
       // 再生中のインスタンスへ即時適用（設計書 §4.3: set_property + loadfile replace）
       let applied = 0;
+      const failed: number[] = [];
       for (const id of playerStates.list.keys()) {
         try {
           await invoke("player_control", {
@@ -68,14 +69,18 @@
           });
           applied += 1;
         } catch {
-          // 個別失敗は続行（該当インスタンスが直前に終了した場合など）
+          // 適用に失敗し、かつまだ稼働中なら失敗として記録する
+          // （直前に終了したインスタンスは一覧から消えているので除外）
+          if (playerStates.list.has(id)) failed.push(id);
         }
       }
-      notify(
-        applied > 0
-          ? t("settings.applied", { count: applied })
-          : t("settings.saved"),
-      );
+      if (failed.length > 0) {
+        notify(t("settings.applyPartial", { count: failed.length }));
+      } else if (applied > 0) {
+        notify(t("settings.applied", { count: applied }));
+      } else {
+        notify(t("settings.saved"));
+      }
     } catch (e) {
       notify(t("settings.failed", { message: asErrorMessage(e) }));
     }

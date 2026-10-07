@@ -57,6 +57,8 @@ const ja = {
   "settings.saving": "保存中…",
   "settings.saved": "保存しました",
   "settings.applied": "保存し、再生中の {count} 台へ適用しました",
+  "settings.applyPartial":
+    "保存しましたが、再生中の {count} 台への即時適用に失敗しました（その台は次回再生時から有効）",
   "settings.failed": "保存に失敗: {message}",
 } as const;
 

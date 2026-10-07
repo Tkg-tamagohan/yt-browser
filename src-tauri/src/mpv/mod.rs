@@ -193,15 +193,21 @@ impl MpvPlayer {
             // アプリ識別のためタイトルに動画 ID を入れる
             format!("--title={}-yt-browser", opts.video_id),
         ];
+        // --script-opts はリスト型で、同じ指定を重ねると後が前を上書きする。
+        // そのため全エントリを 1 つのカンマ区切り値にまとめて渡す。
+        let mut script_opts = Vec::new();
         if let Some(path) = &opts.ytdlp_path {
             // 同梱 / システム混在環境でどちらを使うか確定させる（設計書 §4.1）
-            args.push(format!("--script-opts=ytdl_hook-ytdl_path={path}"));
+            script_opts.push(format!("ytdl_hook-ytdl_path={path}"));
+        }
+        if let Some(delta) = &opts.wheel_volume_delta {
+            script_opts.push(format!("wheel-volume_delta={delta}"));
+        }
+        if !script_opts.is_empty() {
+            args.push(format!("--script-opts={}", script_opts.join(",")));
         }
         if let Some(script) = &opts.wheel_script {
             args.push(format!("--script={}", script.display()));
-        }
-        if let Some(delta) = &opts.wheel_volume_delta {
-            args.push(format!("--script-opts=wheel-volume_delta={delta}"));
         }
         let mut child = tokio::process::Command::new("mpv")
             .args(&args)

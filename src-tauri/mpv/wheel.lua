@@ -4,7 +4,8 @@ local options = { volume_delta = 2 }
 require("mp.options").read_options(options, "wheel")
 
 local function wheel(ev, paused_cmd, playing_delta)
-  if ev.event ~= "down" then return end
+  -- マウスホイールのノッチは複合バインドで press として届く（down が来るバックエンドも一応許容）
+  if ev.event ~= "press" and ev.event ~= "down" then return end
   if mp.get_property_bool("pause") then
     mp.command(paused_cmd)
   else
