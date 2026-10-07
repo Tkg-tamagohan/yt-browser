@@ -668,19 +668,33 @@ mod tests {
             )
             .unwrap();
         }
-        // UC 無しの購読・ブロック・動画・履歴と、UC 付きの重複チャンネルを仕込む
+        // UC 無しの購読・ブロック・動画・履歴と、UC 付きの重複チャンネルを仕込む。
+        // 旧行はカテゴリ・古い購読日時を持つ（衝突統合で引き継がれるべき値）
+        conn.execute("INSERT INTO categories (id, name) VALUES (7, 'tech')", [])
+            .unwrap();
         conn.execute(
-            "INSERT INTO channels (channel_id, title) VALUES ('XuqSBlHAE6Xw-yeJA0Tunw', 'LTT')",
+            "INSERT INTO channels (channel_id, title, category_id, subscribed_at)
+             VALUES ('XuqSBlHAE6Xw-yeJA0Tunw', 'LTT', 7, '2025-01-01 00:00:00')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO channels (channel_id, title) VALUES ('UCXuqSBlHAE6Xw-yeJA0Tunw', 'LTT-uc')",
+            "INSERT INTO channels (channel_id, title, subscribed_at)
+             VALUES ('UCXuqSBlHAE6Xw-yeJA0Tunw', 'LTT-uc', '2026-10-01 00:00:00')",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO channels (channel_id, title) VALUES ('shortOnlyChannel000001', 'OnlyOld')",
+            [],
+        )
+        .unwrap();
+        // 先頭が UC で始まる 22 文字の旧形式 id（NOT LIKE 判定では取りこぼされる）
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title)
+             VALUES ('v1', 'XuqSBlHAE6Xw-yeJA0Tunw', 'V1'),
+                    ('v2', 'UCXuqSBlHAE6Xw-yeJA0Tunw', 'V2'),
+                    ('v3', 'UCzzzzzzzzzzzzzzzzzzzz', 'V3')",
             [],
         )
         .unwrap();
@@ -690,9 +704,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO videos (video_id, channel_id, title)
-             VALUES ('v1', 'XuqSBlHAE6Xw-yeJA0Tunw', 'V1'),
-                    ('v2', 'UCXuqSBlHAE6Xw-yeJA0Tunw', 'V2')",
+            "INSERT INTO blocked_channels (channel_id, title) VALUES ('ucBlockedChannel000000', 'B2')",
             [],
         )
         .unwrap();
@@ -707,25 +719,36 @@ mod tests {
         };
         db.migrate().unwrap();
 
-        // UC 付きが既にあるチャンネルは UC 無し行が消える（重複を残さない）
+        // UC 付きが既にあるチャンネルは UC 無し行が消え、
+        // カテゴリと最古の購読日時は UC 付き行へ引き継がれる
         assert!(db.channel_get("XuqSBlHAE6Xw-yeJA0Tunw").unwrap().is_none());
-        assert!(db
-            .channel_get("UCXuqSBlHAE6Xw-yeJA0Tunw")
-            .unwrap()
-            .is_some());
+        let merged = db.channel_get("UCXuqSBlHAE6Xw-yeJA0Tunw").unwrap().unwrap();
+        assert_eq!(merged.category_id, Some(7));
+        assert_eq!(merged.subscribed_at, "2025-01-01 00:00:00");
         // UC 付きが無いチャンネルはリネームされる
         assert!(db
             .channel_get("UCshortOnlyChannel000001")
             .unwrap()
             .is_some());
-        // videos / watch_history / blocked_channels も UC 付きに揃う
+        // UC 始まりの 22 文字旧 id も正規化される
+        assert!(db
+            .channel_get("UCUCzzzzzzzzzzzzzzzzzzzz")
+            .unwrap()
+            .is_none()); // v3 は channels 行を持たないので videos 側だけ
         let conn = db.lock().unwrap();
+        let v3_channel: String = conn
+            .query_row("SELECT channel_id FROM videos WHERE video_id = 'v3'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(v3_channel, "UCUCzzzzzzzzzzzzzzzzzzzz");
+        // videos / watch_history / blocked_channels も UC 付きに揃う
         let stale: i64 = conn
             .query_row(
-                "SELECT (SELECT COUNT(*) FROM channels WHERE channel_id NOT LIKE 'UC%')
-                      + (SELECT COUNT(*) FROM videos WHERE channel_id NOT LIKE 'UC%')
-                      + (SELECT COUNT(*) FROM blocked_channels WHERE channel_id NOT LIKE 'UC%')
-                      + (SELECT COUNT(*) FROM watch_history WHERE channel_id NOT LIKE 'UC%')",
+                "SELECT (SELECT COUNT(*) FROM channels WHERE length(channel_id) = 22)
+                      + (SELECT COUNT(*) FROM videos WHERE length(channel_id) = 22)
+                      + (SELECT COUNT(*) FROM blocked_channels WHERE length(channel_id) = 22)
+                      + (SELECT COUNT(*) FROM watch_history WHERE length(channel_id) = 22)",
                 [],
                 |r| r.get(0),
             )
