@@ -502,7 +502,7 @@ impl Db {
                     v.thumbnail_url, v.published_at, v.kind, v.is_read
              FROM videos v
              JOIN channels c ON c.channel_id = v.channel_id
-             WHERE v.ingested <> 0
+             WHERE v.ingested = 1
                AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
                AND (?1 = 0 OR v.is_read = 0)
                AND (?2 IS NULL
@@ -991,9 +991,8 @@ fn ingest_rows(
     let mut out = IngestOutcome::default();
     for v in entries {
         // 新規行は is_read=0・ingested=1 で未読投入。既存行は通常はそのままだが、
-        // フィード未確定の行（ingested=0 のプレースホルダ、および v7 で
-        // 出自が曖昧とされた ingested=2 の既存行）には RSS 到達の時点で
-        // 投稿日・種別を埋めて未読へ戻し ingested=1 に確定する。
+        // フィード未確定の行（ingested=0 のプレースホルダ）には RSS 到達の
+        // 時点で投稿日・種別を埋めて未読へ戻し ingested=1 に確定する。
         // ingested=1 の行は WHERE で除外して既読状態を保つ（既読→未読への
         // 戻しは初回購読時の reset_unread 経路だけが担う）。
         out.inserted += tx.execute(
@@ -1011,7 +1010,7 @@ fn ingest_rows(
                kind = excluded.kind,
                is_read = 0,
                ingested = 1
-             WHERE videos.ingested <> 1",
+             WHERE videos.ingested = 0",
             rusqlite::params![
                 v.video_id,
                 v.channel_id,
@@ -1405,12 +1404,12 @@ mod tests {
             )
             .unwrap();
         }
-        // 投稿日あり or 未読 → 投入済み確定(1)。is_read は ingest 以外で
-        // 0 にならないため。「投稿日なし＋既読」はチャンネル・参照の有無で
-        // プレースホルダ確定(0)か曖昧(2: 表示を維持したまま補完対象)かを分ける
+        // 既存行はすべてフィード由来と確定できるため一律 1。
+        // フィード由来であり得ない行（お気に入り・プレイリスト参照のある
+        // 日付なし行、チャンネルなしの日付なし行＝この PR の開発ビルドで
+        // 作られたプレースホルダに限る）だけが 0 に戻る
         conn.execute(
-            "INSERT INTO channels (channel_id, title, rss_etag, rss_last_modified)
-             VALUES ('UCfeedchan00000000001', 'CH', 'ETAG', 'Wed, 01 Oct 2026')",
+            "INSERT INTO channels (channel_id, title) VALUES ('UCfeedchan00000000001', 'CH')",
             [],
         )
         .unwrap();
@@ -1419,8 +1418,7 @@ mod tests {
              VALUES ('dated_ref', 'UCfeedchan00000000001', 'DR', '2026-10-01T00:00:00+00:00', 1),
                     ('dated_unref', 'UCfeedchan00000000001', 'DU', '2026-10-01T00:00:00+00:00', 0),
                     ('undated_ref', 'UCfeedchan00000000001', 'UR', NULL, 1),
-                    ('undated_unref', 'UCfeedchan00000000001', 'UU', NULL, 0),
-                    ('undated_ambig', 'UCfeedchan00000000001', 'UA', NULL, 1),
+                    ('undated_unref', 'UCfeedchan00000000001', 'UU', NULL, 1),
                     ('undated_noch', '', 'UN', NULL, 1)",
             [],
         )
@@ -1451,23 +1449,14 @@ mod tests {
             vec![
                 ("dated_ref".to_string(), 1),
                 ("dated_unref".to_string(), 1),
-                ("undated_ambig".to_string(), 2),
                 ("undated_noch".to_string(), 0),
+                // 参照のある日付なし行はプレースホルダ（開発ビルド由来）として 0
                 ("undated_ref".to_string(), 0),
-                // 未読のまま残る行は ingest を一度通っているため投入済み
+                // 未参照の日付なし行はリリース済み DB ではフィード由来しか
+                // あり得ないため 1 に保持する
                 ("undated_unref".to_string(), 1)
             ]
         );
-        // 曖昧な行を次回ポーリングで確定させるため、条件付き取得の状態は消える
-        let (etag, last_mod): (Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT rss_etag, rss_last_modified FROM channels
-                 WHERE channel_id = 'UCfeedchan00000000001'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!((etag, last_mod), (None, None));
     }
 
     /// DB-LD-01: お気に入りの追加・一覧・削除（FR-7）。
@@ -1696,22 +1685,7 @@ mod tests {
         assert!(item.is_read);
         assert_eq!(item.published_at, None);
 
-        // ingested=2（アップグレード時に出自が曖昧だった既存行）は
-        // フィードに表示されたまま、到達時にプレースホルダと同じ補完を受ける
-        {
-            let conn = db.lock().unwrap();
-            conn.execute(
-                "INSERT INTO videos (video_id, channel_id, title, is_read, ingested)
-                 VALUES ('legacy1234567', ?1, '旧行', 1, 2)",
-                [ch],
-            )
-            .unwrap();
-        }
-        let feed = db
-            .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
-            .unwrap();
-        assert!(feed.iter().any(|i| i.video_id == "legacy1234567"));
-        // 一方、まだフィードに到達していないプレースホルダ（ingested=0）は出ない
+        // フィードに到達していないプレースホルダ（ingested=0）はフィードに出ない
         let mut pending = vref("pend1234567", "未到達");
         pending.channel_id = Some(ch.to_string());
         db.favorite_add(&pending).unwrap();
@@ -1719,26 +1693,5 @@ mod tests {
             .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
             .unwrap();
         assert!(!feed.iter().any(|i| i.video_id == "pend1234567"));
-
-        let legacy = NewVideo {
-            video_id: "legacy1234567",
-            channel_id: ch,
-            channel_title: "テストCH",
-            title: "旧行",
-            thumbnail_url: None,
-            published_at: Some("2026-10-07T01:00:00+00:00"),
-            kind: "video",
-        };
-        let out = db.feed_ingest(ch, &[legacy], None, None).unwrap().unwrap();
-        assert_eq!(out.inserted, 1);
-        let feed = db
-            .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
-            .unwrap();
-        let item = feed.iter().find(|i| i.video_id == "legacy1234567").unwrap();
-        assert_eq!(
-            item.published_at.as_deref(),
-            Some("2026-10-07T01:00:00+00:00")
-        );
-        assert!(!item.is_read);
     }
 }

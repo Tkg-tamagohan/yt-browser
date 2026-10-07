@@ -195,33 +195,29 @@ pub const MIGRATIONS: &[Migration] = &[
     // Phase 7 レビュー対応: ライブラリ登録で先にできた videos 行（プレースホルダ）と
     // フィード投入済みの行を published_at の有無では判別できない（投稿日なしの
     // RSS エントリが毎回新着扱いになる）。独立したフラグ列を追加する。
-    // 列の意味は 3 状態: 0=ライブラリ由来のプレースホルダ（フィード非表示、
-    // 初回 RSS 到達で補完）、1=フィード投入済み（表示）、2=出自が曖昧な
-    // 既存行（表示は維持しつつ、初回到達の補完対象にも残す）。
-    // バックフィルの判定:
-    // - 投稿日あり、または is_read=0（ingest 以外で 0 にならない）は
-    //   フィード投入済みと確定できる → 1
-    // - チャンネル ID なし、またはお気に入り・プレイリスト参照ありで
-    //   投稿日なし+既読の行はプレースホルダとほぼ確定できる → 0
-    //   （実際の YouTube RSS エントリは常に <published> を持つため、
-    //   参照された日付なし行はライブラリ由来しかあり得ない）
-    // - 残る「投稿日なし＋既読＋チャンネルあり＋未参照」は曖昧 → 2。
-    //   旧フィード行なら表示を失わせず、解除済みプレースホルダなら
-    //   初回到達の補完を受けられる（補完で 1 に確定し、その投入だけは
-    //   未読になる。区別不能なため両立はこの形まで）
-    // 曖昧行を早期に確定させるため、条件付き取得（ETag/Last-Modified）の
-    // 状態をクリアし、全チャンネルで一度だけ無条件の再取得を強制する。
+    // 0=ライブラリ由来のプレースホルダ（フィード非表示、初回 RSS 到達で補完）、
+    // 1=フィード投入済み（表示）。
+    // バックフィルは全行 1 でよい: ライブラリ由来行を作れる機能
+    // （favorites/playlists）はこの v6 マイグレーションと同じリリースで
+    // 初めて出るため、リリース済みの DB には v7 適用時点でプレースホルダが
+    // 存在し得ず、既存行はすべてフィード由来と確定できる。
+    // 安全網として、「お気に入り・プレイリスト参照を持つ日付なし行」と
+    // 「チャンネル ID を持たない日付なし行」（いずれもフィード由来は
+    // あり得ない: RSS エントリは常に <published> と所属チャンネルを持つ）
+    // だけを 0 に戻す。この 0 行はこの PR の開発ビルドで作られた
+    // プレースホルダに限られる。
+    // 参照解除済みで残った開発ビルド由来の日付なし行だけは 1 のまま
+    // （判別不能の残存だがリリース版では発生しない）ことを決定記録に明記。
     Migration {
         version: 7,
         name: "videos_ingested_flag",
         sql: "ALTER TABLE videos
                 ADD COLUMN ingested INTEGER NOT NULL DEFAULT 0;
-              UPDATE videos SET ingested = 1
-              WHERE published_at IS NOT NULL OR is_read = 0;
-              UPDATE videos SET ingested = 2
-              WHERE published_at IS NULL AND is_read = 1 AND channel_id <> ''
-                AND video_id NOT IN (SELECT video_id FROM favorites
-                                     UNION SELECT video_id FROM playlist_items);
-              UPDATE channels SET rss_etag = NULL, rss_last_modified = NULL;",
+              UPDATE videos SET ingested = 1;
+              UPDATE videos SET ingested = 0
+              WHERE published_at IS NULL
+                AND (channel_id = ''
+                     OR video_id IN (SELECT video_id FROM favorites
+                                     UNION SELECT video_id FROM playlist_items));",
     },
 ];
