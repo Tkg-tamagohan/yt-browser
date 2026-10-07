@@ -249,12 +249,18 @@
       if (!geo) {
         // 空欄は既定値へのリセット。保存に成功してから画面値を戻す
         // （失敗時に表示と DB の値がずれないようにする）。
-        // 保存中にユーザーが入力し直していた場合はその値を残す
+        // 保存中にユーザーが再入力していた場合はその値は DB に残っていない
+        // ため、画面の値を残したまま未保存であることを通知する
         await invoke("settings_set", {
           key: "pip.geometry",
           value: PIP_GEOMETRY_DEFAULT,
         });
-        if (!pipGeometry.trim()) pipGeometry = PIP_GEOMETRY_DEFAULT;
+        if (!pipGeometry.trim()) {
+          pipGeometry = PIP_GEOMETRY_DEFAULT;
+        } else {
+          invalid = true;
+          notify(t("settings.pip.unsaved"));
+        }
       } else if (PIP_GEOMETRY_RE.test(geo)) {
         await invoke("settings_set", { key: "pip.geometry", value: geo });
       } else {
@@ -263,6 +269,7 @@
       }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
+      // （invalid には未保存変更の検出も含む）
       if (!format || pendingApply !== format) {
         if (!invalid) {
           notify(

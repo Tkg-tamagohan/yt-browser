@@ -249,6 +249,8 @@ const ja = {
   "settings.pip.desc":
     "PiP（最前面・枠なしの小窓）の位置とサイズ。mpv の --geometry 形式（例: 480x270-40-40 は幅480・高さ270・右下から 40px 内側）。次回の PiP 化から有効",
   "settings.pip.geometry": "小窓の位置とサイズ（WxH+±x±y）",
+  "settings.pip.unsaved":
+    "保存中に PiP の値が変更されました。DB には既定値が保存されたため、もう一度保存してください",
 } as const;
 
 export type MessageKey = keyof typeof ja;
