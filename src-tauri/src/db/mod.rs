@@ -456,13 +456,9 @@ impl Db {
     }
 
     /// `list_feed`（設計書 §3.1）。ブロックチャンネルの動画は常に除外する（FR-5）。
-    pub fn feed_list(&self, filter: &FeedFilter) -> Result<Vec<FeedItem>, DbError> {
-        self.feed_list_filtered(filter, FEED_LIST_LIMIT, |_| true)
-    }
-
-    /// `feed_list` に後段述語を掛けてから `limit` 件集める版。
-    /// SQL の LIMIT は掛けず、述語に適合した行だけを `limit` 件までスキャンする
+    /// SQL の LIMIT は掛けず、述語 `keep` に適合した行だけを `limit` 件までスキャンする
     /// （NG フィルタで先頭が抜けても後続の適合行を拾える。FR-9）。
+    /// `feed_list` 相当の無条件取得は `keep: |_| true` として呼ぶ。
     pub fn feed_list_filtered(
         &self,
         filter: &FeedFilter,
@@ -1012,15 +1008,26 @@ mod tests {
             category_id: None,
             days: None,
         };
-        assert_eq!(db.feed_list(&all).unwrap().len(), 1);
+        assert_eq!(
+            db.feed_list_filtered(&all, FEED_LIST_LIMIT, |_| true)
+                .unwrap()
+                .len(),
+            1
+        );
         db.channel_delete("UCchan000000000000001").unwrap();
-        assert!(db.feed_list(&all).unwrap().is_empty());
+        assert!(db
+            .feed_list_filtered(&all, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .is_empty());
         let unread = FeedFilter {
             unread_only: true,
             category_id: None,
             days: None,
         };
-        assert!(db.feed_list(&unread).unwrap().is_empty());
+        assert!(db
+            .feed_list_filtered(&unread, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .is_empty());
     }
 
     /// DB-CH-01: チャットのバッチ保存と FTS5 検索（FR-8）。
