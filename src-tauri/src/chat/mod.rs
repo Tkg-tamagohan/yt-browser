@@ -1,4 +1,4 @@
-//! ライブチャットのポーリングと正規化（設計書 §6.2〜§7、FR-6〜FR-8）。
+//! ライブチャットのポーリングと正規化（設計書 §6.2〜§7、FR-6、FR-9）。
 //!
 //! `chat_start` で動画ごとのポーリングタスクを立て、watch ページの
 //! `ytInitialData` から初期継続トークンを取って `get_live_chat` を繰り返す。
@@ -36,6 +36,9 @@ pub struct ChatPoller {
     innertube: Arc<InnerTube>,
     /// 現在の NG 評価器。filter 変更のたびに丸ごと差し替える。
     matcher: Mutex<Arc<Matcher>>,
+    /// `refresh_filters` の直列化用。一覧取得から差し替えまでを 1 つの
+    /// 排他区間にし、並行する更新で古いマッチャが後勝ちするのを防ぐ。
+    filter_lock: Mutex<()>,
     /// video_id -> 実行中タスクの abort handle。
     sessions: Mutex<HashMap<String, tokio::task::AbortHandle>>,
 }
@@ -47,6 +50,7 @@ impl ChatPoller {
             app,
             innertube,
             matcher: Mutex::new(Arc::new(Matcher::empty())),
+            filter_lock: Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -54,6 +58,7 @@ impl ChatPoller {
     /// `filters` テーブルの現在値で NG 評価器を作り直す。
     /// 起動時と `filter_add` / `filter_remove` の直後に呼ぶ。
     pub fn refresh_filters(&self) -> Result<(), UiError> {
+        let _serialize = self.filter_lock.lock().unwrap();
         let rows = self.db.filter_list()?;
         let m = Matcher::rebuild(&rows);
         if !m.invalid_patterns().is_empty() {
@@ -68,6 +73,12 @@ impl ChatPoller {
         }
         *self.matcher.lock().unwrap() = Arc::new(m);
         Ok(())
+    }
+
+    /// 現在の NG 評価器を共有で取り出す。
+    /// フィード・検索・関連動画の表示側フィルタ（動画系 target）に使う。
+    pub fn matcher(&self) -> Arc<Matcher> {
+        self.matcher.lock().unwrap().clone()
     }
 
     /// 指定動画のチャット取得を開始する。既に動いていれば何もしない。
@@ -155,18 +166,29 @@ impl ChatPoller {
                     let lcc = v
                         .get("continuationContents")
                         .and_then(|c| c.get("liveChatContinuation"));
+                    // dedup は「保存確定済み seen」と「この応答内の pending」の
+                    // 2 段で行う。保存に失敗したバッチは pending を捨てるだけで
+                    // seen には入れないため、YouTube が item を再送したときに
+                    // 履歴へ拾い直せる（UI 側にも再送されるので UI は item_id で dedup）。
+                    // matcher は応答ごとに取り直し、フィルタ変更を走行中にも反映する。
+                    let matcher = self.matcher();
+                    let mut pending: HashSet<String> = HashSet::new();
                     let events = lcc
                         .and_then(|l| l.get("actions"))
                         .and_then(|a| a.as_array())
-                        .map(|acts| self.normalize_all(video_id, acts, &mut seen, &mut order))
+                        .map(|acts| normalize_all(&matcher, video_id, acts, &seen, &mut pending))
                         .unwrap_or_default();
                     if !events.is_empty() {
-                        if let Err(e) = self.db.chat_insert_batch(&events) {
-                            self.status(
-                                Some(video_id),
-                                "warn",
-                                &format!("チャットの保存に失敗: {e}"),
-                            );
+                        match self.db.chat_insert_batch(&events) {
+                            Ok(_) => commit_pending(&mut seen, &mut order, &mut pending),
+                            Err(e) => {
+                                pending.clear();
+                                self.status(
+                                    Some(video_id),
+                                    "warn",
+                                    &format!("チャットの保存に失敗: {e}"),
+                                );
+                            }
                         }
                         let _ = self.app.emit("chat://message", &events);
                     }
@@ -203,44 +225,56 @@ impl ChatPoller {
         }
         self.sessions.lock().unwrap().remove(video_id);
     }
+}
 
-    /// 応答の actions[] 全件を正規化し、重複を除き、NG 判定を付けて返す。
-    fn normalize_all(
-        &self,
-        video_id: &str,
-        actions: &[Value],
-        seen: &mut HashSet<String>,
-        order: &mut VecDeque<String>,
-    ) -> Vec<ChatEvent> {
-        let mut items = Vec::new();
-        for a in actions {
-            iter_action_items(a, &mut items);
+/// 応答の actions[] 全件を正規化し、重複を除き、NG 判定を付けて返す。
+/// `seen` は保存確定済みの既処理 ID、`pending` はこの応答で処理した ID
+/// （呼び出し側が DB 保存の成功時にだけ `commit_pending` で seen へ移す）。
+fn normalize_all(
+    matcher: &Matcher,
+    video_id: &str,
+    actions: &[Value],
+    seen: &HashSet<String>,
+    pending: &mut HashSet<String>,
+) -> Vec<ChatEvent> {
+    let mut items = Vec::new();
+    for a in actions {
+        iter_action_items(a, &mut items);
+    }
+    let mut out = Vec::new();
+    for item in items {
+        let Some(mut e) = (match item {
+            ActionItem::Item(v) => renderer_to_event(video_id, &v),
+            ActionItem::Deleted(target, raw) => Some(deleted_to_event(video_id, &target, &raw)),
+        }) else {
+            continue;
+        };
+        // item_id の無いイベント（一部 renderer）は dedup 対象外にする
+        if !e.item_id.is_empty()
+            && (seen.contains(&e.item_id) || !pending.insert(e.item_id.clone()))
+        {
+            continue;
         }
-        let matcher = self.matcher.lock().unwrap().clone();
-        let mut out = Vec::new();
-        for item in items {
-            let Some(mut e) = (match item {
-                ActionItem::Item(v) => renderer_to_event(video_id, &v),
-                ActionItem::Deleted(target, raw) => Some(deleted_to_event(video_id, &target, &raw)),
-            }) else {
-                continue;
-            };
-            // item_id の無いイベント（一部 renderer）は dedup 対象外にする
-            if !e.item_id.is_empty() {
-                if !seen.insert(e.item_id.clone()) {
-                    continue;
-                }
-                order.push_back(e.item_id.clone());
-                if order.len() > SEEN_CAP {
-                    if let Some(old) = order.pop_front() {
-                        seen.remove(&old);
-                    }
-                }
-            }
-            e.ng = is_ng(&matcher, &e);
-            out.push(e);
+        e.ng = is_ng(matcher, &e);
+        out.push(e);
+    }
+    out
+}
+
+/// 保存が成功したバッチの item ID を既処理集合へ確定し、上限を超えたら古い順に捨てる。
+fn commit_pending(
+    seen: &mut HashSet<String>,
+    order: &mut VecDeque<String>,
+    pending: &mut HashSet<String>,
+) {
+    for id in pending.drain() {
+        seen.insert(id.clone());
+        order.push_back(id);
+    }
+    while order.len() > SEEN_CAP {
+        if let Some(old) = order.pop_front() {
+            seen.remove(&old);
         }
-        out
     }
 }
 
@@ -601,6 +635,36 @@ mod tests {
         // 削除対象は InnerTube の item ID 形（"Chw..." 相当）の文字列を指す
         assert!(!del.message.is_empty());
         assert!(del.item_id.starts_with("del:"));
+    }
+
+    /// CH-08: dedup は保存確定済み seen と応答内 pending の 2 段。
+    /// 保存失敗（pending が捨てられる）後の再送は取り直せる。
+    #[test]
+    fn dedup_pending_only_commits_on_save() {
+        let matcher = Matcher::empty();
+        let act = text_action("m1", "@a", "UCa", "1700000000000004", "hi");
+        let actions = vec![act.clone()];
+
+        let mut seen = HashSet::new();
+        let mut order = VecDeque::new();
+
+        // 1 回目: pending に入ってイベントは返る
+        let mut pending = HashSet::new();
+        let evs = normalize_all(&matcher, "v", &actions, &seen, &mut pending);
+        assert_eq!(evs.len(), 1);
+        assert!(pending.contains("m1"));
+
+        // 保存失敗を想定して pending を捨てたまま同じ応答が再送されると、
+        // seen に無いので再度取れる（履歴に残る側を優先）
+        pending.clear();
+        let evs = normalize_all(&matcher, "v", &actions, &seen, &mut pending);
+        assert_eq!(evs.len(), 1);
+
+        // 保存成功（commit）後の再送は dedup される
+        commit_pending(&mut seen, &mut order, &mut pending);
+        let mut pending2 = HashSet::new();
+        let evs = normalize_all(&matcher, "v", &actions, &seen, &mut pending2);
+        assert!(evs.is_empty());
     }
 
     /// CH-07: 絵文字 run は絵文字自体またはラベルに変換する。

@@ -111,13 +111,8 @@
     try {
       const videoId = playerStates.list.get(id)?.videoId;
       await invoke("player_close", { instanceId: id });
-      // プレイヤー終了に合わせてチャット取得も止める
-      if (videoId) {
-        void invoke("chat_stop", { videoId }).catch(() => {});
-        const cp = new Map(chatPanels);
-        cp.delete(id);
-        chatPanels = cp;
-      }
+      // プレイヤー終了に合わせてチャット取得も止める（同動画の利用者が残る場合は維持）
+      if (videoId) cleanupChatPanel(id, videoId);
       // 手動 close では player://ended が来ないため、共有マップをここで外す
       const next = new Map(playerStates.list);
       next.delete(id);
@@ -175,11 +170,8 @@
     if (cur?.open) {
       next.set(id, { ...cur, open: false, status: null });
       chatPanels = next;
-      try {
-        await invoke("chat_stop", { videoId });
-      } catch (e) {
-        notify(t("player.error", { message: asErrorMessage(e) }));
-      }
+      // 同じ動画を見ている他パネルがあれば共有ポーラーは維持する
+      maybeStopChat(videoId);
       return;
     }
     next.set(id, { open: true, items: cur?.items ?? [], status: null });
@@ -200,33 +192,62 @@
       arr.push(e);
       byVideo.set(e.videoId, arr);
     }
-    const vidToInstance = new Map(
-      [...playerStates.list.values()].map((p) => [p.videoId, p.instanceId]),
-    );
+    // 同一動画を複数ウィンドウで再生している場合、開いている全パネルへ配送する
+    // （ポーラーは動画 ID ごとに 1 本。設計書 §6.2）
+    const vidToInstances = new Map<string, number[]>();
+    for (const p of playerStates.list.values()) {
+      const arr = vidToInstances.get(p.videoId) ?? [];
+      arr.push(p.instanceId);
+      vidToInstances.set(p.videoId, arr);
+    }
     const next = new Map(chatPanels);
     let changed = false;
     for (const [vid, evs] of byVideo) {
-      const inst = vidToInstance.get(vid);
-      if (inst === undefined) continue;
-      const cur = next.get(inst);
-      if (!cur) continue;
-      const items = [...cur.items];
-      for (const e of evs) {
-        if (e.kind === "deleted") {
-          const idx = items.findIndex((i) => i.itemId === e.message);
-          if (idx >= 0) items[idx] = { ...items[idx], deleted: true };
-          continue;
+      for (const inst of vidToInstances.get(vid) ?? []) {
+        const cur = next.get(inst);
+        if (!cur) continue;
+        const items = [...cur.items];
+        const known = new Set(items.map((i) => i.itemId));
+        for (const e of evs) {
+          if (e.kind === "deleted") {
+            const idx = items.findIndex((i) => i.itemId === e.message);
+            if (idx >= 0) items[idx] = { ...items[idx], deleted: true };
+            continue;
+          }
+          if (e.ng || e.kind === "other") continue;
+          // 保存失敗後の再送などで同一 item_id が二度届きうるため表示側でも dedup
+          if (e.itemId && known.has(e.itemId)) continue;
+          if (e.itemId) known.add(e.itemId);
+          items.push(e);
         }
-        if (e.ng || e.kind === "other") continue;
-        items.push(e);
+        next.set(inst, { ...cur, items: items.slice(-CHAT_CAP) });
+        changed = true;
       }
-      next.set(inst, { ...cur, items: items.slice(-CHAT_CAP) });
-      changed = true;
     }
     if (changed) {
       chatPanels = next;
       scrollChatBottom();
     }
+  }
+
+  /// 同じ動画の開いたパネルが残っていなければ共有ポーラーを止める。
+  /// パネルの状態変更（閉じる・削除）を反映した後に呼ぶこと。
+  function maybeStopChat(videoId: string): void {
+    const stillOpen = [...chatPanels.entries()].some(
+      ([inst, cp]) =>
+        cp.open && playerStates.list.get(inst)?.videoId === videoId,
+    );
+    if (!stillOpen) {
+      void invoke("chat_stop", { videoId }).catch(() => {});
+    }
+  }
+
+  /// インスタンスのチャットパネルを閉じ、最後の利用者なら取得も止める
+  function cleanupChatPanel(instanceId: number, videoId: string): void {
+    if (chatPanels.delete(instanceId)) {
+      chatPanels = new Map(chatPanels);
+    }
+    maybeStopChat(videoId);
   }
 
   function scrollChatBottom(): void {
@@ -344,6 +365,8 @@
     unlistenFns.push(
       await listen<PlayerEnded>("player://ended", (ev) => {
         notify(t("player.ended", { reason: ev.payload.reason }));
+        // 再生終了したインスタンスのチャットパネルも片付け、ポーラーを解放する
+        cleanupChatPanel(ev.payload.instanceId, ev.payload.videoId);
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直す
         void refreshResumeHint();
       }),

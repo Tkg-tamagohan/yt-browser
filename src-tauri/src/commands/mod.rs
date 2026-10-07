@@ -257,10 +257,19 @@ pub fn create_category(name: String, db: State<'_, Db>) -> Result<Category, UiEr
     Ok(db.category_create(name)?)
 }
 
-/// `list_feed`（設計書 §3.1）。
+/// `list_feed`（設計書 §3.1）。NG フィルタの動画系 target もここで適用する（FR-9）。
 #[tauri::command]
-pub fn list_feed(filter: FeedFilter, db: State<'_, Db>) -> Result<Vec<FeedItem>, UiError> {
-    Ok(db.feed_list(&filter)?)
+pub fn list_feed(
+    filter: FeedFilter,
+    db: State<'_, Db>,
+    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+) -> Result<Vec<FeedItem>, UiError> {
+    let matcher = poller.matcher();
+    let mut items = db.feed_list(&filter)?;
+    items.retain(|i| {
+        !matcher.is_video_ng(&i.title, i.channel_title.as_deref(), Some(&i.channel_id))
+    });
+    Ok(items)
 }
 
 /// `mark_read`（設計書 §3.1）。`all: true` で一括既読、それ以外は `video_ids` を個別既読。
@@ -289,12 +298,13 @@ pub fn feed_refresh(
 }
 
 /// `search`（設計書 §3.1、FR-4）。`yt-dlp ytsearch` の結果から
-/// ブロック済みチャンネルを除いて返す。
+/// ブロック済みチャンネルと動画系 NG フィルタを除いて返す。
 #[tauri::command]
 pub async fn search(
     query: String,
     db: State<'_, Db>,
     resolver: State<'_, YtDlpResolver>,
+    poller: State<'_, Arc<crate::chat::ChatPoller>>,
 ) -> Result<Vec<crate::model::SearchResult>, UiError> {
     let q = query.trim().to_string();
     if q.is_empty() {
@@ -306,11 +316,17 @@ pub async fn search(
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
     let mut results = yt::search(&path, &q, SEARCH_LIMIT).await?;
     let blocked = db.blocked_ids()?;
+    let matcher = poller.matcher();
     results.retain(|r| {
         r.channel_id
             .as_deref()
             .map(|c| !blocked.contains(c))
             .unwrap_or(true)
+            && !matcher.is_video_ng(
+                &r.title,
+                r.channel_title.as_deref(),
+                r.channel_id.as_deref(),
+            )
     });
     Ok(results)
 }
@@ -319,21 +335,28 @@ pub async fn search(
 const SEARCH_LIMIT: u32 = 20;
 
 /// `get_related`（設計書 §3.1、FR-4）。InnerTube `next` の関連動画から
-/// ブロック済みチャンネルを除いて返す。
+/// ブロック済みチャンネルと動画系 NG フィルタを除いて返す。
 #[tauri::command]
 pub async fn get_related(
     video_id: String,
     db: State<'_, Db>,
     innertube: State<'_, Arc<crate::innertube::InnerTube>>,
+    poller: State<'_, Arc<crate::chat::ChatPoller>>,
 ) -> Result<Vec<crate::model::SearchResult>, UiError> {
     let video_id = parse_video_id(&video_id)?;
     let mut results = innertube.related(&video_id).await?;
     let blocked = db.blocked_ids()?;
+    let matcher = poller.matcher();
     results.retain(|r| {
         r.channel_id
             .as_deref()
             .map(|c| !blocked.contains(c))
             .unwrap_or(true)
+            && !matcher.is_video_ng(
+                &r.title,
+                r.channel_title.as_deref(),
+                r.channel_id.as_deref(),
+            )
     });
     Ok(results)
 }
@@ -386,7 +409,7 @@ pub fn chat_stop(
     Ok(())
 }
 
-/// `chat_history_search`（FR-8）。本文・投稿者名の FTS5 AND 検索。
+/// `chat_history_search`（FR-6 の保存・検索要件）。本文・投稿者名の FTS5 AND 検索。
 #[tauri::command]
 pub fn chat_history_search(
     video_id: Option<String>,
@@ -408,7 +431,7 @@ pub fn chat_history_search(
     Ok(db.chat_search(vid.as_deref(), &q, limit.unwrap_or(100).min(1000))?)
 }
 
-/// `filter_add`（設計書 §3.1、FR-7）。target/kind/pattern を検証して登録し、
+/// `filter_add`（設計書 §3.1、FR-9）。target/kind/pattern を検証して登録し、
 /// 稼働中の NG 評価器を作り直す。
 #[tauri::command]
 pub fn filter_add(

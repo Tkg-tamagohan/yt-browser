@@ -158,7 +158,7 @@ const ja = {
 
   "settings.filters.title": "NG フィルタ",
   "settings.filters.desc":
-    "チャット本文・投稿者などを条件で非表示にする。登録・削除は即時に反映される。",
+    "チャット本文・投稿者のほか、動画タイトル・チャンネル名・チャンネル ID も対象にできる（フィード・検索・関連動画の一覧から除外）。登録・削除は即時に反映される。",
   "settings.filters.target": "対象",
   "settings.filters.kind": "種別",
   "settings.filters.pattern.placeholder": "パターン（NG ワード / 正規表現）",

@@ -107,6 +107,29 @@ impl Matcher {
     pub fn invalid_patterns(&self) -> &[String] {
         &self.invalid
     }
+
+    /// 動画系 target の NG 判定（FR-9）。一覧の表示経路（フィード・検索・関連動画）で
+    /// `is_ng_video` に渡せる値を評価する。`video_desc` は現行の取得経路
+    /// （RSS・ytsearch flat・InnerTube next）のどれにも説明文フィールドが無く
+    /// 評価対象外（決定記録 Phase 6 に記録）。
+    pub fn is_video_ng(
+        &self,
+        title: &str,
+        channel_title: Option<&str>,
+        channel_id: Option<&str>,
+    ) -> bool {
+        if self.is_blocked("video_title", title) {
+            return true;
+        }
+        for (target, text) in [("channel_title", channel_title), ("channel_id", channel_id)] {
+            if let Some(t) = text {
+                if self.is_blocked(target, t) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -169,5 +192,21 @@ mod tests {
         let m = Matcher::rebuild(&[f("chat_text", "literal", "NG")]);
         assert!(!m.is_blocked("chat_text", ""));
         assert!(!Matcher::empty().is_blocked("chat_text", "NG"));
+    }
+
+    /// FT-06: 動画系 target は is_video_ng で評価される（FR-9）。
+    /// 取れないフィールド（None）は判定対象から外れる。
+    #[test]
+    fn video_targets_match() {
+        let m = Matcher::rebuild(&[
+            f("video_title", "literal", "切り抜き"),
+            f("channel_title", "regex", r"公式$"),
+            f("channel_id", "literal", "UCbad"),
+        ]);
+        assert!(m.is_video_ng("【切り抜き】雑談", None, None));
+        assert!(m.is_video_ng("通常タイトル", Some("公式チャンネル公式"), None));
+        assert!(m.is_video_ng("通常タイトル", None, Some("UCbad123")));
+        assert!(!m.is_video_ng("通常タイトル", Some("個人勢"), Some("UCgood")));
+        assert!(!m.is_video_ng("通常タイトル", None, None));
     }
 }
