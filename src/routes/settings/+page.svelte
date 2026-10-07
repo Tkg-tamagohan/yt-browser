@@ -69,10 +69,14 @@
           });
           applied += 1;
         } catch (e) {
-          // 直前に終了したインスタンス（mpv_no_instance）は失敗に数えない。
+          // 終了済みインスタンスは失敗に数えない:
+          // - mpv_no_instance … エントリが既に消えている
+          // - 共有マップに無い … player://ended が届いて終了を反映済み
           // それ以外の IPC エラーは稼働中インスタンスへの適用失敗として記録する
           const code = (e as UiError)?.code;
-          if (code !== "mpv_no_instance") failed.push(id);
+          if (code !== "mpv_no_instance" && playerStates.list.has(id)) {
+            failed.push(id);
+          }
         }
       }
       if (failed.length > 0) {
