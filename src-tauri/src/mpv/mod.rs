@@ -231,7 +231,8 @@ impl MpvPlayer {
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
         let pump = tokio::spawn(event_pump(player.clone(), ev_rx));
 
-        // ファイルロード（レジューム位置つき）。loadfile の第 4 引数は mpv のオプション表。
+        // ファイルロード（レジューム位置つき）。loadfile の第 3 引数は mpv のオプション表。
+        // options の値は文字列のみ受ける mpv（0.34 系など）があるため文字列で渡す。
         let url = format!("https://www.youtube.com/watch?v={}", player.video_id());
         if let Err(e) = player
             .ipc
@@ -239,8 +240,7 @@ impl MpvPlayer {
                 json!("loadfile"),
                 json!(url),
                 json!("replace"),
-                json!(0),
-                json!({ "start": opts.start_sec }),
+                json!({ "start": format!("{}", opts.start_sec) }),
             ])
             .await
         {
@@ -319,8 +319,7 @@ impl MpvPlayer {
                         json!("loadfile"),
                         json!(url),
                         json!("replace"),
-                        json!(0),
-                        json!({ "start": pos }),
+                        json!({ "start": format!("{}", pos) }),
                     ])
                     .await
                 {
