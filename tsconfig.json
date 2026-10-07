@@ -1,0 +1,18 @@
+{
+  "extends": "./.svelte-kit/tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "strict": true,
+    "moduleResolution": "bundler"
+  }
+  // パスエイリアスは https://svelte.dev/docs/kit/configuration#alias で管理する
+  // （$lib は https://svelte.dev/docs/kit/configuration#files）
+  // includes/excludes を上書きする場合は、参照先の tsconfig.json から
+  // 対応する項目をコピーすること。TypeScript は includes をマージしない
+}
