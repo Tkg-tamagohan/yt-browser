@@ -699,7 +699,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO blocked_channels (channel_id, title) VALUES ('badChannelX000000000001', 'B')",
+            "INSERT INTO blocked_channels (channel_id, title) VALUES ('badChannelX00000000000', 'B')",
             [],
         )
         .unwrap();
@@ -742,6 +742,20 @@ mod tests {
             })
             .unwrap();
         assert_eq!(v3_channel, "UCUCzzzzzzzzzzzzzzzzzzzz");
+        // blocked_channels は 22 文字の旧 id が UC 付きに正規化される
+        for (raw, expected) in [
+            ("badChannelX00000000000", "UCbadChannelX00000000000"),
+            ("ucBlockedChannel000000", "UCucBlockedChannel000000"),
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM blocked_channels WHERE channel_id = ?1",
+                    [expected],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{raw} の正規化先が無い");
+        }
         // videos / watch_history / blocked_channels も UC 付きに揃う
         let stale: i64 = conn
             .query_row(
