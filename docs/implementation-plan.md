@@ -43,9 +43,9 @@
 
 ### Phase 4：購読フィード
 
-- [ ] `feed` モジュール：チャンネル RSS のポーリング（ETag / Last-Modified、間隔の適応化）
-- [ ] チャンネル購読、カテゴリ分類、未読管理の DB と UI
-- [ ] `feed://new_items` と `feed://status` のイベント配線
+- [x] `feed` モジュール：チャンネル RSS のポーリング（ETag / Last-Modified、間隔の適応化）
+- [x] チャンネル購読、カテゴリ分類、未読管理の DB と UI
+- [x] `feed://new_items` と `feed://status` のイベント配線
 - [ ] 受け入れ：購読登録→新着が一覧に積まれる、一括既読と個別既読が機能する
 
 ### Phase 5：検索、関連動画、チャンネルブロック

@@ -4,6 +4,7 @@
 mod commands;
 mod db;
 mod error;
+mod feed;
 mod model;
 mod mpv;
 mod sponsor;
@@ -101,11 +102,17 @@ pub fn run() {
             app.manage(ytdlp_resolver.clone());
             app.manage(mpv::PlayerManager::new(
                 app.handle().clone(),
-                db,
+                db.clone(),
                 socket_dir,
                 ytdlp_resolver,
                 wheel_script,
             ));
+
+            // 購読フィードのポーラー（設計書 §1.2）。TICK ごとに期限の来た
+            // チャンネルの RSS を条件付き取得する。
+            let poller = feed::FeedPoller::new(db, app.handle().clone());
+            app.manage(poller.clone());
+            tauri::async_runtime::spawn(poller.run());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -118,6 +125,15 @@ pub fn run() {
             commands::history_get,
             commands::ytdlp_status,
             commands::ytdlp_update,
+            commands::subscribe_channel,
+            commands::unsubscribe_channel,
+            commands::list_channels,
+            commands::set_channel_category,
+            commands::list_categories,
+            commands::create_category,
+            commands::list_feed,
+            commands::mark_read,
+            commands::feed_refresh,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

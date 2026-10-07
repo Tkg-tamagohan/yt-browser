@@ -12,6 +12,7 @@ const ja = {
   "home.db.ng": "DB 接続: 失敗 — {error}",
 
   "nav.player": "再生",
+  "nav.feed": "フィード",
   "nav.settings": "設定",
 
   // Phase 1: mpv 再生の最小 UI
@@ -62,6 +63,35 @@ const ja = {
   "settings.failed": "保存に失敗: {message}",
   "settings.savedQualitySkipped":
     "保存しました（画質式が空のため、画質は変更していません）",
+
+  // Phase 4: 購読フィード
+  "feed.title": "購読フィード",
+  "feed.subscribe.title": "チャンネルを購読",
+  "feed.subscribe.placeholder": "チャンネル ID (UC...) / URL / @handle",
+  "feed.subscribe.button": "購読",
+  "feed.subscribed": "{title} を購読しました",
+  "feed.subscribeFailed": "購読に失敗: {message}",
+  "feed.unsubscribed": "{title} の購読を解除しました",
+  "feed.unsubscribe": "解除",
+  "feed.failed": "操作に失敗: {message}",
+  "feed.category.label": "カテゴリ",
+  "feed.category.none": "未分類",
+  "feed.category.placeholder": "新しいカテゴリ名",
+  "feed.category.add": "カテゴリ追加",
+  "feed.categoryAdded": "カテゴリ「{name}」を追加しました",
+  "feed.channels.title": "購読チャンネル",
+  "feed.items.title": "フィード",
+  "feed.items.empty": "フィード項目がありません",
+  "feed.items.markRead": "既読",
+  "feed.items.markAllRead": "すべて既読",
+  "feed.markedAllRead": "すべて既読にしました",
+  "feed.filters.unreadOnly": "未読のみ",
+  "feed.filters.all": "すべて",
+  "feed.filters.category": "カテゴリ",
+  "feed.refresh": "今すぐ更新",
+  "feed.refreshQueued": "更新を開始しました",
+  "feed.newItems": "{count} 件の新着を受信",
+  "feed.statusEvent": "フィード状態: {message}",
 
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",

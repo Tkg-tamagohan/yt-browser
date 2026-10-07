@@ -50,3 +50,20 @@
 | wheel.lua の同梱形態 | Lua ソースをバイナリに埋め込み（`include_str!`）、起動時に `app_data/mpv/wheel.lua` へ上書き書き出して `--script` で読ませる。リソースディレクトリ参照よりデバッグ/配布で一貫する |
 | ホイール挙動の変更経路 | 音量変化量を `script-opts` の `wheel-volume_delta` で注入する方式を確定。設定キー `wheel.volume_delta`、既定 2。mpv 起動時の注入のため変更は次回再生から有効（稼働中インスタンスには適用されない）。UI 公開は設定画面の本格整備（Phase 7）に委ねる |
 | 画質の即時適用 | `settings_set` 保存後、フロント側が `player_control` の `quality` アクションを全稼働インスタンスへ送る（set_property ytdl-format + loadfile replace で再読み込み） |
+
+## Phase 4 で確定した事項
+
+購読フィード（設計書の詳細が薄かった部分）の暫定仕様を定めた。
+
+| 項目 | 決定内容 |
+|------|----------|
+| RSS エンドポイント | `https://www.youtube.com/feeds/videos.xml?channel_id=<UC...>`（公式 Atom フィード） |
+| 購読入力 | `UC...`（24 文字）、`youtube.com/channel/UC...`、`@handle` / `youtube.com/@handle` を受理。@handle は yt-dlp の `--flat-playlist --playlist-end 1 --dump-single-json` で channel_id へ解決する（暫定仕様） |
+| 間隔の適応化 | 基本 15 分。新着なしで ×1.5（上限 60 分）。連続失敗は 5 分から倍々バックオフ（上限 60 分）。連続失敗 2 回目で `feed://status` に warn、復帰時に info を通知 |
+| 条件付き取得 | `channels.rss_etag` / `rss_last_modified` を If-None-Match / If-Modified-Since に使う。304 時は `last_polled_at` のみ更新 |
+| 初回購読時 | RSS を 1 回取得し、得られたエントリをすべて未読（is_read=0）で投入する |
+| 購読解除時 | チャンネル行を削除し、そのチャンネルの未読動画を既読化する（videos 行自体は残す） |
+| フィード除外 | `list_feed` は `blocked_channels` の動画を常に除外する（FR-5 のフィード側を先行実装） |
+| ブロック操作 UI | Phase 5 の検索・関連動画画面に合わせて後送り |
+| XML パーサー | `roxmltree`（読み取り専用・依存最小）。media:group のサムネイルはローカル名で拾う |
+| フィードからの再生 | フィード項目の再生時はその動画を既読化する |

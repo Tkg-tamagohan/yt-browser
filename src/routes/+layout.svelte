@@ -8,6 +8,7 @@
 
 <nav class="app-nav">
   <a href="/" class:active={page.url.pathname === "/"}>{t("nav.player")}</a>
+  <a href="/feed" class:active={page.url.pathname === "/feed"}>{t("nav.feed")}</a>
   <a href="/settings" class:active={page.url.pathname === "/settings"}
     >{t("nav.settings")}</a
   >

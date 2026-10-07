@@ -1,11 +1,17 @@
 //! Tauri invoke ハンドラ（設計書 §2, §3.1）。
 //! 入力検証と UI 向けの直列化に徹し、実処理は各モジュールへ委譲する。
 
-use tauri::State;
+use std::sync::Arc;
+
+use tauri::{AppHandle, Emitter, State};
 
 use crate::db::Db;
 use crate::error::UiError;
-use crate::model::{normalize_video_id, DbStatus, PlayerAction, WatchHistory, YtDlpStatus};
+use crate::feed::{self, FeedPoller};
+use crate::model::{
+    normalize_video_id, parse_channel_ref, Category, Channel, ChannelRef, DbStatus, FeedFilter,
+    FeedItem, FeedNewItems, PlayerAction, WatchHistory, YtDlpStatus,
+};
 use crate::mpv::PlayerManager;
 use crate::yt::{self, YtDlpResolver};
 
@@ -129,4 +135,145 @@ pub async fn ytdlp_update(
 ) -> Result<String, UiError> {
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
     Ok(yt::update(&path).await?)
+}
+
+/// `subscribe_channel`（設計書 §3.1）。UC ID・channel URL・@handle を受け取り、
+/// RSS を 1 回取得して存在確認と初期一覧の投入を行う。取得したエントリは未読で積む
+/// （登録直後に新着が一覧に現れるのが受け入れ条件）。
+#[tauri::command]
+pub async fn subscribe_channel(
+    input: String,
+    category_id: Option<i64>,
+    db: State<'_, Db>,
+    poller: State<'_, Arc<FeedPoller>>,
+    resolver: State<'_, YtDlpResolver>,
+    app: AppHandle,
+) -> Result<Channel, UiError> {
+    let input = input.trim().to_string();
+    let r = parse_channel_ref(&input).ok_or_else(|| {
+        UiError::invalid_input(
+            "チャンネル ID（UC...）、youtube.com/channel/UC...、または @handle を入力してください",
+        )
+    })?;
+    let channel_id = match r {
+        ChannelRef::Id(id) => id,
+        ChannelRef::Handle(h) => {
+            let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
+            yt::channel_id(&path, &format!("https://www.youtube.com/@{h}"))
+                .await
+                .map_err(UiError::from)?
+        }
+    };
+    match feed::fetch_feed(&poller.client, &channel_id, None, None).await? {
+        feed::FetchOutcome::Parsed {
+            feed,
+            etag,
+            last_modified,
+        } => {
+            // フィードの channel_id が入力と一致しない場合はフィード側を採る
+            // （UC ID の誤入力より URL 解決のリダイレクトを信用する暫定仕様）
+            db.channel_upsert(&feed.channel_id, &feed.channel_title, None)?;
+            if category_id.is_some() {
+                db.channel_set_category(&feed.channel_id, category_id)?;
+            }
+            let mut new_count = 0usize;
+            for e in &feed.entries {
+                if db.video_insert_new(&crate::db::NewVideo {
+                    video_id: &e.video_id,
+                    channel_id: &feed.channel_id,
+                    channel_title: &feed.channel_title,
+                    title: &e.title,
+                    thumbnail_url: e.thumbnail_url.as_deref(),
+                    published_at: e.published_at.as_deref(),
+                    kind: "video",
+                })? {
+                    new_count += 1;
+                }
+            }
+            db.channel_update_poll_meta(
+                &feed.channel_id,
+                etag.as_deref(),
+                last_modified.as_deref(),
+            )?;
+            if new_count > 0 {
+                let _ = app.emit("feed://new_items", FeedNewItems { count: new_count });
+            }
+            poller.wake_now();
+            db.channel_get(&feed.channel_id)?
+                .ok_or_else(|| UiError::internal("購読登録直後のチャンネル取得に失敗"))
+        }
+        // 条件付きヘッダを送っていないので 304 は返らないはず
+        feed::FetchOutcome::NotModified => {
+            Err(UiError::internal("初回取得が NotModified を返した"))
+        }
+    }
+}
+
+/// `unsubscribe_channel`。購読解除し、そのチャンネルの未読を既読化する。
+#[tauri::command]
+pub fn unsubscribe_channel(channel_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+    db.channel_delete(&channel_id)?;
+    Ok(())
+}
+
+/// 購読チャンネル一覧。
+#[tauri::command]
+pub fn list_channels(db: State<'_, Db>) -> Result<Vec<Channel>, UiError> {
+    Ok(db.channel_list()?)
+}
+
+/// チャンネルのカテゴリ割り当て（null で未分類に戻す）。
+#[tauri::command]
+pub fn set_channel_category(
+    channel_id: String,
+    category_id: Option<i64>,
+    db: State<'_, Db>,
+) -> Result<(), UiError> {
+    db.channel_set_category(&channel_id, category_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_categories(db: State<'_, Db>) -> Result<Vec<Category>, UiError> {
+    Ok(db.category_list()?)
+}
+
+#[tauri::command]
+pub fn create_category(name: String, db: State<'_, Db>) -> Result<Category, UiError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(UiError::invalid_input("カテゴリ名が空です"));
+    }
+    Ok(db.category_create(name)?)
+}
+
+/// `list_feed`（設計書 §3.1）。
+#[tauri::command]
+pub fn list_feed(filter: FeedFilter, db: State<'_, Db>) -> Result<Vec<FeedItem>, UiError> {
+    Ok(db.feed_list(&filter)?)
+}
+
+/// `mark_read`（設計書 §3.1）。`all: true` で一括既読、それ以外は `video_ids` を個別既読。
+#[tauri::command]
+pub fn mark_read(
+    video_ids: Option<Vec<String>>,
+    all: Option<bool>,
+    db: State<'_, Db>,
+) -> Result<u64, UiError> {
+    if all == Some(true) {
+        return Ok(db.videos_mark_all_read()?);
+    }
+    let ids = video_ids.unwrap_or_default();
+    db.videos_mark_read(&ids)?;
+    Ok(ids.len() as u64)
+}
+
+/// 手動の即時更新。全チャンネル（または指定チャンネル）の次回予定を現在に戻す。
+#[tauri::command]
+pub fn feed_refresh(
+    channel_id: Option<String>,
+    poller: State<'_, Arc<FeedPoller>>,
+) -> Result<(), UiError> {
+    poller.force_refresh(channel_id.as_deref());
+    Ok(())
 }
