@@ -55,8 +55,11 @@
   let loading = $state(true);
   let saving = $state(false);
   let notices = $state<string[]>([]);
-  // 最後に保存/読込した画質式。変更がない限り再生中インスタンスの再読込を避ける
-  let savedFormat = $state("");
+  // DB に最後に書き込んだ画質式（読込時点では読み取った値）。
+  // 書込み済みと適用完了を分けて追うため、即時適用の成否とは独立に進める
+  let persistedFormat = $state("");
+  // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
+  let pendingApply = $state<string | null>(null);
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -80,17 +83,20 @@
     // 画質式が前回保存値から変わったときだけ適用する（カテゴリだけの保存で
     // 再生中インスタンスが再読込されないようにする。loadfile replace は再生を中断させる）
     const format = effectiveFormat;
-    const qualityChanged = Boolean(format) && format !== savedFormat;
     saving = true;
     try {
-      if (qualityChanged) {
+      // DB の値と違うときだけ書き込む。書いた値は必ず pendingApply にして
+      // 適用成功まで追跡する（書き戻し時も適用が残る形になる）
+      if (format && format !== persistedFormat) {
         await invoke("settings_set", { key: "quality.format", value: format });
+        persistedFormat = format;
+        pendingApply = format;
       }
       await invoke("settings_set", {
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
       });
-      if (!qualityChanged) {
+      if (!format || pendingApply !== format) {
         notify(
           format
             ? t("settings.saved")
@@ -120,10 +126,10 @@
         }
       }
       if (failed.length > 0) {
-        // 未適用の台が残るため savedFormat は進めず、次回保存で適用を再試行できるようにする
+        // 未適用の台が残るため pendingApply を残し、次回保存で適用を再試行できるようにする
         notify(t("settings.applyPartial", { count: failed.length }));
       } else {
-        savedFormat = format;
+        pendingApply = null;
         notify(
           applied > 0
             ? t("settings.applied", { count: applied })
@@ -173,7 +179,7 @@
     } catch {
       // 読み取り失敗時はプリセット既定のままにする
     }
-    savedFormat =
+    persistedFormat =
       selected === CUSTOM ? customFormat.trim() : selected;
     loading = false;
   });
