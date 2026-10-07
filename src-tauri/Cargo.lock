@@ -5183,6 +5183,7 @@ name = "yt-browser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "percent-encoding",
  "reqwest 0.12.28",
  "roxmltree",
  "rusqlite",

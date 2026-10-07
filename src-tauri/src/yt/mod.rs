@@ -330,15 +330,16 @@ mod tests {
     /// ハンドルを UC キーの blocked/channels と比較させないため。
     #[test]
     fn search_jsonl_rejects_handle_uploader_id() {
-        let input = br#"{"id":"abc123def45","title":"Handle Only","uploader":"Some Uploader","uploader_id":"@SomeHandle"}
-{"id":"xyz987wvu65","title":"UC in uploader_id","uploader_id":"UCabcdef0000000000000000"}
-"#;
+        let input = "{\"id\":\"abc123def45\",\"title\":\"Handle Only\",\"uploader\":\"Some Uploader\",\"uploader_id\":\"@SomeHandle\"}\n{\"id\":\"xyz987wvu65\",\"title\":\"UC in uploader_id\",\"uploader_id\":\"UCabcdef0000000000000000\"}\n{\"id\":\"jpn123def45\",\"title\":\"Unicode Handle\",\"uploader_id\":\"@\\u30d2\\u30ab\\u30ad\\u30f3\"}\n".as_bytes();
         let out = parse_search_jsonl(input);
-        assert_eq!(out.len(), 2);
+        assert_eq!(out.len(), 3);
         assert_eq!(out[0].channel_id, None);
         // @handle はブロックキーにはしないが、購読参照として uploader_id に残す
         assert_eq!(out[0].uploader_id.as_deref(), Some("@SomeHandle"));
         assert_eq!(out[0].channel_title.as_deref(), Some("Some Uploader"));
+        // Unicode ハンドルも購読参照として露出する（parse_channel_ref が受理）
+        assert_eq!(out[2].channel_id, None);
+        assert_eq!(out[2].uploader_id.as_deref(), Some("@ヒカキン"));
         assert_eq!(
             out[1].channel_id.as_deref(),
             Some("UCabcdef0000000000000000")

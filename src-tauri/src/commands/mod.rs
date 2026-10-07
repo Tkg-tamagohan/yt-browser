@@ -159,7 +159,10 @@ pub async fn subscribe_channel(
         ChannelRef::Id(id) => id,
         ChannelRef::Handle(h) => {
             let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
-            yt::channel_id(&path, &format!("https://www.youtube.com/@{h}"))
+            // 非 ASCII ハンドルは Url::parse 経由でパーセントエンコードしてから渡す
+            let url = url::Url::parse(&format!("https://www.youtube.com/@{h}"))
+                .map_err(|_| UiError::invalid_input("ハンドルの形式が不正です"))?;
+            yt::channel_id(&path, url.as_str())
                 .await
                 .map_err(UiError::from)?
         }
