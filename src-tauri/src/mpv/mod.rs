@@ -49,6 +49,12 @@ const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
 /// 未設定時の画質式（設計書 §4.3 の 1080p 上限プリセット）。
 pub const DEFAULT_YTDL_FORMAT: &str = "bv*[height<=1080]+ba/b[height<=1080]";
 
+/// ホイール分岐スクリプト（設計書 §4.2）。バイナリに埋め込み、
+/// 起動時に app_data/mpv/wheel.lua へ書き出して `--script` で読ませる。
+pub const WHEEL_LUA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/mpv/wheel.lua"));
+/// 設定キー: ホイール音量の変化量（script-opts `wheel-volume_delta` に渡す）。
+pub const SETTING_WHEEL_VOLUME_DELTA: &str = "wheel.volume_delta";
+
 #[derive(Debug, Error)]
 pub enum MpvError {
     #[error("mpv の起動に失敗: {0}。mpv がインストールされているか確認してください")]
@@ -156,6 +162,10 @@ pub struct SpawnOptions {
     pub ytdl_format: String,
     /// `ytdl_hook-ytdl_path` に渡す yt-dlp のパス。None なら mpv の既定解決に任せる。
     pub ytdlp_path: Option<String>,
+    /// `--script` に渡す wheel.lua のパス（app_data/mpv/wheel.lua）。
+    pub wheel_script: Option<PathBuf>,
+    /// `wheel-volume_delta` に渡す音量変化量。None なら Lua 既定（2）。
+    pub wheel_volume_delta: Option<String>,
 }
 
 impl MpvPlayer {
@@ -183,9 +193,21 @@ impl MpvPlayer {
             // アプリ識別のためタイトルに動画 ID を入れる
             format!("--title={}-yt-browser", opts.video_id),
         ];
+        // --script-opts はリスト型で、同じ指定を重ねると後が前を上書きする。
+        // そのため全エントリを 1 つのカンマ区切り値にまとめて渡す。
+        let mut script_opts = Vec::new();
         if let Some(path) = &opts.ytdlp_path {
             // 同梱 / システム混在環境でどちらを使うか確定させる（設計書 §4.1）
-            args.push(format!("--script-opts=ytdl_hook-ytdl_path={path}"));
+            script_opts.push(format!("ytdl_hook-ytdl_path={path}"));
+        }
+        if let Some(delta) = &opts.wheel_volume_delta {
+            script_opts.push(format!("wheel-volume_delta={delta}"));
+        }
+        if !script_opts.is_empty() {
+            args.push(format!("--script-opts={}", script_opts.join(",")));
+        }
+        if let Some(script) = &opts.wheel_script {
+            args.push(format!("--script={}", script.display()));
         }
         let mut child = tokio::process::Command::new("mpv")
             .args(&args)
@@ -505,6 +527,8 @@ pub struct PlayerManager {
     socket_dir: PathBuf,
     /// yt-dlp パスの解決器（settings `ytdlp.path` → 同梱リソース → PATH）。
     ytdlp_resolver: crate::yt::YtDlpResolver,
+    /// `--script` で読ませる wheel.lua のパス。書き出しに失敗した環境では None。
+    wheel_script: Option<PathBuf>,
 }
 
 struct PlayerEntry {
@@ -521,6 +545,7 @@ impl PlayerManager {
         db: Db,
         socket_dir: PathBuf,
         ytdlp_resolver: crate::yt::YtDlpResolver,
+        wheel_script: Option<PathBuf>,
     ) -> Self {
         Self {
             players: Arc::new(Mutex::new(HashMap::new())),
@@ -529,6 +554,7 @@ impl PlayerManager {
             db,
             socket_dir,
             ytdlp_resolver,
+            wheel_script,
         }
     }
 
@@ -542,11 +568,20 @@ impl PlayerManager {
     ) -> Result<u32, MpvError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let ytdlp_path = self.ytdlp_resolver.resolve(&self.db).await;
+        // 音量変化量は数値として解釈できる値だけを script-opts に渡す
+        let wheel_volume_delta = self
+            .db
+            .setting_get(SETTING_WHEEL_VOLUME_DELTA)
+            .ok()
+            .flatten()
+            .filter(|v| v.trim().parse::<f64>().is_ok());
         let opts = SpawnOptions {
             video_id: video_id.to_string(),
             start_sec,
             ytdl_format: ytdl_format.unwrap_or_else(|| DEFAULT_YTDL_FORMAT.to_string()),
             ytdlp_path,
+            wheel_script: self.wheel_script.clone(),
+            wheel_volume_delta,
         };
         let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts).await?;
         let emitter = self.spawn_emitter(player.clone());

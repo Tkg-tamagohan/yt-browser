@@ -3,46 +3,25 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
-
-  type DbStatus = { schemaVersion: number };
-  type PlayStatus = "idle" | "playing" | "paused" | "buffering" | "ended";
-  type PlayerState = {
-    instanceId: number;
-    videoId: string;
-    pause: boolean;
-    position: number;
-    duration: number;
-    fps: number;
-    state: PlayStatus;
-    volume: number;
-    speed: number;
-    mediaTitle: string;
-  };
-  type PlayerEnded = { instanceId: number; videoId: string; reason: string };
-  type WatchHistory = {
-    videoId: string;
-    title: string;
-    positionSec: number;
-    durationSec: number | null;
-    completed: boolean;
-  };
-  type UiError = { code: string; message: string };
-  type YtDlpStatus = { path: string | null; version: string | null };
-  type PlayerAction =
-    | { type: "pause"; value: boolean }
-    | { type: "seek"; seconds: number }
-    | { type: "volume"; value: number }
-    | { type: "speed"; value: number }
-    | { type: "quality"; format: string }
-    | { type: "frame_step" }
-    | { type: "frame_back_step" };
+  import {
+    initPlayerEvents,
+    playerStates,
+    type DbStatus,
+    type PlayerAction,
+    type PlayerEnded,
+    type PlayerState,
+    type UiError,
+    type WatchHistory,
+    type YtDlpStatus,
+  } from "$lib/players.svelte";
 
   let dbStatus = $state<DbStatus | null>(null);
   let dbError = $state("");
 
   let input = $state("");
   let resumeHint = $state<WatchHistory | null>(null);
-  let players = $state<Map<number, PlayerState>>(new Map());
+  // 再生中インスタンスの状態は共有ストア（ページ遷移で消えないようコンポーネント外に置く）
+  const players = $derived(playerStates.list);
   // シークバーはドラッグ中に state 更新で暴れないよう、操作中の値を別で持つ
   let seekPreview = $state<Map<number, number>>(new Map());
   let notices = $state<string[]>([]);
@@ -114,9 +93,10 @@
   async function closePlayer(id: number): Promise<void> {
     try {
       await invoke("player_close", { instanceId: id });
-      const next = new Map(players);
+      // 手動 close では player://ended が来ないため、共有マップをここで外す
+      const next = new Map(playerStates.list);
       next.delete(id);
-      players = next;
+      playerStates.list = next;
       // 閉じた時点の位置で履歴が更新されているのでヒントを取り直す
       void refreshResumeHint();
     } catch (e) {
@@ -159,17 +139,11 @@
       dbError = asErrorMessage(e);
     }
     await refreshYtDlp();
+    await initPlayerEvents();
 
+    // 状態マップの更新は共有ストア側。ここでは通知とヒント更新だけを購読する
     unlistenFns.push(
-      await listen<PlayerState>("player://state", (ev) => {
-        const next = new Map(players);
-        next.set(ev.payload.instanceId, ev.payload);
-        players = next;
-      }),
       await listen<PlayerEnded>("player://ended", (ev) => {
-        const next = new Map(players);
-        next.delete(ev.payload.instanceId);
-        players = next;
         notify(t("player.ended", { reason: ev.payload.reason }));
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直す
         void refreshResumeHint();
@@ -246,6 +220,18 @@
         <button onclick={() => control(p.instanceId, { type: "pause", value: !p.pause })}>
           {p.pause ? t("player.resume") : t("player.pause")}
         </button>
+        <button
+          title={t("player.frameBackStep")}
+          onclick={() => control(p.instanceId, { type: "frame_back_step" })}
+        >
+          ◀ 1f
+        </button>
+        <button
+          title={t("player.frameStep")}
+          onclick={() => control(p.instanceId, { type: "frame_step" })}
+        >
+          1f ▶
+        </button>
         <label>
           {t("player.volume")}
           <input
@@ -310,25 +296,6 @@
 </main>
 
 <style>
-  :root {
-    font-family: Inter, "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP", Meiryo, sans-serif;
-    font-size: 16px;
-    line-height: 1.6;
-    color: #e8e8e8;
-    background-color: #1a1b1e;
-    font-synthesis: none;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-  }
-
-  .container {
-    margin: 0 auto;
-    max-width: 720px;
-    padding: 6vh 24px 48px;
-    display: flex;
-    flex-direction: column;
-  }
-
   h1 {
     font-size: 2rem;
     margin-bottom: 0.5rem;
@@ -346,38 +313,6 @@
 
   .url-input {
     flex: 1;
-    padding: 8px 12px;
-    border-radius: 8px;
-    border: 1px solid #3c4043;
-    background: #202124;
-    color: #e8e8e8;
-  }
-
-  button {
-    padding: 8px 16px;
-    border-radius: 8px;
-    border: 1px solid #3c4043;
-    background: #2d2f33;
-    color: #e8e8e8;
-    cursor: pointer;
-  }
-
-  button:hover:not(:disabled) {
-    background: #3a3d42;
-  }
-
-  button:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  button.danger {
-    border-color: #7c3a3a;
-  }
-
-  button.link {
-    padding: 2px 10px;
-    font-size: 0.85rem;
   }
 
   .hint {
@@ -418,17 +353,13 @@
     align-items: baseline;
   }
 
-  .subtle {
-    color: #9aa0a6;
-  }
-
   .buffering {
     color: #f9ab00;
   }
 
   .controls {
     display: flex;
-    gap: 16px;
+    gap: 12px;
     align-items: center;
     margin-top: 8px;
     flex-wrap: wrap;
@@ -443,19 +374,8 @@
   }
 
   .controls select {
-    background: #2d2f33;
-    color: #e8e8e8;
-    border: 1px solid #3c4043;
-    border-radius: 6px;
     padding: 4px;
-  }
-
-  .notice {
-    margin-top: 12px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    background: #263040;
-    font-size: 0.9rem;
+    border-radius: 6px;
   }
 
   .status-bar {

@@ -146,7 +146,8 @@ mpv --idle=yes
 ```lua
 -- wheel.lua: 一時停止中はコマ送り、再生中は音量
 local function wheel(ev, paused_cmd, playing_delta)
-  if ev.event ~= "down" then return end
+  -- ホイールのノッチは複合バインドでは press として届く
+  if ev.event ~= "press" and ev.event ~= "down" then return end
   if mp.get_property_bool("pause") then
     mp.command(paused_cmd)
   else
