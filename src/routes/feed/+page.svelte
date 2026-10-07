@@ -175,11 +175,17 @@
     // 再生が始まった項目のみ既読にする（play_video が失敗したら未読のまま残す）
     try {
       await invoke("play_video", { videoId: it.videoId, resume: false });
-      await invoke("mark_read", { videoIds: [it.videoId] });
-      goto("/");
     } catch (e) {
       notify(t("feed.failed", { message: asErrorMessage(e) }));
+      return;
     }
+    // 既読化の失敗は再生を止めない（通知に留めて遷移は行う）
+    try {
+      await invoke("mark_read", { videoIds: [it.videoId] });
+    } catch (e) {
+      notify(t("feed.readMarkFailed", { message: asErrorMessage(e) }));
+    }
+    goto("/");
   }
 
   async function refreshNow(): Promise<void> {

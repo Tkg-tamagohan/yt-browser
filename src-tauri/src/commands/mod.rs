@@ -171,15 +171,9 @@ pub async fn subscribe_channel(
             last_modified,
         } => {
             // フィードの channel_id が入力と一致しない場合はフィード側を採る
-            // （UC ID の誤入力より URL 解決のリダイレクトを信用する暫定仕様）
-            // 新規購読かどうかは upsert 前に判定する: 新規なら取得エントリを
-            // すべて未読に揃える（過去に解除した購読の既読行が残っていても
-            // 「初回投入は未読」の仕様を守るため）
-            let is_new = db.channel_get(&feed.channel_id)?.is_none();
-            db.channel_upsert(&feed.channel_id, &feed.channel_title, None)?;
-            if category_id.is_some() {
-                db.channel_set_category(&feed.channel_id, category_id)?;
-            }
+            // （UC ID の誤入力より URL 解決のリダイレクトを信用する暫定仕様）。
+            // 購読登録と初回投入は一トランザクション（feed_subscribe）:
+            // 新規購読と判定された場合のみ既存行も未読へ戻す
             let items: Vec<crate::db::NewVideo> = feed
                 .entries
                 .iter()
@@ -193,17 +187,23 @@ pub async fn subscribe_channel(
                     kind: "video",
                 })
                 .collect();
-            let new_count = db
-                .feed_ingest(
-                    &feed.channel_id,
-                    &items,
-                    etag.as_deref(),
-                    last_modified.as_deref(),
-                    is_new,
-                )?
-                .unwrap_or(0);
-            if new_count > 0 {
-                let _ = app.emit("feed://new_items", FeedNewItems { count: new_count });
+            let out = db.feed_subscribe(&crate::db::SubscribeArgs {
+                channel_id: &feed.channel_id,
+                title: &feed.channel_title,
+                thumbnail_url: None,
+                category_id,
+                entries: &items,
+                etag: etag.as_deref(),
+                last_modified: last_modified.as_deref(),
+            })?;
+            // 新規挿入に加えて既読→未読の戻し（再購読）も画面更新が要る変化
+            if out.touched() {
+                let _ = app.emit(
+                    "feed://new_items",
+                    FeedNewItems {
+                        count: out.inserted + out.unread_changed,
+                    },
+                );
             }
             poller.wake_now();
             db.channel_get(&feed.channel_id)?

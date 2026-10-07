@@ -390,11 +390,10 @@ impl FeedPoller {
                     &items,
                     etag.as_deref(),
                     last_modified.as_deref(),
-                    false,
                 ) {
-                    Ok(Some(new_count)) => {
-                        self.after_success(&target.channel_id, new_count > 0);
-                        new_count
+                    Ok(Some(out)) => {
+                        self.after_success(&target.channel_id, out.inserted > 0);
+                        out.inserted
                     }
                     // 応答到着までに購読解除された: 挿入せずスケジュールも除去
                     Ok(None) => {

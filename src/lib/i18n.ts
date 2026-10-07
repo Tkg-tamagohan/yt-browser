@@ -84,6 +84,7 @@ const ja = {
   "feed.items.empty": "フィード項目がありません",
   "feed.items.markRead": "既読",
   "feed.items.markAllRead": "すべて既読",
+  "feed.readMarkFailed": "再生は開始しましたが既読の記録に失敗: {message}",
   "feed.markedAllRead": "すべて既読にしました",
   "feed.filters.unreadOnly": "未読のみ",
   "feed.filters.all": "すべて",

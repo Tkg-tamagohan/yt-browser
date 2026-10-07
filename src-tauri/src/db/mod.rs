@@ -26,6 +26,34 @@ pub struct NewVideo<'a> {
     pub kind: &'a str,
 }
 
+/// `feed_ingest` / `feed_subscribe` の戻り値。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IngestOutcome {
+    /// 新たに INSERT された動画数。
+    pub inserted: usize,
+    /// 既存行の既読フラグを未読に戻した数（初回購読投入でのみ発生）。
+    pub unread_changed: usize,
+}
+
+impl IngestOutcome {
+    /// UI 更新が必要な変化（新規挿入または未読への復帰）があったか。
+    pub fn touched(&self) -> bool {
+        self.inserted + self.unread_changed > 0
+    }
+}
+
+/// `feed_subscribe` の引数一式。
+#[derive(Debug)]
+pub struct SubscribeArgs<'a> {
+    pub channel_id: &'a str,
+    pub title: &'a str,
+    pub thumbnail_url: Option<&'a str>,
+    pub category_id: Option<i64>,
+    pub entries: &'a [NewVideo<'a>],
+    pub etag: Option<&'a str>,
+    pub last_modified: Option<&'a str>,
+}
+
 /// ポーラーが逐次処理するチャンネルの条件付き取得メタ（設計書 §8 channels 表のサブセット）。
 #[derive(Debug, Clone)]
 pub struct PollTarget {
@@ -207,26 +235,6 @@ impl Db {
         Ok(())
     }
 
-    /// 購読登録。既に購読済みならタイトル・サムネイルだけ更新する
-    /// （subscribed_at と category_id は保持）。
-    pub fn channel_upsert(
-        &self,
-        channel_id: &str,
-        title: &str,
-        thumbnail_url: Option<&str>,
-    ) -> Result<(), DbError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT INTO channels (channel_id, title, thumbnail_url)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (channel_id) DO UPDATE SET
-               title = excluded.title,
-               thumbnail_url = COALESCE(excluded.thumbnail_url, channels.thumbnail_url)",
-            rusqlite::params![channel_id, title, thumbnail_url],
-        )?;
-        Ok(())
-    }
-
     pub fn channel_get(&self, channel_id: &str) -> Result<Option<Channel>, DbError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
@@ -301,8 +309,7 @@ impl Db {
 
     /// フィード取得結果の投入。チャンネルの存在確認〜エントリ挿入〜取得メタ更新を
     /// 一トランザクションで行い、ポーリング中の購読解除（`channel_delete`）との競合を防ぐ。
-    /// `reset_unread` は初回購読の投入で使い、既存行（解除済み購読の残骸）も未読へ戻す。
-    /// 戻り値は `Some(新規挿入数)`。チャンネルが既に存在しなければ `None`（ロールバック）。
+    /// 戻り値は `Some(IngestOutcome)`。チャンネルが既に存在しなければ `None`（ロールバック）。
     /// なお ETag / Last-Modified は 200 応答に無ければ NULL で上書きする
     /// （欠落した validator を残すと次回以降の条件付き取得が腐る）。
     pub fn feed_ingest(
@@ -311,8 +318,7 @@ impl Db {
         entries: &[NewVideo<'_>],
         etag: Option<&str>,
         last_modified: Option<&str>,
-        reset_unread: bool,
-    ) -> Result<Option<usize>, DbError> {
+    ) -> Result<Option<IngestOutcome>, DbError> {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
         let exists: bool = tx.query_row(
@@ -323,42 +329,48 @@ impl Db {
         if !exists {
             return Ok(None);
         }
-        let mut new_count = 0usize;
-        for v in entries {
-            new_count += tx.execute(
-                "INSERT OR IGNORE INTO videos
-                   (video_id, channel_id, channel_title, title, thumbnail_url,
-                    published_at, kind, is_read)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-                rusqlite::params![
-                    v.video_id,
-                    v.channel_id,
-                    v.channel_title,
-                    v.title,
-                    v.thumbnail_url,
-                    v.published_at,
-                    v.kind
-                ],
+        let out = ingest_rows(&tx, channel_id, entries, false, etag, last_modified)?;
+        tx.commit()?;
+        Ok(Some(out))
+    }
+
+    /// 購読登録＋初回投入を一トランザクションで行う。
+    /// 「channels に行が無い」= 新規購読（または解除済みの再購読）の場合だけ
+    /// 既存動画の既読フラグを未読へ戻す（初回投入は未読の仕様）。
+    /// 新規判定がトランザクション内なので、並行して走った二つの購読要求の
+    /// 後着側は `is_new=false` になり、既読済み動画を未読に戻さない。
+    pub fn feed_subscribe(&self, a: &SubscribeArgs<'_>) -> Result<IngestOutcome, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM channels WHERE channel_id = ?1)",
+            [a.channel_id],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO channels (channel_id, title, thumbnail_url)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (channel_id) DO UPDATE SET
+               title = excluded.title,
+               thumbnail_url = COALESCE(excluded.thumbnail_url, channels.thumbnail_url)",
+            rusqlite::params![a.channel_id, a.title, a.thumbnail_url],
+        )?;
+        if a.category_id.is_some() {
+            tx.execute(
+                "UPDATE channels SET category_id = ?2 WHERE channel_id = ?1",
+                rusqlite::params![a.channel_id, a.category_id],
             )?;
         }
-        if reset_unread {
-            for v in entries {
-                tx.execute(
-                    "UPDATE videos SET is_read = 0 WHERE video_id = ?1",
-                    [v.video_id],
-                )?;
-            }
-        }
-        tx.execute(
-            "UPDATE channels SET
-               last_polled_at = datetime('now'),
-               rss_etag = ?2,
-               rss_last_modified = ?3
-             WHERE channel_id = ?1",
-            rusqlite::params![channel_id, etag, last_modified],
+        let out = ingest_rows(
+            &tx,
+            a.channel_id,
+            a.entries,
+            !exists,
+            a.etag,
+            a.last_modified,
         )?;
         tx.commit()?;
-        Ok(Some(new_count))
+        Ok(out)
     }
 
     /// 購読解除。チャンネル行を消し、そのチャンネルの未読フィードを既読にする
@@ -495,6 +507,55 @@ impl Db {
             None => Ok(None),
         }
     }
+}
+
+/// `feed_ingest` / `feed_subscribe` 共通の投入処理。呼び出し側のトランザクション内で
+/// 実行する前提で、チャンネルの存在確認はここでは行わない。
+/// `reset_unread` が真のとき、既存行（解除済み購読の残骸など）の既読も未読に戻し、
+/// 実際に戻した件数を `unread_changed` で返す。
+fn ingest_rows(
+    tx: &rusqlite::Transaction,
+    channel_id: &str,
+    entries: &[NewVideo<'_>],
+    reset_unread: bool,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<IngestOutcome, DbError> {
+    let mut out = IngestOutcome::default();
+    for v in entries {
+        out.inserted += tx.execute(
+            "INSERT OR IGNORE INTO videos
+               (video_id, channel_id, channel_title, title, thumbnail_url,
+                published_at, kind, is_read)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            rusqlite::params![
+                v.video_id,
+                v.channel_id,
+                v.channel_title,
+                v.title,
+                v.thumbnail_url,
+                v.published_at,
+                v.kind
+            ],
+        )?;
+    }
+    if reset_unread {
+        for v in entries {
+            out.unread_changed += tx.execute(
+                "UPDATE videos SET is_read = 0 WHERE video_id = ?1 AND is_read != 0",
+                [v.video_id],
+            )?;
+        }
+    }
+    tx.execute(
+        "UPDATE channels SET
+           last_polled_at = datetime('now'),
+           rss_etag = ?2,
+           rss_last_modified = ?3
+         WHERE channel_id = ?1",
+        rusqlite::params![channel_id, etag, last_modified],
+    )?;
+    Ok(out)
 }
 
 #[cfg(test)]
