@@ -27,6 +27,10 @@ pub enum YtError {
     Timeout,
     #[error("yt-dlp が見つからない。インストールするか設定 `ytdlp.path` でパスを指定してください")]
     NotFound,
+    #[error("yt-dlp の出力の JSON 解析に失敗: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("yt-dlp の出力に channel_id が含まれていない")]
+    NoChannelId,
 }
 
 /// yt-dlp のバイナリパス解決器。
@@ -127,6 +131,32 @@ fn combined_output(out: &std::process::Output) -> String {
         s.push_str(&err);
     }
     s
+}
+
+/// チャンネル URL（@handle 等）からチャンネル ID を解決する。
+/// `--flat-playlist --playlist-end 1 --dump-single-json` で最小限の取得に留める。
+/// 返される JSON の `channel_id` を読む（プレイリスト型応答を想定）。
+pub async fn channel_id(path: &str, url: &str) -> Result<String, YtError> {
+    let out = run_with_timeout(
+        Command::new(path)
+            .arg(url)
+            .arg("--flat-playlist")
+            .arg("--playlist-end")
+            .arg("1")
+            .arg("--dump-single-json"),
+    )
+    .await?;
+    if !out.status.success() {
+        return Err(YtError::Exit {
+            code: out.status.code().unwrap_or(-1),
+            stderr: combined_output(&out),
+        });
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    v.get("channel_id")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+        .ok_or(YtError::NoChannelId)
 }
 
 /// PATH 解決可否。`--version` が起動できれば存在するとみなす。

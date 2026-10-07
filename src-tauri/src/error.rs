@@ -23,6 +23,11 @@ impl UiError {
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self::new("invalid_input", message)
     }
+
+    /// サーバ側の内部不整合。UI 側の分岐を持たない汎用エラー。
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new("internal", message)
+    }
 }
 
 impl From<crate::db::DbError> for UiError {
@@ -39,6 +44,17 @@ impl From<crate::mpv::MpvError> for UiError {
             crate::mpv::MpvError::SocketTimeout => "mpv_socket_timeout",
             crate::mpv::MpvError::Ipc(_) => "mpv_ipc",
             crate::mpv::MpvError::NoSuchInstance(_) => "mpv_no_instance",
+        };
+        Self::new(code, e.to_string())
+    }
+}
+
+impl From<crate::feed::FeedError> for UiError {
+    fn from(e: crate::feed::FeedError) -> Self {
+        let code = match &e {
+            crate::feed::FeedError::NotFound => "feed_not_found",
+            crate::feed::FeedError::Db(_) => "db",
+            _ => "feed",
         };
         Self::new(code, e.to_string())
     }

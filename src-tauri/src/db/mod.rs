@@ -11,7 +11,57 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use rusqlite::Connection;
 use thiserror::Error;
 
-use crate::model::WatchHistory;
+use crate::model::{Category, Channel, FeedFilter, FeedItem, WatchHistory};
+
+/// `videos` への新規挿入 1 件分（`video_insert_new` の引数）。
+#[derive(Debug, Clone)]
+pub struct NewVideo<'a> {
+    pub video_id: &'a str,
+    pub channel_id: &'a str,
+    pub channel_title: &'a str,
+    pub title: &'a str,
+    pub thumbnail_url: Option<&'a str>,
+    pub published_at: Option<&'a str>,
+    /// 'video' | 'short' | 'live' | 'upcoming'（videos.kind の CHECK 制約）。
+    pub kind: &'a str,
+}
+
+/// `feed_ingest` / `feed_subscribe` の戻り値。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IngestOutcome {
+    /// 新たに INSERT された動画数。
+    pub inserted: usize,
+    /// 既存行の既読フラグを未読に戻した数（初回購読投入でのみ発生）。
+    pub unread_changed: usize,
+}
+
+impl IngestOutcome {
+    /// UI 更新が必要な変化（新規挿入または未読への復帰）があったか。
+    pub fn touched(&self) -> bool {
+        self.inserted + self.unread_changed > 0
+    }
+}
+
+/// `feed_subscribe` の引数一式。
+#[derive(Debug)]
+pub struct SubscribeArgs<'a> {
+    pub channel_id: &'a str,
+    pub title: &'a str,
+    pub thumbnail_url: Option<&'a str>,
+    pub category_id: Option<i64>,
+    pub entries: &'a [NewVideo<'a>],
+    pub etag: Option<&'a str>,
+    pub last_modified: Option<&'a str>,
+}
+
+/// ポーラーが逐次処理するチャンネルの条件付き取得メタ（設計書 §8 channels 表のサブセット）。
+#[derive(Debug, Clone)]
+pub struct PollTarget {
+    pub channel_id: String,
+    pub title: String,
+    pub rss_etag: Option<String>,
+    pub rss_last_modified: Option<String>,
+}
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -185,6 +235,255 @@ impl Db {
         Ok(())
     }
 
+    pub fn channel_get(&self, channel_id: &str) -> Result<Option<Channel>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT channel_id, title, thumbnail_url, category_id,
+                    subscribed_at, last_polled_at
+             FROM channels WHERE channel_id = ?1",
+        )?;
+        let mut rows = stmt.query([channel_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(Channel {
+                channel_id: row.get(0)?,
+                title: row.get(1)?,
+                thumbnail_url: row.get(2)?,
+                category_id: row.get(3)?,
+                subscribed_at: row.get(4)?,
+                last_polled_at: row.get(5)?,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// 購読一覧（UI 用）。
+    pub fn channel_list(&self) -> Result<Vec<Channel>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT channel_id, title, thumbnail_url, category_id,
+                    subscribed_at, last_polled_at
+             FROM channels ORDER BY title COLLATE NOCASE",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(Channel {
+                channel_id: row.get(0)?,
+                title: row.get(1)?,
+                thumbnail_url: row.get(2)?,
+                category_id: row.get(3)?,
+                subscribed_at: row.get(4)?,
+                last_polled_at: row.get(5)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// ポーラー用: 全購読チャンネルの条件付き取得メタ。
+    pub fn channel_poll_targets(&self) -> Result<Vec<PollTarget>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare("SELECT channel_id, title, rss_etag, rss_last_modified FROM channels")?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(PollTarget {
+                channel_id: row.get(0)?,
+                title: row.get(1)?,
+                rss_etag: row.get(2)?,
+                rss_last_modified: row.get(3)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 304 応答時: ポーリング時刻だけを更新する。
+    pub fn channel_mark_polled(&self, channel_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE channels SET last_polled_at = datetime('now') WHERE channel_id = ?1",
+            [channel_id],
+        )?;
+        Ok(())
+    }
+
+    /// フィード取得結果の投入。チャンネルの存在確認〜エントリ挿入〜取得メタ更新を
+    /// 一トランザクションで行い、ポーリング中の購読解除（`channel_delete`）との競合を防ぐ。
+    /// 戻り値は `Some(IngestOutcome)`。チャンネルが既に存在しなければ `None`（ロールバック）。
+    /// なお ETag / Last-Modified は 200 応答に無ければ NULL で上書きする
+    /// （欠落した validator を残すと次回以降の条件付き取得が腐る）。
+    pub fn feed_ingest(
+        &self,
+        channel_id: &str,
+        entries: &[NewVideo<'_>],
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<Option<IngestOutcome>, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM channels WHERE channel_id = ?1)",
+            [channel_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let out = ingest_rows(&tx, channel_id, entries, false, etag, last_modified)?;
+        tx.commit()?;
+        Ok(Some(out))
+    }
+
+    /// 購読登録＋初回投入を一トランザクションで行う。
+    /// 「channels に行が無い」= 新規購読（または解除済みの再購読）の場合だけ
+    /// 既存動画の既読フラグを未読へ戻す（初回投入は未読の仕様）。
+    /// 新規判定がトランザクション内なので、並行して走った二つの購読要求の
+    /// 後着側は `is_new=false` になり、既読済み動画を未読に戻さない。
+    pub fn feed_subscribe(&self, a: &SubscribeArgs<'_>) -> Result<IngestOutcome, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM channels WHERE channel_id = ?1)",
+            [a.channel_id],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO channels (channel_id, title, thumbnail_url)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (channel_id) DO UPDATE SET
+               title = excluded.title,
+               thumbnail_url = COALESCE(excluded.thumbnail_url, channels.thumbnail_url)",
+            rusqlite::params![a.channel_id, a.title, a.thumbnail_url],
+        )?;
+        if a.category_id.is_some() {
+            tx.execute(
+                "UPDATE channels SET category_id = ?2 WHERE channel_id = ?1",
+                rusqlite::params![a.channel_id, a.category_id],
+            )?;
+        }
+        let out = ingest_rows(
+            &tx,
+            a.channel_id,
+            a.entries,
+            !exists,
+            a.etag,
+            a.last_modified,
+        )?;
+        tx.commit()?;
+        Ok(out)
+    }
+
+    /// 購読解除。チャンネル行を消し、そのチャンネルの未読フィードを既読にする
+    /// （購読管理の対象外になった動画が未読一覧に残らないようにする暫定仕様）。
+    pub fn channel_delete(&self, channel_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
+        conn.execute(
+            "UPDATE videos SET is_read = 1 WHERE channel_id = ?1 AND is_read = 0",
+            [channel_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn channel_set_category(
+        &self,
+        channel_id: &str,
+        category_id: Option<i64>,
+    ) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE channels SET category_id = ?2 WHERE channel_id = ?1",
+            rusqlite::params![channel_id, category_id],
+        )?;
+        Ok(())
+    }
+
+    /// `list_feed`（設計書 §3.1）。ブロックチャンネルの動画は常に除外する（FR-5）。
+    pub fn feed_list(&self, filter: &FeedFilter) -> Result<Vec<FeedItem>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read
+             FROM videos v
+             LEFT JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 = 0 OR v.is_read = 0)
+               AND (?2 IS NULL
+                    OR (?2 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?2)
+               AND (?3 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
+             ORDER BY v.published_at DESC
+             LIMIT 500",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![
+            filter.unread_only as i64,
+            filter.category_id,
+            filter.days.map(|d| d as i64),
+        ])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(FeedItem {
+                video_id: row.get(0)?,
+                channel_id: row.get(1)?,
+                channel_title: row.get(2)?,
+                title: row.get(3)?,
+                thumbnail_url: row.get(4)?,
+                published_at: row.get(5)?,
+                kind: row.get(6)?,
+                is_read: row.get::<_, i64>(7)? != 0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 個別既読（設計書 §3.1 の `mark_read`）。
+    pub fn videos_mark_read(&self, video_ids: &[String]) -> Result<(), DbError> {
+        if video_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare("UPDATE videos SET is_read = 1 WHERE video_id = ?1")?;
+        for id in video_ids {
+            stmt.execute([id])?;
+        }
+        Ok(())
+    }
+
+    /// 一括既読。
+    pub fn videos_mark_all_read(&self) -> Result<u64, DbError> {
+        let conn = self.lock()?;
+        let n = conn.execute("UPDATE videos SET is_read = 1 WHERE is_read = 0", [])?;
+        Ok(n as u64)
+    }
+
+    pub fn category_create(&self, name: &str) -> Result<Category, DbError> {
+        let conn = self.lock()?;
+        conn.execute("INSERT INTO categories (name) VALUES (?1)", [name])?;
+        let id = conn.last_insert_rowid();
+        Ok(Category {
+            id,
+            name: name.to_string(),
+            sort_order: 0,
+        })
+    }
+
+    pub fn category_list(&self) -> Result<Vec<Category>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, sort_order FROM categories ORDER BY sort_order, id")?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(Category {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_order: row.get(2)?,
+            });
+        }
+        Ok(out)
+    }
+
     /// 動画 1 件分の履歴。レジューム可否の判定に使う。
     pub fn history_get(&self, video_id: &str) -> Result<Option<WatchHistory>, DbError> {
         let conn = self.lock()?;
@@ -208,6 +507,55 @@ impl Db {
             None => Ok(None),
         }
     }
+}
+
+/// `feed_ingest` / `feed_subscribe` 共通の投入処理。呼び出し側のトランザクション内で
+/// 実行する前提で、チャンネルの存在確認はここでは行わない。
+/// `reset_unread` が真のとき、既存行（解除済み購読の残骸など）の既読も未読に戻し、
+/// 実際に戻した件数を `unread_changed` で返す。
+fn ingest_rows(
+    tx: &rusqlite::Transaction,
+    channel_id: &str,
+    entries: &[NewVideo<'_>],
+    reset_unread: bool,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<IngestOutcome, DbError> {
+    let mut out = IngestOutcome::default();
+    for v in entries {
+        out.inserted += tx.execute(
+            "INSERT OR IGNORE INTO videos
+               (video_id, channel_id, channel_title, title, thumbnail_url,
+                published_at, kind, is_read)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            rusqlite::params![
+                v.video_id,
+                v.channel_id,
+                v.channel_title,
+                v.title,
+                v.thumbnail_url,
+                v.published_at,
+                v.kind
+            ],
+        )?;
+    }
+    if reset_unread {
+        for v in entries {
+            out.unread_changed += tx.execute(
+                "UPDATE videos SET is_read = 0 WHERE video_id = ?1 AND is_read != 0",
+                [v.video_id],
+            )?;
+        }
+    }
+    tx.execute(
+        "UPDATE channels SET
+           last_polled_at = datetime('now'),
+           rss_etag = ?2,
+           rss_last_modified = ?3
+         WHERE channel_id = ?1",
+        rusqlite::params![channel_id, etag, last_modified],
+    )?;
+    Ok(out)
 }
 
 #[cfg(test)]

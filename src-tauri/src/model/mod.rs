@@ -97,6 +97,124 @@ pub struct YtDlpStatus {
     pub version: Option<String>,
 }
 
+/// `channels` テーブルの 1 行（設計書 §8）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Channel {
+    pub channel_id: String,
+    pub title: String,
+    pub thumbnail_url: Option<String>,
+    pub category_id: Option<i64>,
+    pub subscribed_at: String,
+    pub last_polled_at: Option<String>,
+}
+
+/// `categories` テーブルの 1 行（設計書 §8）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Category {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+}
+
+/// `list_feed` のフィルタ（設計書 §3.1）。全項目省略可。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FeedFilter {
+    /// true で未読のみ。
+    pub unread_only: bool,
+    /// カテゴリで絞る。`Some(0)` は未分類のみ、`Some(n)` はそのカテゴリ。
+    pub category_id: Option<i64>,
+    /// 公開日が指定日数以降のものだけに絞る。
+    pub days: Option<u32>,
+}
+
+/// `videos` テーブルの 1 行（設計書 §8）。`list_feed` の返却型。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedItem {
+    pub video_id: String,
+    pub channel_id: String,
+    pub channel_title: Option<String>,
+    pub title: String,
+    pub thumbnail_url: Option<String>,
+    pub published_at: Option<String>,
+    pub kind: String,
+    pub is_read: bool,
+}
+
+/// `feed://new_items` イベントのペイロード（設計書 §3.2）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedNewItems {
+    pub count: usize,
+}
+
+/// `feed://status` イベントのペイロード（設計書 §3.2）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedStatus {
+    pub channel_id: Option<String>,
+    /// "info" | "warn" | "error"。
+    pub level: String,
+    pub message: String,
+}
+
+/// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。
+pub fn is_channel_id(s: &str) -> bool {
+    s.len() == 24
+        && s.starts_with("UC")
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// 購読入力（UC ID、channel URL、@handle）を正規化する。
+/// 戻り値は `(channel_id または @handle, channel_id 確定か)`。
+/// UC 形式に解決できる入力は `Ok(ChannelRef::Id(_))`、@handle は
+/// `Ok(ChannelRef::Handle(_))`（要 yt-dlp 解決）。解釈不能は Err 相当の None。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelRef {
+    /// 確定済みのチャンネル ID（UC...）。
+    Id(String),
+    /// ハンドル（@xxx）。チャンネル ID への変換が必要。
+    Handle(String),
+}
+
+/// `subscribe_channel` の入力を正規化する。
+/// 受理形式: `UC...`、youtube.com/channel/UC...、`@handle`、youtube.com/@handle。
+pub fn parse_channel_ref(input: &str) -> Option<ChannelRef> {
+    let input = input.trim();
+    if is_channel_id(input) {
+        return Some(ChannelRef::Id(input.to_string()));
+    }
+    if let Some(h) = input.strip_prefix('@') {
+        return is_handle(h).then(|| ChannelRef::Handle(h.to_string()));
+    }
+    let url = url::Url::parse(input).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    if !(host == "youtube.com" || host.ends_with(".youtube.com")) {
+        return None;
+    }
+    let mut segs = url.path_segments()?;
+    match segs.next()? {
+        "channel" => segs
+            .next()
+            .and_then(|s| is_channel_id(s).then(|| ChannelRef::Id(s.to_string()))),
+        seg if seg.starts_with('@') => {
+            is_handle(&seg[1..]).then(|| ChannelRef::Handle(seg[1..].to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// @handle の形式チェック（英数字・`-`・`_`・`.` の 3〜30 文字）。
+fn is_handle(s: &str) -> bool {
+    (3..=30).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 /// YouTube の動画入力（URL 各形式または 11 文字の動画 ID）を動画 ID へ正規化する。
 /// 受理する形式: 裸の ID、`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`。
 /// 戻り値は 11 文字の動画 ID。解釈できない入力は None。
