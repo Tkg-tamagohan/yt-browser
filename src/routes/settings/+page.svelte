@@ -68,10 +68,11 @@
             action: { type: "quality", format },
           });
           applied += 1;
-        } catch {
-          // 適用に失敗し、かつまだ稼働中なら失敗として記録する
-          // （直前に終了したインスタンスは一覧から消えているので除外）
-          if (playerStates.list.has(id)) failed.push(id);
+        } catch (e) {
+          // 直前に終了したインスタンス（mpv_no_instance）は失敗に数えない。
+          // それ以外の IPC エラーは稼働中インスタンスへの適用失敗として記録する
+          const code = (e as UiError)?.code;
+          if (code !== "mpv_no_instance") failed.push(id);
         }
       }
       if (failed.length > 0) {
