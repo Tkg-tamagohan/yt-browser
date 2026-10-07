@@ -14,10 +14,10 @@
 
 ### Phase 0：スキャフォールド
 
-- [ ] Tauri v2 + Svelte 5 + TypeScript の雛形を作成する
-- [ ] `cargo test`、`cargo clippy`、`npm run check`（svelte-check）を CI に載せる
-- [ ] DB 接続、マイグレーション枠組み、`settings` テーブルだけ先行して用意する
-- [ ] 受け入れ：空のウィンドウが起動し、テストが緑である
+- [x] Tauri v2 + Svelte 5 + TypeScript の雛形を作成する
+- [x] `cargo test`、`cargo clippy`、`npm run check`（svelte-check）を CI に載せる
+- [x] DB 接続、マイグレーション枠組み、`settings` テーブルだけ先行して用意する
+- [x] 受け入れ：空のウィンドウが起動し、テストが緑である
 
 ### Phase 1：mpv 再生の MVP
 

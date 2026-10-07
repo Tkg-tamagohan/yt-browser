@@ -2,7 +2,20 @@
 
 mpv による軽量な再生と、ローカル完結の購読、履歴、NG 管理を一体化した YouTube 専用ブラウザ（専ブラ）。
 
-現状は要件定義と設計のフェーズであり、実装は未着手である。
+現在は[実装計画](docs/implementation-plan.md)に沿ったフェーズ別実装の途中である。
+
+## 開発環境
+
+- Rust（stable）、Node.js 24、pnpm
+- Tauri の Linux 依存：`libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
+- 実行依存（Phase 1 以降）：mpv、yt-dlp
+
+```sh
+pnpm install
+pnpm tauri dev    # 開発起動
+pnpm check        # svelte-check
+(cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings)
+```
 
 ## 技術スタック
 
