@@ -71,6 +71,31 @@ pub struct ParsedFeed {
     pub entries: Vec<FeedEntry>,
 }
 
+/// YouTube チャンネル ID の正規化。チャンネル ID は常に `UC` + 22 文字だが、
+/// フィード直下の `yt:channelId` が `UC` プレフィックスなしで返る応答を実測で確認しており
+/// （そのまま `?channel_id=` に使うと 404 になる）、欠落していれば補う暫定仕様。
+fn normalize_channel_id(id: &str) -> String {
+    if id.starts_with("UC") {
+        id.to_string()
+    } else {
+        format!("UC{id}")
+    }
+}
+
+/// `media:thumbnail` の URL が想定ホストかを確認する。フィード由来の値を
+/// そのまま `<img src>` に使うため、YouTube 系ホスト以外は採用しない暫定仕様
+/// （WebView の CSP img-src とも一致させる）。
+fn is_allowed_thumbnail(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split('/').next().unwrap_or("");
+    host == "ytimg.com"
+        || host.ends_with(".ytimg.com")
+        || host == "ggpht.com"
+        || host.ends_with(".ggpht.com")
+}
+
 /// Atom XML をパースする。YouTube のチャンネルフィードは固定構造
 /// （feed > yt:channelId, author > name, entry*）なので名前空間問わず
 /// ローカル名で拾う。未知のエントリフィールドは無視する。
@@ -86,15 +111,10 @@ pub fn parse_atom(xml: &str) -> Result<ParsedFeed, FeedError> {
             .and_then(|n| n.text().map(|t| t.trim().to_string()))
             .filter(|t| !t.is_empty())
     };
-    let channel_id = child_text(&root, "channelId")
-        .ok_or_else(|| FeedError::Parse("yt:channelId がありません".into()))?;
-    // <author><name> はフィード直下のものを採る（entry 内の author は無視）
-    let channel_title = root
-        .children()
-        .find(|n| n.is_element() && n.tag_name().name() == "author")
-        .and_then(|a| child_text(&a, "name"))
-        .unwrap_or_else(|| channel_id.clone());
+    let root_channel_id = child_text(&root, "channelId");
     let mut entries = Vec::new();
+    // entry 直下の yt:channelId は UC プレフィックス付きで安定しているため優先する
+    let mut entry_channel_id: Option<String> = None;
     for e in root
         .children()
         .filter(|n| n.is_element() && n.tag_name().name() == "entry")
@@ -105,7 +125,10 @@ pub fn parse_atom(xml: &str) -> Result<ParsedFeed, FeedError> {
         let Some(title) = child_text(&e, "title") else {
             continue;
         };
-        // media:group > media:thumbnail の url 属性
+        if entry_channel_id.is_none() {
+            entry_channel_id = child_text(&e, "channelId");
+        }
+        // media:group > media:thumbnail の url 属性（許可ホストのみ採用）
         let thumbnail_url = e
             .children()
             .find(|n| n.is_element() && n.tag_name().name() == "group")
@@ -113,7 +136,8 @@ pub fn parse_atom(xml: &str) -> Result<ParsedFeed, FeedError> {
                 g.children()
                     .find(|n| n.is_element() && n.tag_name().name() == "thumbnail")
                     .and_then(|t| t.attribute("url").map(|s| s.to_string()))
-            });
+            })
+            .filter(|u| is_allowed_thumbnail(u));
         entries.push(FeedEntry {
             video_id,
             title,
@@ -121,6 +145,16 @@ pub fn parse_atom(xml: &str) -> Result<ParsedFeed, FeedError> {
             thumbnail_url,
         });
     }
+    let channel_id = entry_channel_id
+        .or(root_channel_id)
+        .map(|id| normalize_channel_id(&id))
+        .ok_or_else(|| FeedError::Parse("yt:channelId がありません".into()))?;
+    // <author><name> はフィード直下のものを採る（entry 内の author は無視）
+    let channel_title = root
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "author")
+        .and_then(|a| child_text(&a, "name"))
+        .unwrap_or_else(|| channel_id.clone());
     Ok(ParsedFeed {
         channel_id,
         channel_title,
@@ -336,9 +370,10 @@ impl FeedPoller {
                 etag,
                 last_modified,
             }) => {
-                let mut new_count = 0usize;
-                for entry in &feed.entries {
-                    match self.db.video_insert_new(&crate::db::NewVideo {
+                let items: Vec<crate::db::NewVideo> = feed
+                    .entries
+                    .iter()
+                    .map(|entry| crate::db::NewVideo {
                         video_id: &entry.video_id,
                         channel_id: &feed.channel_id,
                         channel_title: &feed.channel_title,
@@ -346,23 +381,32 @@ impl FeedPoller {
                         thumbnail_url: entry.thumbnail_url.as_deref(),
                         published_at: entry.published_at.as_deref(),
                         kind: "video",
-                    }) {
-                        Ok(true) => new_count += 1,
-                        Ok(false) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, video_id = %entry.video_id, "フィード項目の挿入に失敗")
-                        }
-                    }
-                }
-                if let Err(e) = self.db.channel_update_poll_meta(
+                    })
+                    .collect();
+                // 存在確認〜挿入〜取得メタ更新を一トランザクションで行い、
+                // ポーリング中の購読解除との競合を防ぐ
+                match self.db.feed_ingest(
                     &target.channel_id,
+                    &items,
                     etag.as_deref(),
                     last_modified.as_deref(),
+                    false,
                 ) {
-                    tracing::warn!(error = %e, "ポーリングメタの更新に失敗");
+                    Ok(Some(new_count)) => {
+                        self.after_success(&target.channel_id, new_count > 0);
+                        new_count
+                    }
+                    // 応答到着までに購読解除された: 挿入せずスケジュールも除去
+                    Ok(None) => {
+                        lock(&self.sched).remove(&target.channel_id);
+                        0
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "フィード投入に失敗");
+                        self.after_failure(&target.channel_id, e.to_string());
+                        0
+                    }
                 }
-                self.after_success(&target.channel_id, new_count > 0);
-                new_count
             }
             Err(e) => {
                 tracing::warn!(
@@ -498,6 +542,52 @@ mod tests {
     fn parse_atom_rejects_non_feed() {
         assert!(parse_atom("<html></html>").is_err());
         assert!(parse_atom("not xml").is_err());
+    }
+
+    /// golden fixture: 実際に取得した YouTube チャンネル RSS（技術方針 O）。
+    /// この実応答ではフィード直下の yt:channelId が `UC` プレフィックスなしで
+    /// 返っているのに対し、entry 直下は `UC` 付き — その差異の回帰テスト。
+    #[test]
+    fn parse_atom_golden_fixture() {
+        let xml = include_str!("../../tests/fixtures/youtube_channel_feed.xml");
+        let feed = parse_atom(xml).unwrap();
+        assert_eq!(feed.channel_id, "UCXuqSBlHAE6Xw-yeJA0Tunw");
+        assert_eq!(feed.channel_title, "Linus Tech Tips");
+        assert!(!feed.entries.is_empty());
+        assert!(feed
+            .entries
+            .iter()
+            .all(|e| !e.video_id.is_empty() && !e.title.is_empty()));
+        // サムネイルは許可ホスト（ytimg.com / ggpht.com）のみ採用される
+        assert!(feed
+            .entries
+            .iter()
+            .filter_map(|e| e.thumbnail_url.as_deref())
+            .all(is_allowed_thumbnail));
+    }
+
+    #[test]
+    fn normalize_channel_id_restores_uc_prefix() {
+        assert_eq!(
+            normalize_channel_id("XuqSBlHAE6Xw-yeJA0Tunw"),
+            "UCXuqSBlHAE6Xw-yeJA0Tunw"
+        );
+        assert_eq!(
+            normalize_channel_id("UCXuqSBlHAE6Xw-yeJA0Tunw"),
+            "UCXuqSBlHAE6Xw-yeJA0Tunw"
+        );
+    }
+
+    #[test]
+    fn thumbnail_rejects_foreign_origin() {
+        assert!(is_allowed_thumbnail(
+            "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+        ));
+        assert!(is_allowed_thumbnail("https://yt3.ggpht.com/abc/photo.jpg"));
+        assert!(!is_allowed_thumbnail("https://evil.example/x.png"));
+        assert!(!is_allowed_thumbnail(
+            "http://i.ytimg.com/vi/abc/hqdefault.jpg"
+        ));
     }
 
     #[test]

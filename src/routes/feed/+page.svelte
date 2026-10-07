@@ -50,14 +50,21 @@
   let unreadOnly = $state(true);
   // null=すべて / 0=未分類 / n=カテゴリ id
   let filterCat = $state<number | null>(null);
+  interface Notice {
+    id: number;
+    msg: string;
+  }
+
   let busy = $state(false);
-  let notices = $state<string[]>([]);
+  let notices = $state<Notice[]>([]);
+  let noticeSeq = 0;
   let unlistens: UnlistenFn[] = [];
 
   function notify(msg: string): void {
-    notices = [...notices.slice(-4), msg];
+    const id = ++noticeSeq;
+    notices = [...notices.slice(-4), { id, msg }];
     setTimeout(() => {
-      notices = notices.filter((n) => n !== msg);
+      notices = notices.filter((n) => n.id !== id);
     }, 6000);
   }
 
@@ -165,10 +172,10 @@
   }
 
   async function playItem(it: FeedItem): Promise<void> {
-    // 再生した項目は既読にする（個別既読の一形態として）
+    // 再生が始まった項目のみ既読にする（play_video が失敗したら未読のまま残す）
     try {
-      await invoke("mark_read", { videoIds: [it.videoId] });
       await invoke("play_video", { videoId: it.videoId, resume: false });
+      await invoke("mark_read", { videoIds: [it.videoId] });
       goto("/");
     } catch (e) {
       notify(t("feed.failed", { message: asErrorMessage(e) }));
@@ -331,8 +338,8 @@
     {/if}
   </section>
 
-  {#each notices as n (n)}
-    <div class="notice">{n}</div>
+  {#each notices as n (n.id)}
+    <div class="notice">{n.msg}</div>
   {/each}
 </main>
 

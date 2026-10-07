@@ -172,13 +172,18 @@ pub async fn subscribe_channel(
         } => {
             // フィードの channel_id が入力と一致しない場合はフィード側を採る
             // （UC ID の誤入力より URL 解決のリダイレクトを信用する暫定仕様）
+            // 新規購読かどうかは upsert 前に判定する: 新規なら取得エントリを
+            // すべて未読に揃える（過去に解除した購読の既読行が残っていても
+            // 「初回投入は未読」の仕様を守るため）
+            let is_new = db.channel_get(&feed.channel_id)?.is_none();
             db.channel_upsert(&feed.channel_id, &feed.channel_title, None)?;
             if category_id.is_some() {
                 db.channel_set_category(&feed.channel_id, category_id)?;
             }
-            let mut new_count = 0usize;
-            for e in &feed.entries {
-                if db.video_insert_new(&crate::db::NewVideo {
+            let items: Vec<crate::db::NewVideo> = feed
+                .entries
+                .iter()
+                .map(|e| crate::db::NewVideo {
                     video_id: &e.video_id,
                     channel_id: &feed.channel_id,
                     channel_title: &feed.channel_title,
@@ -186,15 +191,17 @@ pub async fn subscribe_channel(
                     thumbnail_url: e.thumbnail_url.as_deref(),
                     published_at: e.published_at.as_deref(),
                     kind: "video",
-                })? {
-                    new_count += 1;
-                }
-            }
-            db.channel_update_poll_meta(
-                &feed.channel_id,
-                etag.as_deref(),
-                last_modified.as_deref(),
-            )?;
+                })
+                .collect();
+            let new_count = db
+                .feed_ingest(
+                    &feed.channel_id,
+                    &items,
+                    etag.as_deref(),
+                    last_modified.as_deref(),
+                    is_new,
+                )?
+                .unwrap_or(0);
             if new_count > 0 {
                 let _ = app.emit("feed://new_items", FeedNewItems { count: new_count });
             }

@@ -299,23 +299,66 @@ impl Db {
         Ok(())
     }
 
-    /// 200 応答時: 条件付き取得メタを更新する（None の列は変更しない）。
-    pub fn channel_update_poll_meta(
+    /// フィード取得結果の投入。チャンネルの存在確認〜エントリ挿入〜取得メタ更新を
+    /// 一トランザクションで行い、ポーリング中の購読解除（`channel_delete`）との競合を防ぐ。
+    /// `reset_unread` は初回購読の投入で使い、既存行（解除済み購読の残骸）も未読へ戻す。
+    /// 戻り値は `Some(新規挿入数)`。チャンネルが既に存在しなければ `None`（ロールバック）。
+    /// なお ETag / Last-Modified は 200 応答に無ければ NULL で上書きする
+    /// （欠落した validator を残すと次回以降の条件付き取得が腐る）。
+    pub fn feed_ingest(
         &self,
         channel_id: &str,
+        entries: &[NewVideo<'_>],
         etag: Option<&str>,
         last_modified: Option<&str>,
-    ) -> Result<(), DbError> {
-        let conn = self.lock()?;
-        conn.execute(
+        reset_unread: bool,
+    ) -> Result<Option<usize>, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM channels WHERE channel_id = ?1)",
+            [channel_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let mut new_count = 0usize;
+        for v in entries {
+            new_count += tx.execute(
+                "INSERT OR IGNORE INTO videos
+                   (video_id, channel_id, channel_title, title, thumbnail_url,
+                    published_at, kind, is_read)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                rusqlite::params![
+                    v.video_id,
+                    v.channel_id,
+                    v.channel_title,
+                    v.title,
+                    v.thumbnail_url,
+                    v.published_at,
+                    v.kind
+                ],
+            )?;
+        }
+        if reset_unread {
+            for v in entries {
+                tx.execute(
+                    "UPDATE videos SET is_read = 0 WHERE video_id = ?1",
+                    [v.video_id],
+                )?;
+            }
+        }
+        tx.execute(
             "UPDATE channels SET
                last_polled_at = datetime('now'),
-               rss_etag = COALESCE(?2, rss_etag),
-               rss_last_modified = COALESCE(?3, rss_last_modified)
+               rss_etag = ?2,
+               rss_last_modified = ?3
              WHERE channel_id = ?1",
             rusqlite::params![channel_id, etag, last_modified],
         )?;
-        Ok(())
+        tx.commit()?;
+        Ok(Some(new_count))
     }
 
     /// 購読解除。チャンネル行を消し、そのチャンネルの未読フィードを既読にする
@@ -343,28 +386,6 @@ impl Db {
         Ok(())
     }
 
-    /// フィード項目を新規登録する。既存行は触らない（既読フラグ・タイトルを保持）。
-    /// 戻り値は新規挿入されたかどうか。
-    pub fn video_insert_new(&self, v: &NewVideo) -> Result<bool, DbError> {
-        let conn = self.lock()?;
-        let n = conn.execute(
-            "INSERT OR IGNORE INTO videos
-               (video_id, channel_id, channel_title, title, thumbnail_url,
-                published_at, kind, is_read)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-            rusqlite::params![
-                v.video_id,
-                v.channel_id,
-                v.channel_title,
-                v.title,
-                v.thumbnail_url,
-                v.published_at,
-                v.kind
-            ],
-        )?;
-        Ok(n > 0)
-    }
-
     /// `list_feed`（設計書 §3.1）。ブロックチャンネルの動画は常に除外する（FR-5）。
     pub fn feed_list(&self, filter: &FeedFilter) -> Result<Vec<FeedItem>, DbError> {
         let conn = self.lock()?;
@@ -379,7 +400,7 @@ impl Db {
                     OR (?2 = 0 AND c.category_id IS NULL)
                     OR c.category_id = ?2)
                AND (?3 IS NULL
-                    OR v.published_at >= datetime('now', '-' || ?3 || ' days'))
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
              ORDER BY v.published_at DESC
              LIMIT 500",
         )?;

@@ -66,9 +66,12 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `play_video` | `video_id`, `resume` | `Result<instance_id>` |
 | `player_control` | `instance_id`, `action`（pause / resume / seek / volume / speed / quality / frame_step / frame_back_step） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
-| `subscribe_channel` | `channel_id`, `category_id?` | `Result<()>` |
+| `subscribe_channel` | `input`（UC ID・channel URL・`@handle`）, `category_id?` | `Result<Channel>` |
+| `unsubscribe_channel` / `list_channels` / `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` / `Vec<Channel>` |
+| `list_categories` / `create_category` | `name` | `Vec<Category>` / `Result<Category>` |
 | `list_feed` | `filter`（未読のみ、カテゴリ、期間） | `Vec<FeedItem>` |
 | `mark_read` | `video_ids` または `all` | `Result<()>` |
+| `feed_refresh` | `channel_id?` | `Result<()>` |
 | `block_channel` / `unblock_channel` | `channel_id` | `Result<()>` |
 | `search` | `query`, `page` | `Vec<SearchResult>` |
 | `get_related` | `video_id` | `Vec<SearchResult>` |
