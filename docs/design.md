@@ -46,7 +46,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 |---|---|
 | `commands` | Tauri の invoke ハンドラ。入力検証と UI 向けの直列化に徹する |
 | `mpv` | プロセス起動、ソケット管理、JSON IPC クライアント、プロパティ監視 |
-| `yt` | `YoutubeBackend` トレイトと yt-dlp 実装。検索、動画情報、チャンネル動画一覧 |
+| `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
@@ -400,7 +400,7 @@ END;
 
 ### 9.2 YouTube 仕様変更への構造
 
-- ストリーム解決と検索とメタデータは `YoutubeBackend` トレイトの向こうに隔離し、yt-dlp 実装の破損は更新で追従する
+- ストリーム解決と検索は `yt` モジュール内の関数群（`resolve`・`search` 等）の向こうに隔離し、yt-dlp 実装の破損は更新で追従する（トレイト抽象化は第 2 の実装やテスト差し替えが必要になった時点で導入する。現状は未導入）
 - InnerTube の自前実装は `get_live_chat` と `next` に限定し、パーサーは保存した応答 JSON の golden fixture で回帰テストする（技術方針 O）
 - 仕様変更時に UI 側が壊れないよう、`chat` / `related` / `feed` の各劣化状態は独立したステータスとして UI に出す
 
@@ -427,7 +427,7 @@ yt-browser/
       main.rs
       commands/
       mpv/            # プロセス管理・IPC・プロパティ監視
-      yt/             # YoutubeBackend トレイト + yt-dlp 実装
+      yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
       chat/           # get_live_chat ポーラー・正規化
       feed/           # RSS ポーラー

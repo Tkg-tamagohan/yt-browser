@@ -28,8 +28,10 @@
 
   function fmtViews(n: number | null): string {
     if (n === null) return "";
-    if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}${t("search.views.oku")}`;
-    if (n >= 10_000) return `${(n / 10_000).toFixed(1)}${t("search.views.man")}`;
+    if (n >= 100_000_000)
+      return t("search.views.oku", { count: (n / 100_000_000).toFixed(1) });
+    if (n >= 10_000)
+      return t("search.views.man", { count: (n / 10_000).toFixed(1) });
     return t("search.views.count", { count: n.toLocaleString() });
   }
 

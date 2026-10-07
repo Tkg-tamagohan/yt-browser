@@ -1,6 +1,8 @@
 //! yt-dlp 子プロセスの呼び出し（仕様決定 A / 技術方針 P、設計書 §5）。
 //! Phase 1 ではパス解決・バージョン確認・`yt-dlp -U` 更新のみを提供する。
-//! 検索・メタデータ取得は `YoutubeBackend` トレイトとして Phase 5 で実装する。
+//! Phase 5 で検索（ytsearch + flat-playlist）を追加した。
+//! バックエンドの差し替え面はこのモジュール内の関数群が担う
+//! （トレイト抽象化は導入を遅延。decision-records「Phase 5 で確定した事項」参照）。
 
 use std::time::Duration;
 
@@ -228,6 +230,12 @@ fn pick_thumbnail(entry: &serde_json::Value, video_id: &str) -> Option<String> {
         .or_else(|| Some(video_thumbnail(video_id)))
 }
 
+/// UC プレフィックス付きチャンネル ID（`UC` + 22 文字）かどうか。
+/// マイグレーション v4 以降、DB 内の channel_id はこの形に正規化されている。
+fn is_uc_channel_id(s: &str) -> bool {
+    s.len() == 24 && s.starts_with("UC")
+}
+
 /// `--dump-json --flat-playlist` の行単位 JSONL を `SearchResult` へ変換する。
 /// パース不能な行は捨てる（1 行の腐敗で全体を失敗させない暫定仕様）。
 fn parse_search_jsonl(bytes: &[u8]) -> Vec<crate::model::SearchResult> {
@@ -250,10 +258,12 @@ fn parse_search_jsonl(bytes: &[u8]) -> Vec<crate::model::SearchResult> {
             .and_then(|s| s.as_str())
             .unwrap_or("")
             .to_string();
-        let channel_id = v
-            .get("channel_id")
-            .or_else(|| v.get("uploader_id"))
-            .and_then(|s| s.as_str())
+        // channel_id は UC ID、uploader_id は @handle のことがある（実測確認）。
+        // ブロック・購読の判定が UC 前提なので、UC 形の値だけを採用する。
+        let channel_id = ["channel_id", "uploader_id"]
+            .iter()
+            .filter_map(|k| v.get(*k).and_then(|s| s.as_str()))
+            .find(|s| is_uc_channel_id(s))
             .map(|s| s.to_string());
         let channel_title = v
             .get("channel")
@@ -281,7 +291,7 @@ mod tests {
     fn search_jsonl_parses_flat_entries() {
         // yt-dlp --flat-playlist の出力形に沿った JSONL
         let input = br#"{"_type":"url","ie_key":"Youtube","id":"dQw4w9WgXcQ","url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","title":"Never Gonna Give You Up","description":"","duration":213,"channel_id":"UCuAXFkgsw1L7xaCfnd5JJOw","channel":"Rick Astley","view_count":1600000000,"thumbnails":[{"url":"https://i.ytimg.com/vi/dQw4w9WgXcQ/maxres.jpg"}]}
-{"_type":"url","ie_key":"Youtube","id":"abc123def45","title":"No Meta Video","uploader":"Some Uploader","uploader_id":"UCuploader0000000001","duration":60}
+{"_type":"url","ie_key":"Youtube","id":"abc123def45","title":"No Meta Video","uploader":"Some Uploader","uploader_id":"UCuploader00000000000000","duration":60}
 "#;
         let out = parse_search_jsonl(input);
         assert_eq!(out.len(), 2);
@@ -297,11 +307,31 @@ mod tests {
             Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/maxres.jpg")
         );
         // thumbnails 欠落時は ytimg 定形 URL にフォールバック
-        assert_eq!(out[1].channel_id.as_deref(), Some("UCuploader0000000001"));
+        assert_eq!(
+            out[1].channel_id.as_deref(),
+            Some("UCuploader00000000000000")
+        );
         assert_eq!(out[1].channel_title.as_deref(), Some("Some Uploader"));
         assert_eq!(
             out[1].thumbnail_url.as_deref(),
             Some("https://i.ytimg.com/vi/abc123def45/hqdefault.jpg")
+        );
+    }
+
+    /// R-2: uploader_id が @handle（UC 形でない）だけのエントリは channel_id=None にする。
+    /// ハンドルを UC キーの blocked/channels と比較させないため。
+    #[test]
+    fn search_jsonl_rejects_handle_uploader_id() {
+        let input = br#"{"id":"abc123def45","title":"Handle Only","uploader":"Some Uploader","uploader_id":"@SomeHandle"}
+{"id":"xyz987wvu65","title":"UC in uploader_id","uploader_id":"UCabcdef0000000000000000"}
+"#;
+        let out = parse_search_jsonl(input);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].channel_id, None);
+        assert_eq!(out[0].channel_title.as_deref(), Some("Some Uploader"));
+        assert_eq!(
+            out[1].channel_id.as_deref(),
+            Some("UCabcdef0000000000000000")
         );
     }
 

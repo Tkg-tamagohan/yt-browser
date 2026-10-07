@@ -151,16 +151,20 @@
       related = next;
       return;
     }
+    // 開くたびに必ず再取得する（ブロック状態の変化と前回失敗の再試行に対応するため
+    // キャッシュでショートカットしない。前回の items は取得中の表示にだけ使う）
     const next = new Map(related);
-    next.set(id, { open: true, loading: cur?.items ? false : true, items: cur?.items ?? [] });
+    next.set(id, { open: true, loading: true, items: cur?.items ?? [] });
     related = next;
-    if (cur?.items) return; // 既に取得済み
     try {
       const items = await invoke<SearchResult[]>("get_related", { videoId });
+      // 応答までにパネルが閉じられた/消えた場合は結果を捨てる
+      if (!related.get(id)?.open) return;
       const m = new Map(related);
       m.set(id, { open: true, loading: false, items });
       related = m;
     } catch (e) {
+      if (!related.get(id)?.open) return;
       const m = new Map(related);
       m.set(id, { open: true, loading: false, items: [] });
       related = m;
