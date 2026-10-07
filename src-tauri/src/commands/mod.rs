@@ -324,7 +324,7 @@ const SEARCH_LIMIT: u32 = 20;
 pub async fn get_related(
     video_id: String,
     db: State<'_, Db>,
-    innertube: State<'_, crate::innertube::InnerTube>,
+    innertube: State<'_, Arc<crate::innertube::InnerTube>>,
 ) -> Result<Vec<crate::model::SearchResult>, UiError> {
     let video_id = parse_video_id(&video_id)?;
     let mut results = innertube.related(&video_id).await?;
@@ -360,4 +360,106 @@ pub fn unblock_channel(channel_id: String, db: State<'_, Db>) -> Result<(), UiEr
 #[tauri::command]
 pub fn blocked_channels(db: State<'_, Db>) -> Result<Vec<crate::model::BlockedChannel>, UiError> {
     Ok(db.blocked_list()?)
+}
+
+/// `chat_start`（設計書 §3.1、FR-6）。指定動画のライブチャット取得を
+/// バックグラウンドで開始する。見つからない・失敗した場合の通知は
+/// `chat://status` イベントに流れる。
+#[tauri::command]
+pub fn chat_start(
+    video_id: String,
+    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+) -> Result<(), UiError> {
+    let id = parse_video_id(&video_id)?;
+    poller.start(&id);
+    Ok(())
+}
+
+/// `chat_stop`。指定動画のチャット取得を止める。
+#[tauri::command]
+pub fn chat_stop(
+    video_id: String,
+    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+) -> Result<(), UiError> {
+    let id = parse_video_id(&video_id)?;
+    poller.stop(&id);
+    Ok(())
+}
+
+/// `chat_history_search`（FR-8）。本文・投稿者名の FTS5 AND 検索。
+#[tauri::command]
+pub fn chat_history_search(
+    video_id: Option<String>,
+    query: String,
+    limit: Option<u32>,
+    db: State<'_, Db>,
+) -> Result<Vec<crate::model::ChatEvent>, UiError> {
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Err(UiError::invalid_input("検索語が空です"));
+    }
+    if q.len() > 256 {
+        return Err(UiError::invalid_input("検索語が長すぎます"));
+    }
+    let vid = match &video_id {
+        Some(v) if !v.trim().is_empty() => Some(parse_video_id(v)?),
+        _ => None,
+    };
+    Ok(db.chat_search(vid.as_deref(), &q, limit.unwrap_or(100).min(1000))?)
+}
+
+/// `filter_add`（設計書 §3.1、FR-7）。target/kind/pattern を検証して登録し、
+/// 稼働中の NG 評価器を作り直す。
+#[tauri::command]
+pub fn filter_add(
+    target: String,
+    kind: String,
+    pattern: String,
+    db: State<'_, Db>,
+    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+) -> Result<crate::model::Filter, UiError> {
+    let target = target.trim().to_string();
+    let kind = kind.trim().to_string();
+    let pattern = pattern.trim().to_string();
+    if !crate::model::FILTER_TARGETS.contains(&target.as_str()) {
+        return Err(UiError::invalid_input(format!(
+            "target が不正です: {target}"
+        )));
+    }
+    if !crate::model::FILTER_KINDS.contains(&kind.as_str()) {
+        return Err(UiError::invalid_input("kind は literal または regex です"));
+    }
+    if pattern.is_empty() {
+        return Err(UiError::invalid_input("pattern が空です"));
+    }
+    if pattern.len() > 512 {
+        return Err(UiError::invalid_input(
+            "pattern が長すぎます（512 文字上限）",
+        ));
+    }
+    if kind == "regex" {
+        regex::Regex::new(&pattern)
+            .map_err(|e| UiError::invalid_input(format!("正規表現が不正です: {e}")))?;
+    }
+    let f = db.filter_add(&target, &kind, &pattern)?;
+    poller.refresh_filters()?;
+    Ok(f)
+}
+
+/// `filter_remove`。削除して NG 評価器を作り直す。
+#[tauri::command]
+pub fn filter_remove(
+    id: i64,
+    db: State<'_, Db>,
+    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+) -> Result<(), UiError> {
+    db.filter_remove(id)?;
+    poller.refresh_filters()?;
+    Ok(())
+}
+
+/// `filter_list`。登録済み NG フィルタの一覧。
+#[tauri::command]
+pub fn filter_list(db: State<'_, Db>) -> Result<Vec<crate::model::Filter>, UiError> {
+    Ok(db.filter_list()?)
 }

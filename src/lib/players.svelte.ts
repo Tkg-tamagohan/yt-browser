@@ -61,6 +61,40 @@ export type BlockedChannel = {
   createdAt: string;
 };
 
+/// `chat://message` バッチの 1 要素（設計書 §3.1 の ChatEvent）。
+/// `rawJson` は UI へ送られない（直列化省略）。
+export type ChatEvent = {
+  /// InnerTube のアイテム ID。削除イベントはこの値ではなく
+  /// `message` に対象の item ID が入る。
+  itemId: string;
+  videoId: string;
+  postedAtUsec: number;
+  authorChannelId: string | null;
+  authorName: string | null;
+  kind: "text" | "superchat" | "membership" | "deleted" | "other";
+  message: string;
+  amountDisplay: string | null;
+  /// NG フィルタで非表示判定されたもの。保存・送信されるが UI は出さない。
+  ng: boolean;
+};
+
+/// `chat://status` イベント（設計書 §3.2）。
+export type ChatStatus = {
+  videoId: string | null;
+  level: "info" | "warn" | "error" | string;
+  message: string;
+};
+
+/// `filters` テーブルの 1 行（NG フィルタ）。
+export type Filter = {
+  id: number;
+  target: string;
+  kind: string;
+  pattern: string;
+  enabled: boolean;
+  createdAt: string;
+};
+
 export type PlayerAction =
   | { type: "pause"; value: boolean }
   | { type: "seek"; seconds: number }

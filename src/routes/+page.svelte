@@ -1,11 +1,13 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t, type MessageKey } from "$lib/i18n";
   import {
     initPlayerEvents,
     playerStates,
+    type ChatEvent,
+    type ChatStatus,
     type DbStatus,
     type PlayerAction,
     type PlayerEnded,
@@ -33,6 +35,12 @@
       number,
       { open: boolean; loading: boolean; items: SearchResult[]; req: number }
     >
+  >(new Map());
+  // チャットパネルの開閉と表示済みメッセージ（インスタンス ID ごと）。
+  // deleted フラグは削除アクションが届いた表示行を消さず打消し表示にするためのもの
+  type ChatItem = ChatEvent & { deleted?: boolean };
+  let chatPanels = $state<
+    Map<number, { open: boolean; items: ChatItem[]; status: string | null }>
   >(new Map());
   let ytdlp = $state<YtDlpStatus | null>(null);
   let ytdlpChecking = $state(true);
@@ -101,7 +109,15 @@
 
   async function closePlayer(id: number): Promise<void> {
     try {
+      const videoId = playerStates.list.get(id)?.videoId;
       await invoke("player_close", { instanceId: id });
+      // プレイヤー終了に合わせてチャット取得も止める
+      if (videoId) {
+        void invoke("chat_stop", { videoId }).catch(() => {});
+        const cp = new Map(chatPanels);
+        cp.delete(id);
+        chatPanels = cp;
+      }
       // 手動 close では player://ended が来ないため、共有マップをここで外す
       const next = new Map(playerStates.list);
       next.delete(id);
@@ -144,6 +160,110 @@
 
   function relatedPanel(id: number) {
     return related.get(id);
+  }
+
+  function chatPanel(id: number) {
+    return chatPanels.get(id);
+  }
+
+  /// チャットパネルの開閉。開くと chat_start、閉じると chat_stop を呼ぶ。
+  /// メッセージの表示件数は直近 500 件に絞る（設計書 §6.2 の表示間引き）。
+  const CHAT_CAP = 500;
+  async function toggleChat(id: number, videoId: string): Promise<void> {
+    const cur = chatPanels.get(id);
+    const next = new Map(chatPanels);
+    if (cur?.open) {
+      next.set(id, { ...cur, open: false, status: null });
+      chatPanels = next;
+      try {
+        await invoke("chat_stop", { videoId });
+      } catch (e) {
+        notify(t("player.error", { message: asErrorMessage(e) }));
+      }
+      return;
+    }
+    next.set(id, { open: true, items: cur?.items ?? [], status: null });
+    chatPanels = next;
+    try {
+      await invoke("chat_start", { videoId });
+    } catch (e) {
+      notify(t("player.error", { message: asErrorMessage(e) }));
+    }
+  }
+
+  /// `chat://message` の受信処理。videoId で対応プレイヤーへ振り分け、
+  /// 削除イベントは既表示行の打消しに使う。ng / other は表示しない。
+  function onChatMessages(events: ChatEvent[]): void {
+    const byVideo = new Map<string, ChatEvent[]>();
+    for (const e of events) {
+      const arr = byVideo.get(e.videoId) ?? [];
+      arr.push(e);
+      byVideo.set(e.videoId, arr);
+    }
+    const vidToInstance = new Map(
+      [...playerStates.list.values()].map((p) => [p.videoId, p.instanceId]),
+    );
+    const next = new Map(chatPanels);
+    let changed = false;
+    for (const [vid, evs] of byVideo) {
+      const inst = vidToInstance.get(vid);
+      if (inst === undefined) continue;
+      const cur = next.get(inst);
+      if (!cur) continue;
+      const items = [...cur.items];
+      for (const e of evs) {
+        if (e.kind === "deleted") {
+          const idx = items.findIndex((i) => i.itemId === e.message);
+          if (idx >= 0) items[idx] = { ...items[idx], deleted: true };
+          continue;
+        }
+        if (e.ng || e.kind === "other") continue;
+        items.push(e);
+      }
+      next.set(inst, { ...cur, items: items.slice(-CHAT_CAP) });
+      changed = true;
+    }
+    if (changed) {
+      chatPanels = next;
+      scrollChatBottom();
+    }
+  }
+
+  function scrollChatBottom(): void {
+    void tick().then(() => {
+      for (const el of document.querySelectorAll(".chat-list")) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+  }
+
+  /// `chat://status` の受信処理。パネル内に状態行を出し、warn 以上は通知にも出す。
+  function onChatStatus(s: ChatStatus): void {
+    if (s.videoId) {
+      const inst = [...playerStates.list.values()].find(
+        (p) => p.videoId === s.videoId,
+      )?.instanceId;
+      if (inst !== undefined) {
+        const cur = chatPanels.get(inst);
+        if (cur) {
+          const next = new Map(chatPanels);
+          next.set(inst, { ...cur, status: s.message });
+          chatPanels = next;
+        }
+      }
+    }
+    if (s.level !== "info") {
+      notify(t("chat.status", { message: s.message }));
+    }
+  }
+
+  function fmtChatTime(usec: number): string {
+    const d = new Date(usec / 1000);
+    return d.toLocaleTimeString("ja-JP", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
   }
 
   async function toggleRelated(id: number, videoId: string): Promise<void> {
@@ -227,6 +347,12 @@
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直す
         void refreshResumeHint();
       }),
+      await listen<ChatEvent[]>("chat://message", (ev) =>
+        onChatMessages(ev.payload),
+      ),
+      await listen<ChatStatus>("chat://status", (ev) =>
+        onChatStatus(ev.payload),
+      ),
       await listen<SponsorSkipped>("sponsor://skipped", (ev) => {
         const key =
           ev.payload.action === "skip" ? "sponsor.skipped" : "sponsor.notified";
@@ -358,7 +484,44 @@
         <button class="link" onclick={() => toggleRelated(p.instanceId, p.videoId)}>
           {relatedPanel(p.instanceId)?.open ? t("related.hide") : t("related.show")}
         </button>
+        <button class="link" onclick={() => toggleChat(p.instanceId, p.videoId)}>
+          {chatPanel(p.instanceId)?.open ? t("chat.hide") : t("chat.show")}
+        </button>
       </div>
+
+      {#if chatPanel(p.instanceId)?.open}
+        <div class="chat-panel">
+          <h3>{t("chat.title")}</h3>
+          {#if chatPanel(p.instanceId)?.status}
+            <p class="chat-status">{chatPanel(p.instanceId)?.status}</p>
+          {/if}
+          <div class="chat-list">
+            {#each chatPanel(p.instanceId)?.items ?? [] as item (item)}
+              {#if item.deleted}
+                <p class="chat-item deleted">
+                  <span class="subtle">{t("chat.deleted")}</span>
+                </p>
+              {:else}
+                <p class="chat-item" class:superchat={item.kind === "superchat"}>
+                  <span class="chat-time">{fmtChatTime(item.postedAtUsec)}</span>
+                  <span class="chat-author">
+                    {item.authorName ?? t("chat.anonymous")}
+                  </span>
+                  {#if item.kind === "superchat" && item.amountDisplay}
+                    <span class="chat-badge superchat-badge">{item.amountDisplay}</span>
+                  {:else if item.kind === "membership"}
+                    <span class="chat-badge">{t("chat.membership")}</span>
+                  {/if}
+                  <span class="chat-msg">{item.message}</span>
+                </p>
+              {/if}
+            {/each}
+            {#if (chatPanel(p.instanceId)?.items.length ?? 0) === 0}
+              <p class="subtle">{t("chat.empty")}</p>
+            {/if}
+          </div>
+        </div>
+      {/if}
 
       {#if relatedPanel(p.instanceId)?.open}
         <div class="related">
@@ -506,10 +669,86 @@
     border-radius: 6px;
   }
 
-  .related {
+  .related,
+  .chat-panel {
     margin-top: 12px;
     border-top: 1px solid #3c4043;
     padding-top: 8px;
+  }
+
+  .chat-panel h3 {
+    font-size: 1rem;
+    margin: 0 0 8px;
+  }
+
+  .chat-status {
+    color: #f9ab00;
+    font-size: 0.85rem;
+    margin: 4px 0;
+  }
+
+  .chat-list {
+    max-height: 320px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .chat-item {
+    margin: 0;
+    padding: 2px 0;
+    font-size: 0.88rem;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+
+  .chat-item.deleted {
+    opacity: 0.6;
+  }
+
+  .chat-item.superchat {
+    background: #3d2b1f;
+    border-radius: 6px;
+    padding: 2px 8px;
+  }
+
+  .chat-time {
+    color: #9aa0a6;
+    font-family: monospace;
+    font-size: 0.78rem;
+    flex-shrink: 0;
+  }
+
+  .chat-author {
+    color: #8ab4f8;
+    font-size: 0.8rem;
+    flex-shrink: 0;
+    max-width: 14em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-badge {
+    background: #3c4043;
+    border-radius: 4px;
+    padding: 0 6px;
+    font-size: 0.75rem;
+    flex-shrink: 0;
+  }
+
+  .chat-badge.superchat-badge {
+    background: #f9ab00;
+    color: #202124;
+    font-weight: 600;
+  }
+
+  .chat-msg {
+    overflow-wrap: anywhere;
+    min-width: 0;
   }
 
   .related h3 {

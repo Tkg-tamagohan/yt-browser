@@ -107,6 +107,110 @@ impl InnerTube {
             .await?;
         Ok(parse_related(&v))
     }
+
+    /// 指定動画の watch ページ HTML を取得する（チャットの初期継続トークン用）。
+    pub async fn watch_html(&self, video_id: &str) -> Result<String, InnerTubeError> {
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        Ok(self.client.get(&url).send().await?.text().await?)
+    }
+
+    /// `live_chat/get_live_chat`（設計書 §6.2）。continuation で差分アクションと
+    /// 次の継続トークンを取る。応答の正規化は `chat` モジュールが担当する。
+    pub async fn get_live_chat(&self, continuation: &str) -> Result<Value, InnerTubeError> {
+        self.post_json(
+            "live_chat/get_live_chat",
+            json!({ "continuation": continuation }),
+        )
+        .await
+    }
+}
+
+/// watch ページ HTML の `ytInitialData` からチャットの初期継続トークンを取る
+/// （設計書 §6.2）。`liveChatRenderer.continuations[]` の最初の
+/// `continuation` 値を返す。チャットの無い動画（非ライブ・チャット無効）は None。
+pub fn extract_initial_continuation(html: &str) -> Option<String> {
+    let data = extract_yt_initial_data(html)?;
+    let lcr = find_key(&data, "liveChatRenderer")?;
+    next_continuation(lcr).map(|(token, _)| token)
+}
+
+/// `liveChatRenderer`（watch HTML）または `liveChatContinuation`（ポーリング応答）の
+/// `continuations[]` から次の継続トークンと待機時間を取る。
+/// エントリは `{<type>ContinuationData: {continuation, timeoutMs?}}` の形で、
+/// reload / invalidation / timed のいずれかのキーを持つ。
+/// 継続候補が無い場合（配信終了など）は None。
+pub fn next_continuation(node: &Value) -> Option<(String, u64)> {
+    let conts = node.get("continuations")?.as_array()?;
+    conts.iter().find_map(|c| {
+        c.as_object()?.values().find_map(|data| {
+            data.get("continuation").and_then(|t| t.as_str()).map(|t| {
+                (
+                    t.to_string(),
+                    data.get("timeoutMs").and_then(|t| t.as_u64()).unwrap_or(0),
+                )
+            })
+        })
+    })
+}
+
+/// HTML 中の `ytInitialData` 代入に続く JSON オブジェクトを取り出す。
+fn extract_yt_initial_data(html: &str) -> Option<Value> {
+    let idx = html.find("ytInitialData")?;
+    let rest = &html[idx..];
+    let eq = rest.find('=')?;
+    let start = rest[eq..].find('{')? + eq;
+    let end = json_object_end(&rest[start..])?;
+    serde_json::from_str(&rest[start..start + end]).ok()
+}
+
+/// 先頭 `{` から対応する閉じ括弧までのバイト長を返す。
+/// 文字列リテラル内の波括弧を数えないよう、文字列とエスケープをスキップする。
+fn json_object_end(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, &c) in b.iter().enumerate() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// JSON ツリー内で指定キーを持つ最初の値を深さ優先で返す。
+fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    match v {
+        Value::Object(m) => {
+            if let Some(x) = m.get(key) {
+                return Some(x);
+            }
+            m.values().find_map(|x| find_key(x, key))
+        }
+        Value::Array(a) => a.iter().find_map(|x| find_key(x, key)),
+        _ => None,
+    }
 }
 
 /// `"KEY":"value"` 形式の埋め込み値を抽出する（エスケープ `"` は最小限対応）。

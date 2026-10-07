@@ -188,6 +188,104 @@ pub struct FeedStatus {
     pub message: String,
 }
 
+/// チャットイベントの種別（設計書 §3.1 の ChatEvent、§8 の kind CHECK と一致）。
+/// 削除アクションは元メッセージを消さず `deleted` イベントとして記録する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatKind {
+    Text,
+    Superchat,
+    Membership,
+    /// 削除アクション（実測では `removeChatItemAction`）。`message` に削除対象の item ID を入れる。
+    Deleted,
+    /// 上記以外の renderer（バナー・投票・エンゲージメント等）。表示はしないが保存はする。
+    Other,
+}
+
+impl ChatKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Superchat => "superchat",
+            Self::Membership => "membership",
+            Self::Deleted => "deleted",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "superchat" => Self::Superchat,
+            "membership" => Self::Membership,
+            "deleted" => Self::Deleted,
+            "other" => Self::Other,
+            _ => Self::Text,
+        }
+    }
+}
+
+/// ライブチャット 1 イベント（設計書 §3.1 の ChatEvent）。
+/// `chat://message` バッチの要素かつ `chat_logs` への保存単位。
+/// `raw_json` は未正規化フィールドの保存用で、UI には送らない。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatEvent {
+    /// InnerTube のアイテム ID（削除参照・重複除去用）。
+    /// 削除イベントは `message` に対象 ID を持つため、UI 側の行突合にも使う。
+    pub item_id: String,
+    pub video_id: String,
+    /// `timestampUsec`（1970-01-01 からのマイクロ秒）。
+    pub posted_at_usec: i64,
+    pub author_channel_id: Option<String>,
+    pub author_name: Option<String>,
+    pub kind: ChatKind,
+    pub message: String,
+    pub amount_display: Option<String>,
+    /// NG フィルタで非表示と判定されたか。保存も送信もするが、UI は非表示にする。
+    pub ng: bool,
+    /// renderer 原文（ストリームで取れた範囲の生 JSON）。UI には送らない。
+    #[serde(skip_serializing)]
+    pub raw_json: String,
+}
+
+/// `chat://status` イベントのペイロード（設計書 §3.2）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatStatus {
+    pub video_id: Option<String>,
+    /// "info" | "warn" | "error"。
+    pub level: String,
+    pub message: String,
+}
+
+/// `filters` テーブルの 1 行（設計書 §8 の NG フィルタ）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Filter {
+    pub id: i64,
+    /// 評価対象。`video_title` `video_desc` `channel_title` `channel_id`
+    /// `chat_text` `chat_author` のいずれか。
+    pub target: String,
+    /// `literal` または `regex`。
+    pub kind: String,
+    pub pattern: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// filters.target の許容値（DDL の CHECK と一致）。
+pub const FILTER_TARGETS: &[&str] = &[
+    "video_title",
+    "video_desc",
+    "channel_title",
+    "channel_id",
+    "chat_text",
+    "chat_author",
+];
+
+/// filters.kind の許容値（DDL の CHECK と一致）。
+pub const FILTER_KINDS: &[&str] = &["literal", "regex"];
+
 /// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。
 pub fn is_channel_id(s: &str) -> bool {
     s.len() == 24

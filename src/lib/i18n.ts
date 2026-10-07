@@ -145,6 +145,49 @@ const ja = {
 
   "sponsor.skipped": "SponsorBlock: {category} 区間をスキップしました",
   "sponsor.notified": "SponsorBlock: {category} 区間を検出しました（通知のみ）",
+
+  // Phase 6: ライブチャット・NG フィルタ・履歴検索
+  "chat.show": "チャットを表示",
+  "chat.hide": "チャットを閉じる",
+  "chat.title": "ライブチャット",
+  "chat.empty": "メッセージがありません",
+  "chat.deleted": "このメッセージは削除されました",
+  "chat.anonymous": "匿名",
+  "chat.membership": "メンバー",
+  "chat.status": "チャット: {message}",
+
+  "settings.filters.title": "NG フィルタ",
+  "settings.filters.desc":
+    "チャット本文・投稿者などを条件で非表示にする。登録・削除は即時に反映される。",
+  "settings.filters.target": "対象",
+  "settings.filters.kind": "種別",
+  "settings.filters.pattern.placeholder": "パターン（NG ワード / 正規表現）",
+  "settings.filters.add": "追加",
+  "settings.filters.added": "フィルタを追加しました",
+  "settings.filters.addFailed": "フィルタの追加に失敗: {message}",
+  "settings.filters.remove": "削除",
+  "settings.filters.removed": "フィルタを削除しました",
+  "settings.filters.removeFailed": "フィルタの削除に失敗: {message}",
+  "settings.filters.empty": "フィルタはありません",
+  "filter.target.video_title": "動画タイトル",
+  "filter.target.video_desc": "動画説明文",
+  "filter.target.channel_title": "チャンネル名",
+  "filter.target.channel_id": "チャンネル ID",
+  "filter.target.chat_text": "チャット本文",
+  "filter.target.chat_author": "チャット投稿者",
+  "filter.kind.literal": "部分一致",
+  "filter.kind.regex": "正規表現",
+
+  "settings.chatSearch.title": "チャット履歴検索",
+  "settings.chatSearch.desc":
+    "保存済みチャットを本文・投稿者名で全文検索する（検索語は 3 文字以上を推奨）。",
+  "settings.chatSearch.videoId": "動画 ID / URL（省略可）",
+  "settings.chatSearch.placeholder": "検索キーワード",
+  "settings.chatSearch.button": "検索",
+  "settings.chatSearch.searching": "検索中…",
+  "settings.chatSearch.empty": "結果がありません",
+  "settings.chatSearch.failed": "検索に失敗: {message}",
+  "settings.chatSearch.count": "{count} 件",
 } as const;
 
 export type MessageKey = keyof typeof ja;

@@ -124,4 +124,50 @@ pub const MIGRATIONS: &[Migration] = &[
               UPDATE watch_history SET channel_id = 'UC' || channel_id
               WHERE length(channel_id) = 22;",
     },
+    // Phase 6: ライブチャットの保存基盤（設計書 §8 の DDL から該当分）。
+    // chat_logs は削除アクションや未正規化イベントも原文で残し、
+    // 表示側の絞り込みは NG フィルタ（filters）が担う。
+    Migration {
+        version: 5,
+        name: "chat",
+        sql: "CREATE TABLE chat_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT NOT NULL,
+                posted_at_usec INTEGER NOT NULL,
+                author_channel_id TEXT,
+                author_name TEXT,
+                kind TEXT NOT NULL DEFAULT 'text'
+                  CHECK (kind IN ('text','superchat','membership','deleted','other')),
+                message TEXT NOT NULL,
+                amount_display TEXT,
+                raw_json TEXT NOT NULL
+              );
+              CREATE INDEX idx_chat_video_ts ON chat_logs(video_id, posted_at_usec);
+              -- 日本語の部分文字列検索に対応させるため trigram トークナイザを使う
+              -- （unicode61 では「こんにちは世界」全体が 1 語になり、
+              --   「こんにちは」で検索できない）。3 文字未満の検索語は
+              --   部分一致に掛からない（trigram の制約）。
+              CREATE VIRTUAL TABLE chat_logs_fts USING fts5(
+                message, author_name, content='chat_logs', content_rowid='id',
+                tokenize='trigram'
+              );
+              CREATE TRIGGER chat_logs_ai AFTER INSERT ON chat_logs BEGIN
+                INSERT INTO chat_logs_fts(rowid, message, author_name)
+                VALUES (new.id, new.message, new.author_name);
+              END;
+              CREATE TRIGGER chat_logs_ad AFTER DELETE ON chat_logs BEGIN
+                INSERT INTO chat_logs_fts(chat_logs_fts, rowid, message, author_name)
+                VALUES ('delete', old.id, old.message, old.author_name);
+              END;
+              CREATE TABLE filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target TEXT NOT NULL CHECK (target IN
+                  ('video_title','video_desc','channel_title','channel_id',
+                   'chat_text','chat_author')),
+                kind TEXT NOT NULL CHECK (kind IN ('literal','regex')),
+                pattern TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );",
+    },
 ];

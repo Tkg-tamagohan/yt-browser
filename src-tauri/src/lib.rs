@@ -1,10 +1,12 @@
 //! yt-browser アプリケーション本体（設計書 §1.1）。
 //! WebView スレッドは UI 描画と入力だけを持ち、重い処理は Tokio ワーカー側へ置く。
 
+mod chat;
 mod commands;
 mod db;
 mod error;
 mod feed;
+mod filter;
 mod innertube;
 mod model;
 mod mpv;
@@ -110,7 +112,19 @@ pub fn run() {
             ));
 
             // InnerTube クライアント（設計書 §6.1）。関連動画とチャットが共用する。
-            app.manage(innertube::InnerTube::new());
+            let innertube = std::sync::Arc::new(innertube::InnerTube::new());
+            app.manage(innertube.clone());
+
+            // ライブチャットのポーラー（設計書 §6.2）。起動時にフィルタを読み込む。
+            let chat = std::sync::Arc::new(chat::ChatPoller::new(
+                db.clone(),
+                app.handle().clone(),
+                innertube,
+            ));
+            if let Err(e) = chat.refresh_filters() {
+                tracing::warn!(error = e.message, "NG フィルタの初期読み込みに失敗");
+            }
+            app.manage(chat);
 
             // 購読フィードのポーラー（設計書 §1.2）。TICK ごとに期限の来た
             // チャンネルの RSS を条件付き取得���る。
@@ -143,6 +157,12 @@ pub fn run() {
             commands::block_channel,
             commands::unblock_channel,
             commands::blocked_channels,
+            commands::chat_start,
+            commands::chat_stop,
+            commands::chat_history_search,
+            commands::filter_add,
+            commands::filter_remove,
+            commands::filter_list,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -152,6 +172,9 @@ pub fn run() {
         if matches!(event, tauri::RunEvent::Exit) {
             if let Some(manager) = handle.try_state::<mpv::PlayerManager>() {
                 tauri::async_runtime::block_on(manager.close_all());
+            }
+            if let Some(poller) = handle.try_state::<std::sync::Arc<chat::ChatPoller>>() {
+                poller.stop_all();
             }
         }
     });

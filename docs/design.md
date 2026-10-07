@@ -230,14 +230,20 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 3. 応答の `actions[]` を `ChatEvent` に正規化し、`continuations[0].timeoutMs` だけ待って次を投げる
 4. エラー時は指数バックオフ、終了時は継続トークンが消えるためループを抜ける
 
+実装注記（2026-10 の実測値）:
+継続エントリは `continuations[]` の各要素が `{<type>ContinuationData: {continuation, timeoutMs?}}` の形で、実応答では `invalidationContinuationData`（timeoutMs=10000）と初期の `reloadContinuationData` が確認できた。パーサーは種別に依らず `continuation` を持つ最初のエントリを採用する。
+`timeoutMs` が欠落する場合の下限は 300ms とし、間引きを越えた過剰ポーリングを防ぐ。
+アクションは `addChatItemAction.item` の renderer に加え、`replayChatItemAction.actions[]` の入れ子（アーカイブのリプレイチャット）も展開する。
+削除アクションのキー名は 2026-10 時点で `removeChatItemAction`（旧名 `markChatItemAsDeletedAction` も併せて受理し、`targetItemId` を対象 ID とする）。
+
 主な renderer の写像は次の通り。
 
 | renderer | ChatEvent.kind |
 |---|---|
 | `liveChatTextMessageRenderer` | `text` |
 | `liveChatPaidMessageRenderer` / `liveChatPaidStickerRenderer` | `superchat` |
-| `liveChatMembershipItemRenderer` | `membership` |
-| `markChatItemAsDeletedAction` 相当 | `deleted` |
+| `liveChatMembershipItemRenderer` / `liveChatSponsorshipsGiftPurchaseAnnouncementRenderer` | `membership` |
+| `removeChatItemAction` / `markChatItemAsDeletedAction` | `deleted` |
 | その他 | `other`（raw_json を保持） |
 
 ### 6.3 NG と保存のパイプライン

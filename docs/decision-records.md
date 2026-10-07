@@ -100,3 +100,19 @@
 | 検索結果のチャンネル ID | ytsearch の `channel_id` は実測で常に UC 形だが、`uploader_id` は `@handle` や文字列 `"None"` が入ることがある（実測確認）。ブロック・購読の判定は UC 形キー前提なので、`channel_id` → `uploader_id` の順で UC 形（`UC` + 22 文字）の値だけを採用し、該当なしなら `channel_id=None` とする。`@` 始まりの `uploader_id` は `subscribe_channel` が解決できるため `SearchResult.uploader_id` として別途露出し、UC ID の無い結果でも検索画面の購読導線を残す（ブロックキーには使わない）。ハンドル検証は YouTube の実仕様に合わせ Unicode 文字を許容し、`is_handle` は Unicode alphanumeric 3〜30 文字として URL パスはパーセントデコードしてから判定する |
 | 関連動画パネルの再取得方針 | パネルを開くたびに `get_related` を再取得し、結果キャッシュはしない。ブロック／解除の変化が即座に反映され、前回失敗時の再試行経路も自然に確保できるため。取得応答の書き戻しは「その時点でパネルが開いている、かつ世代番号が一致する」場合に限定する（閉じた後や開き直し前の応答で状態を上書きしない） |
 | `YoutubeBackend` トレイト | 設計書 §9.2 はトレイト抽象化を想定していたが、yt-dlp 依存は `yt` モジュール内の関数群に既に隔離されており、第 2 のバックエンドやテスト差し替えの必要が現時点でないため導入を遅延する（実装は関数群・設計書も実態に更新） |
+
+## Phase 6 で確定した事項
+
+ライブチャット・NG フィルタ・履歴保存検索（設計書 §6.2〜§7、§8、FR-6〜FR-8）の暫定仕様を定めた。
+
+| 項目 | 決定内容 |
+|------|----------|
+| 初期継続トークンの取得 | `watch_html` を独立メソッド化し、`ytInitialData` の抽出は「`ytInitialData` の直後の `{` から文字列リテラルを認識する波括弧対応スキャン」で切り出す（`var ytInitialData = {...};` 形を実測確認）。`liveChatRenderer` をキー名で再帰探索し、無い場合はチャットなしとして info 通知して終了 |
+| 継続トークンと待機時間 | `continuations[]` の各エントリは `{<type>ContinuationData: {continuation, timeoutMs?}}` 形で、種別を問わず `continuation` を持つ最初のエントリを採る（実測: invalidation 10000ms / reload）。`timeoutMs` 欠落時の下限は 300ms |
+| 削除アクションのキー名 | 2026-10 時点の実応答は `removeChatItemAction`（設計書の `markChatItemAsDeletedAction` 相当は旧名）。両方を受理し `deleted` イベントに正規化、`message` に対象 item ID を入れる。UI は対象行を消さず「削除されました」表示に差し替える |
+| `chat://message` のバッチ粒度 | ポーリング応答 1 回分を 1 バッチとして emit し、同じ束を 1 トランザクションで `chat_logs` へ保存する（設計書の「数秒または数百件単位」要件を応答単位の束ねで満たす）。表示は直近 500 件に絞る |
+| 重複除去の範囲 | セッション内の既処理 item ID を上限 1 万件で保持して除去する（リプレイ再送・invalidation 差分の食い違い対策）。DB 側に一意制約は持たせない（再起動後の短時間の重複は許容し、raw_json に元 ID は残る） |
+| NG 判定の対象 | `chat_text` は本文に、`chat_author` は投稿者名と投稿者チャンネル ID の両方に適用する（名前か ID どちらでも書ける）。`deleted`/`other` 種別も NG 判定するが UI は `other` を常に非表示とする |
+| NG フィルタの regex 失敗時 | `filter_add` で `regex::Regex::new` による事前検証を行い不正パターンは登録拒否。既存行が rebuild 時にコンパイル失敗した場合はそのパターンだけを除外し（RegexSet は一括コンパイルのため個別検証してから束ねる）、除外件数を `chat://status` に warn 通知する |
+| FTS5 トークナイザ | `trigram` を採用（unicode61 では日本語の部分文字列が語分割されず検索に掛からないため）。制約として 3 文字未満の検索語は部分一致に寄与しない（バンドル SQLite では当該語が無制約扱いになることを実測）。検索は空白区切りの AND、各語を `"..."` フレーズ化して FTS5 構文と衝突しないようにする |
+| golden fixture | 実際の `get_live_chat` 応答を匿名化して `youtube_live_chat.json` として回帰テスト化（テキスト 2 件・削除 1 件・invalidation 継続トークンを含む） |
