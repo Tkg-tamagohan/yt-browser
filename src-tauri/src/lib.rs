@@ -82,6 +82,20 @@ pub fn run() {
             let socket_dir = app.path().runtime_dir().unwrap_or_else(|_| dir.join("run"));
             std::fs::create_dir_all(&socket_dir)?;
 
+            // ホイール分岐スクリプトを app_data へ書き出す（設計書 §4.2、--script で読ませる）。
+            // 埋め込みソースと実体ファイルを同一バージョンに保つため起動ごとに上書きする。
+            // 書き出しに失敗してもアプリは起動させる（ホイール分岐だけが無効になる）。
+            let script_dir = dir.join("mpv");
+            let wheel_script = match std::fs::create_dir_all(&script_dir)
+                .and_then(|()| std::fs::write(script_dir.join("wheel.lua"), mpv::WHEEL_LUA))
+            {
+                Ok(()) => Some(script_dir.join("wheel.lua")),
+                Err(e) => {
+                    tracing::warn!(error = %e, "wheel.lua の書き出しに失敗");
+                    None
+                }
+            };
+
             let ytdlp_resolver = yt::YtDlpResolver::new(app.path().resource_dir().ok());
             app.manage(ytdlp_resolver.clone());
             app.manage(mpv::PlayerManager::new(
@@ -89,6 +103,7 @@ pub fn run() {
                 db,
                 socket_dir,
                 ytdlp_resolver,
+                wheel_script,
             ));
             Ok(())
         })
