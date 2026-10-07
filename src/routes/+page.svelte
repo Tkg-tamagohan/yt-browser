@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "$lib/i18n";
 
   type DbStatus = { schemaVersion: number };
 
@@ -18,14 +19,14 @@
 
 <main class="container">
   <h1>yt-browser</h1>
-  <p class="lead">mpv による軽量な再生とローカル完結のデータ管理を一体化した YouTube 専用ブラウザ。</p>
+  <p class="lead">{t("home.lead")}</p>
 
   {#if dbStatus}
-    <p class="status ok">DB 接続: OK（スキーマ v{dbStatus.schemaVersion}）</p>
+    <p class="status ok">{t("home.db.ok", { version: dbStatus.schemaVersion })}</p>
   {:else if dbError}
-    <p class="status ng">DB 接続: 失敗 — {dbError}</p>
+    <p class="status ng">{t("home.db.ng", { error: dbError })}</p>
   {:else}
-    <p class="status">DB 接続を確認中…</p>
+    <p class="status">{t("home.db.checking")}</p>
   {/if}
 </main>
 

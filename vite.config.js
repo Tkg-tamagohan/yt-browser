@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
-// @ts-expect-error type error without @types/node package
+// @ts-expect-error @types/node 未導入のため process の型が解決しない
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
@@ -8,11 +8,11 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [sveltekit()],
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+  // `tauri dev` / `tauri build` のときだけ適用する Vite オプション
   //
-  // 1. prevent Vite from obscuring rust errors
+  // 1. Rust のエラーが Vite の画面クリアで見えなくなるのを防ぐ
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
+  // 2. Tauri は固定ポートを期待するため、使用中なら起動を失敗させる
   server: {
     port: 1420,
     strictPort: true,
@@ -25,7 +25,7 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
+      // 3. `src-tauri` 配下の変更ではリロードしない
       ignored: ["**/src-tauri/**"],
     },
   },
