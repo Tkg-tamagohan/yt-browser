@@ -111,19 +111,22 @@ pub async fn update(path: &str) -> Result<String, YtError> {
     Ok(combined_output(&out))
 }
 
-/// stdout + stderr をまとめて 500 文字に切り詰める。
-/// `-U` は進捗を stdout に出すので失敗時も stdout を捨てない（決定記録「出力をそのまま UI に返す」）。
+/// stdout + stderr をまとめて返す。`-U` は進捗を stdout に出すので失敗時も
+/// stdout を捨てない（決定記録「出力をそのまま UI に返す」）。
+/// 各ストリームを別々に 500 文字へ切り詰め、長い stdout に stderr の診断が
+/// 潰されないようにする。
 fn combined_output(out: &std::process::Output) -> String {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let mut s = stdout.trim().to_string();
-    if !stderr.trim().is_empty() {
+    let mut s: String = stdout.trim().chars().take(500).collect();
+    let err: String = stderr.trim().chars().take(500).collect();
+    if !err.is_empty() {
         if !s.is_empty() {
             s.push('\n');
         }
-        s.push_str(stderr.trim());
+        s.push_str(&err);
     }
-    s.chars().take(500).collect()
+    s
 }
 
 /// PATH 解決可否。`--version` が起動できれば存在するとみなす。
