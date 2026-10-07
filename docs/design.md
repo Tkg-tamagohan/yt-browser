@@ -77,6 +77,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `filter_add` / `filter_remove` / `filter_list` | `Filter` または `id` | `Result<()>` / `Vec<Filter>` |
 | `history_list` / `playlist_*` / `settings_get` / `settings_set` | 略 | 略 |
 
+`play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 `play_video` が返す `instance_id` が制御対象の識別子で、UI はアクティブな窓の ID を保持して全操作に付ける。
 単一再生でも必須引数に揃え、マルチビュー時の操作経路を初期から担保する（FR-1）。
 `player_control` に操作を集約するのは、mpv 側への転送層を一箇所に保つためである。

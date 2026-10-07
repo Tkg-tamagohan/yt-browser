@@ -30,3 +30,27 @@ impl From<crate::db::DbError> for UiError {
         Self::new("db", e.to_string())
     }
 }
+
+impl From<crate::mpv::MpvError> for UiError {
+    fn from(e: crate::mpv::MpvError) -> Self {
+        // コードは UI 側の分岐用に細分する（未導入/ソケット不成立/IPC/対象なし）
+        let code = match &e {
+            crate::mpv::MpvError::Spawn(_) => "mpv_spawn",
+            crate::mpv::MpvError::SocketTimeout => "mpv_socket_timeout",
+            crate::mpv::MpvError::Ipc(_) => "mpv_ipc",
+            crate::mpv::MpvError::NoSuchInstance(_) => "mpv_no_instance",
+        };
+        Self::new(code, e.to_string())
+    }
+}
+
+impl From<crate::yt::YtError> for UiError {
+    fn from(e: crate::yt::YtError) -> Self {
+        let code = match &e {
+            crate::yt::YtError::NotFound => "ytdlp_not_found",
+            crate::yt::YtError::Timeout => "ytdlp_timeout",
+            _ => "ytdlp",
+        };
+        Self::new(code, e.to_string())
+    }
+}

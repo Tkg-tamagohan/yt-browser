@@ -28,6 +28,13 @@ pnpm check        # svelte-check
 | チャットと関連動画 | InnerTube クライアント（自前、安定層のみ） |
 | DB | SQLite（rusqlite、WAL） |
 
+## yt-dlp まわりの運用メモ
+
+- yt-dlp の解決順は「設定 `ytdlp.path` → 同梱リソース → PATH の `yt-dlp`」。現在の暫定運用はシステムインストール（同梱は配布フェーズで行う）
+- YouTube 解読のため yt-dlp が外部 JS ランタイムを要求する環境がある。`deno` を PATH に入れておく
+- PO Token を要求される環境では、yt-dlp 側の手順（`--cookies-from-browser` や外部プロバイダ）に従う。アプリ側の伝達経路は後フェーズの課題
+- アプリ内の「yt-dlp 更新」ボタンは `yt-dlp -U` を呼ぶ。システム管理のパスでは権限不足で失敗し得る
+
 ## 文書
 
 | 文書 | 内容 |
