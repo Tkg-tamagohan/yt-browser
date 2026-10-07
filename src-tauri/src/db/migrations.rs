@@ -195,21 +195,22 @@ pub const MIGRATIONS: &[Migration] = &[
     // Phase 7 レビュー対応: ライブラリ登録で先にできた videos 行（プレースホルダ）と
     // フィード投入済みの行を published_at の有無では判別できない（投稿日なしの
     // RSS エントリが毎回新着扱いになる）。独立したフラグ列を追加する。
-    // バックフィルの出自判定: 投稿日を持つ行、または未読の行はフィード投入
-    // 済みと確定できる。is_read は ingest 以外で 0 にならない（既定値は 1、
-    // video_upsert は触らない、mark_read 系は 1 にしか書かない）ため、
-    // 未読のまま残る行は必ず一度はフィードを通っている。
-    // 残る曖昧行は「投稿日なし かつ 既読」に限られる（日付を欠いた既読
-    // フィード行、ライブラリ由来のプレースホルダ、参照解除済み
-    // プレースホルダは区別不能）。これらは 0 に揃え、プレースホルダの
-    // 初回 RSS 到達の補完を守る。
-    // 誤って 0 になった日付なしフィード行が feed_list で見えなくなる時間を
-    // 最小化するため、条件付き取得（ETag/Last-Modified）の状態をクリアし、
-    // 全チャンネルで一度だけ無条件の再取得を強制する（304 ではなく
-    // 必ず全件再投入され、RSS ウィンドウ内の曖昧行が ingested=1 に確定する）。
-    // RSS ウィンドウから外れた日付なし既読行だけは再投入されず非表示のまま
-    // 残り得るが、YouTube RSS は実際には常に <published> を含むため
-    // この残存は実運用で発生しない想定（decision-records 参照）。
+    // 列の意味は 3 状態: 0=ライブラリ由来のプレースホルダ（フィード非表示、
+    // 初回 RSS 到達で補完）、1=フィード投入済み（表示）、2=出自が曖昧な
+    // 既存行（表示は維持しつつ、初回到達の補完対象にも残す）。
+    // バックフィルの判定:
+    // - 投稿日あり、または is_read=0（ingest 以外で 0 にならない）は
+    //   フィード投入済みと確定できる → 1
+    // - チャンネル ID なし、またはお気に入り・プレイリスト参照ありで
+    //   投稿日なし+既読の行はプレースホルダとほぼ確定できる → 0
+    //   （実際の YouTube RSS エントリは常に <published> を持つため、
+    //   参照された日付なし行はライブラリ由来しかあり得ない）
+    // - 残る「投稿日なし＋既読＋チャンネルあり＋未参照」は曖昧 → 2。
+    //   旧フィード行なら表示を失わせず、解除済みプレースホルダなら
+    //   初回到達の補完を受けられる（補完で 1 に確定し、その投入だけは
+    //   未読になる。区別不能なため両立はこの形まで）
+    // 曖昧行を早期に確定させるため、条件付き取得（ETag/Last-Modified）の
+    // 状態をクリアし、全チャンネルで一度だけ無条件の再取得を強制する。
     Migration {
         version: 7,
         name: "videos_ingested_flag",
@@ -217,6 +218,10 @@ pub const MIGRATIONS: &[Migration] = &[
                 ADD COLUMN ingested INTEGER NOT NULL DEFAULT 0;
               UPDATE videos SET ingested = 1
               WHERE published_at IS NOT NULL OR is_read = 0;
+              UPDATE videos SET ingested = 2
+              WHERE published_at IS NULL AND is_read = 1 AND channel_id <> ''
+                AND video_id NOT IN (SELECT video_id FROM favorites
+                                     UNION SELECT video_id FROM playlist_items);
               UPDATE channels SET rss_etag = NULL, rss_last_modified = NULL;",
     },
 ];
