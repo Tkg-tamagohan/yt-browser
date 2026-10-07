@@ -13,6 +13,11 @@ use thiserror::Error;
 
 use crate::model::{BlockedChannel, Category, Channel, FeedFilter, FeedItem, WatchHistory};
 
+/// フィード一覧の表示件数上限（設計書 §3.1 の LIMIT 500）。
+/// NG フィルタで抜けた分は後続行で埋めるため、走査は述語適合がこの件数に
+/// 達するまで続く（`feed_list_filtered`）。
+pub const FEED_LIST_LIMIT: usize = 500;
+
 /// `videos` への新規挿入 1 件分（`video_insert_new` の引数）。
 #[derive(Debug, Clone)]
 pub struct NewVideo<'a> {
@@ -452,6 +457,18 @@ impl Db {
 
     /// `list_feed`（設計書 §3.1）。ブロックチャンネルの動画は常に除外する（FR-5）。
     pub fn feed_list(&self, filter: &FeedFilter) -> Result<Vec<FeedItem>, DbError> {
+        self.feed_list_filtered(filter, FEED_LIST_LIMIT, |_| true)
+    }
+
+    /// `feed_list` に後段述語を掛けてから `limit` 件集める版。
+    /// SQL の LIMIT は掛けず、述語に適合した行だけを `limit` 件までスキャンする
+    /// （NG フィルタで先頭が抜けても後続の適合行を拾える。FR-9）。
+    pub fn feed_list_filtered(
+        &self,
+        filter: &FeedFilter,
+        limit: usize,
+        keep: impl Fn(&FeedItem) -> bool,
+    ) -> Result<Vec<FeedItem>, DbError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
@@ -465,8 +482,7 @@ impl Db {
                     OR c.category_id = ?2)
                AND (?3 IS NULL
                     OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
-             ORDER BY v.published_at DESC
-             LIMIT 500",
+             ORDER BY v.published_at DESC",
         )?;
         let mut rows = stmt.query(rusqlite::params![
             filter.unread_only as i64,
@@ -474,8 +490,9 @@ impl Db {
             filter.days.map(|d| d as i64),
         ])?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            out.push(FeedItem {
+        while out.len() < limit {
+            let Some(row) = rows.next()? else { break };
+            let item = FeedItem {
                 video_id: row.get(0)?,
                 channel_id: row.get(1)?,
                 channel_title: row.get(2)?,
@@ -484,7 +501,10 @@ impl Db {
                 published_at: row.get(5)?,
                 kind: row.get(6)?,
                 is_read: row.get::<_, i64>(7)? != 0,
-            });
+            };
+            if keep(&item) {
+                out.push(item);
+            }
         }
         Ok(out)
     }

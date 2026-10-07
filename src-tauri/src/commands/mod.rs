@@ -265,11 +265,13 @@ pub fn list_feed(
     poller: State<'_, Arc<crate::chat::ChatPoller>>,
 ) -> Result<Vec<FeedItem>, UiError> {
     let matcher = poller.matcher();
-    let mut items = db.feed_list(&filter)?;
-    items.retain(|i| {
-        !matcher.is_video_ng(&i.title, i.channel_title.as_deref(), Some(&i.channel_id))
-    });
-    Ok(items)
+    // 述語適合が FEED_LIST_LIMIT 件に達するまで走査するため、
+    // 先頭が NG で抜けても後続の適合行を拾える
+    Ok(
+        db.feed_list_filtered(&filter, crate::db::FEED_LIST_LIMIT, |i| {
+            !matcher.is_video_ng(&i.title, i.channel_title.as_deref(), Some(&i.channel_id))
+        })?,
+    )
 }
 
 /// `mark_read`（設計書 §3.1）。`all: true` で一括既読、それ以外は `video_ids` を個別既読。
@@ -314,7 +316,7 @@ pub async fn search(
         return Err(UiError::invalid_input("検索語が長すぎます"));
     }
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
-    let mut results = yt::search(&path, &q, SEARCH_LIMIT).await?;
+    let mut results = yt::search(&path, &q, SEARCH_FETCH_LIMIT).await?;
     let blocked = db.blocked_ids()?;
     let matcher = poller.matcher();
     results.retain(|r| {
@@ -328,11 +330,15 @@ pub async fn search(
                 r.channel_id.as_deref(),
             )
     });
+    results.truncate(SEARCH_LIMIT as usize);
     Ok(results)
 }
 
 /// 検索の既定取得件数（設計書 §5 の `ytsearch<N>`）。
 const SEARCH_LIMIT: u32 = 20;
+/// ytsearch のフェッチ件数。ブロック・NG フィルタで抜けた分を
+/// 後続候補で埋めるため、表示件数の 3 倍を取ってから絞る。
+const SEARCH_FETCH_LIMIT: u32 = SEARCH_LIMIT * 3;
 
 /// `get_related`（設計書 §3.1、FR-4）。InnerTube `next` の関連動画から
 /// ブロック済みチャンネルと動画系 NG フィルタを除いて返す。

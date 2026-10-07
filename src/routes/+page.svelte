@@ -161,6 +161,19 @@
     return chatPanels.get(id);
   }
 
+  /// 同一動画の chat_start/chat_stop を直列化するキュー。
+  /// invoke は到着順を保証しないため、「閉じる→すぐ開く」で
+  /// stop が start の後に処理されてポーラーが死ぬ競合を防ぐ。
+  const chatOpQueues = new Map<string, Promise<void>>();
+  function enqueueChatOp(videoId: string, op: () => Promise<void>): void {
+    const prev = chatOpQueues.get(videoId) ?? Promise.resolve();
+    const next = prev.then(() => op().catch(() => {}));
+    chatOpQueues.set(videoId, next);
+    void next.finally(() => {
+      if (chatOpQueues.get(videoId) === next) chatOpQueues.delete(videoId);
+    });
+  }
+
   /// チャットパネルの開閉。開くと chat_start、閉じると chat_stop を呼ぶ。
   /// メッセージの表示件数は直近 500 件に絞る（設計書 §6.2 の表示間引き）。
   const CHAT_CAP = 500;
@@ -176,11 +189,13 @@
     }
     next.set(id, { open: true, items: cur?.items ?? [], status: null });
     chatPanels = next;
-    try {
-      await invoke("chat_start", { videoId });
-    } catch (e) {
-      notify(t("player.error", { message: asErrorMessage(e) }));
-    }
+    enqueueChatOp(videoId, async () => {
+      try {
+        await invoke("chat_start", { videoId });
+      } catch (e) {
+        notify(t("player.error", { message: asErrorMessage(e) }));
+      }
+    });
   }
 
   /// `chat://message` の受信処理。videoId で対応プレイヤーへ振り分け、
@@ -238,7 +253,9 @@
         cp.open && playerStates.list.get(inst)?.videoId === videoId,
     );
     if (!stillOpen) {
-      void invoke("chat_stop", { videoId }).catch(() => {});
+      enqueueChatOp(videoId, async () => {
+        await invoke("chat_stop", { videoId }).catch(() => {});
+      });
     }
   }
 
@@ -258,20 +275,19 @@
     });
   }
 
-  /// `chat://status` の受信処理。パネル内に状態行を出し、warn 以上は通知にも出す。
+  /// `chat://status` の受信処理。対象動画を開いている全パネルに状態行を出し、
+  /// warn 以上は通知にも出す。
   function onChatStatus(s: ChatStatus): void {
     if (s.videoId) {
-      const inst = [...playerStates.list.values()].find(
-        (p) => p.videoId === s.videoId,
-      )?.instanceId;
-      if (inst !== undefined) {
-        const cur = chatPanels.get(inst);
-        if (cur) {
-          const next = new Map(chatPanels);
-          next.set(inst, { ...cur, status: s.message });
-          chatPanels = next;
+      const next = new Map(chatPanels);
+      let changed = false;
+      for (const [inst, cp] of next) {
+        if (cp.open && playerStates.list.get(inst)?.videoId === s.videoId) {
+          next.set(inst, { ...cp, status: s.message });
+          changed = true;
         }
       }
+      if (changed) chatPanels = next;
     }
     if (s.level !== "info") {
       notify(t("chat.status", { message: s.message }));
