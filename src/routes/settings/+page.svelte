@@ -248,12 +248,13 @@
       const geo = pipGeometry.trim();
       if (!geo) {
         // 空欄は既定値へのリセット。保存に成功してから画面値を戻す
-        // （失敗時に表示と DB の値がずれないようにする）
+        // （失敗時に表示と DB の値がずれないようにする）。
+        // 保存中にユーザーが入力し直していた場合はその値を残す
         await invoke("settings_set", {
           key: "pip.geometry",
           value: PIP_GEOMETRY_DEFAULT,
         });
-        pipGeometry = PIP_GEOMETRY_DEFAULT;
+        if (!pipGeometry.trim()) pipGeometry = PIP_GEOMETRY_DEFAULT;
       } else if (PIP_GEOMETRY_RE.test(geo)) {
         await invoke("settings_set", { key: "pip.geometry", value: geo });
       } else {
