@@ -77,3 +77,10 @@
 | 再購読時の既読 | 初回購読（`channels` 行が無い）での投入は `reset_unread` で既存行も未読へ戻す。既に購読中の再投入では既読を維持する |
 | フィード一覧の上限 | `list_feed` は `ORDER BY published_at DESC LIMIT 500` の暫定仕様。ページングは Phase 7（ローカルデータ管理）以降で検討 |
 | サムネイル origin | `media:thumbnail` は `https://*.ytimg.com` / `*.ggpht.com` のみ採用（CSP img-src と一致） |
+
+### Phase 4 マージ後の修復で追加確定
+
+| 項目 | 決定内容 |
+|------|----------|
+| UC 無しで保存された既存行 | マイグレーション v4 で `channels`・`blocked_channels`・`videos`・`watch_history` の channel_id を `UC` 付きに正規化。UC 付き行が既に存在するチャンネルは UC 無し行を削除して統合する |
+| 解除後の残存動画の表示 | videos 行は残すが、`list_feed` は `channels` への JOIN（INNER）で購読中チャンネルの項目だけを返す。解除したチャンネルの残存動画は「すべて」表示でも出ない |
