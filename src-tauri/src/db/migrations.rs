@@ -195,18 +195,27 @@ pub const MIGRATIONS: &[Migration] = &[
     // Phase 7 レビュー対応: ライブラリ登録で先にできた videos 行（プレースホルダ）と
     // フィード投入済みの行を published_at の有無では判別できない（投稿日なしの
     // RSS エントリが毎回新着扱いになる）。独立したフラグ列を追加する。
-    // バックフィルは投稿日を持つ行のみ 1 にする。投稿日なしの行は
-    // 「日付を欠いたフィード行」と「ライブラリ由来のプレースホルダ」を
-    // v6 スキーマでは区別できないため 0 に揃える。プレースホルダを
-    // 投入済みと誤認すると初回 RSS 到達の補完が永続的に失われる一方、
-    // 日付なしのフィード行を未投入と見なしても影響は次回投入時に一度だけ
-    // 未読へ戻ることに留まり、その投入で ingested=1 に確定するため
-    // 安全側（0）を採る。
+    // バックフィルの出自判定は「投稿日」または「お気に入り・プレイリストからの
+    // 未参照」で行う。プレースホルダは favorite_add / playlist_add の
+    // トランザクションでのみ作られるため必ず参照を持ち、未参照で
+    // 投稿日なしの行はフィード由来しかあり得ないので 1 に残す
+    // （未参照のまま 0 にすると feed_list の ingested=1 フィルタで
+    // アップグレード後に既存のフィード動画が非表示になる）。
+    // 「投稿日なしかつ参照あり」の行だけは両方であり得るため 0 に揃える。
+    // 実際に日付を欠いたフィード行だった場合は次回の投入で ingested=1 に
+    // 確定し、一度だけ未読へ戻る（プレースホルダを 1 に誤認した場合の
+    // 初回到達補完の永続的喪失より影響が小さい）。
+    // その誤分類を速やかに解消するため、条件付き取得（ETag/Last-Modified）の
+    // 状態をクリアし、全チャンネルで一度だけ無条件の再取得を強制する。
     Migration {
         version: 7,
         name: "videos_ingested_flag",
         sql: "ALTER TABLE videos
                 ADD COLUMN ingested INTEGER NOT NULL DEFAULT 0;
-              UPDATE videos SET ingested = 1 WHERE published_at IS NOT NULL;",
+              UPDATE videos SET ingested = 1
+              WHERE published_at IS NOT NULL
+                 OR video_id NOT IN (SELECT video_id FROM favorites
+                                     UNION SELECT video_id FROM playlist_items);
+              UPDATE channels SET rss_etag = NULL, rss_last_modified = NULL;",
     },
 ];

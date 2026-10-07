@@ -1406,12 +1406,25 @@ mod tests {
             )
             .unwrap();
         }
-        // 投稿日あり＝フィード投入済み確定。投稿日なしは曖昧なので 0 に揃える。
+        // 投稿日あり or お気に入り・プレイリスト未参照 → 投入済み(1)。
+        // 「投稿日なし＋参照あり」だけが曖昧 → プレースホルダ扱い(0)。
+        conn.execute(
+            "INSERT INTO channels (channel_id, title, rss_etag, rss_last_modified)
+             VALUES ('UCfeedchan00000000001', 'CH', 'ETAG', 'Wed, 01 Oct 2026')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO videos (video_id, channel_id, title, published_at, is_read)
-             VALUES ('dated1', 'UCaaaa', 'D', '2026-10-01T00:00:00+00:00', 1),
-                    ('undated', 'UCbbbb', 'U', NULL, 1),
-                    ('holder1', 'UCcccc', 'P', NULL, 0)",
+             VALUES ('dated_ref', 'UCfeedchan00000000001', 'DR', '2026-10-01T00:00:00+00:00', 1),
+                    ('dated_unref', 'UCfeedchan00000000001', 'DU', '2026-10-01T00:00:00+00:00', 0),
+                    ('undated_ref', 'UCfeedchan00000000001', 'UR', NULL, 1),
+                    ('undated_unref', 'UCfeedchan00000000001', 'UU', NULL, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO favorites (video_id) VALUES ('dated_ref'), ('undated_ref')",
             [],
         )
         .unwrap();
@@ -1434,11 +1447,22 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("dated1".to_string(), 1),
-                ("holder1".to_string(), 0),
-                ("undated".to_string(), 0)
+                ("dated_ref".to_string(), 1),
+                ("dated_unref".to_string(), 1),
+                ("undated_ref".to_string(), 0),
+                ("undated_unref".to_string(), 1)
             ]
         );
+        // 曖昧な行を次回ポーリングで確定させるため、条件付き取得の状態は消える
+        let (etag, last_mod): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT rss_etag, rss_last_modified FROM channels
+                 WHERE channel_id = 'UCfeedchan00000000001'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((etag, last_mod), (None, None));
     }
 
     /// DB-LD-01: お気に入りの追加・一覧・削除（FR-7）。

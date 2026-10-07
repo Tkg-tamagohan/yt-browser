@@ -202,18 +202,30 @@
     }
   }
 
+  /// プレイリスト一覧の再取得（件数の最新化）。
+  /// 取得中に他の更新が listsReq を進めたら、応答を捨てて取り直す。
+  /// 失効したまま放置すると追加した動画の件数が古いまま残るため。
+  async function refreshPlaylists(): Promise<void> {
+    for (;;) {
+      const req = ++listsReq;
+      const list = await invoke<Playlist[]>("playlist_list");
+      if (req === listsReq) {
+        playlists = list;
+        return;
+      }
+    }
+  }
+
   /// VideoActions からのプレイリスト追加通知（FR-7）。
   /// 追加先が表示中なら項目一覧も読み直す（重複追加は冪等なので再取得で吸収）。
   /// itemsReq は選択中プレイリストの項目取得だけの世代なので、
   /// 追加先が表示中のときだけ進める（他プレイリストへの追加で
   /// 選択中の取得を無効化しない）。一覧側は独立した listsReq で管理。
   async function onPlaylistAdd(playlistId: number): Promise<void> {
-    const listReq = ++listsReq;
     const target = selectedId === playlistId;
     const itemReq = target ? ++itemsReq : itemsReq;
     try {
-      const list = await invoke<Playlist[]>("playlist_list");
-      if (listReq === listsReq) playlists = list;
+      await refreshPlaylists();
       if (target) {
         const items = await invoke<PlaylistEntry[]>("playlist_items", {
           playlistId,
@@ -234,6 +246,8 @@
         playlistId: selectedId,
         videoId: entry.videoId,
       });
+      // 件数が変わるので飛行中の一覧応答は無効化する
+      ++listsReq;
       playlistItems = playlistItems.filter(
         (i) => i.videoId !== entry.videoId,
       );
