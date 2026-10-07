@@ -150,6 +150,29 @@ pub struct FeedItem {
 pub struct FeedNewItems {
     pub count: usize,
 }
+/// `search` / `get_related` コマンドの結果行（設計書 §3.1 の SearchResult）。
+/// 検索（yt-dlp flat playlist）と関連動画（InnerTube `next`）の共通型。
+/// 片方の経路でしか取れない値は Option にする。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub video_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub duration_sec: Option<i64>,
+    pub view_count: Option<i64>,
+    pub thumbnail_url: Option<String>,
+}
+
+/// `blocked_channels` テーブルの 1 行（設計書 §8）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedChannel {
+    pub channel_id: String,
+    pub title: String,
+    pub created_at: String,
+}
 
 /// `feed://status` イベントのペイロード（設計書 §3.2）。
 #[derive(Debug, Clone, Serialize)]

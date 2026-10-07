@@ -5,6 +5,7 @@
   import {
     initPlayerEvents,
     playerStates,
+    type BlockedChannel,
     type UiError,
   } from "$lib/players.svelte";
 
@@ -60,6 +61,27 @@
   let persistedFormat = $state("");
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
+
+  // ブロック中チャンネル（FR-5: 設定画面での解除）
+  let blocked = $state<BlockedChannel[]>([]);
+
+  async function loadBlocked(): Promise<void> {
+    try {
+      blocked = await invoke<BlockedChannel[]>("blocked_channels");
+    } catch {
+      blocked = [];
+    }
+  }
+
+  async function unblock(b: BlockedChannel): Promise<void> {
+    try {
+      await invoke("unblock_channel", { channelId: b.channelId });
+      blocked = blocked.filter((x) => x.channelId !== b.channelId);
+      notify(t("blocked.unblocked", { title: b.title }));
+    } catch (e) {
+      notify(t("blocked.unblockFailed", { message: asErrorMessage(e) }));
+    }
+  }
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -182,6 +204,7 @@
     persistedFormat =
       selected === CUSTOM ? customFormat.trim() : selected;
     loading = false;
+    void loadBlocked();
   });
 </script>
 
@@ -238,6 +261,25 @@
           </label>
         {/each}
       </div>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("blocked.title")}</h2>
+    <p class="subtle desc">{t("blocked.desc")}</p>
+    {#if blocked.length === 0}
+      <p class="subtle">{t("blocked.empty")}</p>
+    {:else}
+      <ul class="blocked-list">
+        {#each blocked as b (b.channelId)}
+          <li>
+            <span class="ch-title" title={b.channelId}>{b.title}</span>
+            <button class="link" onclick={() => unblock(b)}>
+              {t("blocked.unblock")}
+            </button>
+          </li>
+        {/each}
+      </ul>
     {/if}
   </section>
 

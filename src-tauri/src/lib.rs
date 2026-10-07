@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod error;
 mod feed;
+mod innertube;
 mod model;
 mod mpv;
 mod sponsor;
@@ -108,8 +109,11 @@ pub fn run() {
                 wheel_script,
             ));
 
+            // InnerTube クライアント（設計書 §6.1）。関連動画とチャットが共用する。
+            app.manage(innertube::InnerTube::new());
+
             // 購読フィードのポーラー（設計書 §1.2）。TICK ごとに期限の来た
-            // チャンネルの RSS を条件付き取得する。
+            // チャンネルの RSS を条件付き取得���る。
             let poller = feed::FeedPoller::new(db, app.handle().clone());
             app.manage(poller.clone());
             tauri::async_runtime::spawn(poller.run());
@@ -134,6 +138,11 @@ pub fn run() {
             commands::list_feed,
             commands::mark_read,
             commands::feed_refresh,
+            commands::search,
+            commands::get_related,
+            commands::block_channel,
+            commands::unblock_channel,
+            commands::blocked_channels,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

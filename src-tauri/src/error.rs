@@ -70,3 +70,14 @@ impl From<crate::yt::YtError> for UiError {
         Self::new(code, e.to_string())
     }
 }
+
+impl From<crate::innertube::InnerTubeError> for UiError {
+    fn from(e: crate::innertube::InnerTubeError) -> Self {
+        let code = match &e {
+            crate::innertube::InnerTubeError::Http(_) => "innertube_http",
+            crate::innertube::InnerTubeError::Status(_) => "innertube_status",
+            crate::innertube::InnerTubeError::CfgMissing(_) => "innertube_cfg",
+        };
+        Self::new(code, e.to_string())
+    }
+}

@@ -72,8 +72,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `list_feed` | `filter`（未読のみ、カテゴリ、期間） | `Vec<FeedItem>` |
 | `mark_read` | `video_ids` または `all` | `Result<()>` |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
-| `block_channel` / `unblock_channel` | `channel_id` | `Result<()>` |
-| `search` | `query`, `page` | `Vec<SearchResult>` |
+| `block_channel` / `unblock_channel` / `blocked_channels` | `channel_id`, `title` | `Result<()>` / `Vec<BlockedChannel>` |
+| `search` | `query` | `Vec<SearchResult>` |
 | `get_related` | `video_id` | `Vec<SearchResult>` |
 | `chat_start` / `chat_stop` | `video_id` | `Result<()>` |
 | `chat_history_search` | `video_id?`, `query`, `limit` | `Vec<ChatEvent>` |
@@ -218,6 +218,10 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 
 `innertube` モジュールは watch ページから `INNERTUBE_API_KEY`・`INNERTUBE_CONTEXT_CLIENT_VERSION`・`VISITOR_DATA` を一度だけ取得してキャッシュし、`post_json` を提供する。
 このクライアントをチャットポーラーと関連動画取得（`next`）が共用する。
+
+`next` 応答の関連動画は、2026-10 時点の WEB クライアントでは `lockupViewModel`（`contentType == LOCKUP_CONTENT_TYPE_VIDEO`）で返る。
+パーサーは旧来の `compactVideoRenderer` / `videoWithContextRenderer` も併せてキー名で再帰探索し、レイアウト差分に耐える。
+各フィールドの対応は、`contentId` → 動画 ID、`metadata.lockupMetadataViewModel.title.content` → タイトル、`metadataRows[0]` → チャンネル名、`metadataRows[1]` 先頭 → 短縮表記の再生数、アバター内 `browseEndpoint.browseId` → UC チャンネル ID、サムネイルオーバーレイの `thumbnailBadgeViewModel.text` → 動画長、とする。
 
 ### 6.2 チャットポーラー（仕様決定 F）
 

@@ -183,3 +183,133 @@ async fn run_with_timeout(cmd: &mut Command) -> Result<std::process::Output, YtE
         Err(_) => Err(YtError::Timeout),
     }
 }
+
+/// `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist` による検索（設計書 §5）。
+/// flat エントリはチャンネル一覧表示と同等の軽量メタだけを持つ。
+/// `limit` は取得する最大件数。
+pub async fn search(
+    path: &str,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<crate::model::SearchResult>, YtError> {
+    let out = run_with_timeout(
+        Command::new(path)
+            .arg(format!("ytsearch{limit}:{query}"))
+            .arg("--dump-json")
+            .arg("--flat-playlist")
+            .arg("--no-warnings"),
+    )
+    .await?;
+    if !out.status.success() {
+        return Err(YtError::Exit {
+            code: out.status.code().unwrap_or(-1),
+            stderr: combined_output(&out),
+        });
+    }
+    Ok(parse_search_jsonl(&out.stdout))
+}
+
+/// 動画 ID からサムネイル URL を組み立てる。
+/// flat エントリが `thumbnails` を持たない場合のフォールバックとして使う。
+/// `i.ytimg.com` の静的 URL パターンで、CSP img-src の許可範囲内。
+fn video_thumbnail(video_id: &str) -> String {
+    format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
+}
+
+/// `thumbnails` 配列から最後尾（高解像度側）の URL を取る。無ければフォールバック。
+fn pick_thumbnail(entry: &serde_json::Value, video_id: &str) -> Option<String> {
+    entry
+        .get("thumbnails")
+        .and_then(|t| t.as_array())
+        .and_then(|arr| arr.last())
+        .and_then(|t| t.get("url"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| Some(video_thumbnail(video_id)))
+}
+
+/// `--dump-json --flat-playlist` の行単位 JSONL を `SearchResult` へ変換する。
+/// パース不能な行は捨てる（1 行の腐敗で全体を失敗させない暫定仕様）。
+fn parse_search_jsonl(bytes: &[u8]) -> Vec<crate::model::SearchResult> {
+    let mut out = Vec::new();
+    for line in bytes.split(|&b| b == b'\n') {
+        let line = line.trim_ascii();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(id) = v.get("id").and_then(|s| s.as_str()) else {
+            continue;
+        };
+        // flat エントリの id は動画 ID。プレイリスト等は _type=url で url 側を見るべきだが、
+        // ytsearch のエントリは動画なので id のみ採用する。
+        let title = v
+            .get("title")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let channel_id = v
+            .get("channel_id")
+            .or_else(|| v.get("uploader_id"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        let channel_title = v
+            .get("channel")
+            .or_else(|| v.get("uploader"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        out.push(crate::model::SearchResult {
+            video_id: id.to_string(),
+            title,
+            channel_id,
+            channel_title,
+            duration_sec: v.get("duration").and_then(|d| d.as_i64()),
+            view_count: v.get("view_count").and_then(|c| c.as_i64()),
+            thumbnail_url: pick_thumbnail(&v, id),
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_jsonl_parses_flat_entries() {
+        // yt-dlp --flat-playlist の出力形に沿った JSONL
+        let input = br#"{"_type":"url","ie_key":"Youtube","id":"dQw4w9WgXcQ","url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","title":"Never Gonna Give You Up","description":"","duration":213,"channel_id":"UCuAXFkgsw1L7xaCfnd5JJOw","channel":"Rick Astley","view_count":1600000000,"thumbnails":[{"url":"https://i.ytimg.com/vi/dQw4w9WgXcQ/maxres.jpg"}]}
+{"_type":"url","ie_key":"Youtube","id":"abc123def45","title":"No Meta Video","uploader":"Some Uploader","uploader_id":"UCuploader0000000001","duration":60}
+"#;
+        let out = parse_search_jsonl(input);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].video_id, "dQw4w9WgXcQ");
+        assert_eq!(
+            out[0].channel_id.as_deref(),
+            Some("UCuAXFkgsw1L7xaCfnd5JJOw")
+        );
+        assert_eq!(out[0].duration_sec, Some(213));
+        assert_eq!(out[0].view_count, Some(1_600_000_000));
+        assert_eq!(
+            out[0].thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/maxres.jpg")
+        );
+        // thumbnails 欠落時は ytimg 定形 URL にフォールバック
+        assert_eq!(out[1].channel_id.as_deref(), Some("UCuploader0000000001"));
+        assert_eq!(out[1].channel_title.as_deref(), Some("Some Uploader"));
+        assert_eq!(
+            out[1].thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/abc123def45/hqdefault.jpg")
+        );
+    }
+
+    #[test]
+    fn search_jsonl_skips_bad_lines() {
+        let input = b"not json\n{\"id\":\"abc123def45\",\"title\":\"ok\"}\n{\"no_id\":1}\n";
+        let out = parse_search_jsonl(input);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].video_id, "abc123def45");
+    }
+}

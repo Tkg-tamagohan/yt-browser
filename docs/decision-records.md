@@ -84,3 +84,16 @@
 |------|----------|
 | UC 無しで保存された既存行 | マイグレーション v4 で `channels`・`blocked_channels`・`videos`・`watch_history` の channel_id を `UC` 付きに正規化。UC 付き行が既に存在するチャンネルは UC 無し行を削除して統合する |
 | 解除後の残存動画の表示 | videos 行は残すが、`list_feed` は `channels` への JOIN（INNER）で購読中チャンネルの項目だけを返す。解除したチャンネルの残存動画は「すべて」表示でも出ない |
+
+## Phase 5 で確定した事項
+
+検索・関連動画・チャンネルブロック（設計書 §5、§6.1、FR-4、FR-5）の暫定仕様を定めた。
+
+| 項目 | 決定内容 |
+|------|----------|
+| 検索の実体 | `yt-dlp "ytsearch<上限>:<クエリ>" --dump-json --flat-playlist --no-warnings` の行単位 JSONL を読む（設計書 §5 表どおり）。パース不能行はスキップし、全体失敗にはしない。上限は暫定 20 件（`SEARCH_LIMIT`）で、ページングは持たない（設計書の `page` 引数は見送り、必要になれば `ytsearch` 件数を増やす方向で対応） |
+| 検索結果のサムネイル | `thumbnails[]` の末尾（最大解像）を採用。無い場合は `https://i.ytimg.com/vi/<id>/hqdefault.jpg` にフォールバック（CSP img-src 内） |
+| `next` 応答の形式 | 2026-10 の実応答は `lockupViewModel` 形式で、`compactVideoRenderer` / `videoWithContextRenderer` は含まれない。パーサーは両形式をキー名で再帰探索し、`LOCKUP_CONTENT_TYPE_PLAYLIST`（Mix 等）は除外、同一 video_id は重複除去する（実応答を golden fixture `youtube_next_related.json` として保存） |
+| 関連動画のチャンネル ID | `lockupViewModel` のチャンネルリンクは `/@handle` だが、アバターの `browseEndpoint.browseId` に UC ID が入っているためそこから取る（ブロック判定が UC 前提のため必須） |
+| `block_channel` の `title` 引数 | 設計書表は `channel_id` のみだが、設定画面のブロック一覧に表示名を出すため `title` を併せて保存する（`blocked_channels.title` は既に NOT NULL）。呼び出し側は channelTitle が無いとき channelId 自体を渡す |
+| ブロックの適用面 | フィード一覧は `NOT IN`（設計書 §7 どおり）、検索・関連動画はコマンド層で結果を後段フィルタする。フィード画面・検索画面・関連動画パネルの各項目にブロック導線を置き、解除は設定画面の一覧から行う（FR-5） |
