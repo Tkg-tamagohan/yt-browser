@@ -62,12 +62,24 @@ pub struct ActiveSegment {
     pub action: CategoryAction,
 }
 
-/// `pos` が区間に入ったか判定する。境界は `[start, end)`。
-/// 発火済みフラグの管理のため、該当区間のインデックスを返す。
-pub fn hit_index(segments: &[ActiveSegment], pos: f64) -> Option<usize> {
-    segments
-        .iter()
-        .position(|s| s.action != CategoryAction::Off && pos >= s.start && pos < s.end)
+/// 未発火の候補のうち `pos` が入る最初の区間のインデックス。
+/// 境界は `[start, end)`。発火済み区間とバックオフ中の区間は除外するので、
+/// 区間同士が重なっていても後の候補に到達できる。
+pub fn next_candidate(
+    segments: &[ActiveSegment],
+    fired: &std::collections::HashSet<usize>,
+    backoff: &HashMap<usize, std::time::Instant>,
+    pos: f64,
+) -> Option<usize> {
+    let now = std::time::Instant::now();
+    (0..segments.len()).find(|&i| {
+        let s = &segments[i];
+        s.action != CategoryAction::Off
+            && pos >= s.start
+            && pos < s.end
+            && !fired.contains(&i)
+            && backoff.get(&i).is_none_or(|until| now >= *until)
+    })
 }
 
 /// 設定 `sponsor.categories` の値を解析してカテゴリ→動作のマップを返す。
@@ -168,29 +180,62 @@ mod tests {
         }
     }
 
+    fn no_fired() -> (
+        std::collections::HashSet<usize>,
+        HashMap<usize, std::time::Instant>,
+    ) {
+        (std::collections::HashSet::new(), HashMap::new())
+    }
+
     #[test]
-    fn hit_returns_segment_inside_half_open_range() {
+    fn next_candidate_returns_segment_inside_half_open_range() {
+        let (f, b) = no_fired();
         let segs = vec![seg(10.0, 20.0, CategoryAction::Skip)];
-        assert!(hit_index(&segs, 15.0).is_some());
-        assert!(hit_index(&segs, 10.0).is_some()); // start 境界は含む
-        assert!(hit_index(&segs, 20.0).is_none()); // end 境界は含まない
-        assert!(hit_index(&segs, 9.9).is_none());
+        assert!(next_candidate(&segs, &f, &b, 15.0).is_some());
+        assert!(next_candidate(&segs, &f, &b, 10.0).is_some()); // start 境界は含む
+        assert!(next_candidate(&segs, &f, &b, 20.0).is_none()); // end 境界は含まない
+        assert!(next_candidate(&segs, &f, &b, 9.9).is_none());
     }
 
     #[test]
-    fn hit_ignores_off_categories() {
+    fn next_candidate_ignores_off_categories() {
+        let (f, b) = no_fired();
         let segs = vec![seg(10.0, 20.0, CategoryAction::Off)];
-        assert!(hit_index(&segs, 15.0).is_none());
+        assert!(next_candidate(&segs, &f, &b, 15.0).is_none());
     }
 
     #[test]
-    fn hit_returns_first_matching() {
+    fn next_candidate_returns_first_matching() {
+        let (f, b) = no_fired();
         let segs = vec![
             seg(10.0, 20.0, CategoryAction::Notify),
             seg(15.0, 25.0, CategoryAction::Skip),
         ];
-        let idx = hit_index(&segs, 16.0).unwrap();
+        let idx = next_candidate(&segs, &f, &b, 16.0).unwrap();
         assert_eq!(segs[idx].action, CategoryAction::Notify);
+    }
+
+    #[test]
+    fn next_candidate_skips_fired_segment_to_reach_overlapped() {
+        // 通知区間とスキップ区間が重なるとき、発火済みの前者を越えて後者に到達する
+        let (mut f, b) = no_fired();
+        let segs = vec![
+            seg(10.0, 30.0, CategoryAction::Notify),
+            seg(15.0, 20.0, CategoryAction::Skip),
+        ];
+        f.insert(0);
+        let idx = next_candidate(&segs, &f, &b, 16.0).unwrap();
+        assert_eq!(segs[idx].action, CategoryAction::Skip);
+    }
+
+    #[test]
+    fn next_candidate_skips_backed_off_segment() {
+        let (f, mut b) = no_fired();
+        let segs = vec![seg(10.0, 20.0, CategoryAction::Skip)];
+        b.insert(0, std::time::Instant::now() + Duration::from_secs(60));
+        assert!(next_candidate(&segs, &f, &b, 15.0).is_none());
+        b.insert(0, std::time::Instant::now() - Duration::from_secs(1));
+        assert!(next_candidate(&segs, &f, &b, 15.0).is_some());
     }
 
     #[test]

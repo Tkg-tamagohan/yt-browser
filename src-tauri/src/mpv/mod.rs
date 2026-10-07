@@ -163,6 +163,8 @@ pub struct SponsorState {
     pub segments: Vec<crate::sponsor::ActiveSegment>,
     /// 各区間につき 1 回だけ発火させるための消化済みインデックス。
     fired: HashSet<usize>,
+    /// seek 失敗した区間の再試行までの猶予（区間 index → 次回試行可能時刻）。
+    backoff: HashMap<usize, Instant>,
 }
 
 /// `PlayerManager::play` に渡す起動条件。
@@ -511,27 +513,42 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
     }
 }
 
+/// スキップの seek に失敗した区間を再試行するまでの間隔。
+const SPONSOR_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+
 /// time-pos が SponsorBlock 区間に入ったときの処理（設計書 §4.4）。
 /// Skip は区間末尾へ seek して `sponsor://skipped`、Notify は同イベントを通知だけ送る。
 /// 各区間は再生ごとに 1 回だけ発火する（戻って再侵入しても再発火しない）。
+/// 発火済み区間とバックオフ中の区間は `next_candidate` が除外するので、
+/// 区間が重なっていても未発火の候補に到達できる。
 async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
-    let seg = {
+    let picked = {
         let mut sp = lock(&player.sponsor);
-        match crate::sponsor::hit_index(&sp.segments, pos) {
-            Some(i) if !sp.fired.contains(&i) => {
+        crate::sponsor::next_candidate(&sp.segments, &sp.fired, &sp.backoff, pos).map(|i| {
+            // Notify は IPC を伴わないので、この時点で消化済みにしてよい
+            if sp.segments[i].action == crate::sponsor::CategoryAction::Notify {
                 sp.fired.insert(i);
-                Some(sp.segments[i].clone())
             }
-            _ => None,
-        }
+            (i, sp.segments[i].clone())
+        })
     };
-    let Some(seg) = seg else { return };
+    let Some((i, seg)) = picked else { return };
     if seg.action == crate::sponsor::CategoryAction::Skip {
-        if let Err(e) = player
+        match player
             .control(&PlayerAction::Seek { seconds: seg.end })
             .await
         {
-            tracing::warn!(error = %e, "SponsorBlock スキップの seek に失敗");
+            Ok(()) => {
+                lock(&player.sponsor).fired.insert(i);
+            }
+            Err(e) => {
+                // 失敗時は発火済みにせず通知も出さない。短いバックオフ後に再試行する
+                tracing::warn!(error = %e, "SponsorBlock スキップの seek に失敗");
+                lock(&player.sponsor)
+                    .backoff
+                    .insert(i, Instant::now() + SPONSOR_RETRY_BACKOFF);
+                return;
+            }
         }
     }
     let payload = crate::sponsor::SkippedPayload {

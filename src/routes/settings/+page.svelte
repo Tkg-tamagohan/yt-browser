@@ -55,6 +55,8 @@
   let loading = $state(true);
   let saving = $state(false);
   let notices = $state<string[]>([]);
+  // 最後に保存/読込した画質式。変更がない限り再生中インスタンスの再読込を避ける
+  let savedFormat = $state("");
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -75,15 +77,24 @@
   }
 
   async function save(): Promise<void> {
+    // 画質式が前回保存値から変わったときだけ適用する（カテゴリだけの保存で
+    // 再生中インスタンスが再読込されないようにする。loadfile replace は再生を中断させる）
     const format = effectiveFormat;
-    if (!format) return;
+    const qualityChanged = Boolean(format) && format !== savedFormat;
     saving = true;
     try {
-      await invoke("settings_set", { key: "quality.format", value: format });
+      if (qualityChanged) {
+        await invoke("settings_set", { key: "quality.format", value: format });
+        savedFormat = format;
+      }
       await invoke("settings_set", {
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
       });
+      if (!qualityChanged) {
+        notify(t("settings.saved"));
+        return;
+      }
       // 再生中のインスタンスへ即時適用（設計書 §4.3: set_property + loadfile replace）
       let applied = 0;
       const failed: number[] = [];
@@ -114,8 +125,9 @@
       }
     } catch (e) {
       notify(t("settings.failed", { message: asErrorMessage(e) }));
+    } finally {
+      saving = false;
     }
-    saving = false;
   }
 
   onMount(async () => {
@@ -154,6 +166,8 @@
     } catch {
       // 読み取り失敗時はプリセット既定のままにする
     }
+    savedFormat =
+      selected === CUSTOM ? customFormat.trim() : selected;
     loading = false;
   });
 </script>
@@ -217,7 +231,7 @@
   <button
     class="save-btn"
     onclick={save}
-    disabled={saving || !effectiveFormat}
+    disabled={loading || saving}
   >
     {saving ? t("settings.saving") : t("settings.save")}
   </button>
