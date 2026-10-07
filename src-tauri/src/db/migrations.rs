@@ -220,4 +220,14 @@ pub const MIGRATIONS: &[Migration] = &[
                      OR video_id IN (SELECT video_id FROM favorites
                                      UNION SELECT video_id FROM playlist_items));",
     },
+    // この PR の開発途中で v7 が一度「0/1/2 の 3 状態」版で書き込まれており、
+    // その版を適用した開発用 DB には ingested=2 の行が残り得る。新版の
+    // feed_list は ingested=1 のみを表示するため、2 は投入済みに昇格する。
+    // （3 状態版は未リリースのため、リリース済み DB ではこの UPDATE は無害な
+    // 空操作になる）
+    Migration {
+        version: 8,
+        name: "videos_ingested_promote_state2",
+        sql: "UPDATE videos SET ingested = 1 WHERE ingested = 2;",
+    },
 ];

@@ -1459,6 +1459,62 @@ mod tests {
         );
     }
 
+    /// v8: この PR の開発途中の 3 状態版 v7 が書き込んだ ingested=2 行を
+    /// 投入済みに昇格する（リリース済み DB では空操作）。
+    #[test]
+    fn migrate_v8_promotes_intermediate_state2() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        // v7 までを適用した状態（3 状態版 v7 を通った開発 DB を模す）
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 8) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO channels (channel_id, title) VALUES ('UCfeedchan00000000001', 'CH')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title, published_at, is_read, ingested)
+             VALUES ('dev_state2', 'UCfeedchan00000000001', 'S2', NULL, 1, 2),
+                    ('normal', 'UCfeedchan00000000001', 'N1', '2026-10-01T00:00:00+00:00', 1, 1),
+                    ('placeholder', 'UCfeedchan00000000001', 'P0', NULL, 1, 0)",
+            [],
+        )
+        .unwrap();
+        // 3 状態版の v7 を既に適用済みとした DB に v8 だけを後追い適用する
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 8) {
+            conn.execute_batch(m.sql).unwrap();
+        }
+        let mut stmt = conn
+            .prepare("SELECT video_id, ingested FROM videos ORDER BY video_id")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("dev_state2".to_string(), 1),
+                ("normal".to_string(), 1),
+                ("placeholder".to_string(), 0)
+            ]
+        );
+    }
+
     /// DB-LD-01: お気に入りの追加・一覧・削除（FR-7）。
     /// 動画メタは videos 台帳から JOIN で取り、重複登録は新しい日時に更新しない。
     #[test]
