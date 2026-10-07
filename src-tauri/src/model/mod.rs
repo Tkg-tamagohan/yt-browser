@@ -286,6 +286,52 @@ pub const FILTER_TARGETS: &[&str] = &[
 /// filters.kind の許容値（DDL の CHECK と一致）。
 pub const FILTER_KINDS: &[&str] = &["literal", "regex"];
 
+/// `favorite_add` / `playlist_add` の動画参照。
+/// 検索・関連・フィード行のメタ情報をそのまま受け取り、`videos` 台帳へ登録する。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoRef {
+    pub video_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
+/// `favorites` 一覧の 1 行。動画メタは `videos` 台帳から JOIN で取る。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavoriteEntry {
+    pub video_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub added_at: String,
+}
+
+/// `playlists` 一覧の 1 行（`item_count` は LEFT JOIN の集計）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    pub item_count: i64,
+}
+
+/// `playlist_items` 一覧の 1 行（登録順の position 付き）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistEntry {
+    pub position: i64,
+    pub video_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
 /// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。
 pub fn is_channel_id(s: &str) -> bool {
     s.len() == 24

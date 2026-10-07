@@ -170,4 +170,64 @@ pub const MIGRATIONS: &[Migration] = &[
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
               );",
     },
+    // Phase 7: お気に入りとカスタムプレイリスト（設計書 §8 の DDL から該当分、FR-7）。
+    // 動画のメタ情報は videos を台帳として JOIN で取り、
+    // favorites / playlist_items は video_id と並びだけを持つ。
+    Migration {
+        version: 6,
+        name: "localdata",
+        sql: "CREATE TABLE favorites (
+                video_id TEXT PRIMARY KEY,
+                added_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+              CREATE TABLE playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0
+              );
+              CREATE TABLE playlist_items (
+                playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+                video_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (playlist_id, video_id)
+              );",
+    },
+    // Phase 7 レビュー対応: ライブラリ登録で先にできた videos 行（プレースホルダ）と
+    // フィード投入済みの行を published_at の有無では判別できない（投稿日なしの
+    // RSS エントリが毎回新着扱いになる）。独立したフラグ列を追加する。
+    // 0=ライブラリ由来のプレースホルダ（フィード非表示、初回 RSS 到達で補完）、
+    // 1=フィード投入済み（表示）。
+    // バックフィルは全行 1 でよい: ライブラリ由来行を作れる機能
+    // （favorites/playlists）はこの v6 マイグレーションと同じリリースで
+    // 初めて出るため、リリース済みの DB には v7 適用時点でプレースホルダが
+    // 存在し得ず、既存行はすべてフィード由来と確定できる。
+    // 安全網として、「お気に入り・プレイリスト参照を持つ日付なし行」と
+    // 「チャンネル ID を持たない日付なし行」（いずれもフィード由来は
+    // あり得ない: RSS エントリは常に <published> と所属チャンネルを持つ）
+    // だけを 0 に戻す。この 0 行はこの PR の開発ビルドで作られた
+    // プレースホルダに限られる。
+    // 参照解除済みで残った開発ビルド由来の日付なし行だけは 1 のまま
+    // （判別不能の残存だがリリース版では発生しない）ことを決定記録に明記。
+    Migration {
+        version: 7,
+        name: "videos_ingested_flag",
+        sql: "ALTER TABLE videos
+                ADD COLUMN ingested INTEGER NOT NULL DEFAULT 0;
+              UPDATE videos SET ingested = 1;
+              UPDATE videos SET ingested = 0
+              WHERE published_at IS NULL
+                AND (channel_id = ''
+                     OR video_id IN (SELECT video_id FROM favorites
+                                     UNION SELECT video_id FROM playlist_items));",
+    },
+    // この PR の開発途中で v7 が一度「0/1/2 の 3 状態」版で書き込まれており、
+    // その版を適用した開発用 DB には ingested=2 の行が残り得る。新版の
+    // feed_list は ingested=1 のみを表示するため、2 は投入済みに昇格する。
+    // （3 状態版は未リリースのため、リリース済み DB ではこの UPDATE は無害な
+    // 空操作になる）
+    Migration {
+        version: 8,
+        name: "videos_ingested_promote_state2",
+        sql: "UPDATE videos SET ingested = 1 WHERE ingested = 2;",
+    },
 ];

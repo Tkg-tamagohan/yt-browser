@@ -3,6 +3,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t, type MessageKey } from "$lib/i18n";
+  import { loadLibrary } from "$lib/library";
+  import VideoActions from "$lib/VideoActions.svelte";
   import {
     initPlayerEvents,
     playerStates,
@@ -12,9 +14,11 @@
     type PlayerAction,
     type PlayerEnded,
     type PlayerState,
+    type Playlist,
     type SearchResult,
     type SponsorSkipped,
     type UiError,
+    type VideoRef,
     type WatchHistory,
     type YtDlpStatus,
   } from "$lib/players.svelte";
@@ -45,6 +49,31 @@
   let ytdlp = $state<YtDlpStatus | null>(null);
   let ytdlpChecking = $state(true);
   let ytdlpUpdating = $state(false);
+
+  // お気に入り・プレイリスト行アクション用（FR-7）
+  let favIds = $state<Set<string>>(new Set());
+  let playlists = $state<Playlist[]>([]);
+
+  function videoRefOf(r: SearchResult): VideoRef {
+    return {
+      videoId: r.videoId,
+      title: r.title,
+      channelId: r.channelId,
+      channelTitle: r.channelTitle,
+      thumbnailUrl: r.thumbnailUrl,
+    };
+  }
+
+  function onFavChange(videoId: string, faved: boolean): void {
+    const next = new Set(favIds);
+    if (faved) next.add(videoId);
+    else next.delete(videoId);
+    favIds = next;
+  }
+
+  function onPlaylistCreated(pl: Playlist): void {
+    playlists = [...playlists, pl];
+  }
 
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
@@ -376,6 +405,13 @@
     }
     await refreshYtDlp();
     await initPlayerEvents();
+    try {
+      const lib = await loadLibrary();
+      favIds = lib.favIds;
+      playlists = lib.playlists;
+    } catch {
+      // 行アクションが出せなくても再生は使えるため静かに握る
+    }
 
     // 状態マップの更新は共有ストア側。ここでは通知とヒント更新だけを購読する
     unlistenFns.push(
@@ -589,6 +625,13 @@
                           {t("search.block")}
                         </button>
                       {/if}
+                      <VideoActions
+                        video={videoRefOf(r)}
+                        faved={favIds.has(r.videoId)}
+                        {playlists}
+                        onfavchange={onFavChange}
+                        onplaylistcreated={onPlaylistCreated}
+                      />
                     </div>
                   </div>
                 </li>

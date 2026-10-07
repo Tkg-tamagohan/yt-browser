@@ -13,6 +13,9 @@
   <a href="/search" class:active={page.url.pathname === "/search"}
     >{t("nav.search")}</a
   >
+  <a href="/library" class:active={page.url.pathname === "/library"}
+    >{t("nav.library")}</a
+  >
   <a href="/settings" class:active={page.url.pathname === "/settings"}
     >{t("nav.settings")}</a
   >

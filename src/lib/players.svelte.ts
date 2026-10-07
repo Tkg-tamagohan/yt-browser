@@ -32,9 +32,49 @@ export type SponsorSkipped = {
 export type WatchHistory = {
   videoId: string;
   title: string;
+  channelId: string | null;
+  channelTitle: string | null;
   positionSec: number;
   durationSec: number | null;
+  lastWatchedAt: string;
   completed: boolean;
+};
+
+/// `favorite_add` / `playlist_add` の入力（検索・関連・フィード行のメタを渡す）。
+export type VideoRef = {
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+};
+
+/// `favorite_list` の 1 行（FR-7）。
+export type FavoriteEntry = {
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+  addedAt: string;
+};
+
+/// `playlist_list` の 1 行（FR-7）。
+export type Playlist = {
+  id: number;
+  name: string;
+  sortOrder: number;
+  itemCount: number;
+};
+
+/// `playlist_items` の 1 行（FR-7）。
+export type PlaylistEntry = {
+  position: number;
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
 };
 
 export type UiError = { code: string; message: string };

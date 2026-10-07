@@ -5,6 +5,9 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
+  import { loadLibrary } from "$lib/library";
+  import VideoActions from "$lib/VideoActions.svelte";
+  import type { Playlist, VideoRef } from "$lib/players.svelte";
 
   interface Channel {
     channelId: string;
@@ -53,6 +56,31 @@
   let filterCat = $state<number | null>(null);
   let busy = $state(false);
   let unlistens: UnlistenFn[] = [];
+
+  // お気に入り・プレイリスト行アクション用（FR-7）
+  let favIds = $state<Set<string>>(new Set());
+  let playlists = $state<Playlist[]>([]);
+
+  function videoRefOf(it: FeedItem): VideoRef {
+    return {
+      videoId: it.videoId,
+      title: it.title,
+      channelId: it.channelId,
+      channelTitle: it.channelTitle,
+      thumbnailUrl: it.thumbnailUrl,
+    };
+  }
+
+  function onFavChange(videoId: string, faved: boolean): void {
+    const next = new Set(favIds);
+    if (faved) next.add(videoId);
+    else next.delete(videoId);
+    favIds = next;
+  }
+
+  function onPlaylistCreated(pl: Playlist): void {
+    playlists = [...playlists, pl];
+  }
 
   function asErrorMessage(e: unknown): string {
     if (typeof e === "object" && e !== null && "message" in e) {
@@ -208,6 +236,13 @@
 
   onMount(async () => {
     await refreshAll();
+    try {
+      const lib = await loadLibrary();
+      favIds = lib.favIds;
+      playlists = lib.playlists;
+    } catch {
+      // 行アクションが出せなくてもフィードは使えるため静かに握る
+    }
     unlistens.push(
       await listen<FeedNewItems>("feed://new_items", (ev) => {
         notify(t("feed.newItems", { count: ev.payload.count }));
@@ -347,6 +382,13 @@
             >
               {t("search.block")}
             </button>
+            <VideoActions
+              video={videoRefOf(it)}
+              faved={favIds.has(it.videoId)}
+              {playlists}
+              onfavchange={onFavChange}
+              onplaylistcreated={onPlaylistCreated}
+            />
           </li>
         {/each}
       </ul>

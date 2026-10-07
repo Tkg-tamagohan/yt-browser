@@ -5,13 +5,17 @@
 
 mod migrations;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::Connection;
 use thiserror::Error;
 
-use crate::model::{BlockedChannel, Category, Channel, FeedFilter, FeedItem, WatchHistory};
+use crate::model::{
+    BlockedChannel, Category, Channel, FavoriteEntry, FeedFilter, FeedItem, Playlist,
+    PlaylistEntry, WatchHistory,
+};
 
 /// フィード一覧の表示件数上限（設計書 §3.1 の LIMIT 500）。
 /// NG フィルタで抜けた分は後続行で埋めるため、走査は述語適合がこの件数に
@@ -34,7 +38,8 @@ pub struct NewVideo<'a> {
 /// `feed_ingest` / `feed_subscribe` の戻り値。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IngestOutcome {
-    /// 新たに INSERT された動画数。
+    /// 新たにフィードへ現れた動画数。新規 INSERT と、ライブラリ登録で
+    /// 先に作られたプレースホルダ行（published_at NULL）への初回投入を含む。
     pub inserted: usize,
     /// 既存行の既読フラグを未読に戻した数（初回購読投入でのみ発生）。
     pub unread_changed: usize,
@@ -80,6 +85,8 @@ pub enum DbError {
         name: &'static str,
         source: rusqlite::Error,
     },
+    #[error("対象が存在しない")]
+    NotFound,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -89,6 +96,10 @@ pub enum DbError {
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    /// 履歴を手動削除された動画の保存抑止（セッション内のみ有効）。
+    /// `history_remove` で登録し、明示的な再生開始（`history_upsert`）で解除する。
+    /// 再生中プレイヤーの定期・終了保存が削除済み履歴を復活させないためのもの。
+    history_suppressed: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Db {
@@ -97,6 +108,7 @@ impl Db {
         let conn = Connection::open(path)?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
+            history_suppressed: Arc::new(Mutex::new(HashSet::new())),
         };
         db.init_pragmas()?;
         db.migrate()?;
@@ -109,6 +121,7 @@ impl Db {
         let conn = Connection::open_in_memory()?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
+            history_suppressed: Arc::new(Mutex::new(HashSet::new())),
         };
         db.init_pragmas()?;
         db.migrate()?;
@@ -197,8 +210,15 @@ impl Db {
     }
 
     /// 再生開始時に履歴行を確保する。既存行は位置や完了状態を壊さない。
+    /// 明示的な再生開始なので、手動削除による保存抑止をここで解除する。
+    /// 抑止の解除と挿入は conn ロック内で行い、`history_remove` や
+    /// `history_update_progress` と同じ排他区間に載せて交錯を防ぐ。
     pub fn history_upsert(&self, video_id: &str) -> Result<(), DbError> {
         let conn = self.lock()?;
+        self.history_suppressed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(video_id);
         conn.execute(
             "INSERT INTO watch_history (video_id, title) VALUES (?1, '')
              ON CONFLICT (video_id) DO NOTHING",
@@ -223,7 +243,18 @@ impl Db {
         } else {
             position_sec.max(0.0) as i64
         };
+        // 抑止確認と書き込みは conn ロックの同一排他区間に置く。
+        // ここで先に確認してからロックを取ると、間に割り込んだ削除が
+        // 抑止登録を済ませてもこの保存が削除済み行を再作成してしまう
         let conn = self.lock()?;
+        if self
+            .history_suppressed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(video_id)
+        {
+            return Ok(());
+        }
         conn.execute(
             "INSERT INTO watch_history
                (video_id, title, position_sec, duration_sec, last_watched_at, completed)
@@ -471,7 +502,8 @@ impl Db {
                     v.thumbnail_url, v.published_at, v.kind, v.is_read
              FROM videos v
              JOIN channels c ON c.channel_id = v.channel_id
-             WHERE v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+             WHERE v.ingested = 1
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
                AND (?1 = 0 OR v.is_read = 0)
                AND (?2 IS NULL
                     OR (?2 = 0 AND c.category_id IS NULL)
@@ -574,6 +606,237 @@ impl Db {
             })),
             None => Ok(None),
         }
+    }
+
+    /// 視聴履歴の一覧（FR-7）。新しく見た順で `limit` 件まで返す。
+    /// 同じ `last_watched_at`（秒精度）の行は rowid 降順で決定的にする。
+    pub fn history_list(&self, limit: u32) -> Result<Vec<WatchHistory>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT video_id, title, channel_id, channel_title,
+                    position_sec, duration_sec, last_watched_at, completed
+             FROM watch_history ORDER BY last_watched_at DESC, rowid DESC LIMIT ?1",
+        )?;
+        let mut rows = stmt.query([limit])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(WatchHistory {
+                video_id: row.get(0)?,
+                title: row.get(1)?,
+                channel_id: row.get(2)?,
+                channel_title: row.get(3)?,
+                position_sec: row.get(4)?,
+                duration_sec: row.get(5)?,
+                last_watched_at: row.get(6)?,
+                completed: row.get::<_, i64>(7)? != 0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 視聴履歴の個別削除（手動削除のみ、仕様決定 I）。
+    /// 再生中の同じ動画に対する以後の `history_update_progress` を抑止する
+    /// （再生中の削除で直後に履歴が復活しないようにする）。
+    /// 抑止はセッション内のみ有効で、明示的な再生開始で解除される。
+    /// 削除と抑止登録は conn ロックの同一排他区間で行う
+    /// （保存側の「確認→書き込み」と直列化される順序を一致させるため）。
+    pub fn history_remove(&self, video_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM watch_history WHERE video_id = ?1", [video_id])?;
+        self.history_suppressed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(video_id.to_string());
+        Ok(())
+    }
+
+    /// `videos` 台帳への登録（お気に入り・プレイリスト追加の前段）。
+    /// フィード由来でない動画は channel_id を `VideoRef` の値（または空文字）で
+    /// 登録する。空のチャンネル ID は `channels` に JOIN しないためフィードに
+    /// 現れない。既存行は非空の値だけで上書きし、is_read は触らない。
+    fn video_upsert(conn: &Connection, v: &crate::model::VideoRef) -> Result<(), DbError> {
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, channel_title, title, thumbnail_url, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'video')
+             ON CONFLICT (video_id) DO UPDATE SET
+               channel_id = CASE WHEN excluded.channel_id <> ''
+                                 THEN excluded.channel_id ELSE videos.channel_id END,
+               channel_title = COALESCE(excluded.channel_title, videos.channel_title),
+               title = CASE WHEN excluded.title <> ''
+                            THEN excluded.title ELSE videos.title END,
+               thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url)",
+            rusqlite::params![
+                v.video_id,
+                v.channel_id.as_deref().unwrap_or(""),
+                v.channel_title,
+                v.title,
+                v.thumbnail_url,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// お気に入り追加。`videos` 登録と同じトランザクションで行う。
+    pub fn favorite_add(&self, v: &crate::model::VideoRef) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        Self::video_upsert(&tx, v)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO favorites (video_id) VALUES (?1)",
+            [&v.video_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn favorite_remove(&self, video_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM favorites WHERE video_id = ?1", [video_id])?;
+        Ok(())
+    }
+
+    /// お気に入り一覧。追加が新しい順。
+    pub fn favorite_list(&self) -> Result<Vec<FavoriteEntry>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.video_id, v.title, NULLIF(v.channel_id, ''), v.channel_title,
+                    v.thumbnail_url, f.added_at
+             FROM favorites f JOIN videos v ON v.video_id = f.video_id
+             ORDER BY f.added_at DESC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(FavoriteEntry {
+                video_id: row.get(0)?,
+                title: row.get(1)?,
+                channel_id: row.get(2)?,
+                channel_title: row.get(3)?,
+                thumbnail_url: row.get(4)?,
+                added_at: row.get(5)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// プレイリスト一覧。`item_count` は LEFT JOIN の件数集計。
+    pub fn playlist_list(&self) -> Result<Vec<Playlist>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, p.sort_order, COUNT(i.video_id) AS item_count
+             FROM playlists p LEFT JOIN playlist_items i ON i.playlist_id = p.id
+             GROUP BY p.id
+             ORDER BY p.sort_order, p.id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_order: row.get(2)?,
+                item_count: row.get(3)?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn playlist_create(&self, name: &str) -> Result<Playlist, DbError> {
+        let conn = self.lock()?;
+        conn.execute("INSERT INTO playlists (name) VALUES (?1)", [name])?;
+        Ok(Playlist {
+            id: conn.last_insert_rowid(),
+            name: name.to_string(),
+            sort_order: 0,
+            item_count: 0,
+        })
+    }
+
+    /// 名称変更。対象が存在しなければ `DbError::NotFound`。
+    pub fn playlist_rename(&self, playlist_id: i64, name: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        let n = conn.execute(
+            "UPDATE playlists SET name = ?1 WHERE id = ?2",
+            rusqlite::params![name, playlist_id],
+        )?;
+        if n == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// プレイリスト削除。`playlist_items` は ON DELETE CASCADE で連動して消える。
+    pub fn playlist_delete(&self, playlist_id: i64) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        let n = conn.execute("DELETE FROM playlists WHERE id = ?1", [playlist_id])?;
+        if n == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// プレイリストの中身。position 昇順。
+    pub fn playlist_items(&self, playlist_id: i64) -> Result<Vec<PlaylistEntry>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT i.position, i.video_id, v.title, NULLIF(v.channel_id, ''),
+                    v.channel_title, v.thumbnail_url
+             FROM playlist_items i JOIN videos v ON v.video_id = i.video_id
+             WHERE i.playlist_id = ?1
+             ORDER BY i.position, i.rowid",
+        )?;
+        let mut rows = stmt.query([playlist_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(PlaylistEntry {
+                position: row.get(0)?,
+                video_id: row.get(1)?,
+                title: row.get(2)?,
+                channel_id: row.get(3)?,
+                channel_title: row.get(4)?,
+                thumbnail_url: row.get(5)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// プレイリスト末尾への追加。`videos` 登録と同じトランザクションで行い、
+    /// position は末尾 + 1。既登録の動画は重複登録しない（位置は維持）。
+    /// 存在しないプレイリストには `DbError::NotFound`。
+    pub fn playlist_add(
+        &self,
+        playlist_id: i64,
+        v: &crate::model::VideoRef,
+    ) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
+            [playlist_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(DbError::NotFound);
+        }
+        Self::video_upsert(&tx, v)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id, position)
+             VALUES (?1, ?2,
+                     COALESCE((SELECT MAX(position) + 1 FROM playlist_items
+                               WHERE playlist_id = ?1), 0))",
+            rusqlite::params![playlist_id, v.video_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn playlist_remove(&self, playlist_id: i64, video_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM playlist_items WHERE playlist_id = ?1 AND video_id = ?2",
+            rusqlite::params![playlist_id, video_id],
+        )?;
+        Ok(())
     }
 
     /// チャットの一括保存（設計書 §6.2）。ポーリング応答 1 回分を 1 トランザクションで。
@@ -727,11 +990,27 @@ fn ingest_rows(
 ) -> Result<IngestOutcome, DbError> {
     let mut out = IngestOutcome::default();
     for v in entries {
+        // 新規行は is_read=0・ingested=1 で未読投入。既存行は通常はそのままだが、
+        // フィード未確定の行（ingested=0 のプレースホルダ）には RSS 到達の
+        // 時点で投稿日・種別を埋めて未読へ戻し ingested=1 に確定する。
+        // ingested=1 の行は WHERE で除外して既読状態を保つ（既読→未読への
+        // 戻しは初回購読時の reset_unread 経路だけが担う）。
         out.inserted += tx.execute(
-            "INSERT OR IGNORE INTO videos
+            "INSERT INTO videos
                (video_id, channel_id, channel_title, title, thumbnail_url,
-                published_at, kind, is_read)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                published_at, kind, is_read, ingested)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 1)
+             ON CONFLICT (video_id) DO UPDATE SET
+               channel_id = excluded.channel_id,
+               channel_title = COALESCE(excluded.channel_title, videos.channel_title),
+               title = CASE WHEN excluded.title <> '' THEN excluded.title
+                            ELSE videos.title END,
+               thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
+               published_at = excluded.published_at,
+               kind = excluded.kind,
+               is_read = 0,
+               ingested = 1
+             WHERE videos.ingested = 0",
             rusqlite::params![
                 v.video_id,
                 v.channel_id,
@@ -920,6 +1199,7 @@ mod tests {
         .unwrap();
         let db = Db {
             conn: Arc::new(Mutex::new(conn)),
+            history_suppressed: Arc::new(Mutex::new(HashSet::new())),
         };
         db.migrate().unwrap();
 
@@ -1090,5 +1370,384 @@ mod tests {
         assert!(db.filter_list().unwrap().is_empty());
         // 存在しない ID の削除は false
         assert!(!db.filter_remove(f.id).unwrap());
+    }
+
+    fn vref(video_id: &str, title: &str) -> crate::model::VideoRef {
+        crate::model::VideoRef {
+            video_id: video_id.to_string(),
+            title: title.to_string(),
+            channel_id: Some("UCchan000000000000001".to_string()),
+            channel_title: Some("テストCH".to_string()),
+            thumbnail_url: Some("https://i.ytimg.com/vi/x.jpg".to_string()),
+        }
+    }
+
+    /// v7 マイグレーション: ingested のバックフィルは投稿日を持つ行のみ 1 にする。
+    /// v6 状態の DB に「投稿日ありのフィード行」と「投稿日なしの行」
+    /// （日付を欠いたフィード行とライブラリ由来プレースホルダは区別不能）を
+    /// 仕込んでから v7 を適用する。
+    #[test]
+    fn migrate_v7_backfills_ingested_by_provenance() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 6) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+        // 既存行はすべてフィード由来と確定できるため一律 1。
+        // フィード由来であり得ない行（お気に入り・プレイリスト参照のある
+        // 日付なし行、チャンネルなしの日付なし行＝この PR の開発ビルドで
+        // 作られたプレースホルダに限る）だけが 0 に戻る
+        conn.execute(
+            "INSERT INTO channels (channel_id, title) VALUES ('UCfeedchan00000000001', 'CH')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title, published_at, is_read)
+             VALUES ('dated_ref', 'UCfeedchan00000000001', 'DR', '2026-10-01T00:00:00+00:00', 1),
+                    ('dated_unref', 'UCfeedchan00000000001', 'DU', '2026-10-01T00:00:00+00:00', 0),
+                    ('undated_ref', 'UCfeedchan00000000001', 'UR', NULL, 1),
+                    ('undated_unref', 'UCfeedchan00000000001', 'UU', NULL, 1),
+                    ('undated_noch', '', 'UN', NULL, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO favorites (video_id) VALUES ('dated_ref'), ('undated_ref')",
+            [],
+        )
+        .unwrap();
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 7) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+        let mut stmt = conn
+            .prepare("SELECT video_id, ingested FROM videos ORDER BY video_id")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("dated_ref".to_string(), 1),
+                ("dated_unref".to_string(), 1),
+                ("undated_noch".to_string(), 0),
+                // 参照のある日付なし行はプレースホルダ（開発ビルド由来）として 0
+                ("undated_ref".to_string(), 0),
+                // 未参照の日付なし行はリリース済み DB ではフィード由来しか
+                // あり得ないため 1 に保持する
+                ("undated_unref".to_string(), 1)
+            ]
+        );
+    }
+
+    /// v8: この PR の開発途中の 3 状態版 v7 が書き込んだ ingested=2 行を
+    /// 投入済みに昇格する（リリース済み DB では空操作）。
+    #[test]
+    fn migrate_v8_promotes_intermediate_state2() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        // v7 までを適用した状態（3 状態版 v7 を通った開発 DB を模す）
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 8) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO channels (channel_id, title) VALUES ('UCfeedchan00000000001', 'CH')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title, published_at, is_read, ingested)
+             VALUES ('dev_state2', 'UCfeedchan00000000001', 'S2', NULL, 1, 2),
+                    ('normal', 'UCfeedchan00000000001', 'N1', '2026-10-01T00:00:00+00:00', 1, 1),
+                    ('placeholder', 'UCfeedchan00000000001', 'P0', NULL, 1, 0)",
+            [],
+        )
+        .unwrap();
+        // 3 状態版の v7 を既に適用済みとした DB に v8 だけを後追い適用する
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 8) {
+            conn.execute_batch(m.sql).unwrap();
+        }
+        let mut stmt = conn
+            .prepare("SELECT video_id, ingested FROM videos ORDER BY video_id")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("dev_state2".to_string(), 1),
+                ("normal".to_string(), 1),
+                ("placeholder".to_string(), 0)
+            ]
+        );
+    }
+
+    /// DB-LD-01: お気に入りの追加・一覧・削除（FR-7）。
+    /// 動画メタは videos 台帳から JOIN で取り、重複登録は新しい日時に更新しない。
+    #[test]
+    fn favorite_roundtrip() {
+        let db = Db::connect_in_memory().unwrap();
+        db.favorite_add(&vref("dQw4w9WgXcQ", "動画A")).unwrap();
+        let list = db.favorite_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "動画A");
+        assert_eq!(list[0].channel_id.as_deref(), Some("UCchan000000000000001"));
+        db.favorite_add(&vref("dQw4w9WgXcQ", "動画A")).unwrap();
+        assert_eq!(db.favorite_list().unwrap().len(), 1);
+        db.favorite_remove("dQw4w9WgXcQ").unwrap();
+        assert!(db.favorite_list().unwrap().is_empty());
+    }
+
+    /// DB-LD-02: video_upsert は非空値で既存メタを補強し、空値は上書きしない。
+    /// channel_id が取れない入力は台帳では空文字になり、一覧では NULL で返す。
+    #[test]
+    fn video_upsert_merges_metadata() {
+        let db = Db::connect_in_memory().unwrap();
+        db.favorite_add(&vref("dQw4w9WgXcQ", "元タイトル")).unwrap();
+        // 空タイトル・channel_id なしで再登録しても既存値を保つ
+        let mut sparse = vref("dQw4w9WgXcQ", "");
+        sparse.channel_id = None;
+        db.favorite_add(&sparse).unwrap();
+        let list = db.favorite_list().unwrap();
+        assert_eq!(list[0].title, "元タイトル");
+        assert_eq!(list[0].channel_id.as_deref(), Some("UCchan000000000000001"));
+        // channel_id を一切持たない動画は NULLIF で None に見える
+        let mut no_ch = vref("nochan12345", "無名");
+        no_ch.channel_id = None;
+        no_ch.channel_title = None;
+        db.favorite_add(&no_ch).unwrap();
+        let e = db
+            .favorite_list()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.video_id == "nochan12345")
+            .unwrap();
+        assert_eq!(e.channel_id, None);
+    }
+
+    /// DB-LD-03: プレイリストの CRUD とアイテム順序（FR-7）。
+    /// position は末尾追加で連番、重複追加は位置を維持して無視される。
+    #[test]
+    fn playlist_crud_and_order() {
+        let db = Db::connect_in_memory().unwrap();
+        let pl = db.playlist_create("夜の選曲").unwrap();
+        assert_eq!(pl.item_count, 0);
+        db.playlist_add(pl.id, &vref("aaaaaaaaaa1", "A")).unwrap();
+        db.playlist_add(pl.id, &vref("bbbbbbbbbb2", "B")).unwrap();
+        // 重複追加は位置を維持して無視される
+        db.playlist_add(pl.id, &vref("aaaaaaaaaa1", "A")).unwrap();
+        let items = db.playlist_items(pl.id).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].video_id, "aaaaaaaaaa1");
+        assert_eq!(items[1].video_id, "bbbbbbbbbb2");
+        assert_eq!(items[0].position, 0);
+        // 一覧の item_count も 2
+        assert_eq!(db.playlist_list().unwrap()[0].item_count, 2);
+        // 途中削除でも残りの順序は変わらない
+        db.playlist_remove(pl.id, "aaaaaaaaaa1").unwrap();
+        let items = db.playlist_items(pl.id).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].video_id, "bbbbbbbbbb2");
+        // リネームと削除
+        db.playlist_rename(pl.id, "朝の選曲").unwrap();
+        assert_eq!(db.playlist_list().unwrap()[0].name, "朝の選曲");
+        db.playlist_delete(pl.id).unwrap();
+        assert!(db.playlist_items(pl.id).unwrap().is_empty());
+        assert!(db.playlist_list().unwrap().is_empty());
+        // 存在しない id への rename / add は NotFound
+        assert!(matches!(
+            db.playlist_rename(999, "x"),
+            Err(DbError::NotFound)
+        ));
+        assert!(matches!(
+            db.playlist_add(999, &vref("cccccccccc3", "C")),
+            Err(DbError::NotFound)
+        ));
+    }
+
+    /// DB-LD-04: 履歴一覧は新しい順、history_remove で個別削除（FR-7、仕様決定 I）。
+    #[test]
+    fn history_list_and_remove() {
+        let db = Db::connect_in_memory().unwrap();
+        for (i, v) in ["a1", "a2", "a3"].iter().enumerate() {
+            db.history_update_progress(v, "t", i as f64, Some(60), false)
+                .unwrap();
+        }
+        let list = db.history_list(500).unwrap();
+        assert_eq!(list.len(), 3);
+        // last_watched_at は datetime('now') 同時刻でも rowid 降順で
+        // 決定的になる（同一時刻の順序不定を防ぐ）
+        assert_eq!(list[0].video_id, "a3");
+        assert_eq!(list[1].video_id, "a2");
+        assert_eq!(list[2].video_id, "a1");
+        assert!(list.iter().all(|h| !h.completed));
+        db.history_remove("a2").unwrap();
+        let list = db.history_list(500).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(!list.iter().any(|h| h.video_id == "a2"));
+        // limit が効く
+        assert_eq!(db.history_list(1).unwrap().len(), 1);
+    }
+
+    /// DB-LD-05: 手動削除した履歴は再生中プレイヤーの進捗保存で復活しない。
+    /// 明示的な再生開始（history_upsert）で抑止は解除される。
+    #[test]
+    fn history_remove_suppresses_inflight_progress() {
+        let db = Db::connect_in_memory().unwrap();
+        db.history_upsert("abc123def45").unwrap();
+        db.history_update_progress("abc123def45", "t", 10.0, Some(60), false)
+            .unwrap();
+        // 視聴中にライブラリから削除 → 以後の進捗保存は書き込まない
+        db.history_remove("abc123def45").unwrap();
+        db.history_update_progress("abc123def45", "t", 30.0, Some(60), false)
+            .unwrap();
+        assert!(db.history_get("abc123def45").unwrap().is_none());
+        // 明示的な再生開始で抑止解除 → 履歴が再び残る
+        db.history_upsert("abc123def45").unwrap();
+        db.history_update_progress("abc123def45", "t", 5.0, Some(60), false)
+            .unwrap();
+        let h = db.history_get("abc123def45").unwrap().unwrap();
+        assert_eq!(h.position_sec, 5);
+
+        // 削除と進捗保存が並行しても、remove 完了後に履歴は復活しない
+        // （抑止確認と書き込みが conn ロック内で直列化されていることの検証）
+        let db2 = db.clone();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..50 {
+                let _ = db2.history_update_progress("conc1234567", "t", 1.0, None, false);
+            }
+        });
+        db.history_upsert("conc1234567").unwrap();
+        db.history_remove("conc1234567").unwrap();
+        writer.join().unwrap();
+        db.history_update_progress("conc1234567", "t", 1.0, None, false)
+            .unwrap();
+        assert!(db.history_get("conc1234567").unwrap().is_none());
+    }
+
+    /// DB-LD-06: ライブラリ登録で先に作ったプレースホルダ行に、
+    /// 後着の RSS 投入で投稿日・種別・未読を埋める。既存のフィード行は
+    /// 既読状態を含めて書き換えない。
+    #[test]
+    fn feed_ingest_backfills_library_placeholder() {
+        let db = Db::connect_in_memory().unwrap();
+        let ch = "UCchan000000000000001";
+        // 購読チャンネルと、お気に入り登録で先にできた行（published_at NULL）
+        db.feed_subscribe(&SubscribeArgs {
+            channel_id: ch,
+            title: "テストCH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &[],
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+        let mut v = vref("dQw4w9WgXcQ", "動画A");
+        v.channel_id = Some(ch.to_string());
+        db.favorite_add(&v).unwrap();
+
+        // RSS で同じ動画が届く: published_at / kind が埋まり未読になる
+        let entry = NewVideo {
+            video_id: "dQw4w9WgXcQ",
+            channel_id: ch,
+            channel_title: "テストCH",
+            title: "動画A",
+            thumbnail_url: None,
+            published_at: Some("2026-10-07T00:00:00+00:00"),
+            kind: "video",
+        };
+        let out = db
+            .feed_ingest(ch, std::slice::from_ref(&entry), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.inserted, 1);
+        let feed = db
+            .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+            .unwrap();
+        let item = feed.iter().find(|i| i.video_id == "dQw4w9WgXcQ").unwrap();
+        assert_eq!(
+            item.published_at.as_deref(),
+            Some("2026-10-07T00:00:00+00:00")
+        );
+        assert!(!item.is_read);
+
+        // 既読にしても再投入で既読状態は保つ（プレースホルダではないため）
+        db.videos_mark_read(&["dQw4w9WgXcQ".to_string()]).unwrap();
+        let out = db.feed_ingest(ch, &[entry], None, None).unwrap().unwrap();
+        assert_eq!(out.inserted, 0);
+        let feed = db
+            .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+            .unwrap();
+        let item = feed.iter().find(|i| i.video_id == "dQw4w9WgXcQ").unwrap();
+        assert!(item.is_read);
+
+        // 投稿日なしのエントリも最初の投入で ingested=1 となり、
+        // 再投入で未読に戻ったり inserted が増えたりしない
+        let no_date = NewVideo {
+            video_id: "nodate12345",
+            channel_id: ch,
+            channel_title: "テストCH",
+            title: "投稿日なし",
+            thumbnail_url: None,
+            published_at: None,
+            kind: "video",
+        };
+        let out = db
+            .feed_ingest(ch, std::slice::from_ref(&no_date), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.inserted, 1);
+        db.videos_mark_read(&["nodate12345".to_string()]).unwrap();
+        let out = db.feed_ingest(ch, &[no_date], None, None).unwrap().unwrap();
+        assert_eq!(out.inserted, 0);
+        let feed = db
+            .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+            .unwrap();
+        let item = feed.iter().find(|i| i.video_id == "nodate12345").unwrap();
+        assert!(item.is_read);
+        assert_eq!(item.published_at, None);
+
+        // フィードに到達していないプレースホルダ（ingested=0）はフィードに出ない
+        let mut pending = vref("pend1234567", "未到達");
+        pending.channel_id = Some(ch.to_string());
+        db.favorite_add(&pending).unwrap();
+        let feed = db
+            .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+            .unwrap();
+        assert!(!feed.iter().any(|i| i.video_id == "pend1234567"));
     }
 }
