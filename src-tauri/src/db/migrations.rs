@@ -194,13 +194,19 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     // Phase 7 レビュー対応: ライブラリ登録で先にできた videos 行（プレースホルダ）と
     // フィード投入済みの行を published_at の有無では判別できない（投稿日なしの
-    // RSS エントリが毎回新着扱いになる）。独立したフラグ列を追加し、
-    // 既存行はすべてフィード由来なので 1 に初期化する。
+    // RSS エントリが毎回新着扱いになる）。独立したフラグ列を追加する。
+    // バックフィルは投稿日を持つ行のみ 1 にする。投稿日なしの行は
+    // 「日付を欠いたフィード行」と「ライブラリ由来のプレースホルダ」を
+    // v6 スキーマでは区別できないため 0 に揃える。プレースホルダを
+    // 投入済みと誤認すると初回 RSS 到達の補完が永続的に失われる一方、
+    // 日付なしのフィード行を未投入と見なしても影響は次回投入時に一度だけ
+    // 未読へ戻ることに留まり、その投入で ingested=1 に確定するため
+    // 安全側（0）を採る。
     Migration {
         version: 7,
         name: "videos_ingested_flag",
         sql: "ALTER TABLE videos
                 ADD COLUMN ingested INTEGER NOT NULL DEFAULT 0;
-              UPDATE videos SET ingested = 1;",
+              UPDATE videos SET ingested = 1 WHERE published_at IS NOT NULL;",
     },
 ];

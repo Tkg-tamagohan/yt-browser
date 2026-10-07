@@ -1384,6 +1384,63 @@ mod tests {
         }
     }
 
+    /// v7 マイグレーション: ingested のバックフィルは投稿日を持つ行のみ 1 にする。
+    /// v6 状態の DB に「投稿日ありのフィード行」と「投稿日なしの行」
+    /// （日付を欠いたフィード行とライブラリ由来プレースホルダは区別不能）を
+    /// 仕込んでから v7 を適用する。
+    #[test]
+    fn migrate_v7_backfills_ingested_by_provenance() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 6) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+        // 投稿日あり＝フィード投入済み確定。投稿日なしは曖昧なので 0 に揃える。
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title, published_at, is_read)
+             VALUES ('dated1', 'UCaaaa', 'D', '2026-10-01T00:00:00+00:00', 1),
+                    ('undated', 'UCbbbb', 'U', NULL, 1),
+                    ('holder1', 'UCcccc', 'P', NULL, 0)",
+            [],
+        )
+        .unwrap();
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 7) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+        let mut stmt = conn
+            .prepare("SELECT video_id, ingested FROM videos ORDER BY video_id")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("dated1".to_string(), 1),
+                ("holder1".to_string(), 0),
+                ("undated".to_string(), 0)
+            ]
+        );
+    }
+
     /// DB-LD-01: お気に入りの追加・一覧・削除（FR-7）。
     /// 動画メタは videos 台帳から JOIN で取り、重複登録は新しい日時に更新しない。
     #[test]

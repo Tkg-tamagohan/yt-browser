@@ -29,7 +29,11 @@
   // 遅れて返る旧リクエストが表示を上書きしないようにする世代番号
   let selectedId = $state<number | null>(null);
   let playlistItems = $state<PlaylistEntry[]>([]);
+  // 選択中プレイリストの項目取得（itemsReq）とプレイリスト一覧の取得
+  // （listsReq）は別の世代で管理する。片方の世代を進めても、無関係な
+  // 取得中の応答を無効化しない
   let itemsReq = 0;
+  let listsReq = 0;
   let newPlaylistName = $state("");
   let renamingId = $state<number | null>(null);
   let renameText = $state("");
@@ -122,6 +126,7 @@
   }
 
   function onPlaylistCreated(pl: Playlist): void {
+    ++listsReq;
     playlists = [...playlists, pl];
   }
 
@@ -130,6 +135,7 @@
     if (!name) return;
     try {
       const pl = await invoke<Playlist>("playlist_create", { name });
+      ++listsReq;
       playlists = [...playlists, pl];
       newPlaylistName = "";
       selectedId = pl.id;
@@ -153,6 +159,7 @@
     }
     try {
       await invoke("playlist_rename", { playlistId: pl.id, name });
+      ++listsReq;
       playlists = playlists.map((p) =>
         p.id === pl.id ? { ...p, name } : p,
       );
@@ -166,6 +173,7 @@
   async function deletePlaylist(pl: Playlist): Promise<void> {
     try {
       await invoke("playlist_delete", { playlistId: pl.id });
+      ++listsReq;
       playlists = playlists.filter((p) => p.id !== pl.id);
       if (selectedId === pl.id) {
         selectedId = null;
@@ -196,19 +204,21 @@
 
   /// VideoActions からのプレイリスト追加通知（FR-7）。
   /// 追加先が表示中なら項目一覧も読み直す（重複追加は冪等なので再取得で吸収）。
-  /// 再取得も世代番号を進め、連続追加で遅れた古い応答が新しい一覧を
-  /// 上書きしないようにする（選択時の取得と同じ世代に載せる）
+  /// itemsReq は選択中プレイリストの項目取得だけの世代なので、
+  /// 追加先が表示中のときだけ進める（他プレイリストへの追加で
+  /// 選択中の取得を無効化しない）。一覧側は独立した listsReq で管理。
   async function onPlaylistAdd(playlistId: number): Promise<void> {
-    const req = ++itemsReq;
+    const listReq = ++listsReq;
+    const target = selectedId === playlistId;
+    const itemReq = target ? ++itemsReq : itemsReq;
     try {
       const list = await invoke<Playlist[]>("playlist_list");
-      if (req !== itemsReq) return;
-      playlists = list;
-      if (selectedId === playlistId) {
+      if (listReq === listsReq) playlists = list;
+      if (target) {
         const items = await invoke<PlaylistEntry[]>("playlist_items", {
           playlistId,
         });
-        if (req === itemsReq && selectedId === playlistId) {
+        if (itemReq === itemsReq && selectedId === playlistId) {
           playlistItems = items;
         }
       }
