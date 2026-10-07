@@ -13,6 +13,11 @@ use thiserror::Error;
 
 use crate::model::{BlockedChannel, Category, Channel, FeedFilter, FeedItem, WatchHistory};
 
+/// フィード一覧の表示件数上限（設計書 §3.1 の LIMIT 500）。
+/// NG フィルタで抜けた分は後続行で埋めるため、走査は述語適合がこの件数に
+/// 達するまで続く（`feed_list_filtered`）。
+pub const FEED_LIST_LIMIT: usize = 500;
+
 /// `videos` への新規挿入 1 件分（`video_insert_new` の引数）。
 #[derive(Debug, Clone)]
 pub struct NewVideo<'a> {
@@ -451,7 +456,15 @@ impl Db {
     }
 
     /// `list_feed`（設計書 §3.1）。ブロックチャンネルの動画は常に除外する（FR-5）。
-    pub fn feed_list(&self, filter: &FeedFilter) -> Result<Vec<FeedItem>, DbError> {
+    /// SQL の LIMIT は掛けず、述語 `keep` に適合した行だけを `limit` 件までスキャンする
+    /// （NG フィルタで先頭が抜けても後続の適合行を拾える。FR-9）。
+    /// `feed_list` 相当の無条件取得は `keep: |_| true` として呼ぶ。
+    pub fn feed_list_filtered(
+        &self,
+        filter: &FeedFilter,
+        limit: usize,
+        keep: impl Fn(&FeedItem) -> bool,
+    ) -> Result<Vec<FeedItem>, DbError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
@@ -465,8 +478,7 @@ impl Db {
                     OR c.category_id = ?2)
                AND (?3 IS NULL
                     OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
-             ORDER BY v.published_at DESC
-             LIMIT 500",
+             ORDER BY v.published_at DESC",
         )?;
         let mut rows = stmt.query(rusqlite::params![
             filter.unread_only as i64,
@@ -474,8 +486,9 @@ impl Db {
             filter.days.map(|d| d as i64),
         ])?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            out.push(FeedItem {
+        while out.len() < limit {
+            let Some(row) = rows.next()? else { break };
+            let item = FeedItem {
                 video_id: row.get(0)?,
                 channel_id: row.get(1)?,
                 channel_title: row.get(2)?,
@@ -484,7 +497,10 @@ impl Db {
                 published_at: row.get(5)?,
                 kind: row.get(6)?,
                 is_read: row.get::<_, i64>(7)? != 0,
-            });
+            };
+            if keep(&item) {
+                out.push(item);
+            }
         }
         Ok(out)
     }
@@ -559,9 +575,145 @@ impl Db {
             None => Ok(None),
         }
     }
-}
 
-/// `feed_ingest` / `feed_subscribe` 共通の投入処理。呼び出し側のトランザクション内で
+    /// チャットの一括保存（設計書 §6.2）。ポーリング応答 1 回分を 1 トランザクションで。
+    pub fn chat_insert_batch(&self, events: &[crate::model::ChatEvent]) -> Result<usize, DbError> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let n = {
+            let mut stmt = tx.prepare(
+                "INSERT INTO chat_logs
+                   (video_id, posted_at_usec, author_channel_id, author_name,
+                    kind, message, amount_display, raw_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            let mut n = 0usize;
+            for e in events {
+                n += stmt.execute(rusqlite::params![
+                    e.video_id,
+                    e.posted_at_usec,
+                    e.author_channel_id,
+                    e.author_name,
+                    e.kind.as_str(),
+                    e.message,
+                    e.amount_display,
+                    e.raw_json,
+                ])?;
+            }
+            n
+        };
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// チャット履歴の全文検索（FR-8、`chat_history_search`）。
+    /// 本文・投稿者名を FTS5 で AND 検索し、時刻の新しい順に返す。
+    /// `video_id` 指定でその動画に限定する。
+    pub fn chat_search(
+        &self,
+        video_id: Option<&str>,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<crate::model::ChatEvent>, DbError> {
+        // 入力を空白でトークン化し、各語をフレーズ指定にする（AND 検索）。
+        // FTS5 構文との衝突を避けるため各語を " で囲み、内部の " は "" に逃がす。
+        let fts = query
+            .split_whitespace()
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if fts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT c.video_id, c.posted_at_usec, c.author_channel_id, c.author_name,
+                    c.kind, c.message, c.amount_display
+             FROM chat_logs_fts f JOIN chat_logs c ON c.id = f.rowid
+             WHERE chat_logs_fts MATCH ?1
+               AND (?2 IS NULL OR c.video_id = ?2)
+             ORDER BY c.posted_at_usec DESC
+             LIMIT ?3",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![fts, video_id, limit])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let kind: String = row.get(4)?;
+            out.push(crate::model::ChatEvent {
+                item_id: String::new(),
+                video_id: row.get(0)?,
+                posted_at_usec: row.get(1)?,
+                author_channel_id: row.get(2)?,
+                author_name: row.get(3)?,
+                kind: crate::model::ChatKind::from_str(&kind),
+                message: row.get(5)?,
+                amount_display: row.get(6)?,
+                ng: false,
+                raw_json: String::new(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// NG フィルタ登録（FR-7）。対象・種別・パターンの妥当性は呼び出し側で検証済み。
+    pub fn filter_add(
+        &self,
+        target: &str,
+        kind: &str,
+        pattern: &str,
+    ) -> Result<crate::model::Filter, DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO filters (target, kind, pattern) VALUES (?1, ?2, ?3)",
+            rusqlite::params![target, kind, pattern],
+        )?;
+        let id = conn.last_insert_rowid();
+        let created_at: String =
+            conn.query_row("SELECT created_at FROM filters WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })?;
+        Ok(crate::model::Filter {
+            id,
+            target: target.to_string(),
+            kind: kind.to_string(),
+            pattern: pattern.to_string(),
+            enabled: true,
+            created_at,
+        })
+    }
+
+    /// NG フィルタ削除。行が存在しなければ false。
+    pub fn filter_remove(&self, id: i64) -> Result<bool, DbError> {
+        let conn = self.lock()?;
+        let n = conn.execute("DELETE FROM filters WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
+
+    /// NG フィルタ一覧（設定画面と Matcher の rebuild 用）。
+    pub fn filter_list(&self) -> Result<Vec<crate::model::Filter>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, target, kind, pattern, enabled, created_at
+             FROM filters ORDER BY id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(crate::model::Filter {
+                id: row.get(0)?,
+                target: row.get(1)?,
+                kind: row.get(2)?,
+                pattern: row.get(3)?,
+                enabled: row.get::<_, i64>(4)? != 0,
+                created_at: row.get(5)?,
+            });
+        }
+        Ok(out)
+    }
+}
 /// 実行する前提で、チャンネルの存在確認はここでは行わない。
 /// `reset_unread` が真のとき、既存行（解除済み購読の残骸など）の既読も未読に戻し、
 /// 実際に戻した件数を `unread_changed` で返す。
@@ -856,14 +1008,87 @@ mod tests {
             category_id: None,
             days: None,
         };
-        assert_eq!(db.feed_list(&all).unwrap().len(), 1);
+        assert_eq!(
+            db.feed_list_filtered(&all, FEED_LIST_LIMIT, |_| true)
+                .unwrap()
+                .len(),
+            1
+        );
         db.channel_delete("UCchan000000000000001").unwrap();
-        assert!(db.feed_list(&all).unwrap().is_empty());
+        assert!(db
+            .feed_list_filtered(&all, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .is_empty());
         let unread = FeedFilter {
             unread_only: true,
             category_id: None,
             days: None,
         };
-        assert!(db.feed_list(&unread).unwrap().is_empty());
+        assert!(db
+            .feed_list_filtered(&unread, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// DB-CH-01: チャットのバッチ保存と FTS5 検索（FR-8）。
+    /// 本文・投稿者のどちらにもヒットし、video_id で絞り込める。
+    #[test]
+    fn chat_insert_and_search() {
+        use crate::model::{ChatEvent, ChatKind};
+        let db = Db::connect_in_memory().unwrap();
+        let ev = |id: i64, vid: &str, author: &str, msg: &str| ChatEvent {
+            item_id: String::new(),
+            video_id: vid.to_string(),
+            posted_at_usec: id,
+            author_channel_id: None,
+            author_name: Some(author.to_string()),
+            kind: ChatKind::Text,
+            message: msg.to_string(),
+            amount_display: None,
+            ng: false,
+            raw_json: "{}".to_string(),
+        };
+        let n = db
+            .chat_insert_batch(&[
+                ev(1, "v1", "@alice", "こんにちは世界"),
+                ev(2, "v1", "@bob", "another line"),
+                ev(3, "v2", "@alice", "アルプスの発言"),
+            ])
+            .unwrap();
+        assert_eq!(n, 3);
+
+        // 本文検索（trigram: 部分文字列でもヒットする）
+        let hits = db.chat_search(None, "こんにちは", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message, "こんにちは世界");
+        // 投稿者名でもヒットする
+        let hits = db.chat_search(None, "alice", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        // AND 検索（投稿者＋本文の両方を含む行のみ）
+        // 各検索語は trigram の最小語長である 3 文字以上にする
+        let hits = db.chat_search(None, "alice アルプ", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].video_id, "v2");
+        // video_id 絞り込み
+        let hits = db.chat_search(Some("v1"), "alice", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        // FTS5 構文を含む入力でも落ちない
+        let hits = db.chat_search(None, "NEAR 'こんにちは'", 10).unwrap();
+        assert_eq!(hits.len(), 0);
+    }
+
+    /// DB-CH-02: NG フィルタの登録・一覧・削除（FR-7）。
+    #[test]
+    fn filter_roundtrip() {
+        let db = Db::connect_in_memory().unwrap();
+        let f = db.filter_add("chat_text", "literal", "売り込み").unwrap();
+        assert_eq!(f.target, "chat_text");
+        assert!(f.enabled);
+        assert!(!f.created_at.is_empty());
+        assert_eq!(db.filter_list().unwrap().len(), 1);
+        assert!(db.filter_remove(f.id).unwrap());
+        assert!(db.filter_list().unwrap().is_empty());
+        // 存在しない ID の削除は false
+        assert!(!db.filter_remove(f.id).unwrap());
     }
 }

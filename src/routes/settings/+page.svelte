@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { t } from "$lib/i18n";
+  import { t, type MessageKey } from "$lib/i18n";
   import {
     initPlayerEvents,
     playerStates,
     type BlockedChannel,
+    type ChatEvent,
+    type Filter,
     type UiError,
   } from "$lib/players.svelte";
 
@@ -64,6 +66,102 @@
 
   // ブロック中チャンネル（FR-5: 設定画面での解除）
   let blocked = $state<BlockedChannel[]>([]);
+
+  // NG フィルタ（FR-7）。対象・種別は DDL の CHECK と同じ値集合
+  const FILTER_TARGETS = [
+    "video_title",
+    "video_desc",
+    "channel_title",
+    "channel_id",
+    "chat_text",
+    "chat_author",
+  ] as const;
+  const FILTER_KINDS = ["literal", "regex"] as const;
+  let filters = $state<Filter[]>([]);
+  let fTarget = $state<string>("chat_text");
+  let fKind = $state<string>("literal");
+  let fPattern = $state("");
+
+  // チャット履歴検索（FR-8）
+  let chatQuery = $state("");
+  let chatVideoId = $state("");
+  let chatResults = $state<ChatEvent[] | null>(null);
+  let chatSearching = $state(false);
+
+  async function loadFilters(): Promise<void> {
+    try {
+      filters = await invoke<Filter[]>("filter_list");
+    } catch {
+      filters = [];
+    }
+  }
+
+  async function addFilter(): Promise<void> {
+    const pattern = fPattern.trim();
+    if (!pattern) return;
+    try {
+      await invoke("filter_add", {
+        target: fTarget,
+        kind: fKind,
+        pattern,
+      });
+      fPattern = "";
+      await loadFilters();
+      notify(t("settings.filters.added"));
+    } catch (e) {
+      notify(t("settings.filters.addFailed", { message: asErrorMessage(e) }));
+    }
+  }
+
+  async function removeFilter(f: Filter): Promise<void> {
+    try {
+      await invoke("filter_remove", { id: f.id });
+      filters = filters.filter((x) => x.id !== f.id);
+      notify(t("settings.filters.removed"));
+    } catch (e) {
+      notify(t("settings.filters.removeFailed", { message: asErrorMessage(e) }));
+    }
+  }
+
+  async function searchChat(): Promise<void> {
+    const query = chatQuery.trim();
+    if (!query) return;
+    chatSearching = true;
+    try {
+      chatResults = await invoke<ChatEvent[]>("chat_history_search", {
+        videoId: chatVideoId.trim() || null,
+        query,
+        limit: 200,
+      });
+    } catch (e) {
+      chatResults = null;
+      notify(t("settings.chatSearch.failed", { message: asErrorMessage(e) }));
+    }
+    chatSearching = false;
+  }
+
+  /// フィルタ対象・種別の日本語ラベル。未定義の値は生値をそのまま出す
+  /// （メッセージキー欠落時のフォールバック。sponsor カテゴリと同じ方式）。
+  function filterTargetLabel(target: string): string {
+    const key = `filter.target.${target}` as MessageKey;
+    const s = t(key);
+    return s === key ? target : s;
+  }
+
+  function filterKindLabel(kind: string): string {
+    const key = `filter.kind.${kind}` as MessageKey;
+    const s = t(key);
+    return s === key ? kind : s;
+  }
+
+  function fmtChatTime(usec: number): string {
+    return new Date(usec / 1000).toLocaleString("ja-JP", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
 
   async function loadBlocked(): Promise<void> {
     try {
@@ -205,6 +303,7 @@
       selected === CUSTOM ? customFormat.trim() : selected;
     loading = false;
     void loadBlocked();
+    void loadFilters();
   });
 </script>
 
@@ -280,6 +379,91 @@
           </li>
         {/each}
       </ul>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.filters.title")}</h2>
+    <p class="subtle desc">{t("settings.filters.desc")}</p>
+    <div class="filter-form">
+      <select bind:value={fTarget} aria-label={t("settings.filters.target")}>
+        {#each FILTER_TARGETS as target}
+          <option value={target}>{t(`filter.target.${target}`)}</option>
+        {/each}
+      </select>
+      <select bind:value={fKind} aria-label={t("settings.filters.kind")}>
+        {#each FILTER_KINDS as kind}
+          <option value={kind}>{t(`filter.kind.${kind}`)}</option>
+        {/each}
+      </select>
+      <input
+        type="text"
+        class="pattern-input"
+        bind:value={fPattern}
+        placeholder={t("settings.filters.pattern.placeholder")}
+        onkeydown={(e) => e.key === "Enter" && addFilter()}
+      />
+      <button onclick={addFilter} disabled={!fPattern.trim()}>
+        {t("settings.filters.add")}
+      </button>
+    </div>
+    {#if filters.length === 0}
+      <p class="subtle">{t("settings.filters.empty")}</p>
+    {:else}
+      <ul class="filter-list">
+        {#each filters as f (f.id)}
+          <li>
+            <span class="f-target">{filterTargetLabel(f.target)}</span>
+            <span class="f-kind">{filterKindLabel(f.kind)}</span>
+            <code class="f-pattern">{f.pattern}</code>
+            <button class="link" onclick={() => removeFilter(f)}>
+              {t("settings.filters.remove")}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.chatSearch.title")}</h2>
+    <p class="subtle desc">{t("settings.chatSearch.desc")}</p>
+    <div class="filter-form">
+      <input
+        type="text"
+        class="vid-input"
+        bind:value={chatVideoId}
+        placeholder={t("settings.chatSearch.videoId")}
+      />
+      <input
+        type="text"
+        class="pattern-input"
+        bind:value={chatQuery}
+        placeholder={t("settings.chatSearch.placeholder")}
+        onkeydown={(e) => e.key === "Enter" && searchChat()}
+      />
+      <button onclick={searchChat} disabled={chatSearching || !chatQuery.trim()}>
+        {chatSearching ? t("settings.chatSearch.searching") : t("settings.chatSearch.button")}
+      </button>
+    </div>
+    {#if chatResults !== null}
+      {#if chatResults.length === 0}
+        <p class="subtle">{t("settings.chatSearch.empty")}</p>
+      {:else}
+        <p class="subtle">
+          {t("settings.chatSearch.count", { count: chatResults.length })}
+        </p>
+        <ul class="chat-hits">
+          {#each chatResults as e (e)}
+            <li>
+              <span class="chat-time">{fmtChatTime(e.postedAtUsec)}</span>
+              <span class="ch-title">{e.authorName ?? "-"}</span>
+              {#if e.kind !== "text"}<span class="f-kind">{e.kind}</span>{/if}
+              <span class="hit-msg">{e.message}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </section>
 
@@ -371,5 +555,77 @@
   .save-btn {
     align-self: flex-start;
     margin-top: 16px;
+  }
+
+  .filter-form {
+    display: flex;
+    gap: 8px;
+    margin: 12px 0;
+    flex-wrap: wrap;
+  }
+
+  .filter-form select {
+    padding: 4px;
+    border-radius: 6px;
+  }
+
+  .pattern-input {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .vid-input {
+    width: 220px;
+    font-family: monospace;
+  }
+
+  .filter-list,
+  .chat-hits {
+    list-style: none;
+    padding: 0;
+    margin: 8px 0 0;
+  }
+
+  .filter-list li,
+  .chat-hits li {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 4px 0;
+    font-size: 0.9rem;
+  }
+
+  .f-target {
+    color: #8ab4f8;
+    white-space: nowrap;
+  }
+
+  .f-kind {
+    color: #9aa0a6;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  .f-pattern {
+    color: #e8eaed;
+    overflow-wrap: anywhere;
+    flex: 1;
+  }
+
+  .chat-time {
+    color: #9aa0a6;
+    font-family: monospace;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  .hit-msg {
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  .chat-hits {
+    max-height: 320px;
+    overflow-y: auto;
   }
 </style>
