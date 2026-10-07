@@ -24,6 +24,17 @@ thiserror = "2"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+tokio = { version = "1", features = [
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt",
+  "sync",
+  "time",
+] }
+url = "2"
 
 [dev-dependencies]
 tempfile = "3"

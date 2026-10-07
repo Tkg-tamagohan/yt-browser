@@ -21,11 +21,11 @@
 
 ### Phase 1：mpv 再生の MVP
 
-- [ ] `mpv` モジュール：プロセス起動、Unix ソケット IPC、`observe_property`、コマンド送信
-- [ ] `commands`：`play_video` / `player_control` / `player_close`
-- [ ] 最小 UI：URL または動画 ID の入力 → 再生、進捗、音量、一時停止
-- [ ] `watch_history` への記録とレジューム（前回位置の復帰）
-- [ ] yt-dlp 導入方針（同梱か自動更新か）をここで確定する（要件 8 未決事項）
+- [x] `mpv` モジュール：プロセス起動、Unix ソケット IPC、`observe_property`、コマンド送信
+- [x] `commands`：`play_video` / `player_control` / `player_close`
+- [x] 最小 UI：URL または動画 ID の入力 → 再生、進捗、音量、一時停止
+- [x] `watch_history` への記録とレジューム（前回位置の復帰）
+- [x] yt-dlp 導入方針（同梱か自動更新か）をここで確定する（要件 8 未決事項 → 決定記録「Phase 1 で確定した事項」）
 - [ ] 受け入れ：任意の動画 URL で再生、一時停止、シーク、終了が動き、再開時に前回位置へ復帰する
 
 ### Phase 2：コマ送りと画質選択

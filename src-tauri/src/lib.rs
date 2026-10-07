@@ -5,6 +5,8 @@ mod commands;
 mod db;
 mod error;
 mod model;
+mod mpv;
+mod yt;
 
 use std::path::PathBuf;
 
@@ -63,7 +65,7 @@ fn init_tracing(log_dir: Option<PathBuf>) -> Option<WorkerGuard> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -74,14 +76,42 @@ pub fn run() {
             let db = db::Db::connect(&dir.join("yt-browser.db"))
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
             tracing::info!(path = %dir.display(), "DB 接続を確立");
-            app.manage(db);
+            app.manage(db.clone());
+
+            // mpv の IPC ソケット置き場。runtime_dir が取れない環境では app_data 配下に退避する
+            let socket_dir = app.path().runtime_dir().unwrap_or_else(|_| dir.join("run"));
+            std::fs::create_dir_all(&socket_dir)?;
+
+            let ytdlp_resolver = yt::YtDlpResolver::new(app.path().resource_dir().ok());
+            app.manage(ytdlp_resolver.clone());
+            app.manage(mpv::PlayerManager::new(
+                app.handle().clone(),
+                db,
+                socket_dir,
+                ytdlp_resolver,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::db_status,
             commands::settings_get,
             commands::settings_set,
+            commands::play_video,
+            commands::player_control,
+            commands::player_close,
+            commands::history_get,
+            commands::ytdlp_status,
+            commands::ytdlp_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // アプリ終了時に全 mpv インスタンスを停止する
+    app.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(manager) = handle.try_state::<mpv::PlayerManager>() {
+                tauri::async_runtime::block_on(manager.close_all());
+            }
+        }
+    });
 }

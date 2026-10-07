@@ -1,0 +1,273 @@
+//! mpv JSON IPC の送受信層（設計書 §4.1）。
+//! ソケット接続、`request_id` によるコマンド/応答の対応付け、
+//! 非同期イベント（property-change 等）の配送を担当する。
+//!
+//! Phase 1 は Unix ドメインソケットのみ。Windows の名前付きパイプは
+//! 対応フェーズで `interprocess` 系のクレートに載せ替える。
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::unix::OwnedWriteHalf;
+use tokio::net::UnixStream;
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
+
+/// mpv コマンド応答の待ち時間。loadfile 等は即時返るため十分な値。
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// request_id → 応答待ち送信箱の対応表。
+type PendingMap = HashMap<u64, oneshot::Sender<Result<Value, IpcError>>>;
+
+#[derive(Debug, Error)]
+pub enum IpcError {
+    #[error("ipc io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("mpv が応答せずソケットが閉じられた")]
+    Closed,
+    #[error("mpv 応答タイムアウト")]
+    Timeout,
+    #[error("mpv エラー: {0}")]
+    Mpv(String),
+}
+
+/// mpv から非同期に上がる行。プロパティ変化とその他イベントを区別する。
+#[derive(Debug)]
+pub enum IpcEvent {
+    /// `observe_property` に対応する変化通知。
+    PropertyChange {
+        #[allow(dead_code)]
+        id: u64,
+        name: String,
+        data: Value,
+    },
+    /// `end-file` や `shutdown` などのイベント。
+    Event { name: String, data: Value },
+    /// ソケットが切断された（mpv プロセス終了を含む）。
+    Disconnected,
+}
+
+pub struct IpcClient {
+    /// OwnedWriteHalf は async の await 越えに保持するため tokio Mutex（Send）。
+    writer: AsyncMutex<OwnedWriteHalf>,
+    pending: Arc<Mutex<PendingMap>>,
+    next_request_id: AtomicU64,
+}
+
+impl IpcClient {
+    /// ソケットへ接続し、読み取りタスクを起動する。
+    /// `events` は読み取った非同期イベントの配送先。
+    pub async fn connect(path: &Path, events: mpsc::Sender<IpcEvent>) -> Result<Self, IpcError> {
+        let stream = UnixStream::connect(path).await?;
+        let (read_half, write_half) = stream.into_split();
+        let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
+        spawn_reader(read_half, events, pending.clone());
+        Ok(Self {
+            writer: AsyncMutex::new(write_half),
+            pending,
+            next_request_id: AtomicU64::new(1),
+        })
+    }
+
+    /// JSON コマンドを送り、`request_id` に対応する応答を待つ。
+    /// 応答の `data` フィールドを返す（無い場合は Null）。
+    pub async fn command(&self, args: Vec<Value>) -> Result<Value, IpcError> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        lock(&self.pending).insert(request_id, tx);
+
+        let line = json!({ "command": args, "request_id": request_id }).to_string() + "\n";
+        {
+            let mut writer = self.writer.lock().await;
+            if let Err(e) = writer.write_all(line.as_bytes()).await {
+                lock(&self.pending).remove(&request_id);
+                return Err(e.into());
+            }
+        }
+        match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(_)) => Err(IpcError::Closed),
+            Err(_) => {
+                lock(&self.pending).remove(&request_id);
+                Err(IpcError::Timeout)
+            }
+        }
+    }
+}
+
+/// Mutex のポイズンを握りつぶす。ロック保持中にパニックしない実装なので安全側に倒す。
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn spawn_reader(
+    read: tokio::net::unix::OwnedReadHalf,
+    events: mpsc::Sender<IpcEvent>,
+    pending: Arc<Mutex<PendingMap>>,
+) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(read).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            dispatch_line(&line, &events, &pending);
+        }
+        // 応答待ちのコマンドをすべて失敗させてから切断を通知する
+        for (_, tx) in lock(&pending).drain() {
+            let _ = tx.send(Err(IpcError::Closed));
+        }
+        let _ = events.send(IpcEvent::Disconnected).await;
+    });
+}
+
+fn dispatch_line(line: &str, events: &mpsc::Sender<IpcEvent>, pending: &Arc<Mutex<PendingMap>>) {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        tracing::debug!(line, "mpv IPC: 解釈不能な行をスキップ");
+        return;
+    };
+    // コマンド応答は request_id を持つ
+    if let Some(req_id) = v.get("request_id").and_then(Value::as_u64) {
+        if let Some(tx) = lock(pending).remove(&req_id) {
+            let result = match v.get("error").and_then(Value::as_str) {
+                Some("success") | None => Ok(v.get("data").cloned().unwrap_or(Value::Null)),
+                Some(err) => Err(IpcError::Mpv(err.to_string())),
+            };
+            let _ = tx.send(result);
+        }
+        return;
+    }
+    let ev = match v.get("event").and_then(Value::as_str) {
+        Some("property-change") => IpcEvent::PropertyChange {
+            id: v.get("id").and_then(Value::as_u64).unwrap_or(0),
+            name: v
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            data: v.get("data").cloned().unwrap_or(Value::Null),
+        },
+        Some(name) => IpcEvent::Event {
+            name: name.to_string(),
+            data: v.clone(),
+        },
+        None => return,
+    };
+    // try_send: 受信側が溢れていても読み取りを止めない（最新値で追いつく設計）
+    let _ = events.try_send(ev);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixListener;
+
+    /// 疑似 mpv: コマンドを 1 つ受けて応答し、イベント行を 1 つ流す。
+    async fn fake_mpv_server(sock: &Path, event_line: &'static str) -> tokio::task::JoinHandle<()> {
+        let listener = UnixListener::bind(sock).unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut lines = BufReader::new(r).lines();
+            // コマンド 1 件を受けて応答し、イベント行を 1 つ流す
+            if let Ok(Some(line)) = lines.next_line().await {
+                let v: Value = serde_json::from_str(&line).unwrap();
+                let req_id = v["request_id"].as_u64().unwrap();
+                let cmd = v["command"][0].as_str().unwrap();
+                let reply = if cmd == "get_property" {
+                    json!({"request_id": req_id, "error": "success", "data": 42.0})
+                } else {
+                    json!({"request_id": req_id, "error": "success"})
+                };
+                w.write_all((reply.to_string() + "\n").as_bytes())
+                    .await
+                    .unwrap();
+                if !event_line.is_empty() {
+                    w.write_all(event_line.as_bytes()).await.unwrap();
+                    w.write_all(b"\n").await.unwrap();
+                }
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn command_reply_matched_by_request_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("t.sock");
+        let server = fake_mpv_server(&sock, "").await;
+        let (tx, _rx) = mpsc::channel(8);
+        let client = IpcClient::connect(&sock, tx).await.unwrap();
+        let data = client
+            .command(vec![json!("get_property"), json!("volume")])
+            .await
+            .unwrap();
+        assert_eq!(data, json!(42.0));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn property_change_is_delivered_to_event_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("t.sock");
+        let server = fake_mpv_server(
+            &sock,
+            r#"{"event":"property-change","id":1,"name":"time-pos","data":12.5}"#,
+        )
+        .await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let client = IpcClient::connect(&sock, tx).await.unwrap();
+        client
+            .command(vec![json!("set_property"), json!("pause"), json!(true)])
+            .await
+            .unwrap();
+        match rx.recv().await.unwrap() {
+            IpcEvent::PropertyChange { id, name, data } => {
+                assert_eq!(id, 1);
+                assert_eq!(name, "time-pos");
+                assert_eq!(data, json!(12.5));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnect_fails_pending_and_notifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("t.sock");
+        // 即切断するサーバ
+        let server = tokio::spawn({
+            let sock = sock.clone();
+            async move {
+                let listener = UnixListener::bind(&sock).unwrap();
+                let (_stream, _) = listener.accept().await.unwrap();
+                // drop で切断
+            }
+        });
+        let (tx, mut rx) = mpsc::channel(8);
+        // サーバが bind するのを待つ
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let client = IpcClient::connect(&sock, tx).await.unwrap();
+        server.await.unwrap();
+        // 切断後のコマンドは Closed 系エラーになる
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.command(vec![json!("get_property"), json!("pause")]),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        // 切断通知が届く
+        let mut saw_disconnect = false;
+        while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+            if matches!(ev, IpcEvent::Disconnected) {
+                saw_disconnect = true;
+                break;
+            }
+        }
+        assert!(saw_disconnect);
+    }
+}
