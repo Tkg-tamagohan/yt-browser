@@ -77,12 +77,15 @@
   }
 
   async function refreshResumeHint(): Promise<void> {
+    const query = input.trim();
     resumeHint = null;
-    if (!input.trim()) return;
+    if (!query) return;
     try {
       const h = await invoke<WatchHistory | null>("history_get", {
-        videoId: input.trim(),
+        videoId: query,
       });
+      // 応答が返るまでに入力が変わっていたら結果は捨てる
+      if (input.trim() !== query) return;
       if (h && !h.completed && h.positionSec > 0) resumeHint = h;
     } catch {
       // 入力が URL として解釈できない段階では黙って無視する
@@ -114,6 +117,8 @@
       const next = new Map(players);
       next.delete(id);
       players = next;
+      // 閉じた時点の位置で履歴が更新されているのでヒントを取り直す
+      void refreshResumeHint();
     } catch (e) {
       notify(t("player.error", { message: asErrorMessage(e) }));
     }
@@ -166,6 +171,8 @@
         next.delete(ev.payload.instanceId);
         players = next;
         notify(t("player.ended", { reason: ev.payload.reason }));
+        // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直す
+        void refreshResumeHint();
       }),
     );
   });

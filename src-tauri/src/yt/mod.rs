@@ -91,45 +91,60 @@ pub async fn version(path: &str) -> Result<String, YtError> {
     if !out.status.success() {
         return Err(YtError::Exit {
             code: out.status.code().unwrap_or(-1),
-            stderr: String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .take(500)
-                .collect(),
+            stderr: combined_output(&out),
         });
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// `yt-dlp -U`（セルフアップデート）を実行して出力末尾を返す。
-/// システム管理のパスでは権限不足で失敗し得る。その場合も stderr を拾って返す。
+/// システム管理のパスでは権限不足で失敗し得る。決定記録どおり stdout/stderr の
+/// 両方の出力を返し、失敗時もその出力をエラーメッセージに含める。
 pub async fn update(path: &str) -> Result<String, YtError> {
     let out = run_with_timeout(Command::new(path).arg("-U")).await?;
     if !out.status.success() {
         return Err(YtError::Exit {
             code: out.status.code().unwrap_or(-1),
-            stderr: String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .take(500)
-                .collect(),
+            stderr: combined_output(&out),
         });
     }
+    Ok(combined_output(&out))
+}
+
+/// stdout + stderr をまとめて 500 文字に切り詰める。
+/// `-U` は進捗を stdout に出すので失敗時も stdout を捨てない（決定記録「出力をそのまま UI に返す」）。
+fn combined_output(out: &std::process::Output) -> String {
     let stdout = String::from_utf8_lossy(&out.stdout);
-    Ok(stdout.trim().chars().take(500).collect())
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let mut s = stdout.trim().to_string();
+    if !stderr.trim().is_empty() {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        s.push_str(stderr.trim());
+    }
+    s.chars().take(500).collect()
 }
 
 /// PATH 解決可否。`--version` が起動できれば存在するとみなす。
+/// 応答しない実行ファイルに引きずられないよう 10 秒で打ち切る。
 async fn which_exists(name: &str) -> bool {
-    Command::new(name)
-        .arg("--version")
+    let mut cmd = Command::new(name);
+    cmd.arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .kill_on_drop(true);
+    match tokio::time::timeout(Duration::from_secs(10), cmd.status()).await {
+        Ok(res) => res.map(|s| s.success()).unwrap_or(false),
+        Err(_) => false,
+    }
 }
 
+/// `cmd.output()` をタイムアウト付きで実行する。
+/// `kill_on_drop(true)` によりタイムアウト時に子プロセスも確実に終了する
+/// （ドロップだけではプロセスが残る）。
 async fn run_with_timeout(cmd: &mut Command) -> Result<std::process::Output, YtError> {
+    cmd.kill_on_drop(true);
     match tokio::time::timeout(PROCESS_TIMEOUT, cmd.output()).await {
         Ok(res) => res.map_err(YtError::Spawn),
         Err(_) => Err(YtError::Timeout),

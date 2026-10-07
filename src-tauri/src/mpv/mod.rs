@@ -61,6 +61,64 @@ pub enum MpvError {
     NoSuchInstance(u32),
 }
 
+/// 終端イベント（end-file / ソケット切断）と意図的なリロードの区別を管理する。
+/// `loadfile ... replace`（画質変更）は旧ファイルの `end-file` を発生させるが、
+/// これを終了と取り違えないために `pending_replaces` で回数を数える。
+#[derive(Default)]
+struct TerminalTracker {
+    /// 記録済みの終了理由。Some ならこのインスタンスは終端済み。
+    ended_reason: Mutex<Option<String>>,
+    /// 発行済みで未処理の `loadfile ... replace` の回数。
+    pending_replaces: AtomicU32,
+}
+
+impl TerminalTracker {
+    /// `loadfile ... replace` を発行する直前に呼ぶ。発生する end-file は無視される。
+    fn begin_replace(&self) {
+        self.pending_replaces.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// replace コマンド自体が失敗したときに予約を取り消す。
+    fn cancel_replace(&self) {
+        self.pending_replaces.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// 新しいファイルのロード完了。end-file の取りこぼしでカウンタが残った場合の掃除。
+    fn on_file_loaded(&self) {
+        self.pending_replaces.store(0, Ordering::SeqCst);
+    }
+
+    /// end-file を終端イベントとして処理するなら true を返し理由を記録する。
+    /// replace 由来の end-file は消化して false を返す。二重記録はしない。
+    fn on_end_file(&self, reason: &str) -> bool {
+        if self.pending_replaces.load(Ordering::SeqCst) > 0 {
+            self.pending_replaces.fetch_sub(1, Ordering::SeqCst);
+            return false;
+        }
+        let mut ended = lock(&self.ended_reason);
+        if ended.is_some() {
+            return false;
+        }
+        *ended = Some(reason.to_string());
+        true
+    }
+
+    /// ソケット切断。まだ終端が記録されていなければ "process_exit" で記録して true。
+    fn on_disconnect(&self) -> bool {
+        let mut ended = lock(&self.ended_reason);
+        if ended.is_some() {
+            return false;
+        }
+        *ended = Some("process_exit".to_string());
+        true
+    }
+
+    /// 履歴保存用の completed 判定。終端理由が eof のときのみ true。
+    fn completed(&self) -> bool {
+        lock(&self.ended_reason).as_deref() == Some("eof")
+    }
+}
+
 /// mpv プロセス 1 台分の制御ハンドル。
 pub struct MpvPlayer {
     instance_id: u32,
@@ -73,6 +131,8 @@ pub struct MpvPlayer {
     state: Mutex<PlayerState>,
     /// 終了通知（end-file / ソケット切断）。payload は mpv の reason 文字列。
     ended_tx: broadcast::Sender<String>,
+    /// 終端判定と意図的リロードの区別。
+    terminal: TerminalTracker,
 }
 
 /// `PlayerManager::play` に渡す起動条件。
@@ -121,14 +181,28 @@ impl MpvPlayer {
             .spawn()
             .map_err(MpvError::Spawn)?;
 
-        wait_for_socket(&socket_path, &mut child).await?;
+        if let Err(e) = wait_for_socket(&socket_path, &mut child).await {
+            cleanup_failed_spawn(&mut child, &socket_path).await;
+            return Err(e);
+        }
 
         let (ev_tx, ev_rx) = mpsc::channel(64);
-        let ipc = IpcClient::connect(&socket_path, ev_tx).await?;
+        let ipc = match IpcClient::connect(&socket_path, ev_tx).await {
+            Ok(ipc) => ipc,
+            Err(e) => {
+                cleanup_failed_spawn(&mut child, &socket_path).await;
+                return Err(e.into());
+            }
+        };
 
         for (id, name) in OBSERVED_PROPERTIES {
-            ipc.command(vec![json!("observe_property"), json!(id), json!(name)])
-                .await?;
+            if let Err(e) = ipc
+                .command(vec![json!("observe_property"), json!(id), json!(name)])
+                .await
+            {
+                cleanup_failed_spawn(&mut child, &socket_path).await;
+                return Err(MpvError::Ipc(e));
+            }
         }
 
         let (ended_tx, _) = broadcast::channel(8);
@@ -151,6 +225,7 @@ impl MpvPlayer {
                 media_title: String::new(),
             }),
             ended_tx,
+            terminal: TerminalTracker::default(),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -158,7 +233,7 @@ impl MpvPlayer {
 
         // ファイルロード（レジューム位置つき）。loadfile の第 4 引数は mpv のオプション表。
         let url = format!("https://www.youtube.com/watch?v={}", player.video_id());
-        player
+        if let Err(e) = player
             .ipc
             .command(vec![
                 json!("loadfile"),
@@ -167,7 +242,13 @@ impl MpvPlayer {
                 json!(0),
                 json!({ "start": opts.start_sec }),
             ])
-            .await?;
+            .await
+        {
+            // この時点ではまだマネージャ未登録なので、ここで mpv を確実に止める。
+            pump.abort();
+            player.shutdown().await;
+            return Err(MpvError::Ipc(e));
+        }
         Ok((player, pump))
     }
 
@@ -187,6 +268,11 @@ impl MpvPlayer {
     /// 終了通知を購読する。
     pub fn subscribe_ended(&self) -> broadcast::Receiver<String> {
         self.ended_tx.subscribe()
+    }
+
+    /// 終端理由が eof（最後まで再生）なら true。close 時の保存判定に使う。
+    fn terminal_completed(&self) -> bool {
+        self.terminal.completed()
     }
 
     /// `player_control` の操作を mpv コマンドへ変換して送る。
@@ -225,7 +311,10 @@ impl MpvPlayer {
                     .await?;
                 let pos = self.snapshot().position;
                 let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
-                self.ipc
+                // replace で発生する旧ファイルの end-file は終了とみなさない
+                self.terminal.begin_replace();
+                if let Err(e) = self
+                    .ipc
                     .command(vec![
                         json!("loadfile"),
                         json!(url),
@@ -233,7 +322,11 @@ impl MpvPlayer {
                         json!(0),
                         json!({ "start": pos }),
                     ])
-                    .await?;
+                    .await
+                {
+                    self.terminal.cancel_replace();
+                    return Err(MpvError::Ipc(e));
+                }
             }
             PlayerAction::FrameStep => {
                 self.ipc.command(vec![json!("frame-step")]).await?;
@@ -314,26 +407,36 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
             IpcEvent::PropertyChange { name, data, .. } => {
                 player.apply_property(&name, data);
             }
-            IpcEvent::Event { name, data } => {
-                if name == "end-file" {
+            IpcEvent::Event { name, data } => match name.as_str() {
+                "end-file" => {
                     let reason = data
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("unknown")
                         .to_string();
+                    // replace（画質変更）由来の end-file は終了イベントとしない
+                    if !player.terminal.on_end_file(&reason) {
+                        continue;
+                    }
                     {
                         let mut st = lock(&player.state);
                         st.state = PlayStatus::Ended;
                     }
                     let _ = player.ended_tx.send(reason);
                 }
-            }
-            IpcEvent::Disconnected => {
-                let mut st = lock(&player.state);
-                if st.state != PlayStatus::Ended {
-                    st.state = PlayStatus::Ended;
-                    let _ = player.ended_tx.send("process_exit".to_string());
+                "file-loaded" => {
+                    // 新ファイルのロード完了。replace 予約の取りこぼしを掃除する
+                    player.terminal.on_file_loaded();
                 }
+                _ => {}
+            },
+            IpcEvent::Disconnected => {
+                if !player.terminal.on_disconnect() {
+                    continue;
+                }
+                let mut st = lock(&player.state);
+                st.state = PlayStatus::Ended;
+                let _ = player.ended_tx.send("process_exit".to_string());
             }
         }
     }
@@ -366,10 +469,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 起動途中で失敗した mpv を掃除する。kill で確実に回収し、ソケット残骸を消す。
+async fn cleanup_failed_spawn(child: &mut tokio::process::Child, socket_path: &Path) {
+    let _ = child.kill().await;
+    let _ = tokio::fs::remove_file(socket_path).await;
+}
+
 /// 全 mpv インスタンスの管理（設計書 §4.5 のマルチビュー前提）。
 /// `play` が発行する `instance_id` が UI 側の操作対象識別子。
 pub struct PlayerManager {
-    players: Mutex<HashMap<u32, PlayerEntry>>,
+    /// emitter タスクが終端イベント時に自分のエントリを外すため Arc で共有する。
+    players: Arc<Mutex<HashMap<u32, PlayerEntry>>>,
     next_id: AtomicU32,
     app: AppHandle,
     db: Db,
@@ -394,7 +504,7 @@ impl PlayerManager {
         ytdlp_resolver: crate::yt::YtDlpResolver,
     ) -> Self {
         Self {
-            players: Mutex::new(HashMap::new()),
+            players: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU32::new(1),
             app,
             db,
@@ -447,7 +557,7 @@ impl PlayerManager {
     }
 
     /// `player_close` の実体。最終位置を保存してから mpv を止める。
-    /// 既に終了済みのインスタンス（emitter 自然終了済み）でも掃除だけは行う。
+    /// 既に終端処理済み（emitter が除去済み）のインスタンスに対しても冪等に成功する。
     pub async fn close(&self, instance_id: u32) -> Result<(), MpvError> {
         let entry = lock(&self.players).remove(&instance_id);
         let Some(PlayerEntry {
@@ -456,11 +566,14 @@ impl PlayerManager {
             emitter,
         }) = entry
         else {
-            return Err(MpvError::NoSuchInstance(instance_id));
+            // 終端イベントで既に掃除済み。close は冪等に成功させる。
+            tracing::debug!(instance_id, "close 対象のインスタンスは既に存在しない");
+            return Ok(());
         };
         emitter.abort();
         pump.abort();
-        self.persist_history(&player, false);
+        // 終端理由が eof なら completed を維持して保存する（途中保存で上書きしない）
+        self.persist_history(&player, player.terminal_completed());
         player.shutdown().await;
         Ok(())
     }
@@ -476,16 +589,18 @@ impl PlayerManager {
         {
             emitter.abort();
             pump.abort();
-            self.persist_history(&player, false);
+            self.persist_history(&player, player.terminal_completed());
             player.shutdown().await;
         }
     }
 
     /// 状態のサンプリング送出と履歴の定期保存。
-    /// 終了通知を受けたら最終保存をしてタスクを抜ける。
+    /// 終了通知を受けたら最終保存・UI への ended 送出をして、エントリを外して mpv を止める。
+    /// 終端で mpv プロセスを残さないのは、UI がカードを外した後もプロセスが浮遊するのを防ぐため。
     fn spawn_emitter(&self, player: Arc<MpvPlayer>) -> JoinHandle<()> {
         let app = self.app.clone();
         let db = self.db.clone();
+        let players = Arc::clone(&self.players);
         let mut ended_rx = player.subscribe_ended();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(EMIT_INTERVAL);
@@ -518,6 +633,13 @@ impl PlayerManager {
                         if let Err(e) = app.emit("player://ended", &payload) {
                             tracing::warn!(error = %e, "player://ended の送出に失敗");
                         }
+                        // 管理表から外し、ポンプを止めて mpv を終了させる。
+                        // close() との競合は先に外した側が掃除を担い、後着側は冪等に成功する。
+                        if let Some(entry) = lock(&players).remove(&player.instance_id()) {
+                            entry.pump.abort();
+                            drop(entry.emitter);
+                        }
+                        player.shutdown().await;
                         break;
                     }
                 }
@@ -541,5 +663,67 @@ fn persist_now(db: &Db, player: &MpvPlayer, completed: bool) {
         completed,
     ) {
         tracing::warn!(video_id = %snap.video_id, error = %e, "履歴の保存に失敗");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalTracker;
+
+    /// 終端判定: eof は completed、それ以外の終了は不完全のまま。
+    #[test]
+    fn terminal_completed_only_for_eof() {
+        let t = TerminalTracker::default();
+        assert!(!t.completed());
+        assert!(t.on_end_file("eof"));
+        assert!(t.completed());
+
+        let t = TerminalTracker::default();
+        assert!(t.on_end_file("error"));
+        assert!(!t.completed());
+    }
+
+    /// 終端判定: 画質変更（loadfile replace）由来の end-file は終了扱いしない。
+    #[test]
+    fn replace_end_file_is_ignored() {
+        let t = TerminalTracker::default();
+        t.begin_replace();
+        assert!(!t.on_end_file("stop"));
+        // 予約は1回分だけ。次の真の end-file は終端として処理される
+        assert!(t.on_end_file("eof"));
+        assert!(t.completed());
+    }
+
+    /// 終端判定: replace 発行失敗時の取消でカウンタが残らない。
+    #[test]
+    fn cancel_replace_keeps_terminal_detection() {
+        let t = TerminalTracker::default();
+        t.begin_replace();
+        t.cancel_replace();
+        assert!(t.on_end_file("eof"));
+    }
+
+    /// 終端判定: 二重の終端イベントと切断通知は一度だけ受理する。
+    #[test]
+    fn terminal_is_recorded_once() {
+        let t = TerminalTracker::default();
+        assert!(t.on_end_file("eof"));
+        assert!(!t.on_end_file("stop"));
+        assert!(!t.on_disconnect());
+
+        let t = TerminalTracker::default();
+        assert!(t.on_disconnect());
+        assert!(!t.on_end_file("eof"));
+        assert!(!t.completed());
+    }
+
+    /// 終端判定: file-loaded で取りこぼした replace 予約を掃除する。
+    #[test]
+    fn file_loaded_clears_pending_replaces() {
+        let t = TerminalTracker::default();
+        t.begin_replace();
+        t.on_file_loaded();
+        // 予約が残っていないので次の end-file は終端になる
+        assert!(t.on_end_file("eof"));
     }
 }
