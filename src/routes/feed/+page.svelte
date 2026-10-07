@@ -136,6 +136,22 @@
     }
   }
 
+  async function blockItem(it: FeedItem): Promise<void> {
+    try {
+      await invoke("block_channel", {
+        channelId: it.channelId,
+        title: it.channelTitle ?? it.channelId,
+      });
+      // ブロックしたチャンネルの項目は一覧から消える
+      items = items.filter((x) => x.channelId !== it.channelId);
+      notify(
+        t("blocked.added", { title: it.channelTitle ?? it.channelId }),
+      );
+    } catch (e) {
+      notify(t("blocked.addFailed", { message: asErrorMessage(e) }));
+    }
+  }
+
   async function markRead(videoId: string): Promise<void> {
     try {
       await invoke("mark_read", { videoIds: [videoId] });
@@ -324,6 +340,13 @@
                 {t("feed.items.markRead")}
               </button>
             {/if}
+            <button
+              class="link danger"
+              title={t("feed.item.block")}
+              onclick={() => blockItem(it)}
+            >
+              {t("search.block")}
+            </button>
           </li>
         {/each}
       </ul>

@@ -13,6 +13,7 @@ const ja = {
 
   "nav.player": "再生",
   "nav.feed": "フィード",
+  "nav.search": "検索",
   "nav.settings": "設定",
 
   // Phase 1: mpv 再生の最小 UI
@@ -93,6 +94,37 @@ const ja = {
   "feed.refreshQueued": "更新を開始しました",
   "feed.newItems": "{count} 件の新着を受信",
   "feed.statusEvent": "フィード状態: {message}",
+  "feed.item.block": "チャンネルをブロック",
+
+  // Phase 5: 検索・関連動画・チャンネルブロック
+  "search.title": "検索",
+  "search.placeholder": "検索キーワード",
+  "search.button": "検索",
+  "search.searching": "検索中…",
+  "search.empty": "結果がありません",
+  "search.failed": "検索に失敗: {message}",
+  "search.play": "再生",
+  "search.subscribe": "購読",
+  "search.block": "ブロック",
+  "search.views.count": "{count} 回視聴",
+  "search.views.man": "{count}万回",
+  "search.views.oku": "{count}億回",
+
+  "related.title": "関連動画",
+  "related.show": "関連動画を表示",
+  "related.hide": "関連動画を閉じる",
+  "related.loading": "読み込み中…",
+  "related.empty": "関連動画が見つかりません",
+  "related.failed": "関連動画の取得に失敗: {message}",
+
+  "blocked.title": "ブロック中のチャンネル",
+  "blocked.desc": "ブロックしたチャンネルの動画はフィード・検索・関連動画に表示されません。",
+  "blocked.empty": "ブロック中のチャンネルはありません",
+  "blocked.added": "{title} をブロックしました",
+  "blocked.addFailed": "ブロックに失敗: {message}",
+  "blocked.unblock": "解除",
+  "blocked.unblocked": "{title} のブロックを解除しました",
+  "blocked.unblockFailed": "ブロック解除に失敗: {message}",
 
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",

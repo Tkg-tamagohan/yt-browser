@@ -159,7 +159,10 @@ pub async fn subscribe_channel(
         ChannelRef::Id(id) => id,
         ChannelRef::Handle(h) => {
             let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
-            yt::channel_id(&path, &format!("https://www.youtube.com/@{h}"))
+            // 非 ASCII ハンドルは Url::parse 経由でパーセントエンコードしてから渡す
+            let url = url::Url::parse(&format!("https://www.youtube.com/@{h}"))
+                .map_err(|_| UiError::invalid_input("ハンドルの形式が不正です"))?;
+            yt::channel_id(&path, url.as_str())
                 .await
                 .map_err(UiError::from)?
         }
@@ -283,4 +286,78 @@ pub fn feed_refresh(
 ) -> Result<(), UiError> {
     poller.force_refresh(channel_id.as_deref());
     Ok(())
+}
+
+/// `search`（設計書 §3.1、FR-4）。`yt-dlp ytsearch` の結果から
+/// ブロック済みチャンネルを除いて返す。
+#[tauri::command]
+pub async fn search(
+    query: String,
+    db: State<'_, Db>,
+    resolver: State<'_, YtDlpResolver>,
+) -> Result<Vec<crate::model::SearchResult>, UiError> {
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Err(UiError::invalid_input("検索語が空です"));
+    }
+    if q.len() > 256 {
+        return Err(UiError::invalid_input("検索語が長すぎます"));
+    }
+    let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
+    let mut results = yt::search(&path, &q, SEARCH_LIMIT).await?;
+    let blocked = db.blocked_ids()?;
+    results.retain(|r| {
+        r.channel_id
+            .as_deref()
+            .map(|c| !blocked.contains(c))
+            .unwrap_or(true)
+    });
+    Ok(results)
+}
+
+/// 検索の既定取得件数（設計書 §5 の `ytsearch<N>`）。
+const SEARCH_LIMIT: u32 = 20;
+
+/// `get_related`（設計書 §3.1、FR-4）。InnerTube `next` の関連動画から
+/// ブロック済みチャンネルを除いて返す。
+#[tauri::command]
+pub async fn get_related(
+    video_id: String,
+    db: State<'_, Db>,
+    innertube: State<'_, crate::innertube::InnerTube>,
+) -> Result<Vec<crate::model::SearchResult>, UiError> {
+    let video_id = parse_video_id(&video_id)?;
+    let mut results = innertube.related(&video_id).await?;
+    let blocked = db.blocked_ids()?;
+    results.retain(|r| {
+        r.channel_id
+            .as_deref()
+            .map(|c| !blocked.contains(c))
+            .unwrap_or(true)
+    });
+    Ok(results)
+}
+
+/// `block_channel`（設計書 §3.1、FR-5）。検索・関連・フィードの全一覧から除外される。
+#[tauri::command]
+pub fn block_channel(channel_id: String, title: String, db: State<'_, Db>) -> Result<(), UiError> {
+    let channel_id = channel_id.trim();
+    if channel_id.is_empty() {
+        return Err(UiError::invalid_input("channel_id が空です"));
+    }
+    db.blocked_add(channel_id, title.trim())?;
+    Ok(())
+}
+
+/// `unblock_channel`（FR-5）。設定画面のブロック一覧から解除する。
+#[tauri::command]
+pub fn unblock_channel(channel_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+    db.blocked_remove(channel_id.trim())?;
+    Ok(())
+}
+
+/// ブロック中チャンネル一覧（設定画面用）。
+#[tauri::command]
+pub fn blocked_channels(db: State<'_, Db>) -> Result<Vec<crate::model::BlockedChannel>, UiError> {
+    Ok(db.blocked_list()?)
 }

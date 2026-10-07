@@ -46,7 +46,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 |---|---|
 | `commands` | Tauri の invoke ハンドラ。入力検証と UI 向けの直列化に徹する |
 | `mpv` | プロセス起動、ソケット管理、JSON IPC クライアント、プロパティ監視 |
-| `yt` | `YoutubeBackend` トレイトと yt-dlp 実装。検索、動画情報、チャンネル動画一覧 |
+| `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
@@ -72,8 +72,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `list_feed` | `filter`（未読のみ、カテゴリ、期間） | `Vec<FeedItem>` |
 | `mark_read` | `video_ids` または `all` | `Result<()>` |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
-| `block_channel` / `unblock_channel` | `channel_id` | `Result<()>` |
-| `search` | `query`, `page` | `Vec<SearchResult>` |
+| `block_channel` / `unblock_channel` / `blocked_channels` | `channel_id`, `title` | `Result<()>` / `Vec<BlockedChannel>` |
+| `search` | `query` | `Vec<SearchResult>` |
 | `get_related` | `video_id` | `Vec<SearchResult>` |
 | `chat_start` / `chat_stop` | `video_id` | `Result<()>` |
 | `chat_history_search` | `video_id?`, `query`, `limit` | `Vec<ChatEvent>` |
@@ -218,6 +218,10 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 
 `innertube` モジュールは watch ページから `INNERTUBE_API_KEY`・`INNERTUBE_CONTEXT_CLIENT_VERSION`・`VISITOR_DATA` を一度だけ取得してキャッシュし、`post_json` を提供する。
 このクライアントをチャットポーラーと関連動画取得（`next`）が共用する。
+
+`next` 応答の関連動画は、2026-10 時点の WEB クライアントでは `lockupViewModel`（`contentType == LOCKUP_CONTENT_TYPE_VIDEO`）で返る。
+パーサーは旧来の `compactVideoRenderer` / `videoWithContextRenderer` も併せてキー名で再帰探索し、レイアウト差分に耐える。
+各フィールドの対応は、`contentId` → 動画 ID、`metadata.lockupMetadataViewModel.title.content` → タイトル、`metadataRows[0]` → チャンネル名、`metadataRows[1]` 先頭 → 短縮表記の再生数、アバター内 `browseEndpoint.browseId` → UC チャンネル ID、サムネイルオーバーレイの `thumbnailBadgeViewModel.text` → 動画長、とする。
 
 ### 6.2 チャットポーラー（仕様決定 F）
 
@@ -396,7 +400,7 @@ END;
 
 ### 9.2 YouTube 仕様変更への構造
 
-- ストリーム解決と検索とメタデータは `YoutubeBackend` トレイトの向こうに隔離し、yt-dlp 実装の破損は更新で追従する
+- ストリーム解決と検索は `yt` モジュール内の関数群（`resolve`・`search` 等）の向こうに隔離し、yt-dlp 実装の破損は更新で追従する（トレイト抽象化は第 2 の実装やテスト差し替えが必要になった時点で導入する。現状は未導入）
 - InnerTube の自前実装は `get_live_chat` と `next` に限定し、パーサーは保存した応答 JSON の golden fixture で回帰テストする（技術方針 O）
 - 仕様変更時に UI 側が壊れないよう、`chat` / `related` / `feed` の各劣化状態は独立したステータスとして UI に出す
 
@@ -423,7 +427,7 @@ yt-browser/
       main.rs
       commands/
       mpv/            # プロセス管理・IPC・プロパティ監視
-      yt/             # YoutubeBackend トレイト + yt-dlp 実装
+      yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
       chat/           # get_live_chat ポーラー・正規化
       feed/           # RSS ポーラー

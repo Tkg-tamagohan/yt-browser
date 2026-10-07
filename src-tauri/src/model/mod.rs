@@ -150,6 +150,33 @@ pub struct FeedItem {
 pub struct FeedNewItems {
     pub count: usize,
 }
+/// `search` / `get_related` コマンドの結果行（設計書 §3.1 の SearchResult）。
+/// 検索（yt-dlp flat playlist）と関連動画（InnerTube `next`）の共通型。
+/// 片方の経路でしか取れない値は Option にする。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub video_id: String,
+    pub title: String,
+    /// UC 形チャンネル ID。ブロック・購読の判定キーとして使えるのはこの値だけ。
+    pub channel_id: Option<String>,
+    /// `@handle` 形の投稿者 ID。ブロックキーには使えないが、
+    /// `subscribe_channel` は @handle を解決できるため購読導線の代替入力として露出する。
+    pub uploader_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub duration_sec: Option<i64>,
+    pub view_count: Option<i64>,
+    pub thumbnail_url: Option<String>,
+}
+
+/// `blocked_channels` テーブルの 1 行（設計書 §8）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedChannel {
+    pub channel_id: String,
+    pub title: String,
+    pub created_at: String,
+}
 
 /// `feed://status` イベントのペイロード（設計書 §3.2）。
 #[derive(Debug, Clone, Serialize)]
@@ -201,18 +228,26 @@ pub fn parse_channel_ref(input: &str) -> Option<ChannelRef> {
         "channel" => segs
             .next()
             .and_then(|s| is_channel_id(s).then(|| ChannelRef::Id(s.to_string()))),
-        seg if seg.starts_with('@') => {
-            is_handle(&seg[1..]).then(|| ChannelRef::Handle(seg[1..].to_string()))
+        seg => {
+            // path_segments はパーセントエンコードのまま返るため、先にデコードする
+            // （非 ASCII ハンドルはエンコードされて届く。生の @ ・ %40 両対応）
+            let seg = percent_encoding::percent_decode_str(seg)
+                .decode_utf8()
+                .ok()?;
+            seg.strip_prefix('@')
+                .filter(|h| is_handle(h))
+                .map(|h| ChannelRef::Handle(h.to_string()))
         }
-        _ => None,
     }
 }
 
-/// @handle の形式チェック（英数字・`-`・`_`・`.` の 3〜30 文字）。
+/// @handle の形式チェック（文字・数字・`-`・`_`・`.` の 3〜30 文字）。
+/// YouTube のハンドルは非ラテン文字（日本語等）を許容するため、
+/// 文字判定は Unicode の alphanumeric とし、長さは文字数で数える。
 fn is_handle(s: &str) -> bool {
-    (3..=30).contains(&s.len())
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    (3..=30).contains(&s.chars().count())
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// YouTube の動画入力（URL 各形式または 11 文字の動画 ID）を動画 ID へ正規化する。
@@ -295,6 +330,32 @@ mod tests {
         ] {
             assert_eq!(normalize_video_id(url), Some("dQw4w9WgXcQ".into()), "{url}");
         }
+    }
+
+    /// R-3: ハンドルは Unicode 文字を許容する（YouTube の実仕様に揃える）。
+    #[test]
+    fn channel_ref_accepts_unicode_handle() {
+        assert_eq!(
+            parse_channel_ref("@ヒカキン"),
+            Some(ChannelRef::Handle("ヒカキン".into()))
+        );
+        assert_eq!(
+            parse_channel_ref("https://www.youtube.com/@ヒカキン"),
+            Some(ChannelRef::Handle("ヒカキン".into()))
+        );
+        assert_eq!(
+            parse_channel_ref("@Hikakin.TV"),
+            Some(ChannelRef::Handle("Hikakin.TV".into()))
+        );
+    }
+
+    #[test]
+    fn channel_ref_rejects_bad_handle() {
+        for bad in ["@ab", "@a b", "@handle/with/slash", "@"] {
+            assert_eq!(parse_channel_ref(bad), None, "{bad}");
+        }
+        let long = format!("@{}", "a".repeat(31));
+        assert_eq!(parse_channel_ref(&long), None);
     }
 
     #[test]

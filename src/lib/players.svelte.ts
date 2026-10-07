@@ -43,6 +43,24 @@ export type YtDlpStatus = { path: string | null; version: string | null };
 
 export type DbStatus = { schemaVersion: number };
 
+export type SearchResult = {
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  // @handle 形の投稿者 ID。ブロックキーには使えないが購読入力には使える
+  uploaderId: string | null;
+  channelTitle: string | null;
+  durationSec: number | null;
+  viewCount: number | null;
+  thumbnailUrl: string | null;
+};
+
+export type BlockedChannel = {
+  channelId: string;
+  title: string;
+  createdAt: string;
+};
+
 export type PlayerAction =
   | { type: "pause"; value: boolean }
   | { type: "seek"; seconds: number }

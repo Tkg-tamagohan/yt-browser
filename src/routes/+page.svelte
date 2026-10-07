@@ -10,6 +10,7 @@
     type PlayerAction,
     type PlayerEnded,
     type PlayerState,
+    type SearchResult,
     type SponsorSkipped,
     type UiError,
     type WatchHistory,
@@ -26,6 +27,13 @@
   // シークバーはドラッグ中に state 更新で暴れないよう、操作中の値を別で持つ
   let seekPreview = $state<Map<number, number>>(new Map());
   let notices = $state<string[]>([]);
+  // 関連動画パネルの開閉と内容（インスタンス ID ごと）
+  let related = $state<
+    Map<
+      number,
+      { open: boolean; loading: boolean; items: SearchResult[]; req: number }
+    >
+  >(new Map());
   let ytdlp = $state<YtDlpStatus | null>(null);
   let ytdlpChecking = $state(true);
   let ytdlpUpdating = $state(false);
@@ -98,6 +106,9 @@
       const next = new Map(playerStates.list);
       next.delete(id);
       playerStates.list = next;
+      const rel = new Map(related);
+      rel.delete(id);
+      related = rel;
       // 閉じた時点の位置で履歴が更新されているのでヒントを取り直す
       void refreshResumeHint();
     } catch (e) {
@@ -129,6 +140,73 @@
 
   function statusLabel(p: PlayerState): string {
     return p.state === "buffering" ? t("player.buffering") : "";
+  }
+
+  function relatedPanel(id: number) {
+    return related.get(id);
+  }
+
+  async function toggleRelated(id: number, videoId: string): Promise<void> {
+    const cur = related.get(id);
+    if (cur?.open) {
+      const next = new Map(related);
+      next.set(id, { ...cur, open: false });
+      related = next;
+      return;
+    }
+    // 開くたびに必ず再取得する（ブロック状態の変化と前回失敗の再試行に対応するため
+    // キャッシュでショートカットしない）。req は開き直しごとに増やす世代番号で、
+    // 古いリクエストの応答が新しい開き直しの結果を上書きしないよう照合する。
+    const req = (cur?.req ?? 0) + 1;
+    const next = new Map(related);
+    next.set(id, { open: true, loading: true, items: [], req });
+    related = next;
+    try {
+      const items = await invoke<SearchResult[]>("get_related", { videoId });
+      // 応答までに閉じられた・別の開き直しが始まった場合は結果を捨てる
+      const now = related.get(id);
+      if (!now?.open || now.req !== req) return;
+      const m = new Map(related);
+      m.set(id, { ...now, loading: false, items });
+      related = m;
+    } catch (e) {
+      const now = related.get(id);
+      if (!now?.open || now.req !== req) return;
+      const m = new Map(related);
+      m.set(id, { ...now, loading: false, items: [] });
+      related = m;
+      notify(t("related.failed", { message: asErrorMessage(e) }));
+    }
+  }
+
+  async function playRelated(r: SearchResult): Promise<void> {
+    try {
+      await invoke("play_video", { videoId: r.videoId, resume: true });
+    } catch (e) {
+      notify(t("player.error", { message: asErrorMessage(e) }));
+    }
+  }
+
+  async function blockRelated(id: number, r: SearchResult): Promise<void> {
+    if (!r.channelId) return;
+    try {
+      await invoke("block_channel", {
+        channelId: r.channelId,
+        title: r.channelTitle ?? r.channelId,
+      });
+      const cur = related.get(id);
+      if (cur) {
+        const next = new Map(related);
+        next.set(id, {
+          ...cur,
+          items: cur.items.filter((x) => x.channelId !== r.channelId),
+        });
+        related = next;
+      }
+      notify(t("blocked.added", { title: r.channelTitle ?? r.channelId }));
+    } catch (e) {
+      notify(t("blocked.addFailed", { message: asErrorMessage(e) }));
+    }
   }
 
   let unlistenFns: UnlistenFn[] = [];
@@ -277,7 +355,46 @@
         <button class="danger" onclick={() => closePlayer(p.instanceId)}>
           {t("player.close")}
         </button>
+        <button class="link" onclick={() => toggleRelated(p.instanceId, p.videoId)}>
+          {relatedPanel(p.instanceId)?.open ? t("related.hide") : t("related.show")}
+        </button>
       </div>
+
+      {#if relatedPanel(p.instanceId)?.open}
+        <div class="related">
+          <h3>{t("related.title")}</h3>
+          {#if relatedPanel(p.instanceId)?.loading}
+            <p class="subtle">{t("related.loading")}</p>
+          {:else if (relatedPanel(p.instanceId)?.items.length ?? 0) === 0}
+            <p class="subtle">{t("related.empty")}</p>
+          {:else}
+            <ul class="related-list">
+              {#each relatedPanel(p.instanceId)?.items ?? [] as r (r.videoId)}
+                <li class="related-item">
+                  {#if r.thumbnailUrl}
+                    <img class="thumb" src={r.thumbnailUrl} alt="" />
+                  {/if}
+                  <div class="meta">
+                    <div class="title">{r.title}</div>
+                    <div class="sub">{r.channelTitle ?? ""}</div>
+                    <div class="actions">
+                      <button onclick={() => playRelated(r)}>{t("search.play")}</button>
+                      {#if r.channelId}
+                        <button
+                          class="danger"
+                          onclick={() => blockRelated(p.instanceId, r)}
+                        >
+                          {t("search.block")}
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
     </section>
   {/each}
 
@@ -387,6 +504,71 @@
   .controls select {
     padding: 4px;
     border-radius: 6px;
+  }
+
+  .related {
+    margin-top: 12px;
+    border-top: 1px solid #3c4043;
+    padding-top: 8px;
+  }
+
+  .related h3 {
+    font-size: 1rem;
+    margin: 0 0 8px;
+  }
+
+  .related-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+
+  .related-item {
+    display: flex;
+    gap: 10px;
+    padding: 6px 0;
+    align-items: flex-start;
+  }
+
+  .related-item .thumb {
+    width: 120px;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #26282c;
+  }
+
+  .related-item .meta {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .related-item .title {
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+  }
+
+  .related-item .sub {
+    color: #9aa0a6;
+    font-size: 0.8rem;
+    margin: 2px 0 6px;
+  }
+
+  .related-item .actions {
+    display: flex;
+    gap: 8px;
+    font-size: 0.85rem;
+  }
+
+  .related-item .actions .danger {
+    color: #ff7b72;
+  }
+
+  .subtle {
+    color: #9aa0a6;
+    font-size: 0.85rem;
   }
 
   .status-bar {
