@@ -25,9 +25,11 @@
   let playlists = $state<Playlist[]>([]);
   let favIds = $state<Set<string>>(new Set());
 
-  // 選択中プレイリストとその中身
+  // 選択中プレイリストとその中身。reqId は選択ごとに進み、
+  // 遅れて返る旧リクエストが表示を上書きしないようにする世代番号
   let selectedId = $state<number | null>(null);
   let playlistItems = $state<PlaylistEntry[]>([]);
+  let itemsReq = 0;
   let newPlaylistName = $state("");
   let renamingId = $state<number | null>(null);
   let renameText = $state("");
@@ -70,12 +72,6 @@
     favIds = lib.favIds;
     playlists = lib.playlists;
     favorites = await invoke<FavoriteEntry[]>("favorite_list");
-  }
-
-  async function loadItems(id: number): Promise<void> {
-    playlistItems = await invoke<PlaylistEntry[]>("playlist_items", {
-      playlistId: id,
-    });
   }
 
   onMount(async () => {
@@ -184,8 +180,34 @@
   async function selectPlaylist(pl: Playlist): Promise<void> {
     selectedId = pl.id;
     renamingId = null;
+    playlistItems = [];
+    const req = ++itemsReq;
     try {
-      await loadItems(pl.id);
+      const items = await invoke<PlaylistEntry[]>("playlist_items", {
+        playlistId: pl.id,
+      });
+      // 応答が返るまでに別のプレイリストに切り替わっていたら捨てる
+      if (req !== itemsReq || selectedId !== pl.id) return;
+      playlistItems = items;
+    } catch (e) {
+      if (req === itemsReq) notify(t("library.failed", { message: err(e) }));
+    }
+  }
+
+  /// VideoActions からのプレイリスト追加通知（FR-7）。
+  /// 追加先が表示中なら項目一覧も読み直す（重複追加は冪等なので再取得で吸収）。
+  async function onPlaylistAdd(playlistId: number): Promise<void> {
+    try {
+      playlists = await invoke<Playlist[]>("playlist_list");
+      if (selectedId === playlistId) {
+        const req = itemsReq;
+        const items = await invoke<PlaylistEntry[]>("playlist_items", {
+          playlistId,
+        });
+        if (req === itemsReq && selectedId === playlistId) {
+          playlistItems = items;
+        }
+      }
     } catch (e) {
       notify(t("library.failed", { message: err(e) }));
     }
@@ -315,6 +337,7 @@
                   {playlists}
                   onfavchange={onFavChange}
                   onplaylistcreated={onPlaylistCreated}
+                  onplaylistadd={onPlaylistAdd}
                 />
               </div>
             </div>

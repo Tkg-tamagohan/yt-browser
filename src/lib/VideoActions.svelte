@@ -13,6 +13,8 @@
     playlists?: Playlist[];
     onfavchange?: (videoId: string, faved: boolean) => void;
     onplaylistcreated?: (pl: Playlist) => void;
+    /// プレイリストへの追加が成功したとき（一覧表示側が件数・項目を読み直すため）
+    onplaylistadd?: (playlistId: number) => void;
   };
   let {
     video,
@@ -20,6 +22,7 @@
     playlists = [],
     onfavchange,
     onplaylistcreated,
+    onplaylistadd,
   }: Props = $props();
 
   let menuOpen = $state(false);
@@ -52,6 +55,7 @@
       await invoke("playlist_add", { playlistId: pl.id, video });
       notify(t("library.playlist.added", { name: pl.name }));
       menuOpen = false;
+      onplaylistadd?.(pl.id);
     } catch (e) {
       notify(t("library.playlist.addFailed", { message: err(e) }));
     }

@@ -135,5 +135,7 @@
 | プレイリスト項目の順序 | `position` は末尾追加のみの自動採番（`MAX(position)+1`）。中間項目の削除後は番号の空きを詰めずそのまま残す（順序の正規化やドラッグ並べ替えは今回の受け入れ範囲外として文書に明記） |
 | 履歴一覧の上限 | `history_list` は既定 500 件・上限 1000 件。単位時間あたりの視聴本数から十分な余裕として暫定。超過分は現状ページングなしの制約として許容する |
 | 削除の確定 | `history_remove`・`favorite_remove`・`playlist_remove`・`playlist_delete` は UI 上の confirm ダイアログを挟まず即時削除する。元に戻す導線（undo）は別途検討課題として残し、Phase 7 の受け入れは「一覧・編集・削除が完結する」まで |
+| 履歴削除と再生中の保存 | 再生中の動画を履歴一覧から削除しても、プレイヤーの定期・終了保存（`history_update_progress`）が同じ動画の履歴を再作成してしまうため、`Db` 内にセッション限りの抑止セット（`history_suppressed`）を置く。`history_remove` で登録し `history_update_progress` は抑止中の動画を書き込まず、明示的な再生開始（`history_upsert`）で解除して履歴を再び残せるようにする（回帰テスト DB-LD-05） |
+| ライブラリ登録の空行とフィード投入 | お気に入り・プレイリスト登録は `videos` に `published_at` NULL・`is_read=1` のプレースホルダを作る。後着の RSS 投入が `INSERT OR IGNORE` ではこの行を補完しないため、`ingest_rows` を UPSERT に変え `WHERE videos.published_at IS NULL` の行だけに `published_at`・`kind`・未読（`is_read=0`）を埋める。既にフィード行として存在するものは既読状態を含めて一切書き換えない（回帰テスト DB-LD-06） |
 | 行アクションの共有化 | ☆ お気に入りトグルとプレイリスト追加メニューは `VideoActions` コンポーネントとして共通化し、検索・フィード・関連動画・ライブラリの各行に同じ UI で載せる。お気に入り登録済みの video_id 集合とプレイリスト一覧は `loadLibrary()` で各ページの onMount 時にまとめて読み、行アクション失敗はトースト通知で表す |
 | ホイール設定の UI 公開 | Phase 2 の決定記録どおり `wheel.volume_delta` を設定画面の数値入力で公開する。`--script-opts` 注入のため「次回再生から有効」の表記を UI に添え、即時適用の仕組みは持たない。値は保存時に数値として検証し（有限・±100 以内）、不正値は `settings_set` に送らず失敗通知する |

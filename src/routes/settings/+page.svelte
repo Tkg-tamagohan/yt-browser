@@ -62,8 +62,8 @@
   // 書込み済みと適用完了を分けて追うため、即時適用の成否とは独立に進める
   let persistedFormat = $state("");
   // ホイール 1 ノッチの音量変化量（mpv script-opts の wheel-volume_delta。
-  // 次回再生から有効。既定 2、空文字なら Lua 既定のまま）
-  let wheelDelta = $state("2");
+  // 次回再生から有効。既定 2、undefined は「Lua 既定のまま」＝保存スキップ）
+  let wheelDelta = $state<number | undefined>(2);
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -219,21 +219,19 @@
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
       });
-      // wheel.volume_delta: 数値として解釈できる値だけ保存する
-      // （mpv 側が文字列のまま script-opts に渡すため、ここで弾く）
-      const delta = wheelDelta.trim();
-      if (delta !== "") {
-        const n = Number(delta);
-        if (!Number.isFinite(n) || Math.abs(n) > 100) {
+      // wheel.volume_delta: 有限数値・±100 以内だけ保存する
+      // （mpv 側がそのまま script-opts に渡すため、ここで弾く）
+      if (wheelDelta !== undefined) {
+        if (!Number.isFinite(wheelDelta) || Math.abs(wheelDelta) > 100) {
           notify(
             t("settings.failed", {
-              message: `wheel.volume_delta: ${delta}`,
+              message: `wheel.volume_delta: ${wheelDelta}`,
             }),
           );
         } else {
           await invoke("settings_set", {
             key: "wheel.volume_delta",
-            value: delta,
+            value: String(wheelDelta),
           });
         }
       }
@@ -304,7 +302,10 @@
       const wheelRaw = await invoke<string | null>("settings_get", {
         key: "wheel.volume_delta",
       });
-      if (wheelRaw !== null) wheelDelta = wheelRaw;
+      if (wheelRaw !== null) {
+        const n = Number(wheelRaw);
+        if (Number.isFinite(n)) wheelDelta = n;
+      }
       if (sponsorRaw) {
         try {
           const parsed = JSON.parse(sponsorRaw) as Record<string, string>;
