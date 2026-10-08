@@ -120,6 +120,8 @@ mpv --idle=yes
     --script-opts=ytdl_hook-ytdl_path=<yt-dlp のパス>
 ```
 
+Windows の `--input-ipc-server` は `\\.\pipe\yt-browser-mpv-<instance>-<pid>`（名前付きパイプ、アプリ多重起動の衝突回避にプロセス ID を含める）を渡す。名前付きパイプはファイルシステムに実体を持たないため、出現待ちは `Path::exists` ではなく接続プローブで判定する。
+
 `ytdl_path` を明示するのは、同梱 yt-dlp とシステム yt-dlp が混在する環境でどちらが使われるかを確定させるためである。
 
 送受信の例。

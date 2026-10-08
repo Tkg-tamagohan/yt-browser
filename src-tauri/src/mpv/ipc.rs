@@ -47,19 +47,28 @@ mod imp {
 
     /// ERROR_PIPE_BUSY。全パイプインスタンスが使用中＝パイプ自体は存在する。
     const ERROR_PIPE_BUSY: i32 = 231;
+    /// BUSY 解消を待つ期限。wait_for_socket が存在を確認した直後の一時的な
+    /// 混雑を越えられれば十分な値。
+    const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
     pub async fn connect(path: &Path) -> io::Result<(ReadHalf, WriteHalf)> {
         // 名前付きパイプの接続自体は同期 API。
-        // 直前の待機・接続がインスタンスを占有しているときだけ一呼吸置いて再試行する。
-        let pipe = match ClientOptions::new().open(path) {
-            Ok(pipe) => pipe,
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                ClientOptions::new().open(path)?
+        // 直前の待機プローブや別クライアントがインスタンスを占有していると
+        // ERROR_PIPE_BUSY になるため、期限付きで開き直す。BUSY 以外の失敗は即返す。
+        let deadline = std::time::Instant::now() + CONNECT_DEADLINE;
+        loop {
+            match ClientOptions::new().open(path) {
+                Ok(pipe) => return Ok(tokio::io::split(pipe)),
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(RETRY_INTERVAL).await;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
-        };
-        Ok(tokio::io::split(pipe))
+        }
     }
 }
 
