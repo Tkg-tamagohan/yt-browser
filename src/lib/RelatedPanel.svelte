@@ -11,7 +11,7 @@
   import {
     createVideoActionState,
     videoRefOf,
-  } from "$lib/videoActions.svelte";
+  } from "$lib/video-actions.svelte";
   import {
     asErrorMessage,
     type SearchResult,
