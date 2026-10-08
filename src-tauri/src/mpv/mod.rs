@@ -169,6 +169,9 @@ pub struct MpvPlayer {
     sponsor: Mutex<SponsorState>,
     /// PiP 化で解除した最大化状態。PiP 解除時に復元する。
     pip_prev_maximized: Mutex<bool>,
+    /// set_pip の遷移を直列化する。並行呼び出しが state.pip のチェックを
+    /// 同時に通過して保存値や mpv プロパティを競合させるのを防ぐ
+    pip_op: tokio::sync::Mutex<()>,
 }
 
 /// SponsorBlock の判定状態。区間は再生開始後のバックグラウンド取得で差し込まれる。
@@ -302,6 +305,7 @@ impl MpvPlayer {
             app,
             sponsor: Mutex::new(SponsorState::default()),
             pip_prev_maximized: Mutex::new(false),
+            pip_op: tokio::sync::Mutex::new(()),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -431,6 +435,10 @@ impl MpvPlayer {
     /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除し、
     /// 解除時に復元する。
     pub async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
+        // 遷移全体を直列化する。並行する set_pip が state.pip チェックを
+        // 同時に通過して pip_prev_maximized を上書きしたり、mpv への
+        // プロパティ送信を交互させたりするのを防ぐ
+        let _op = self.pip_op.lock().await;
         if enabled {
             // 最大化の記録は false→true の遷移時だけ行う。
             // PiP 中の再適用（enabled=true の重複送信）で保存値を上書きしない
