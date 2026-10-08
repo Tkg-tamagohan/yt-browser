@@ -246,6 +246,7 @@ const ja = {
   "library.playlist.selectHint": "左の一覧からプレイリストを選んでください",
   "library.playlists.empty": "プレイリストはありません",
   "library.playlist.importUrl": "YouTube プレイリストの URL",
+  "library.playlist.importName": "プレイリスト名（省略可）",
   "library.playlist.import": "取り込み",
   "library.playlist.importing": "取り込み中…",
   "library.playlist.imported": "「{name}」を取り込みました（{count} 件）",

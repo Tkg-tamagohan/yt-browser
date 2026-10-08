@@ -216,9 +216,11 @@ impl Db {
         Ok(())
     }
 
-    /// 項目順の一括書き換え（仕様決定 T）。`video_ids` は現項目と
-    /// 同一集合であることを呼び出し側で検証済みとし、渡した順に
-    /// position を振り直す。存在しないプレイリストは `DbError::NotFound`。
+    /// 項目順の一括書き換え（仕様決定 T）。`video_ids` が現項目と
+    /// 同一集合（順不同・重複なし）であることをこのトランザクション内で
+    /// 検証し、一致しない場合は `DbError::MismatchedItems` で変更しない
+    /// （検証と更新の分離による並行編集の誤適用を防ぐ）。
+    /// 存在しないプレイリストは `DbError::NotFound`。
     pub fn playlist_reorder(&self, playlist_id: i64, video_ids: &[String]) -> Result<(), DbError> {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
@@ -229,6 +231,21 @@ impl Db {
         )?;
         if !exists {
             return Err(DbError::NotFound);
+        }
+        let mut current: Vec<String> = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT video_id FROM playlist_items WHERE playlist_id = ?1 ORDER BY position",
+            )?;
+            let mut rows = stmt.query([playlist_id])?;
+            while let Some(row) = rows.next()? {
+                current.push(row.get(0)?);
+            }
+        }
+        let same =
+            video_ids.len() == current.len() && current.iter().all(|id| video_ids.contains(id));
+        if !same {
+            return Err(DbError::MismatchedItems);
         }
         for (pos, vid) in video_ids.iter().enumerate() {
             tx.execute(

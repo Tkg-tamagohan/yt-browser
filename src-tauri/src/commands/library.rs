@@ -161,6 +161,22 @@ pub async fn playlist_import(
     resolver: State<'_, YtDlpResolver>,
     db: State<'_, Db>,
 ) -> Result<Playlist, UiError> {
+    // 取り込み対象は YouTube の URL のみ（yt-dlp の任意 extractor 呼び出しを防ぐ）
+    let parsed =
+        url::Url::parse(&url).map_err(|_| UiError::invalid_input("URL を認識できませんでした"))?;
+    let host_ok = matches!(parsed.scheme(), "https" | "http")
+        && matches!(
+            parsed.host_str(),
+            Some("youtube.com")
+                | Some("youtu.be")
+                | Some("music.youtube.com")
+                | Some("www.youtube.com")
+        );
+    if !host_ok {
+        return Err(UiError::invalid_input(
+            "YouTube のプレイリスト URL を入力してください",
+        ));
+    }
     let path = resolver
         .resolve(&db)
         .await
@@ -184,7 +200,11 @@ pub async fn playlist_import(
         }
     };
     let mut playlist = db.playlist_create(&name)?;
-    db.playlist_add_many(playlist.id, &items)?;
+    if let Err(e) = db.playlist_add_many(playlist.id, &items) {
+        // 項目登録の失敗で空の一覧を残さない
+        let _ = db.playlist_delete(playlist.id);
+        return Err(e.into());
+    }
     // INSERT OR IGNORE で既存項目は位置維持されるため実件数を取り直す
     playlist.item_count = db.playlist_items(playlist.id)?.len() as i64;
     Ok(playlist)
@@ -206,14 +226,13 @@ pub fn playlist_reorder(
         .iter()
         .map(|v| parse_video_id(v))
         .collect::<Result<_, _>>()?;
-    let current = db.playlist_items(playlist_id)?;
-    let same = ids.len() == current.len() && current.iter().all(|it| ids.contains(&it.video_id));
-    if !same {
-        return Err(UiError::invalid_input(
-            "並べ替え後の項目が現在のプレイリスト内容と一致しません",
-        ));
-    }
-    Ok(db.playlist_reorder(playlist_id, &ids)?)
+    // 同一集合の検証は db.playlist_reorder が書き込みトランザクション内で行う
+    db.playlist_reorder(playlist_id, &ids).map_err(|e| match e {
+        crate::db::DbError::MismatchedItems => {
+            UiError::invalid_input("並べ替え後の項目が現在のプレイリスト内容と一致しません")
+        }
+        e => e.into(),
+    })
 }
 
 /// `playlist_sort`（FR-11、仕様決定 T）。
@@ -232,5 +251,10 @@ pub fn playlist_sort(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError>
         (None, None) => std::cmp::Ordering::Equal,
     });
     let ids: Vec<String> = items.into_iter().map(|i| i.video_id).collect();
-    Ok(db.playlist_reorder(playlist_id, &ids)?)
+    db.playlist_reorder(playlist_id, &ids).map_err(|e| match e {
+        crate::db::DbError::MismatchedItems => {
+            UiError::invalid_input("プレイリストが他の操作で変更されました。再度お試しください")
+        }
+        e => e.into(),
+    })
 }

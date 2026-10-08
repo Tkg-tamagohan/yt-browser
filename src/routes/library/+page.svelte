@@ -50,6 +50,7 @@
 
   // プレイリスト取り込み（FR-10、仕様決定 R）。URL と任意の名前を受ける
   let importUrl = $state("");
+  let importName = $state("");
   let importing = $state(false);
 
   // 項目の並べ替え（FR-11、仕様決定 T）。DnD はドラッグ中の行番号と
@@ -268,10 +269,15 @@
     if (!url || importing) return;
     importing = true;
     try {
-      const pl = await invoke<Playlist>("playlist_import", { url });
+      const name = importName.trim();
+      const pl = await invoke<Playlist>("playlist_import", {
+        url,
+        name: name === "" ? null : name,
+      });
       ++listsReq;
       va.playlists = [...va.playlists, pl];
       importUrl = "";
+      importName = "";
       notify(
         t("library.playlist.imported", { name: pl.name, count: pl.itemCount }),
       );
@@ -546,6 +552,12 @@
             type="text"
             bind:value={importUrl}
             placeholder={t("library.playlist.importUrl")}
+            onkeydown={(e) => e.key === "Enter" && void importPlaylist()}
+          />
+          <input
+            type="text"
+            bind:value={importName}
+            placeholder={t("library.playlist.importName")}
             onkeydown={(e) => e.key === "Enter" && void importPlaylist()}
           />
           <button

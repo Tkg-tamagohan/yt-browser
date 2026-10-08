@@ -126,9 +126,12 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 登録済み項目は次の終端（自然終了・途中失敗）で同一 mpv が先頭から読み込む。
 `playlist_import` は YouTube プレイリストを `yt-dlp --flat-playlist` で取り込み、
 各項目を `video_upsert` で `videos` 台帳に集約したうえで新規プレイリストへ登録する（FR-10、仕様決定 R）。
+`url` は YouTube 系ホスト（youtube.com / youtu.be / music.youtube.com）のみ受け付け、
+項目登録に失敗したときは作成済みの空プレイリストを削除してからエラーを返す。
 `name` 省略時は取り込んだプレイリストのタイトル、それも無いときは「取り込みプレイリスト」とする（暫定）。
 `playlist_reorder` は項目順の一括書き換え（FR-11、仕様決定 T）。渡した `video_ids` が
-現在の項目と同一集合でない場合は変更せずエラーとする（並行編集の誤適用防止）。
+現在の項目と同一集合でない場合は変更せずエラーとする（並行編集の誤適用防止。
+検証は `playlist_items` の更新と同じ書き込みトランザクション内で行う）。
 `playlist_sort` は `published_at` 昇順の一括ソート（one-shot）。`published_at` の無い項目は末尾に寄せ、同キー内は現在順を保つ。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
 
