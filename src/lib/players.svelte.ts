@@ -1,6 +1,7 @@
 // プレイヤー状態の共有ストア（設計書 §3.2 のイベント経路）。
 // 複数ページ（再生・設定）で同じマップを参照するため、イベント購読は一度だけ初期化する。
 
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export type PlayStatus = "idle" | "playing" | "paused" | "buffering" | "ended";
@@ -173,6 +174,12 @@ export function initPlayerEvents(): Promise<void> {
         next.delete(ev.payload.instanceId);
         playerStates.list = next;
       });
+      // リロード後はイベントが来ない一時停止中インスタンスがあるため、
+      // 登録直後に一覧を取得してカードを復元する。
+      const snapshot = await invoke<PlayerState[]>("player_list");
+      const next = new Map(playerStates.list);
+      for (const s of snapshot) next.set(s.instanceId, s);
+      playerStates.list = next;
     })();
   }
   return initPromise;

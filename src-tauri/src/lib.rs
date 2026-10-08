@@ -143,6 +143,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::play_video,
+            commands::player_list,
             commands::player_control,
             commands::player_close,
             commands::history_get,

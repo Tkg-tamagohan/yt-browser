@@ -230,4 +230,20 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "videos_ingested_promote_state2",
         sql: "UPDATE videos SET ingested = 1 WHERE ingested = 2;",
     },
+    // 残課題対応: チャットパネルの再オープンでバックログが再取得され
+    // chat_logs に重複行が作られていた問題への対応。イベントの
+    // item_id を列として持たせ、(video_id, item_id) に一意制約を置き
+    // INSERT OR IGNORE で冪等化する。item_id を持たないイベント
+    // （空文字列）は NULL として入れ、UNIQUE 制約の対象外にする
+    // （SQLite は NULL を個別の値として扱い衝突しない）。
+    // 既存行の item_id は raw_json（renderer 原文）の id フィールドから
+    // 復元する。取れない行は NULL のまま残る。
+    Migration {
+        version: 9,
+        name: "chat_logs_item_id",
+        sql: "ALTER TABLE chat_logs ADD COLUMN item_id TEXT;
+              UPDATE chat_logs SET item_id = json_extract(raw_json, '$.id');
+              CREATE UNIQUE INDEX idx_chat_item
+                ON chat_logs(video_id, item_id);",
+    },
 ];

@@ -847,11 +847,14 @@ impl Db {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
         let n = {
+            // idx_chat_item の一意制約に頼って冪等化する。
+            // 既知の item_id を持つ重複イベントは IGNORE され、
+            // 戻り値には実際に挿入された件数だけが入る。
             let mut stmt = tx.prepare(
-                "INSERT INTO chat_logs
+                "INSERT OR IGNORE INTO chat_logs
                    (video_id, posted_at_usec, author_channel_id, author_name,
-                    kind, message, amount_display, raw_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    kind, message, amount_display, raw_json, item_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULLIF(?9, ''))",
             )?;
             let mut n = 0usize;
             for e in events {
@@ -864,6 +867,7 @@ impl Db {
                     e.message,
                     e.amount_display,
                     e.raw_json,
+                    e.item_id,
                 ])?;
             }
             n
@@ -1370,6 +1374,44 @@ mod tests {
         assert!(db.filter_list().unwrap().is_empty());
         // 存在しない ID の削除は false
         assert!(!db.filter_remove(f.id).unwrap());
+    }
+
+    /// DB-CH-03: chat_logs の item_id 一意制約による冪等化（migration v9）。
+    /// 同じ item_id のイベントを再投入しても無視され、件数は増えない。
+    /// item_id の無いイベント（NULL）は制約対象外なので重複して入る。
+    #[test]
+    fn chat_insert_dedup_by_item_id() {
+        use crate::model::{ChatEvent, ChatKind};
+        let db = Db::connect_in_memory().unwrap();
+        let ev = |id: &str, msg: &str| ChatEvent {
+            item_id: id.to_string(),
+            video_id: "v1".to_string(),
+            posted_at_usec: 1,
+            author_channel_id: None,
+            author_name: None,
+            kind: ChatKind::Text,
+            message: msg.to_string(),
+            amount_display: None,
+            ng: false,
+            raw_json: "{}".to_string(),
+        };
+        assert_eq!(db.chat_insert_batch(&[ev("i1", "a"), ev("i2", "b")]).unwrap(), 2);
+        // バックログ再取得を模して同じイベントを再投入: 全部無視される
+        assert_eq!(db.chat_insert_batch(&[ev("i1", "a"), ev("i2", "b")]).unwrap(), 0);
+        // 一部だけ新規: 新規分だけ入る
+        assert_eq!(db.chat_insert_batch(&[ev("i2", "b"), ev("i3", "c")]).unwrap(), 1);
+        // 別動画の同じ item_id は別行として入る
+        let mut other = ev("i1", "a");
+        other.video_id = "v2".to_string();
+        assert_eq!(db.chat_insert_batch(&[other]).unwrap(), 1);
+        // item_id 空（NULL）は制約対象外で重複して入る
+        assert_eq!(db.chat_insert_batch(&[ev("", "x"), ev("", "x")]).unwrap(), 2);
+        let total: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM chat_logs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 6);
     }
 
     fn vref(video_id: &str, title: &str) -> crate::model::VideoRef {
