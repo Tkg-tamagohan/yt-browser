@@ -293,28 +293,33 @@ mod tests {
     async fn disconnect_fails_pending_and_notifies() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("t.sock");
-        // 即切断するサーバ
-        let server = tokio::spawn({
-            let sock = sock.clone();
-            async move {
-                let listener = UnixListener::bind(&sock).unwrap();
-                let (_stream, _) = listener.accept().await.unwrap();
-                // drop で切断
-            }
+        // 接続を受けて応答せず保持するサーバ。drop_tx を落とすとストリームも drop される
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (drop_tx, drop_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _hold = stream;
+            let _ = drop_rx.await;
+            // _hold drop で切断
         });
         let (tx, mut rx) = mpsc::channel(8);
-        // サーバが bind するのを待つ
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let client = IpcClient::connect(&sock, tx).await.unwrap();
+        // 応答の来ないコマンドを in-flight にしてから切断する
+        let cmd = tokio::spawn(async move {
+            client
+                .command(vec![json!("get_property"), json!("pause")])
+                .await
+        });
+        // コマンド送信が済むまでの小待機
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(drop_tx);
         server.await.unwrap();
-        // 切断後のコマンドは Closed 系エラーになる
-        let result = tokio::time::timeout(
-            Duration::from_secs(2),
-            client.command(vec![json!("get_property"), json!("pause")]),
-        )
-        .await
-        .unwrap();
-        assert!(result.is_err());
+        // in-flight コマンドは Closed で失敗する
+        let result = tokio::time::timeout(Duration::from_secs(2), cmd)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(IpcError::Closed)));
         // 切断通知が届く
         let mut saw_disconnect = false;
         while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
@@ -420,23 +425,31 @@ mod tests {
     #[tokio::test]
     async fn disconnect_fails_pending_and_notifies() {
         let pipe = pipe_path();
-        // クライアント接続を受けて即 drop するサーバ
+        // 接続を受けて応答せず保持するサーバ。drop_tx を落とすとサーバも drop される
         let server = ServerOptions::new().create(&pipe).unwrap();
+        let (drop_tx, drop_rx) = oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server.connect().await.unwrap();
-            // drop で切断
+            let _ = drop_rx.await;
+            // server drop で切断
         });
         let (tx, mut rx) = mpsc::channel(8);
         let client = IpcClient::connect(&pipe, tx).await.unwrap();
+        // 応答の来ないコマンドを in-flight にしてから切断する
+        let cmd = tokio::spawn(async move {
+            client
+                .command(vec![json!("get_property"), json!("pause")])
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(drop_tx);
         server_task.await.unwrap();
-        // 切断後のコマンドは Closed 系エラーになる
-        let result = tokio::time::timeout(
-            Duration::from_secs(2),
-            client.command(vec![json!("get_property"), json!("pause")]),
-        )
-        .await
-        .unwrap();
-        assert!(result.is_err());
+        // in-flight コマンドは Closed で失敗する
+        let result = tokio::time::timeout(Duration::from_secs(2), cmd)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(IpcError::Closed)));
         // 切断通知が届く
         let mut saw_disconnect = false;
         while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
