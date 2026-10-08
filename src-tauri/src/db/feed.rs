@@ -22,13 +22,15 @@ pub struct NewVideo<'a> {
 }
 
 /// `feed_ingest` / `feed_subscribe` の戻り値。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct IngestOutcome {
     /// 新たにフィードへ現れた動画数。新規 INSERT と、ライブラリ登録で
     /// 先に作られたプレースホルダ行（published_at NULL）への初回投入を含む。
     pub inserted: usize,
     /// 既存行の既読フラグを未読に戻した数（初回購読投入でのみ発生）。
     pub unread_changed: usize,
+    /// `inserted` に数えた動画の video_id（shorts 判定など投入後処理の対象）。
+    pub new_video_ids: Vec<String>,
 }
 
 impl IngestOutcome {
@@ -141,12 +143,14 @@ impl Db {
                     OR c.category_id = ?2)
                AND (?3 IS NULL
                     OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
+               AND (?4 IS NULL OR v.kind = ?4)
              ORDER BY v.published_at DESC",
         )?;
         let mut rows = stmt.query(rusqlite::params![
             filter.unread_only as i64,
             filter.category_id,
             filter.days.map(|d| d as i64),
+            filter.kind,
         ])?;
         let mut out = Vec::new();
         while out.len() < limit {
@@ -166,6 +170,21 @@ impl Db {
             }
         }
         Ok(out)
+    }
+
+    /// `videos.kind` の事後更新（shorts 判定結果の書き戻し、仕様決定 V）。
+    /// 'video' の行だけを更新し、既に別種別へ判定済みの行は上書きしない。
+    pub fn videos_set_kind(&self, video_ids: &[String], kind: &str) -> Result<(), DbError> {
+        if video_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare("UPDATE videos SET kind = ?2 WHERE video_id = ?1 AND kind = 'video'")?;
+        for id in video_ids {
+            stmt.execute(rusqlite::params![id, kind])?;
+        }
+        Ok(())
     }
 
     /// 個別既読（設計書 §3.1 の `mark_read`）。
@@ -207,7 +226,7 @@ fn ingest_rows(
         // 時点で投稿日・種別を埋めて未読へ戻し ingested=1 に確定する。
         // ingested=1 の行は WHERE で除外して既読状態を保つ（既読→未読への
         // 戻しは初回購読時の reset_unread 経路だけが担う）。
-        out.inserted += tx.execute(
+        let n = tx.execute(
             "INSERT INTO videos
                (video_id, channel_id, channel_title, title, thumbnail_url,
                 published_at, kind, is_read, ingested)
@@ -233,6 +252,10 @@ fn ingest_rows(
                 v.kind
             ],
         )?;
+        out.inserted += n;
+        if n > 0 {
+            out.new_video_ids.push(v.video_id.to_string());
+        }
     }
     if reset_unread {
         for v in entries {

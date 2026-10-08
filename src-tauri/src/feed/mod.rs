@@ -258,10 +258,16 @@ pub struct FeedPoller {
     app: AppHandle,
     /// 購読コマンドからの初回取得にも使い回す共有クライアント。
     pub client: reqwest::Client,
+    /// shorts 判定用クライアント（仕様決定 V）。非 short は /watch へ 303 で
+    /// 転送されるため、リダイレクトを追跡しないクライアントで先頭応答を見る。
+    detect_client: reqwest::Client,
     sched: Mutex<HashMap<String, ChannelSchedule>>,
     /// subscribe 時に即座に巡回を起こすための通知。
     wake: Notify,
 }
+
+/// shorts 判定 1 件あたりの上限時間。
+const SHORTS_TIMEOUT: Duration = Duration::from_secs(8);
 
 impl FeedPoller {
     pub fn new(db: Db, app: AppHandle) -> Arc<Self> {
@@ -269,9 +275,26 @@ impl FeedPoller {
             db,
             app,
             client: reqwest::Client::new(),
+            detect_client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("リダイレクト非追跡クライアントの生成に失敗"),
             sched: Mutex::new(HashMap::new()),
             wake: Notify::new(),
         })
+    }
+
+    /// 新規投入アイテムの shorts 判定をバックグラウンドで起こす（仕様決定 V）。
+    /// 購読の初回投入・ポーリング投入の両方から呼び、非同期で `videos.kind` を更新する。
+    pub fn spawn_kind_detection(&self, video_ids: Vec<String>) {
+        if video_ids.is_empty() {
+            return;
+        }
+        let db = self.db.clone();
+        let client = self.detect_client.clone();
+        tauri::async_runtime::spawn(async move {
+            detect_shorts(&client, &db, video_ids).await;
+        });
     }
 
     /// 新規購読などでスケジュールを即時回したいときに呼ぶ。
@@ -390,6 +413,7 @@ impl FeedPoller {
                 ) {
                     Ok(Some(out)) => {
                         self.after_success(&target.channel_id, out.inserted > 0);
+                        self.spawn_kind_detection(out.new_video_ids);
                         out.inserted
                     }
                     // 応答到着までに購読解除された: 挿入せずスケジュールも除去
@@ -469,6 +493,33 @@ impl FeedPoller {
         };
         if let Err(e) = self.app.emit("feed://status", payload) {
             tracing::warn!(error = %e, "feed://status の送出に失敗");
+        }
+    }
+}
+
+/// `youtube.com/shorts/<id>` への先頭応答が 200 の項目を `kind='short'` に更新する
+/// （仕様決定 V）。`client` はリダイレクト非追跡（`redirect::Policy::none()`）で
+/// 作ること — 非 short は 303 で `/watch?v=` へ転送され、転送先の 200 は
+/// 判定に使わない（実測、2026-10）。判定失敗・タイムアウトは 'video' のまま
+/// 残し、初版ではリトライしない。
+async fn detect_shorts(client: &reqwest::Client, db: &Db, video_ids: Vec<String>) {
+    let mut shorts = Vec::new();
+    for id in &video_ids {
+        let url = format!("https://www.youtube.com/shorts/{id}");
+        match client.head(&url).timeout(SHORTS_TIMEOUT).send().await {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+                shorts.push(id.clone());
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(video_id = %id, error = %e, "shorts 判定リクエストに失敗");
+            }
+        }
+    }
+    if !shorts.is_empty() {
+        tracing::debug!(count = shorts.len(), "shorts と判定");
+        if let Err(e) = db.videos_set_kind(&shorts, "short") {
+            tracing::warn!(error = %e, "kind=short の保存に失敗");
         }
     }
 }

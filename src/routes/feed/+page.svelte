@@ -55,11 +55,26 @@
   let unreadOnly = $state(true);
   // null=すべて / 0=未分類 / n=カテゴリ id
   let filterCat = $state<number | null>(null);
+  // 種別フィルタ（""=すべて）。"video" は未検出項目を含む（仕様決定 V）
+  let filterKind = $state("");
+  // 登録チャンネル一覧の表示用カテゴリ絞込（画面ローカル、FR-13）
+  let chanCatFilter = $state<number | null>(null);
   let busy = $state(false);
   let unlistens: UnlistenFn[] = [];
 
   // お気に入り・プレイリスト行アクション用（FR-7）
   const va = createVideoActionState();
+
+  // 登録チャンネル一覧のカテゴリ絞込（DB ではなく表示のみ）
+  let visibleChannels = $derived(
+    chanCatFilter === null
+      ? channels
+      : channels.filter((c) =>
+          chanCatFilter === 0
+            ? c.categoryId === null
+            : c.categoryId === chanCatFilter,
+        ),
+  );
 
   async function loadItems(): Promise<void> {
     items = await invoke<FeedItem[]>("list_feed", {
@@ -67,6 +82,7 @@
         unreadOnly,
         categoryId: filterCat,
         days: null,
+        kind: filterKind || null,
       },
     });
   }
@@ -221,95 +237,127 @@
 <main class="container feed">
   <h1>{t("feed.title")}</h1>
 
-  <section class="panel">
-    <h2>{t("feed.subscribe.title")}</h2>
-    <div class="row">
-      <input
-        type="text"
-        bind:value={subInput}
-        placeholder={t("feed.subscribe.placeholder")}
-        onkeydown={(e) => e.key === "Enter" && subscribe()}
-      />
-      <select bind:value={subCategory} aria-label={t("feed.category.label")}>
-        <option value={null}>{t("feed.category.none")}</option>
-        {#each categories as c (c.id)}
-          <option value={c.id}>{c.name}</option>
-        {/each}
-      </select>
-      <button onclick={subscribe} disabled={busy || !subInput.trim()}>
-        {t("feed.subscribe.button")}
-      </button>
-    </div>
-    <div class="row">
-      <input
-        type="text"
-        bind:value={newCatName}
-        placeholder={t("feed.category.placeholder")}
-        onkeydown={(e) => e.key === "Enter" && createCategory()}
-      />
-      <button class="link" onclick={createCategory} disabled={!newCatName.trim()}>
-        {t("feed.category.add")}
-      </button>
-    </div>
-  </section>
+  <div class="feed-grid">
+    <div class="feed-col">
+      <section class="panel">
+        <h2>{t("feed.subscribe.title")}</h2>
+        <div class="row">
+          <input
+            type="text"
+            bind:value={subInput}
+            placeholder={t("feed.subscribe.placeholder")}
+            onkeydown={(e) => e.key === "Enter" && subscribe()}
+          />
+          <select bind:value={subCategory} aria-label={t("feed.category.label")}>
+            <option value={null}>{t("feed.category.none")}</option>
+            {#each categories as c (c.id)}
+              <option value={c.id}>{c.name}</option>
+            {/each}
+          </select>
+          <button onclick={subscribe} disabled={busy || !subInput.trim()}>
+            {t("feed.subscribe.button")}
+          </button>
+        </div>
+        <div class="row">
+          <input
+            type="text"
+            bind:value={newCatName}
+            placeholder={t("feed.category.placeholder")}
+            onkeydown={(e) => e.key === "Enter" && createCategory()}
+          />
+          <button class="link" onclick={createCategory} disabled={!newCatName.trim()}>
+            {t("feed.category.add")}
+          </button>
+        </div>
+      </section>
 
-  {#if channels.length > 0}
-    <section class="panel">
-      <h2>{t("feed.channels.title")}</h2>
-      <ul class="channel-list">
-        {#each channels as ch (ch.channelId)}
-          <li>
-            <span class="ch-title" title={ch.channelId}>{ch.title}</span>
+      {#if channels.length > 0}
+        <section class="panel">
+          <div class="row feed-head">
+            <h2>{t("feed.channels.title")}</h2>
             <select
-              value={ch.categoryId}
-              onchange={(e) =>
-                setCategory(
-                  ch,
-                  e.currentTarget.value === ""
-                    ? null
-                    : Number(e.currentTarget.value),
-                )}
-              aria-label={t("feed.category.label")}
+              bind:value={chanCatFilter}
+              aria-label={t("feed.channels.filter")}
+              title={t("feed.channels.filter")}
             >
-              <option value="">{t("feed.category.none")}</option>
+              <option value={null}>{t("feed.filters.all")}</option>
+              <option value={0}>{t("feed.category.none")}</option>
               {#each categories as c (c.id)}
                 <option value={c.id}>{c.name}</option>
               {/each}
             </select>
-            <button class="link danger" onclick={() => unsubscribe(ch)}>
-              {t("feed.unsubscribe")}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  <section class="panel">
-    <div class="row feed-head">
-      <h2>{t("feed.items.title")}</h2>
-      <label class="filter">
-        <input
-          type="checkbox"
-          bind:checked={unreadOnly}
-          onchange={() => void loadItems()}
-        />
-        {t("feed.filters.unreadOnly")}
-      </label>
-      <select
-        bind:value={filterCat}
-        onchange={() => void loadItems()}
-        aria-label={t("feed.filters.category")}
-      >
-        <option value={null}>{t("feed.filters.all")}</option>
-        <option value={0}>{t("feed.category.none")}</option>
-        {#each categories as c (c.id)}
-          <option value={c.id}>{c.name}</option>
-        {/each}
-      </select>
-      <button class="link" onclick={refreshNow}>{t("feed.refresh")}</button>
-      <button class="link" onclick={markAllRead}>{t("feed.items.markAllRead")}</button>
+          </div>
+          {#if visibleChannels.length === 0}
+            <p class="subtle">{t("feed.channels.empty")}</p>
+          {:else}
+            <ul class="channel-list">
+              {#each visibleChannels as ch (ch.channelId)}
+                <li>
+                  <span class="ch-title" title={ch.channelId}>{ch.title}</span>
+                  <select
+                    value={ch.categoryId}
+                    onchange={(e) =>
+                      setCategory(
+                        ch,
+                        e.currentTarget.value === ""
+                          ? null
+                          : Number(e.currentTarget.value),
+                      )}
+                    aria-label={t("feed.category.label")}
+                  >
+                    <option value="">{t("feed.category.none")}</option>
+                    {#each categories as c (c.id)}
+                      <option value={c.id}>{c.name}</option>
+                    {/each}
+                  </select>
+                  <button class="link danger" onclick={() => unsubscribe(ch)}>
+                    {t("feed.unsubscribe")}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      {/if}
     </div>
+
+    <div class="feed-col">
+      <section class="panel">
+        <div class="row feed-head">
+          <h2>{t("feed.items.title")}</h2>
+          <label class="filter">
+            <input
+              type="checkbox"
+              bind:checked={unreadOnly}
+              onchange={() => void loadItems()}
+            />
+            {t("feed.filters.unreadOnly")}
+          </label>
+          <select
+            bind:value={filterCat}
+            onchange={() => void loadItems()}
+            aria-label={t("feed.filters.category")}
+          >
+            <option value={null}>{t("feed.filters.all")}</option>
+            <option value={0}>{t("feed.category.none")}</option>
+            {#each categories as c (c.id)}
+              <option value={c.id}>{c.name}</option>
+            {/each}
+          </select>
+          <select
+            bind:value={filterKind}
+            onchange={() => void loadItems()}
+            aria-label={t("feed.filters.kind")}
+            title={t("feed.filters.kind")}
+          >
+            <option value="">{t("feed.filters.all")}</option>
+            <option value="video">{t("feed.filters.kindVideo")}</option>
+            <option value="short">{t("feed.filters.kindShort")}</option>
+            <option value="live">{t("feed.filters.kindLive")}</option>
+          </select>
+          <button class="link" onclick={refreshNow}>{t("feed.refresh")}</button>
+          <button class="link" onclick={markAllRead}>{t("feed.items.markAllRead")}</button>
+        </div>
 
     {#if items.length === 0}
       <p class="subtle">{t("feed.items.empty")}</p>
@@ -356,12 +404,27 @@
         {/each}
       </ul>
     {/if}
-  </section>
+      </section>
+    </div>
+  </div>
 </main>
 
 <style>
   .feed {
-    max-width: 860px;
+    max-width: 1100px;
+  }
+  /* FR-13: 左=購読管理、右=フィード一覧。狭い画面では縦積み。
+     .container の既定 flex 縦並びは維持するため grid を .feed-grid に掛ける */
+  .feed-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 340px) 1fr;
+    gap: 0 16px;
+    align-items: start;
+  }
+  @media (max-width: 760px) {
+    .feed-grid {
+      grid-template-columns: 1fr;
+    }
   }
   .panel {
     margin-top: 16px;

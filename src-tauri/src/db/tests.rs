@@ -243,6 +243,7 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         unread_only: false,
         category_id: None,
         days: None,
+        kind: None,
     };
     assert_eq!(
         db.feed_list_filtered(&all, FEED_LIST_LIMIT, |_| true)
@@ -259,6 +260,7 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         unread_only: true,
         category_id: None,
         days: None,
+        kind: None,
     };
     assert!(db
         .feed_list_filtered(&unread, FEED_LIST_LIMIT, |_| true)
@@ -825,6 +827,135 @@ fn feed_ingest_backfills_library_placeholder() {
         .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
         .unwrap();
     assert!(!feed.iter().any(|i| i.video_id == "pend1234567"));
+}
+
+/// 新規投入の video_id が IngestOutcome.new_video_ids に返り、
+/// 再投入では空になる（shorts 判定の対象集合、仕様決定 V）。
+#[test]
+fn feed_ingest_reports_new_video_ids() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    let entries = [NewVideo {
+        video_id: "vid00000001",
+        channel_id: ch,
+        channel_title: "CH",
+        title: "V1",
+        thumbnail_url: None,
+        published_at: Some("2026-10-08T00:00:00+00:00"),
+        kind: "video",
+    }];
+    let out = db
+        .feed_subscribe(&SubscribeArgs {
+            channel_id: ch,
+            title: "CH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &entries,
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+    assert_eq!(out.new_video_ids, vec!["vid00000001".to_string()]);
+
+    let out = db.feed_ingest(ch, &entries, None, None).unwrap().unwrap();
+    assert_eq!(out.inserted, 0);
+    assert!(out.new_video_ids.is_empty());
+}
+
+/// 種別フィルタ（FR-13）。kind='short' の行だけが絞り込まれる。
+#[test]
+fn feed_list_filtered_by_kind() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    fn mk<'a>(id: &'a str, kind: &'a str, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at: Some("2026-10-08T00:00:00+00:00"),
+            kind,
+        }
+    }
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[
+            mk("video0000001", "video", ch),
+            mk("short0000001", "short", ch),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+
+    let by_kind = |kind: Option<String>| {
+        let f = FeedFilter {
+            kind,
+            ..Default::default()
+        };
+        db.feed_list_filtered(&f, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .iter()
+            .map(|i| i.video_id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(by_kind(None).len(), 2);
+    assert_eq!(by_kind(Some("short".to_string())), vec!["short0000001"]);
+    assert_eq!(by_kind(Some("video".to_string())), vec!["video0000001"]);
+    assert!(by_kind(Some("live".to_string())).is_empty());
+}
+
+/// videos_set_kind は 'video' の行だけ更新し、
+/// 判定済みの別種別は上書きしない。
+#[test]
+fn videos_set_kind_only_upgrades_video() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    fn mk<'a>(id: &'a str, kind: &'a str, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at: Some("2026-10-08T00:00:00+00:00"),
+            kind,
+        }
+    }
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[
+            mk("video0000001", "video", ch),
+            mk("live00000001", "live", ch),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+
+    db.videos_set_kind(
+        &["video0000001".to_string(), "live00000001".to_string()],
+        "short",
+    )
+    .unwrap();
+    let kind_of = |id: &str| {
+        let f = FeedFilter::default();
+        db.feed_list_filtered(&f, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .iter()
+            .find(|i| i.video_id == id)
+            .map(|i| i.kind.clone())
+            .unwrap()
+    };
+    assert_eq!(kind_of("video0000001"), "short");
+    assert_eq!(kind_of("live00000001"), "live");
 }
 
 // ---------------------------------------------------------------------------

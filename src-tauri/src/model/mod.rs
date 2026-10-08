@@ -132,6 +132,9 @@ pub struct FeedFilter {
     pub category_id: Option<i64>,
     /// 公開日が指定日数以降のものだけに絞る。
     pub days: Option<u32>,
+    /// 動画の種別（"video" | "short" | "live"）で絞る（FR-13）。
+    /// kind が未検出（'video' のまま）の項目は video として扱う（仕様決定 V）。
+    pub kind: Option<String>,
 }
 
 /// `videos` テーブルの 1 行（設計書 §8）。`list_feed` の返却型。
