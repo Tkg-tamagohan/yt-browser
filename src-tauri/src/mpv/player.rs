@@ -185,6 +185,7 @@ impl MpvPlayer {
                 speed: 1.0,
                 media_title: String::new(),
                 pip: opts.pip_geometry.is_some(),
+                format: opts.ytdl_format.clone(),
             }),
             ended_tx,
             terminal: TerminalTracker::default(),
@@ -288,6 +289,8 @@ impl MpvPlayer {
                     self.terminal.cancel_replace();
                     return Err(MpvError::Ipc(e));
                 }
+                // 適用済みの画質式を状態へ反映する（カードの画質表示が追従する）
+                lock(&self.state).format = format.clone();
             }
             PlayerAction::FrameStep => {
                 self.ipc.command(vec![json!("frame-step")]).await?;

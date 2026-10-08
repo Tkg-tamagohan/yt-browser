@@ -18,6 +18,33 @@ const PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
 pub const SETTING_YTDLP_PATH: &str = "ytdlp.path";
 /// 設定キー: 画質式（`ytdl-format`）のユーザー上書き。
 pub const SETTING_QUALITY_FORMAT: &str = "quality.format";
+/// 設定キー: PiP で起動するインスタンスの既定画質式（仕様決定 W）。
+/// 未設定・空文字は `quality.format` に従う。
+pub const SETTING_PIP_QUALITY_FORMAT: &str = "pip.quality.format";
+
+/// インスタンス起動時の画質式を解決する（実装レベル細目「PiP 画質の解決順」）。
+/// 優先順は「インスタンス別の指定 > PiP なら `pip.quality.format` > `quality.format`」。
+/// いずれも空文字・空白のみは未設定として扱い、下の段へ進む。
+pub fn resolve_launch_format(
+    explicit: Option<&str>,
+    pip: bool,
+    pip_format: Option<String>,
+    global_format: Option<String>,
+) -> Option<String> {
+    let normalize = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(f) = explicit.and_then(normalize) {
+        return Some(f);
+    }
+    if pip {
+        if let Some(f) = pip_format.and_then(|s| normalize(&s)) {
+            return Some(f);
+        }
+    }
+    global_format.and_then(|s| normalize(&s))
+}
 
 #[derive(Debug, Error)]
 pub enum YtError {
@@ -475,5 +502,42 @@ mod tests {
         );
 
         assert!(channel_ref_candidates(&serde_json::json!({})).is_empty());
+    }
+
+    /// 起動時画質の解決順（実装レベル細目「PiP 画質の解決順」）。
+    #[test]
+    fn resolve_launch_format_priority() {
+        let global = Some("g".to_string());
+        let pip = Some("p".to_string());
+        // インスタンス別指定が最優先（PiP でも全体指定でも同じ）
+        assert_eq!(
+            resolve_launch_format(Some("x"), true, pip.clone(), global.clone()),
+            Some("x".to_string())
+        );
+        // PiP は pip.quality.format が次点。未設定・空文字なら全体既定
+        assert_eq!(
+            resolve_launch_format(None, true, pip.clone(), global.clone()),
+            Some("p".to_string())
+        );
+        assert_eq!(
+            resolve_launch_format(None, true, Some("  ".to_string()), global.clone()),
+            Some("g".to_string())
+        );
+        assert_eq!(
+            resolve_launch_format(None, true, None, global.clone()),
+            Some("g".to_string())
+        );
+        // 通常起動は pip.quality.format を見ずに全体既定
+        assert_eq!(
+            resolve_launch_format(None, false, pip.clone(), global.clone()),
+            Some("g".to_string())
+        );
+        // 空白のインスタンス別指定は未設定扱い
+        assert_eq!(
+            resolve_launch_format(Some("  "), true, pip.clone(), global.clone()),
+            Some("p".to_string())
+        );
+        // 全部無ければ None（呼び出し側で DEFAULT_YTDL_FORMAT になる）
+        assert_eq!(resolve_launch_format(None, true, None, None), None);
     }
 }

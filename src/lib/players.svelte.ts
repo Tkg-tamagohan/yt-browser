@@ -19,6 +19,8 @@ export type PlayerState = {
   mediaTitle: string;
   /// PiP（最前面・枠なしの小窓）表示中かどうか（設計書 §4.5）。
   pip: boolean;
+  /// 現在適用中の画質式（`ytdl-format`）。
+  format: string;
 };
 
 export type PlayerEnded = { instanceId: number; videoId: string; reason: string };
@@ -161,6 +163,12 @@ export const playerStates = $state<{
   list: Map<number, PlayerState>;
 }>({ list: new Map() });
 
+/// インスタンス別画質を指定済みの instanceId 集合（仕様決定 X。セッション内のみ有効）。
+/// プレイヤーカードの画質選択が成功した時点で登録し、インスタンス終了で解放する。
+/// 設定画面の全体画質の即時適用はこの集合のインスタンスを除外する
+/// （個別指定が全体既定で消えないようにする）
+export const formatOverrides = new Set<number>();
+
 /// 再生インスタンスの終了・手動クローズ直後に呼び出すページ側フック
 /// （resumeHint の再取得など）。PlayerCards はレイアウトで常時マウントのため
 /// ページのローカル状態を直接参照できず、+page はマウント中だけここに登録する。
@@ -188,6 +196,7 @@ export function initPlayerEvents(): Promise<void> {
         const next = new Map(playerStates.list);
         next.delete(ev.payload.instanceId);
         playerStates.list = next;
+        formatOverrides.delete(ev.payload.instanceId);
       });
       // リロード後はイベントが来ない一時停止中インスタンスがあるため、
       // 登録直後に一覧を取得してカードを復元する。

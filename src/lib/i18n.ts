@@ -31,6 +31,9 @@ const ja = {
   "player.fps": "{fps} fps",
   "player.volume": "音量",
   "player.speed": "速度",
+  "player.quality": "画質",
+  "player.quality.hint":
+    "このインスタンスだけの画質式を変更（セッション内のみ有効。次回再生は既定画質に戻る）",
   "player.ended": "再生が終了しました（{reason}）",
   "player.error": "エラー: {message}",
   "player.frameStep": "1 コマ進み",
@@ -256,6 +259,9 @@ const ja = {
   "settings.pip.desc":
     "PiP（最前面・枠なしの小窓）の位置とサイズ。mpv の --geometry 形式（例: 480x270-40-40 は幅480・高さ270・右下から 40px 内側）。次回の PiP 化から有効",
   "settings.pip.geometry": "小窓の位置とサイズ（WxH+±x±y）",
+  "settings.pip.quality": "PiP の既定画質（ytdl-format 式）",
+  "settings.pip.quality.desc":
+    "空欄なら全体の画質設定に従う。小窓向けに低めの画質を指定しておくと起動が軽くなる",
   "settings.pip.unsaved":
     "保存中に PiP の値が変更されました。DB には既定値が保存されたため、もう一度保存してください",
 } as const;

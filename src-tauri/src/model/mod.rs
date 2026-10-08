@@ -42,6 +42,8 @@ pub struct PlayerState {
     pub media_title: String,
     /// PiP（最前面・枠なしの小窓）表示中かどうか（設計書 §4.5）。
     pub pip: bool,
+    /// 現在適用中の画質式（`ytdl-format`）。起動時解決値または Quality 変更後の値。
+    pub format: String,
 }
 
 /// `player://ended` イベントのペイロード（設計書 §3.2）。

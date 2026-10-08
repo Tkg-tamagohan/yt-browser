@@ -67,7 +67,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_status` | なし | `Result<DbStatus>`（`schema_version`） |
 | `settings_get` | `key` | `Result<Option<String>>` |
 | `settings_set` | `key`, `value` | `Result<()>` |
-| `play_video` | `video_id`, `resume`, `pip?` | `Result<instance_id>` |
+| `play_video` | `video_id`, `resume`, `pip?`, `format?` | `Result<instance_id>` |
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
@@ -124,7 +124,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
-| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip }` | observe_property の変化を間引いて発火[^statesample] |
+| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format }` | observe_property の変化を間引いて発火[^statesample] |
 | `player://ended` | `{ instanceId, videoId, reason }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
 | `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
@@ -148,6 +148,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `sponsor.categories` | JSON マップ `{"<カテゴリ>":"<動作>"}` | SponsorBlock のカテゴリごとの動作（§4.4）。動作は `skip` / `notify` / `off` |
 | `wheel.volume_delta` | 数値 | ホイール再生中の 1 ノッチあたりの音量変化量（§4.2、mpv script-opts の `wheel-volume_delta`） |
 | `pip.geometry` | `WxH±x±y` | PiP 小窓の位置とサイズ（§4.5、既定 `480x270-40-40`） |
+| `pip.quality.format` | `ytdl-format` 式 | PiP インスタンスの既定画質（§4.5）。未設定・空文字は `quality.format` に従う（仕様決定 W） |
 | `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5） |
 
 ## 4. 動画再生サブシステム
@@ -254,6 +255,8 @@ mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-ba
 PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動したものを指す。
 アプリのウィンドウにはピクセルを持ち込まないので、WebView との合成は発生しない。
 `ontop`・`border`・`geometry` はいずれも起動後に `set_property` で変更できるため、稼働中インスタンスを後から PiP 化・解除できる（`player_control` の `pip` アクション、`PlayerState.pip` で状態を伝える）。小窓の位置とサイズは設定 `pip.geometry`（mpv の `WxH±x±y` 形式のみ受理、既定 `480x270-40-40`）で変更する。
+
+起動時の画質式は「`play_video` の `format` 引数（インスタンス別指定）> PiP なら `pip.quality.format` > `quality.format`」の順で解決する（仕様決定 W、実装レベル細目「PiP 画質の解決順」）。稼働中インスタンスの画質はプレイヤーカードの画質選択から `player_control` の `quality` アクションで変えられる。この変更は DB に保存せずセッション内に限り有効で、次回再生は既定画質に戻る（仕様決定 X）。現在の適用値は `PlayerState.format` としてカードへ伝える。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
