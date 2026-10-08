@@ -704,7 +704,10 @@ fn playlist_reorder_renumbers_positions() {
     .unwrap();
     let items = db.playlist_items(pl.id).unwrap();
     assert_eq!(
-        items.iter().map(|i| i.video_id.as_str()).collect::<Vec<_>>(),
+        items
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
         ["cccccccccc3", "aaaaaaaaaa1", "bbbbbbbbbb2"]
     );
     assert_eq!(
@@ -735,18 +738,15 @@ fn playlist_add_many_appends_and_dedupes() {
     .unwrap();
     assert_eq!(db.playlist_items(pl.id).unwrap().len(), 3);
     // 途中に既存項目が混ざった再投入: 新規分だけ末尾追加、既存は位置維持
-    db.playlist_add_many(
-        pl.id,
-        &[
-            vref("bbbbbbbbbb2", "B"),
-            vref("dddddddddd4", "D"),
-        ],
-    )
-    .unwrap();
+    db.playlist_add_many(pl.id, &[vref("bbbbbbbbbb2", "B"), vref("dddddddddd4", "D")])
+        .unwrap();
     let items = db.playlist_items(pl.id).unwrap();
     assert_eq!(items.len(), 4);
     assert_eq!(
-        items.iter().map(|i| i.video_id.as_str()).collect::<Vec<_>>(),
+        items
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
         ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3", "dddddddddd4"]
     );
     // published_at は未投入のまま None
