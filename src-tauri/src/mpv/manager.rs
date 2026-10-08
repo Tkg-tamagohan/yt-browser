@@ -1,11 +1,12 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
 use super::player::{MpvPlayer, SpawnOptions};
 use super::{
-    is_valid_pip_geometry, lock, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
+    is_valid_pip_geometry, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
     SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
 };
 use crate::db::Db;
 use crate::model::{PlayerAction, PlayerEnded, PlayerState};
+use crate::util::lock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};

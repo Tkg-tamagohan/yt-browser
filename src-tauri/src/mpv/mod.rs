@@ -4,32 +4,31 @@
 
 mod ipc;
 mod manager;
-pub mod player;
+pub(crate) mod player;
 mod spawn;
 mod terminal;
 
-pub use ipc::IpcClient;
+pub(crate) use ipc::IpcClient;
 use ipc::{IpcError, IpcEvent};
 pub use manager::PlayerManager;
-use std::sync::{Mutex, MutexGuard};
 use thiserror::Error;
 
 /// 未設定時の画質式（設計書 §4.3 の 1080p 上限プリセット）。
-pub const DEFAULT_YTDL_FORMAT: &str = "bv*[height<=1080]+ba/b[height<=1080]";
+pub(crate) const DEFAULT_YTDL_FORMAT: &str = "bv*[height<=1080]+ba/b[height<=1080]";
 
 /// ホイール分岐スクリプト（設計書 §4.2）。バイナリに埋め込み、
 /// 起動時に app_data/mpv/wheel.lua へ書き出して `--script` で読ませる。
 pub const WHEEL_LUA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/mpv/wheel.lua"));
 /// 設定キー: ホイール音量の変化量（script-opts `wheel-volume_delta` に渡す）。
-pub const SETTING_WHEEL_VOLUME_DELTA: &str = "wheel.volume_delta";
+pub(crate) const SETTING_WHEEL_VOLUME_DELTA: &str = "wheel.volume_delta";
 /// PiP 小窓の `--geometry` 値（設定キー `pip.geometry`）。
-pub const SETTING_PIP_GEOMETRY: &str = "pip.geometry";
+pub(crate) const SETTING_PIP_GEOMETRY: &str = "pip.geometry";
 /// 設定が無い・不正なときの既定値。画面右下寄せの 480x270。
-pub const DEFAULT_PIP_GEOMETRY: &str = "480x270-40-40";
+pub(crate) const DEFAULT_PIP_GEOMETRY: &str = "480x270-40-40";
 
 /// `pip.geometry` / 既定値として受け付ける mpv geometry 形式
 /// （`WxH` と任意の `+-x+-y` のみ。mpv に渡す値なので曖昧な入力を残さない）。
-pub fn is_valid_pip_geometry(s: &str) -> bool {
+pub(crate) fn is_valid_pip_geometry(s: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$").unwrap())
         .is_match(s)
@@ -45,10 +44,6 @@ pub enum MpvError {
     Ipc(#[from] ipc::IpcError),
     #[error("インスタンス {0} は存在しない（既に終了した可能性がある）")]
     NoSuchInstance(u32),
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]

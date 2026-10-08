@@ -15,8 +15,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use crate::db::Db;
-use crate::error::UiError;
-use crate::filter::Matcher;
+use crate::filter::{Matcher, NgMatcher};
 use crate::innertube::InnerTube;
 use crate::model::{ChatEvent, ChatKind, ChatStatus};
 
@@ -34,51 +33,22 @@ pub struct ChatPoller {
     db: Db,
     app: AppHandle,
     innertube: Arc<InnerTube>,
-    /// 現在の NG 評価器。filter 変更のたびに丸ごと差し替える。
-    matcher: Mutex<Arc<Matcher>>,
-    /// `refresh_filters` の直列化用。一覧取得から差し替えまでを 1 つの
-    /// 排他区間にし、並行する更新で古いマッチャが後勝ちするのを防ぐ。
-    filter_lock: Mutex<()>,
+    /// 共有の NG 評価器。所有者は `filter::NgMatcher`（chat 以外の
+    /// コマンドも使うためここでは参照だけ持つ）。
+    ng: Arc<NgMatcher>,
     /// video_id -> 実行中タスクの JoinHandle（停止は `abort()`）。
     sessions: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
 }
 
 impl ChatPoller {
-    pub fn new(db: Db, app: AppHandle, innertube: Arc<InnerTube>) -> Self {
+    pub fn new(db: Db, app: AppHandle, innertube: Arc<InnerTube>, ng: Arc<NgMatcher>) -> Self {
         Self {
             db,
             app,
             innertube,
-            matcher: Mutex::new(Arc::new(Matcher::empty())),
-            filter_lock: Mutex::new(()),
+            ng,
             sessions: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// `filters` テーブルの現在値で NG 評価器を作り直す。
-    /// 起動時と `filter_add` / `filter_remove` の直後に呼ぶ。
-    pub fn refresh_filters(&self) -> Result<(), UiError> {
-        let _serialize = self.filter_lock.lock().unwrap();
-        let rows = self.db.filter_list()?;
-        let m = Matcher::rebuild(&rows);
-        if !m.invalid_patterns().is_empty() {
-            self.status(
-                None,
-                "warn",
-                &format!(
-                    "コンパイルに失敗したフィルタを除外しました（{} 件）",
-                    m.invalid_patterns().len()
-                ),
-            );
-        }
-        *self.matcher.lock().unwrap() = Arc::new(m);
-        Ok(())
-    }
-
-    /// 現在の NG 評価器を共有で取り出す。
-    /// フィード・検索・関連動画の表示側フィルタ（動画系 target）に使う。
-    pub fn matcher(&self) -> Arc<Matcher> {
-        self.matcher.lock().unwrap().clone()
     }
 
     /// 指定動画のチャット取得を開始する。既に動いていれば何もしない。
@@ -173,7 +143,7 @@ impl ChatPoller {
                     // seen には入れないため、YouTube が item を再送したときに
                     // 履歴へ拾い直せる（UI 側にも再送されるので UI は item_id で dedup）。
                     // matcher は応答ごとに取り直し、フィルタ変更を走行中にも反映する。
-                    let matcher = self.matcher();
+                    let matcher = self.ng.get();
                     let mut pending: HashSet<String> = HashSet::new();
                     let events = lcc
                         .and_then(|l| l.get("actions"))

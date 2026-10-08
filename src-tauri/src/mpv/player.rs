@@ -2,8 +2,9 @@
 //! SponsorBlock 判定を `MpvPlayer` にまとめる。
 use super::spawn::{cleanup_failed_spawn, ipc_endpoint, loadfile_replace, wait_for_socket};
 use super::terminal::TerminalTracker;
-use super::{lock, IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
+use super::{IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
 use crate::model::{PlayStatus, PlayerAction, PlayerState};
+use crate::util::lock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,7 +36,7 @@ const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
 ];
 
 /// mpv プロセス 1 台分の制御ハンドル。
-pub struct MpvPlayer {
+pub(crate) struct MpvPlayer {
     instance_id: u32,
     video_id: String,
     ipc: IpcClient,
@@ -61,8 +62,8 @@ pub struct MpvPlayer {
 
 /// SponsorBlock の判定状態。区間は再生開始後のバックグラウンド取得で差し込まれる。
 #[derive(Default)]
-pub struct SponsorState {
-    pub segments: Vec<crate::sponsor::ActiveSegment>,
+pub(crate) struct SponsorState {
+    pub(crate) segments: Vec<crate::sponsor::ActiveSegment>,
     /// 各区間につき 1 回だけ発火させるための消化済みインデックス。
     fired: HashSet<usize>,
     /// seek 失敗した区間の再試行までの猶予（区間 index → 次回試行可能時刻）。
@@ -70,28 +71,28 @@ pub struct SponsorState {
 }
 
 /// `PlayerManager::play` に渡す起動条件。
-pub struct SpawnOptions {
-    pub video_id: String,
+pub(crate) struct SpawnOptions {
+    pub(crate) video_id: String,
     /// レジューム開始位置（秒）。0 なら先頭から。
-    pub start_sec: f64,
+    pub(crate) start_sec: f64,
     /// `--ytdl-format` に渡す画質式。
-    pub ytdl_format: String,
+    pub(crate) ytdl_format: String,
     /// `ytdl_hook-ytdl_path` に渡す yt-dlp のパス。None なら mpv の既定解決に任せる。
-    pub ytdlp_path: Option<String>,
+    pub(crate) ytdlp_path: Option<String>,
     /// `--script` に渡す wheel.lua のパス（app_data/mpv/wheel.lua）。
-    pub wheel_script: Option<PathBuf>,
+    pub(crate) wheel_script: Option<PathBuf>,
     /// `wheel-volume_delta` に渡す音量変化量。None なら Lua 既定（2）。
-    pub wheel_volume_delta: Option<String>,
+    pub(crate) wheel_volume_delta: Option<String>,
     /// PiP（最前面・枠なしの小窓）で起動するときの `--geometry` 値。
     /// None なら通常ウィンドウで起動する（設計書 §4.5）。
-    pub pip_geometry: Option<String>,
+    pub(crate) pip_geometry: Option<String>,
 }
 
 impl MpvPlayer {
     /// mpv を起動し、IPC ソケットに接続してプロパティ監視とファイルロードを行う。
     /// 戻り値の `JoinHandle` はイベントポンプ（IPC イベント→状態変換）で、
     /// 呼び出し側（PlayerManager）が保持して終了時に abort する。
-    pub async fn spawn(
+    pub(crate) async fn spawn(
         instance_id: u32,
         socket_dir: &Path,
         opts: SpawnOptions,
@@ -215,21 +216,21 @@ impl MpvPlayer {
         Ok((player, pump))
     }
 
-    pub fn instance_id(&self) -> u32 {
+    pub(crate) fn instance_id(&self) -> u32 {
         self.instance_id
     }
 
-    pub fn video_id(&self) -> String {
+    pub(crate) fn video_id(&self) -> String {
         self.video_id.clone()
     }
 
     /// 現在状態のスナップショット。
-    pub fn snapshot(&self) -> PlayerState {
+    pub(crate) fn snapshot(&self) -> PlayerState {
         lock(&self.state).clone()
     }
 
     /// 終了通知を購読する。
-    pub fn subscribe_ended(&self) -> broadcast::Receiver<String> {
+    pub(crate) fn subscribe_ended(&self) -> broadcast::Receiver<String> {
         self.ended_tx.subscribe()
     }
 
@@ -239,12 +240,12 @@ impl MpvPlayer {
     }
 
     /// バックグラウンドで取得した SponsorBlock 区間を差し込む（設計書 §4.4）。
-    pub fn set_sponsor_segments(&self, segments: Vec<crate::sponsor::ActiveSegment>) {
+    pub(crate) fn set_sponsor_segments(&self, segments: Vec<crate::sponsor::ActiveSegment>) {
         lock(&self.sponsor).segments = segments;
     }
 
     /// `player_control` の操作を mpv コマンドへ変換して送る。
-    pub async fn control(&self, action: &PlayerAction) -> Result<(), MpvError> {
+    pub(crate) async fn control(&self, action: &PlayerAction) -> Result<(), MpvError> {
         match action {
             PlayerAction::Pause { value } => {
                 self.ipc
@@ -310,7 +311,7 @@ impl MpvPlayer {
     /// 最大化中のウィンドウでは geometry が効かず枠なし最前面の巨大ウィンドウが
     /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除し、
     /// 解除時に復元する。
-    pub async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
+    pub(crate) async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
         // 遷移全体を直列化する。並行する set_pip が state.pip チェックを
         // 同時に通過して pip_prev_maximized を上書きしたり、mpv への
         // プロパティ送信を交互させたりするのを防ぐ
@@ -380,7 +381,7 @@ impl MpvPlayer {
     }
 
     /// mpv を終了させる。quit を送り、猶予後に生きていれば kill する。
-    pub async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) {
         let _ = self.ipc.command(vec![json!("quit")]).await;
         let mut child = self.child.lock().await;
         tokio::select! {

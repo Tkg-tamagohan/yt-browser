@@ -7,7 +7,7 @@
 //! ポーリングやパースの失敗は再生を阻害しない（warn ログ＋`feed://status` に留める）。
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
@@ -16,6 +16,7 @@ use tokio::sync::Notify;
 
 use crate::db::{Db, PollTarget};
 use crate::model::{FeedNewItems, FeedStatus};
+use crate::util::lock;
 
 /// チャンネル RSS のエンドポイント（`?channel_id=` を後置）。
 const FEED_URL: &str = "https://www.youtube.com/feeds/videos.xml";
@@ -35,10 +36,6 @@ const FAIL_BASE: Duration = Duration::from_secs(5 * 60);
 const FAIL_MAX: Duration = Duration::from_secs(60 * 60);
 /// この回数以上の連続失敗で `feed://status` へ劣化を通知する。
 const FAIL_NOTIFY_THRESHOLD: u32 = 2;
-
-fn lock<'a, T>(m: &'a Mutex<T>) -> MutexGuard<'a, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 #[derive(Debug, Error)]
 pub enum FeedError {

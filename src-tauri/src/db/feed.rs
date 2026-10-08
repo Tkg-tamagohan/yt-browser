@@ -8,7 +8,7 @@ use crate::model::{FeedFilter, FeedItem};
 /// 達するまで続く（`feed_list_filtered`）。
 pub const FEED_LIST_LIMIT: usize = 500;
 
-/// `videos` への新規挿入 1 件分（`video_insert_new` の引数）。
+/// `videos` への新規挿入 1 件分（`feed_ingest` / `feed_subscribe` の `entries` 要素）。
 #[derive(Debug, Clone)]
 pub struct NewVideo<'a> {
     pub video_id: &'a str,

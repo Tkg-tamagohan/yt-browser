@@ -137,9 +137,9 @@ pub fn create_category(name: String, db: State<'_, Db>) -> Result<Category, UiEr
 pub fn list_feed(
     filter: FeedFilter,
     db: State<'_, Db>,
-    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+    ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<Vec<FeedItem>, UiError> {
-    let matcher = poller.matcher();
+    let matcher = ng.get();
     // 述語適合が FEED_LIST_LIMIT 件に達するまで走査するため、
     // 先頭が NG で抜けても後続の適合行を拾える
     Ok(

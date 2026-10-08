@@ -10,10 +10,7 @@ impl Db {
     /// `history_update_progress` と同じ排他区間に載せて交錯を防ぐ。
     pub fn history_upsert(&self, video_id: &str) -> Result<(), DbError> {
         let conn = self.lock()?;
-        self.history_suppressed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(video_id);
+        crate::util::lock(&self.history_suppressed).remove(video_id);
         conn.execute(
             "INSERT INTO watch_history (video_id, title) VALUES (?1, '')
              ON CONFLICT (video_id) DO NOTHING",
@@ -42,12 +39,7 @@ impl Db {
         // ここで先に確認してからロックを取ると、間に割り込んだ削除が
         // 抑止登録を済ませてもこの保存が削除済み行を再作成してしまう
         let conn = self.lock()?;
-        if self
-            .history_suppressed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(video_id)
-        {
+        if crate::util::lock(&self.history_suppressed).contains(video_id) {
             return Ok(());
         }
         conn.execute(
@@ -125,10 +117,7 @@ impl Db {
     pub fn history_remove(&self, video_id: &str) -> Result<(), DbError> {
         let conn = self.lock()?;
         conn.execute("DELETE FROM watch_history WHERE video_id = ?1", [video_id])?;
-        self.history_suppressed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(video_id.to_string());
+        crate::util::lock(&self.history_suppressed).insert(video_id.to_string());
         Ok(())
     }
 }

@@ -9,13 +9,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
+
+use crate::util::lock;
 
 /// 転送層の OS 差異を閉じ込める。`connect` がストリームを確立して
 /// 読み/書きの半端に分割して返す。以降の処理は半端の型にだけ依存する。
@@ -151,11 +153,6 @@ impl IpcClient {
             }
         }
     }
-}
-
-/// Mutex のポイズンを握りつぶす。ロック保持中にパニックしない実装なので安全側に倒す。
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn spawn_reader(

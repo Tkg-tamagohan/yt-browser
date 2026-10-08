@@ -39,7 +39,7 @@ pub fn filter_add(
     kind: String,
     pattern: String,
     db: State<'_, Db>,
-    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+    ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<crate::model::Filter, UiError> {
     let target = target.trim().to_string();
     let kind = kind.trim().to_string();
@@ -65,7 +65,7 @@ pub fn filter_add(
             .map_err(|e| UiError::invalid_input(format!("正規表現が不正です: {e}")))?;
     }
     let f = db.filter_add(&target, &kind, &pattern)?;
-    poller.refresh_filters()?;
+    ng.refresh()?;
     Ok(f)
 }
 
@@ -74,10 +74,10 @@ pub fn filter_add(
 pub fn filter_remove(
     id: i64,
     db: State<'_, Db>,
-    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+    ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<(), UiError> {
     db.filter_remove(id)?;
-    poller.refresh_filters()?;
+    ng.refresh()?;
     Ok(())
 }
 

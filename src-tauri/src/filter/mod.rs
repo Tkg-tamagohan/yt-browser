@@ -4,13 +4,17 @@
 //! 全件作り直す（件数は少数前提。増分更新はしない）。
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use aho_corasick::AhoCorasick;
 use regex::RegexSet;
+use tauri::{AppHandle, Emitter};
 
-use crate::model::Filter;
+use crate::db::Db;
+use crate::error::UiError;
+use crate::model::{ChatStatus, Filter};
 
-/// target 単位の NG 判定器。`chat::ChatPoller` が Arc で共有し、
+/// target 単位の NG 判定器。`NgMatcher` が Arc で共有し、
 /// フィルタ登録・削除のたびに丸ごと差し替える。
 #[derive(Debug, Default)]
 pub struct Matcher {
@@ -109,7 +113,7 @@ impl Matcher {
     }
 
     /// 動画系 target の NG 判定（FR-9）。一覧の表示経路（フィード・検索・関連動画）で
-    /// `is_ng_video` に渡せる値を評価する。`video_desc` は現行の取得経路
+    /// `is_video_ng` に渡せる値を評価する。`video_desc` は現行の取得経路
     /// （RSS・ytsearch flat・InnerTube next）のどれにも説明文フィールドが無く
     /// 評価対象外（決定記録 Phase 6 に記録）。
     pub fn is_video_ng(
@@ -129,6 +133,63 @@ impl Matcher {
             }
         }
         false
+    }
+}
+
+/// 稼働中の NG 評価器の共有所有。`tauri::State` に `Arc` で載せる。
+/// chat 表示だけでなくフィード・検索・関連動画の動画系 NG 判定もここを
+/// 経由するため、所有者は chat モジュールではなくこのモジュールに置く
+/// （chat 以外のコマンドが chat モジュールへ依存しないようにする）。
+pub struct NgMatcher {
+    db: Db,
+    app: AppHandle,
+    /// 現在の NG 評価器。filter 変更のたびに丸ごと差し替える。
+    current: Mutex<Arc<Matcher>>,
+    /// `refresh` の直列化用。一覧取得から差し替えまでを 1 つの
+    /// 排他区間にし、並行する更新で古いマッチャが後勝ちするのを防ぐ。
+    refresh_lock: Mutex<()>,
+}
+
+impl NgMatcher {
+    pub fn new(db: Db, app: AppHandle) -> Self {
+        Self {
+            db,
+            app,
+            current: Mutex::new(Arc::new(Matcher::empty())),
+            refresh_lock: Mutex::new(()),
+        }
+    }
+
+    /// `filters` テーブルの現在値で NG 評価器を作り直す。
+    /// 起動時と `filter_add` / `filter_remove` の直後に呼ぶ。
+    pub fn refresh(&self) -> Result<(), UiError> {
+        let _serialize = self.refresh_lock.lock().unwrap();
+        let rows = self.db.filter_list()?;
+        let m = Matcher::rebuild(&rows);
+        if !m.invalid_patterns().is_empty() {
+            // 不正パターン除外の警告は `chat://status`（video_id なしの全体通知）
+            // で届ける既存の IPC 契約をそのまま維持する
+            let _ = self.app.emit(
+                "chat://status",
+                ChatStatus {
+                    video_id: None,
+                    level: "warn".to_string(),
+                    message: format!(
+                        "コンパイルに失敗したフィルタを除外しました（{} 件）",
+                        m.invalid_patterns().len()
+                    ),
+                },
+            );
+        }
+        *self.current.lock().unwrap() = Arc::new(m);
+        Ok(())
+    }
+
+    /// 現在の NG 評価器を共有で取り出す。
+    /// フィード・検索・関連動画の表示側フィルタ（動画系 target）と
+    /// チャット表示フィルタ（chat_text / chat_author）の双方に使う。
+    pub fn get(&self) -> Arc<Matcher> {
+        self.current.lock().unwrap().clone()
     }
 }
 
