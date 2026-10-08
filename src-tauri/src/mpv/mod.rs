@@ -33,6 +33,11 @@ const SOCKET_POLL: Duration = Duration::from_millis(50);
 /// quit 送信後、mpv の自発終了を待つ猶予。
 const QUIT_GRACE: Duration = Duration::from_millis(800);
 
+/// 最大化解除→geometry 送信の間に挟む猶予。X の最大化遷移中に届く
+/// リサイズ要求は WM/mpv 側でドロップされるため、遷移完了を待つ
+/// （実機検証で ~600ms が動作確認された値）。
+const PWM_TRANSITION_WAIT: Duration = Duration::from_millis(600);
+
 /// `observe_property` で監視する mpv プロパティ（設計書 §4.1）。
 const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
     (1, "time-pos"),
@@ -441,21 +446,19 @@ impl MpvPlayer {
         let _op = self.pip_op.lock().await;
         if enabled {
             // 最大化の記録は false→true の遷移時だけ行う。
-            // PiP 中の再適用（enabled=true の重複送信）で保存値を上書きしない
-            let maximized = if !lock(&self.state).pip {
-                let m = self
-                    .ipc
-                    .command(vec![json!("get_property"), json!("window-maximized")])
-                    .await
-                    .ok()
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                *lock(&self.pip_prev_maximized) = m;
-                m
-            } else {
-                // 既に PiP 中: 解除済みだが念のため解除を再送する
-                true
-            };
+            // PiP 中の再適用（enabled=true の重複送信）で保存値を上書きしない。
+            // 解除自体は毎回読んで適用する（PiP 中の外部操作で再最大化された
+            // 場合も正しく解除できるように）
+            let maximized = self
+                .ipc
+                .command(vec![json!("get_property"), json!("window-maximized")])
+                .await
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !lock(&self.state).pip {
+                *lock(&self.pip_prev_maximized) = maximized;
+            }
             if maximized {
                 self.ipc
                     .command(vec![
@@ -464,6 +467,10 @@ impl MpvPlayer {
                         json!(false),
                     ])
                     .await?;
+                // 最大化解除は非同期の X 遷移で、遷移中に届く geometry の
+                // リサイズ要求はドロップされる（実機検証で確認）。
+                // 遷移完了を待つ実機確認済みの猶予を挟んでから後続を送る
+                tokio::time::sleep(PWM_TRANSITION_WAIT).await;
             }
         }
         self.ipc
