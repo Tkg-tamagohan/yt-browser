@@ -110,12 +110,8 @@ pub async fn playing_channel(
     resolver: State<'_, YtDlpResolver>,
 ) -> Result<PlayingChannel, UiError> {
     let id = parse_video_id(&video_id)?;
-    let mut input: Option<String> = None;
-    let mut title: Option<String> = None;
     // 1) videos 台帳（フィード・お気に入り・プレイリスト経由で既知情報がある）
-    let (cid, ct) = db.video_channel(&id)?;
-    input = cid;
-    title = ct;
+    let (mut input, mut title) = db.video_channel(&id)?;
     // 2) watch_history（台帳に無い動画も履歴の再視聴で拾う）
     if input.is_none() {
         if let Some(h) = db.history_get(&id)? {

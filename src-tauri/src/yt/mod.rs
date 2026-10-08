@@ -213,7 +213,10 @@ fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
         out.push(cid);
     }
     if let Some(up) = get("uploader_id") {
-        out.push(if up.starts_with('@') {
+        // UC 形の uploader_id はチャンネル ID として扱う（yt-dlp が
+        // uploader_id に UC ID を出すことがある。`@UC...` と解釈すると
+        // 存在しないハンドルへ解決してしまう）
+        out.push(if is_uc_channel_id(&up) || up.starts_with('@') {
             up
         } else {
             format!("@{up}")
@@ -445,6 +448,21 @@ mod tests {
             "uploader_id": "@handle1",
         });
         assert_eq!(channel_ref_candidates(&v), vec!["@handle1".to_string()]);
+
+        // uploader_id が UC 形の場合は @ を付けない（実例: yt-dlp が
+        // uploader_id に UC ID を返すことがある）
+        let v = serde_json::json!({
+            "channel_id": "None",
+            "uploader_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+            "channel_url": "https://www.youtube.com/channel/UCuAXFkgsw1L7xaCfnd5JJOw",
+        });
+        assert_eq!(
+            channel_ref_candidates(&v),
+            vec![
+                "UCuAXFkgsw1L7xaCfnd5JJOw".to_string(),
+                "https://www.youtube.com/channel/UCuAXFkgsw1L7xaCfnd5JJOw".to_string()
+            ]
+        );
 
         let v = serde_json::json!({
             "channel_id": "",
