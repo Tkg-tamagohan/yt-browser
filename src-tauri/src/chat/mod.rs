@@ -39,8 +39,8 @@ pub struct ChatPoller {
     /// `refresh_filters` の直列化用。一覧取得から差し替えまでを 1 つの
     /// 排他区間にし、並行する更新で古いマッチャが後勝ちするのを防ぐ。
     filter_lock: Mutex<()>,
-    /// video_id -> 実行中タスクの abort handle。
-    sessions: Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    /// video_id -> 実行中タスクの JoinHandle（停止は `abort()`）。
+    sessions: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
 }
 
 impl ChatPoller {
@@ -89,8 +89,10 @@ impl ChatPoller {
         }
         let poller = Arc::clone(self);
         let vid = video_id.to_string();
-        let handle = tokio::spawn(async move { poller.run(&vid).await });
-        sessions.insert(video_id.to_string(), handle.abort_handle());
+        // chat_start は同期コマンド（ランタイムコンテキスト外）から呼ばれるため
+        // tokio::spawn ではなく Tauri のランタイムに乗せる
+        let handle = tauri::async_runtime::spawn(async move { poller.run(&vid).await });
+        sessions.insert(video_id.to_string(), handle);
     }
 
     /// 指定動画のチャット取得を止める。未起動なら何もしない。
