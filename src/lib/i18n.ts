@@ -236,7 +236,6 @@ const ja = {
   "library.playlists.empty": "プレイリストはありません",
   "library.removed": "削除しました",
   "library.removeFailed": "削除に失敗: {message}",
-  "library.thumbnailAlt": "サムネイル",
 
   // Phase 7: ホイール割り当て（決定記録: script-opts 注入のため次回再生から有効）
   "settings.wheel.title": "ホイール割り当て",

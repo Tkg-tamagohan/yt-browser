@@ -1126,7 +1126,7 @@ mod tests {
         assert!(t.completed());
     }
 
-    /// DB-PL-01 相当: pip.geometry の受理形式（mpv に渡す値なので
+    /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
     /// WxH 必須・符号付き座標は任意・曖昧な入力は残さない）。
     #[test]
     fn pip_geometry_validation() {
