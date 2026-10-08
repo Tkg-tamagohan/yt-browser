@@ -10,6 +10,7 @@
   import { QUALITY_PRESETS } from "$lib/quality";
   import {
     asErrorMessage,
+    formatOverrides,
     initPlayerEvents,
     playerStates,
     type BlockedChannel,
@@ -244,11 +245,17 @@
         notify(t("settings.failed", { message: `pip.geometry: ${geo}` }));
       }
       // pip.quality.format: 空欄は未設定（全体画質に従う）。値は自由記述の
-      // フォーマット式なのでバリデーションせずそのまま保存する
+      // フォーマット式なのでバリデーションせずそのまま保存する。
+      // 保存待ちの間に再入力された場合は DB と画面がずれるため未保存と通知する
+      const pq = pipQuality.trim();
       await invoke("settings_set", {
         key: "pip.quality.format",
-        value: pipQuality.trim(),
+        value: pq,
       });
+      if (pipQuality.trim() !== pq) {
+        invalid = true;
+        notify(t("settings.pip.unsaved"));
+      }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       // （invalid には未保存変更の検出も含む）
@@ -266,6 +273,9 @@
       let applied = 0;
       const failed: number[] = [];
       for (const id of playerStates.list.keys()) {
+        // インスタンス別画質を指定済みの台は除外する（仕様決定 X の
+        // セッション内有効な個別指定が全体既定で消えないようにする）
+        if (formatOverrides.has(id)) continue;
         try {
           await invoke("player_control", {
             instanceId: id,

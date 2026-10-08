@@ -23,6 +23,7 @@
   } from "$lib/chat.svelte";
   import {
     asErrorMessage,
+    formatOverrides,
     initPlayerEvents,
     playbackHooks,
     playerStates,
@@ -163,6 +164,27 @@
   // 応答後も次の状態イベントが届く猶予を置いてから再有効化する
   let pipBusy = $state<Set<number>>(new Set());
 
+  // インスタンス別画質の変更中セット。応答までの連続操作を防ぎ、
+  // 失敗時は select の表示を現在の適用値へ戻す
+  let qualityBusy = $state<Set<number>>(new Set());
+
+  async function setQuality(id: number, format: string, el: HTMLSelectElement): Promise<void> {
+    if (qualityBusy.has(id)) return;
+    qualityBusy = new Set(qualityBusy).add(id);
+    try {
+      await control(id, { type: "quality", format });
+      // 適用成功: このインスタンスの個別指定を記録する（設定画面の全体適用から外す）
+      formatOverrides.add(id);
+    } catch {
+      // control がエラー通知を出す。欄の表示だけ実態へ戻す
+      el.value = playerStates.list.get(id)?.format ?? "";
+    } finally {
+      const s = new Set(qualityBusy);
+      s.delete(id);
+      qualityBusy = s;
+    }
+  }
+
   async function togglePip(id: number, next: boolean): Promise<void> {
     if (pipBusy.has(id)) return;
     pipBusy = new Set(pipBusy).add(id);
@@ -190,6 +212,7 @@
       const rel = new Set(relatedOpen);
       rel.delete(id);
       relatedOpen = rel;
+      formatOverrides.delete(id);
       // 閉じた時点の位置で履歴が更新されているのでページ側のヒントを取り直させる
       runPlaybackHooks();
     } catch (e) {
@@ -342,11 +365,9 @@
           <select
             value={p.format}
             title={t("player.quality.hint")}
+            disabled={qualityBusy.has(p.instanceId)}
             onchange={(e) =>
-              control(p.instanceId, {
-                type: "quality",
-                format: e.currentTarget.value,
-              })}
+              setQuality(p.instanceId, e.currentTarget.value, e.currentTarget)}
           >
             {#each QUALITY_PRESETS as q}
               <option value={q.format} selected={q.format === p.format}>
