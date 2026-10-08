@@ -16,6 +16,8 @@ export type PlayerState = {
   volume: number;
   speed: number;
   mediaTitle: string;
+  /// PiP（最前面・枠なしの小窓）表示中かどうか（設計書 §4.5）。
+  pip: boolean;
 };
 
 export type PlayerEnded = { instanceId: number; videoId: string; reason: string };
@@ -142,7 +144,8 @@ export type PlayerAction =
   | { type: "speed"; value: number }
   | { type: "quality"; format: string }
   | { type: "frame_step" }
-  | { type: "frame_back_step" };
+  | { type: "frame_back_step" }
+  | { type: "pip"; enabled: boolean };
 
 export const playerStates = $state<{
   list: Map<number, PlayerState>;

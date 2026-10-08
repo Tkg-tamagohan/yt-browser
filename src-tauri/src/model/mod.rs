@@ -40,6 +40,8 @@ pub struct PlayerState {
     pub volume: f64,
     pub speed: f64,
     pub media_title: String,
+    /// PiP（最前面・枠なしの小窓）表示中かどうか（設計書 §4.5）。
+    pub pip: bool,
 }
 
 /// `player://ended` イベントのペイロード（設計書 §3.2）。
@@ -71,6 +73,8 @@ pub enum PlayerAction {
     FrameStep,
     /// 1 フレーム後退。
     FrameBackStep,
+    /// PiP 表示の切り替え（設計書 §4.5: ontop・枠なし・小窓配置）。
+    Pip { enabled: bool },
 }
 
 /// `watch_history` テーブルの 1 行（設計書 §8）。

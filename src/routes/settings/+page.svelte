@@ -64,6 +64,11 @@
   // ホイール 1 ノッチの音量変化量（mpv script-opts の wheel-volume_delta。
   // 次回再生から有効。既定 2、undefined は「Lua 既定のまま」＝保存スキップ）
   let wheelDelta = $state<number | undefined>(2);
+  // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する。
+  // 空欄での保存は「既定値へ戻す」操作として扱い、UI 表示も既定に戻す
+  const PIP_GEOMETRY_DEFAULT = "480x270-40-40";
+  let pipGeometry = $state(PIP_GEOMETRY_DEFAULT);
+  const PIP_GEOMETRY_RE = /^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$/;
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -219,10 +224,13 @@
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
       });
+      // 不正値があっても他キーの保存自体は行うが、全体の成功通知は出さない
+      let invalid = false;
       // wheel.volume_delta: 有限数値・±100 以内だけ保存する
       // （mpv 側がそのまま script-opts に渡すため、ここで弾く）
       if (wheelDelta !== undefined) {
         if (!Number.isFinite(wheelDelta) || Math.abs(wheelDelta) > 100) {
+          invalid = true;
           notify(
             t("settings.failed", {
               message: `wheel.volume_delta: ${wheelDelta}`,
@@ -235,12 +243,41 @@
           });
         }
       }
+      // pip.geometry: mpv の geometry 形式だけ保存する（ここで弾く）。
+      // 空欄は既定値へのリセットとして扱い、不正形式は失敗通知のみ
+      const geo = pipGeometry.trim();
+      if (!geo) {
+        // 空欄は既定値へのリセット。保存に成功してから画面値を戻す
+        // （失敗時に表示と DB の値がずれないようにする）。
+        // 保存中にユーザーが再入力していた場合はその値は DB に残っていない
+        // ため、画面の値を残したまま未保存であることを通知する
+        await invoke("settings_set", {
+          key: "pip.geometry",
+          value: PIP_GEOMETRY_DEFAULT,
+        });
+        if (!pipGeometry.trim()) {
+          pipGeometry = PIP_GEOMETRY_DEFAULT;
+        } else {
+          invalid = true;
+          notify(t("settings.pip.unsaved"));
+        }
+      } else if (PIP_GEOMETRY_RE.test(geo)) {
+        await invoke("settings_set", { key: "pip.geometry", value: geo });
+      } else {
+        invalid = true;
+        notify(t("settings.failed", { message: `pip.geometry: ${geo}` }));
+      }
+      // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
+      // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
+      // （invalid には未保存変更の検出も含む）
       if (!format || pendingApply !== format) {
-        notify(
-          format
-            ? t("settings.saved")
-            : t("settings.savedQualitySkipped"),
-        );
+        if (!invalid) {
+          notify(
+            format
+              ? t("settings.saved")
+              : t("settings.savedQualitySkipped"),
+          );
+        }
         return;
       }
       // 再生中のインスタンスへ即時適用（設計書 §4.3: set_property + loadfile replace）
@@ -269,11 +306,13 @@
         notify(t("settings.applyPartial", { count: failed.length }));
       } else {
         pendingApply = null;
-        notify(
-          applied > 0
-            ? t("settings.applied", { count: applied })
-            : t("settings.saved"),
-        );
+        if (!invalid) {
+          notify(
+            applied > 0
+              ? t("settings.applied", { count: applied })
+              : t("settings.saved"),
+          );
+        }
       }
     } catch (e) {
       notify(t("settings.failed", { message: asErrorMessage(e) }));
@@ -302,6 +341,12 @@
       const wheelRaw = await invoke<string | null>("settings_get", {
         key: "wheel.volume_delta",
       });
+      const pipGeoRaw = await invoke<string | null>("settings_get", {
+        key: "pip.geometry",
+      });
+      if (pipGeoRaw !== null && PIP_GEOMETRY_RE.test(pipGeoRaw.trim())) {
+        pipGeometry = pipGeoRaw.trim();
+      }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
         if (Number.isFinite(n)) wheelDelta = n;
@@ -381,6 +426,24 @@
           min="-100"
           max="100"
           step="1"
+        />
+      </label>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.pip.title")}</h2>
+    <p class="subtle desc">{t("settings.pip.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <label class="wheel-row">
+        {t("settings.pip.geometry")}
+        <input
+          type="text"
+          class="format-input"
+          bind:value={pipGeometry}
+          placeholder="480x270-40-40"
         />
       </label>
     {/if}

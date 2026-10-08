@@ -33,6 +33,11 @@ const SOCKET_POLL: Duration = Duration::from_millis(50);
 /// quit 送信後、mpv の自発終了を待つ猶予。
 const QUIT_GRACE: Duration = Duration::from_millis(800);
 
+/// 最大化解除→geometry 送信の間に挟む猶予。X の最大化遷移中に届く
+/// リサイズ要求は WM/mpv 側でドロップされるため、遷移完了を待つ
+/// （実機検証で ~600ms が動作確認された値）。
+const PWM_TRANSITION_WAIT: Duration = Duration::from_millis(600);
+
 /// `observe_property` で監視する mpv プロパティ（設計書 §4.1）。
 const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
     (1, "time-pos"),
@@ -54,6 +59,18 @@ pub const DEFAULT_YTDL_FORMAT: &str = "bv*[height<=1080]+ba/b[height<=1080]";
 pub const WHEEL_LUA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/mpv/wheel.lua"));
 /// 設定キー: ホイール音量の変化量（script-opts `wheel-volume_delta` に渡す）。
 pub const SETTING_WHEEL_VOLUME_DELTA: &str = "wheel.volume_delta";
+/// PiP 小窓の `--geometry` 値（設定キー `pip.geometry`）。
+pub const SETTING_PIP_GEOMETRY: &str = "pip.geometry";
+/// 設定が無い・不正なときの既定値。画面右下寄せの 480x270。
+pub const DEFAULT_PIP_GEOMETRY: &str = "480x270-40-40";
+
+/// `pip.geometry` / 既定値として受け付ける mpv geometry 形式
+/// （`WxH` と任意の `+-x+-y` のみ。mpv に渡す値なので曖昧な入力を残さない）。
+pub fn is_valid_pip_geometry(s: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$").unwrap())
+        .is_match(s)
+}
 
 #[derive(Debug, Error)]
 pub enum MpvError {
@@ -155,6 +172,11 @@ pub struct MpvPlayer {
     app: AppHandle,
     /// SponsorBlock の区間と発火済みフラグ（設計書 §4.4）。
     sponsor: Mutex<SponsorState>,
+    /// PiP 化で解除した最大化状態。PiP 解除時に復元する。
+    pip_prev_maximized: Mutex<bool>,
+    /// set_pip の遷移を直列化する。並行呼び出しが state.pip のチェックを
+    /// 同時に通過して保存値や mpv プロパティを競合させるのを防ぐ
+    pip_op: tokio::sync::Mutex<()>,
 }
 
 /// SponsorBlock の判定状態。区間は再生開始後のバックグラウンド取得で差し込まれる。
@@ -180,6 +202,9 @@ pub struct SpawnOptions {
     pub wheel_script: Option<PathBuf>,
     /// `wheel-volume_delta` に渡す音量変化量。None なら Lua 既定（2）。
     pub wheel_volume_delta: Option<String>,
+    /// PiP（最前面・枠なしの小窓）で起動するときの `--geometry` 値。
+    /// None なら通常ウィンドウで起動する（設計書 §4.5）。
+    pub pip_geometry: Option<String>,
 }
 
 impl MpvPlayer {
@@ -223,6 +248,12 @@ impl MpvPlayer {
         }
         if let Some(script) = &opts.wheel_script {
             args.push(format!("--script={}", script.display()));
+        }
+        // PiP は起動時フラグで指定する（設計書 §4.5: ontop・枠なし・小窓配置）
+        if let Some(geo) = &opts.pip_geometry {
+            args.push("--ontop=yes".into());
+            args.push("--border=no".into());
+            args.push(format!("--geometry={geo}"));
         }
         let mut child = tokio::process::Command::new("mpv")
             .args(&args)
@@ -272,11 +303,14 @@ impl MpvPlayer {
                 volume: 100.0,
                 speed: 1.0,
                 media_title: String::new(),
+                pip: opts.pip_geometry.is_some(),
             }),
             ended_tx,
             terminal: TerminalTracker::default(),
             app,
             sponsor: Mutex::new(SponsorState::default()),
+            pip_prev_maximized: Mutex::new(false),
+            pip_op: tokio::sync::Mutex::new(()),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -389,7 +423,88 @@ impl MpvPlayer {
             PlayerAction::FrameBackStep => {
                 self.ipc.command(vec![json!("frame-back-step")]).await?;
             }
+            PlayerAction::Pip { enabled } => {
+                // 設定値（pip.geometry）の解決は PlayerManager::control で行う。
+                // ここに直接届いた場合は既定値で切り替える。
+                self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY).await?;
+            }
         }
+        Ok(())
+    }
+
+    /// PiP 表示の切り替え（設計書 §4.5）。ontop・枠なし・小窓配置をまとめて適用し、
+    /// 解除時は geometry を空に戻す（mpv は空文字で既定配置に戻す）。
+    /// いずれのプロパティも実行時に変更可能（mpv 0.34 系で確認済み）。
+    ///
+    /// 最大化中のウィンドウでは geometry が効かず枠なし最前面の巨大ウィンドウが
+    /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除し、
+    /// 解除時に復元する。
+    pub async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
+        // 遷移全体を直列化する。並行する set_pip が state.pip チェックを
+        // 同時に通過して pip_prev_maximized を上書きしたり、mpv への
+        // プロパティ送信を交互させたりするのを防ぐ
+        let _op = self.pip_op.lock().await;
+        if enabled {
+            // 最大化の記録は false→true の遷移時だけ行う。
+            // PiP 中の再適用（enabled=true の重複送信）で保存値を上書きしない。
+            // 解除自体は毎回読んで適用する（PiP 中の外部操作で再最大化された
+            // 場合も正しく解除できるように）
+            let maximized = self
+                .ipc
+                .command(vec![json!("get_property"), json!("window-maximized")])
+                .await
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !lock(&self.state).pip {
+                *lock(&self.pip_prev_maximized) = maximized;
+            }
+            if maximized {
+                self.ipc
+                    .command(vec![
+                        json!("set_property"),
+                        json!("window-maximized"),
+                        json!(false),
+                    ])
+                    .await?;
+                // 最大化解除は非同期の X 遷移で、遷移中に届く geometry の
+                // リサイズ要求はドロップされる（実機検証で確認）。
+                // 遷移完了を待つ実機確認済みの猶予を挟んでから後続を送る
+                tokio::time::sleep(PWM_TRANSITION_WAIT).await;
+            }
+        }
+        self.ipc
+            .command(vec![json!("set_property"), json!("ontop"), json!(enabled)])
+            .await?;
+        self.ipc
+            .command(vec![
+                json!("set_property"),
+                json!("border"),
+                json!(!enabled),
+            ])
+            .await?;
+        self.ipc
+            .command(vec![
+                json!("set_property"),
+                json!("geometry"),
+                json!(if enabled { geometry } else { "" }),
+            ])
+            .await?;
+        if !enabled {
+            // PiP 化で解除した最大化を復元する（復元失敗は解除自体を失敗にしない）
+            let restore = std::mem::take(&mut *lock(&self.pip_prev_maximized));
+            if restore {
+                let _ = self
+                    .ipc
+                    .command(vec![
+                        json!("set_property"),
+                        json!("window-maximized"),
+                        json!(true),
+                    ])
+                    .await;
+            }
+        }
+        lock(&self.state).pip = enabled;
         Ok(())
     }
 
@@ -647,11 +762,13 @@ impl PlayerManager {
 
     /// `play_video` の実体。mpv 起動→監視タスク起動→履歴行の確保まで行う。
     /// `start_sec` はレジューム位置（0 で先頭）。
+    /// `pip` が true なら最前面・枠なしの小窓で起動する（設計書 §4.5）。
     pub async fn play(
         &self,
         video_id: &str,
         start_sec: f64,
         ytdl_format: Option<String>,
+        pip: bool,
     ) -> Result<u32, MpvError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let ytdlp_path = self.ytdlp_resolver.resolve(&self.db).await;
@@ -669,6 +786,7 @@ impl PlayerManager {
             ytdlp_path,
             wheel_script: self.wheel_script.clone(),
             wheel_volume_delta,
+            pip_geometry: pip.then(|| self.pip_geometry()),
         };
         let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
         let emitter = self.spawn_emitter(player.clone());
@@ -709,13 +827,32 @@ impl PlayerManager {
     }
 
     /// `player_control` の実体。
+    /// `Pip` は設定値 `pip.geometry` を参照してここで処理し、
+    /// 残りはプレイヤー固有の `control` に委譲する。
     pub async fn control(&self, instance_id: u32, action: &PlayerAction) -> Result<(), MpvError> {
         let player = {
             let players = lock(&self.players);
             players.get(&instance_id).map(|e| e.player.clone())
         };
         let player = player.ok_or(MpvError::NoSuchInstance(instance_id))?;
-        player.control(action).await
+        match action {
+            PlayerAction::Pip { enabled } => {
+                let geometry = self.pip_geometry();
+                player.set_pip(*enabled, &geometry).await
+            }
+            _ => player.control(action).await,
+        }
+    }
+
+    /// `pip.geometry` 設定値を検証して返す。無効・未設定は既定値に戻す。
+    fn pip_geometry(&self) -> String {
+        self.db
+            .setting_get(SETTING_PIP_GEOMETRY)
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_valid_pip_geometry(s))
+            .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string())
     }
 
     /// `player_close` の実体。最終位置を保存してから mpv を止める。
@@ -830,7 +967,7 @@ fn persist_now(db: &Db, player: &MpvPlayer, completed: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalTracker;
+    use super::{is_valid_pip_geometry, TerminalTracker};
 
     /// 終端判定: eof は completed、それ以外の終了は不完全のまま。
     #[test]
@@ -904,5 +1041,33 @@ mod tests {
         // 新ファイルが同じ末尾位置から再度 EOF になれば終端として受理される
         assert!(t.on_eof());
         assert!(t.completed());
+    }
+
+    /// DB-PL-01 相当: pip.geometry の受理形式（mpv に渡す値なので
+    /// WxH 必須・符号付き座標は任意・曖昧な入力は残さない）。
+    #[test]
+    fn pip_geometry_validation() {
+        for ok in [
+            "480x270",
+            "480x270-40-40",
+            "1920x1080+0+0",
+            "640x360+200-100",
+        ] {
+            assert!(is_valid_pip_geometry(ok), "{ok} は受理されるべき");
+        }
+        for ng in [
+            "",
+            "480",
+            "x270",
+            "480x",
+            "480x270+",
+            "480x270+10",
+            "abc x 123",
+            "480x270+10+10; rm -rf",
+            "480*270",
+            "-480x270",
+        ] {
+            assert!(!is_valid_pip_geometry(ng), "{ng} は拒否されるべき");
+        }
     }
 }

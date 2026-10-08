@@ -117,9 +117,13 @@
     }
   }
 
-  async function play(resume: boolean): Promise<void> {
+  async function play(resume: boolean, pip = false): Promise<void> {
     try {
-      await invoke<number>("play_video", { videoId: input.trim(), resume });
+      await invoke<number>("play_video", {
+        videoId: input.trim(),
+        resume,
+        pip,
+      });
       if (resume && resumeHint) {
         notify(t("player.resumeApplied", { position: fmt(resumeHint.positionSec) }));
       }
@@ -133,6 +137,25 @@
       await invoke("player_control", { instanceId: id, action });
     } catch (e) {
       notify(t("player.error", { message: asErrorMessage(e) }));
+    }
+  }
+
+  // PiP 切り替え中のインスタンス。p.pip は 300ms 間隔の状態イベントでしか
+  // 更新されないため、連打されると古い状態から同じ値を二度送ってしまう。
+  // 応答後も次の状態イベントが届く猶予を置いてから再有効化する
+  let pipBusy = $state<Set<number>>(new Set());
+
+  async function togglePip(id: number, next: boolean): Promise<void> {
+    if (pipBusy.has(id)) return;
+    pipBusy = new Set(pipBusy).add(id);
+    try {
+      await control(id, { type: "pip", enabled: next });
+    } finally {
+      setTimeout(() => {
+        const s = new Set(pipBusy);
+        s.delete(id);
+        pipBusy = s;
+      }, 400);
     }
   }
 
@@ -464,6 +487,13 @@
     <button onclick={() => play(true)} disabled={!resumeHint}>
       {t("player.playResume")}
     </button>
+    <button
+      title={t("player.pip.hint")}
+      onclick={() => play(false, true)}
+      disabled={!input.trim()}
+    >
+      {t("player.playPip")}
+    </button>
   </div>
   {#if resumeHint}
     <p class="hint">
@@ -553,6 +583,13 @@
             {/each}
           </select>
         </label>
+        <button
+          title={t("player.pip.hint")}
+          disabled={pipBusy.has(p.instanceId)}
+          onclick={() => togglePip(p.instanceId, !p.pip)}
+        >
+          {p.pip ? t("player.unpip") : t("player.pip")}
+        </button>
         <button class="danger" onclick={() => closePlayer(p.instanceId)}>
           {t("player.close")}
         </button>
