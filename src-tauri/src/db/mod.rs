@@ -1395,23 +1395,103 @@ mod tests {
             ng: false,
             raw_json: "{}".to_string(),
         };
-        assert_eq!(db.chat_insert_batch(&[ev("i1", "a"), ev("i2", "b")]).unwrap(), 2);
+        assert_eq!(
+            db.chat_insert_batch(&[ev("i1", "a"), ev("i2", "b")])
+                .unwrap(),
+            2
+        );
         // バックログ再取得を模して同じイベントを再投入: 全部無視される
-        assert_eq!(db.chat_insert_batch(&[ev("i1", "a"), ev("i2", "b")]).unwrap(), 0);
+        assert_eq!(
+            db.chat_insert_batch(&[ev("i1", "a"), ev("i2", "b")])
+                .unwrap(),
+            0
+        );
         // 一部だけ新規: 新規分だけ入る
-        assert_eq!(db.chat_insert_batch(&[ev("i2", "b"), ev("i3", "c")]).unwrap(), 1);
+        assert_eq!(
+            db.chat_insert_batch(&[ev("i2", "b"), ev("i3", "c")])
+                .unwrap(),
+            1
+        );
         // 別動画の同じ item_id は別行として入る
         let mut other = ev("i1", "a");
         other.video_id = "v2".to_string();
         assert_eq!(db.chat_insert_batch(&[other]).unwrap(), 1);
         // item_id 空（NULL）は制約対象外で重複して入る
-        assert_eq!(db.chat_insert_batch(&[ev("", "x"), ev("", "x")]).unwrap(), 2);
+        assert_eq!(
+            db.chat_insert_batch(&[ev("", "x"), ev("", "x")]).unwrap(),
+            2
+        );
         let total: i64 = db
             .lock()
             .unwrap()
             .query_row("SELECT COUNT(*) FROM chat_logs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total, 6);
+    }
+
+    /// v9 マイグレーション: raw_json ラッパの内側から item_id を復元し、
+    /// バックフィル由来の重複を最古行だけ残して掃除する。
+    #[test]
+    fn migrate_v9_backfills_item_id_and_dedups() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 9) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+        // v8 までの DB を模す: 同じイベントが再保存された重複行を含める
+        let ins = |raw: &str| {
+            conn.execute(
+                "INSERT INTO chat_logs
+                   (video_id, posted_at_usec, kind, message, raw_json)
+                 VALUES ('v1', 1, 'text', 'm', ?1)",
+                [raw],
+            )
+            .unwrap();
+        };
+        ins(r#"{"liveChatTextMessageRenderer":{"id":"item-1"}}"#);
+        ins(r#"{"liveChatTextMessageRenderer":{"id":"item-1"}}"#);
+        ins(r#"{"markChatItemAsDeletedAction":{"targetItemId":"t-9"}}"#);
+        ins("{}"); // id を持たない行は NULL のまま
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 9) {
+            conn.execute_batch(m.sql).unwrap();
+        }
+        let mut stmt = conn
+            .prepare("SELECT item_id, COUNT(*) FROM chat_logs GROUP BY item_id ORDER BY item_id")
+            .unwrap();
+        let rows: Vec<(Option<String>, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // 重複は最古の 1 行に掃除され、del: 合成 ID も復元される
+        assert_eq!(
+            rows,
+            vec![
+                (None, 1),
+                (Some("del:t-9".to_string()), 1),
+                (Some("item-1".to_string()), 1),
+            ]
+        );
+        // 一意索引が効いている（復元された item_id と同じ値は再投入できない）
+        assert!(conn
+            .execute(
+                "INSERT INTO chat_logs
+                   (video_id, posted_at_usec, kind, message, raw_json, item_id)
+                 VALUES ('v1', 2, 'text', 'm2', '{}', 'item-1')",
+                [],
+            )
+            .is_err());
     }
 
     fn vref(video_id: &str, title: &str) -> crate::model::VideoRef {

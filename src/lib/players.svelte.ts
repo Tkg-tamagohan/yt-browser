@@ -164,12 +164,18 @@ let initPromise: Promise<void> | null = null;
 export function initPlayerEvents(): Promise<void> {
   if (!initPromise) {
     initPromise = (async () => {
+      // player_list の応答を待つ間に届いたイベントの instanceId を記録する。
+      // スナップショットは取得時点の値なので、飛行中に更新・終了が起きた
+      // インスタンスはイベント側を優先し、古い値で上書きしない。
+      const inFlight = new Set<number>();
       await listen<PlayerState>("player://state", (ev) => {
+        inFlight.add(ev.payload.instanceId);
         const next = new Map(playerStates.list);
         next.set(ev.payload.instanceId, ev.payload);
         playerStates.list = next;
       });
       await listen<PlayerEnded>("player://ended", (ev) => {
+        inFlight.add(ev.payload.instanceId);
         const next = new Map(playerStates.list);
         next.delete(ev.payload.instanceId);
         playerStates.list = next;
@@ -178,7 +184,9 @@ export function initPlayerEvents(): Promise<void> {
       // 登録直後に一覧を取得してカードを復元する。
       const snapshot = await invoke<PlayerState[]>("player_list");
       const next = new Map(playerStates.list);
-      for (const s of snapshot) next.set(s.instanceId, s);
+      for (const s of snapshot) {
+        if (!inFlight.has(s.instanceId)) next.set(s.instanceId, s);
+      }
       playerStates.list = next;
     })();
   }
