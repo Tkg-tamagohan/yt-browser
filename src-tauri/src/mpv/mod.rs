@@ -1143,4 +1143,96 @@ mod tests {
             assert!(!is_valid_pip_geometry(ng), "{ng} は拒否されるべき");
         }
     }
+
+    /// IPC 疑似サーバが UnixListener 前提のため Unix のみ。
+    #[cfg(unix)]
+    mod ipc_tests {
+        use crate::mpv::{ipc_endpoint, loadfile_replace, lock, IpcClient, IpcEvent};
+        use serde_json::{json, Value};
+        use std::path::Path;
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixListener;
+        use tokio::sync::mpsc;
+        use tokio::task::JoinHandle;
+
+        /// 疑似 mpv: 受信したコマンドを記録し、`replies` の応答を順に返す。
+        /// replies を返し終えたら切断する。
+        async fn spawn_fake_mpv(
+            sock: &Path,
+            replies: &'static [&'static str],
+        ) -> (JoinHandle<()>, Arc<Mutex<Vec<Value>>>) {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let received_task = received.clone();
+            let listener = UnixListener::bind(sock).unwrap();
+            let handle = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (r, mut w) = stream.into_split();
+                let mut lines = BufReader::new(r).lines();
+                let mut count = 0usize;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let v: Value = serde_json::from_str(&line).unwrap();
+                    let req_id = v["request_id"].as_u64().unwrap();
+                    lock(&received_task).push(v["command"].clone());
+                    let error = replies[count.min(replies.len() - 1)];
+                    count += 1;
+                    let reply = json!({"request_id": req_id, "error": error});
+                    w.write_all((reply.to_string() + "\n").as_bytes())
+                        .await
+                        .unwrap();
+                    if count >= replies.len() {
+                        break;
+                    }
+                }
+            });
+            (handle, received)
+        }
+
+        async fn connect(sock: &Path) -> (IpcClient, mpsc::Receiver<IpcEvent>) {
+            let (tx, rx) = mpsc::channel(8);
+            (IpcClient::connect(sock, tx).await.unwrap(), rx)
+        }
+
+        /// mpv 0.38+ では 4 引数形が受理され、リトライは起きない。
+        #[tokio::test]
+        async fn loadfile_replace_uses_four_arg_form_when_accepted() {
+            let dir = tempfile::tempdir().unwrap();
+            let sock = ipc_endpoint(dir.path(), 0);
+            let (server, received) = spawn_fake_mpv(&sock, &["success"]).await;
+            let (client, _rx) = connect(&sock).await;
+            loadfile_replace(&client, "http://example/v", json!({"start": "1.5"}))
+                .await
+                .unwrap();
+            server.await.unwrap();
+            let received = lock(&received).clone();
+            assert_eq!(received.len(), 1);
+            // [loadfile, url, "replace", -1(index), {options}]
+            let cmd = received[0].as_array().unwrap();
+            assert_eq!(cmd.len(), 5);
+            assert_eq!(cmd[0], json!("loadfile"));
+            assert_eq!(cmd[2], json!("replace"));
+            assert_eq!(cmd[3], json!(-1));
+            assert_eq!(cmd[4], json!({"start": "1.5"}));
+        }
+
+        /// invalid parameter 応答では旧 3 引数形にフォールバックする。
+        #[tokio::test]
+        async fn loadfile_replace_falls_back_to_legacy_args() {
+            let dir = tempfile::tempdir().unwrap();
+            let sock = ipc_endpoint(dir.path(), 0);
+            let (server, received) = spawn_fake_mpv(&sock, &["invalid parameter", "success"]).await;
+            let (client, _rx) = connect(&sock).await;
+            loadfile_replace(&client, "http://example/v", json!({"start": "1.5"}))
+                .await
+                .unwrap();
+            server.await.unwrap();
+            let received = lock(&received).clone();
+            assert_eq!(received.len(), 2);
+            // 2 回目は [loadfile, url, "replace", {options}]（index なし）
+            let retry = received[1].as_array().unwrap();
+            assert_eq!(retry.len(), 4);
+            assert_eq!(retry[3], json!({"start": "1.5"}));
+        }
+    }
 }
