@@ -242,8 +242,11 @@ impl Db {
                 current.push(row.get(0)?);
             }
         }
-        let same =
-            video_ids.len() == current.len() && current.iter().all(|id| video_ids.contains(id));
+        // 大きなプレイリストでも線形で比較できるよう集合照合にする
+        let incoming: std::collections::HashSet<&String> = video_ids.iter().collect();
+        let same = video_ids.len() == current.len()
+            && incoming.len() == video_ids.len()
+            && current.iter().all(|id| incoming.contains(id));
         if !same {
             return Err(DbError::MismatchedItems);
         }

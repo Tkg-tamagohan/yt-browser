@@ -678,8 +678,8 @@ fn playlist_crud_and_order() {
 
 /// DB-LD-07: 項目順の一括書き換え（FR-11、仕様決定 T）。
 /// 渡した順に position が振り直され、未登録プレイリストは NotFound。
-/// セットの一致検証はコマンド層（`playlist_reorder`）の責務で、
-/// DB 層は渡された順の適用のみ担う。
+/// 同一集合の検証はこの書き込みトランザクション内で行い、集合不一致・
+/// 重複・件数違いは `MismatchedItems` で変更を破棄する。
 #[test]
 fn playlist_reorder_renumbers_positions() {
     let db = Db::connect_in_memory().unwrap();
@@ -718,6 +718,26 @@ fn playlist_reorder_renumbers_positions() {
         db.playlist_reorder(999, &[]),
         Err(DbError::NotFound)
     ));
+    // 集合不一致・重複・件数違いは MismatchedItems で既存順を破壊しない
+    for bad in [
+        vec!["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"], // 未登録項目
+        vec!["aaaaaaaaaa1", "bbbbbbbbbb2", "bbbbbbbbbb2"], // 重複
+        vec!["aaaaaaaaaa1", "bbbbbbbbbb2"],                // 件数不足
+    ] {
+        let ids: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
+        assert!(matches!(
+            db.playlist_reorder(pl.id, &ids),
+            Err(DbError::MismatchedItems)
+        ));
+    }
+    assert_eq!(
+        db.playlist_items(pl.id)
+            .unwrap()
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["cccccccccc3", "aaaaaaaaaa1", "bbbbbbbbbb2"]
+    );
 }
 
 /// DB-LD-08: 取り込み用の一括追加（FR-10、仕様決定 R）。
