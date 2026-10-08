@@ -93,7 +93,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
 | `list_feed` | `filter`（`unread_only`、`category_id`、`days`、全項目省略可） | `Result<Vec<FeedItem>>` |
-| `mark_read` | `video_ids?`, `all?` | `Result<u64>`（既読化した件数） |
+| `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
 | `search` | `query` | `Result<Vec<SearchResult>>` |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
@@ -112,6 +112,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 単一再生でも必須引数に揃え、マルチビュー時の操作経路を初期から担保する（FR-1）。
 `player_control` に操作を集約するのは、mpv 側への転送層を一箇所に保つためである。
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
+表の引数名は Rust 側の受け取り名（snake_case）で記し、JS 側は camelCase のキーで渡す（`video_id` → `videoId`）。
+戻り値とイベントのペイロードは camelCase に直列化される。
 `action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}` を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
@@ -121,13 +123,13 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
-| `player://state` | `{ instance_id, video_id, pause, position, duration, fps, state, volume, speed, media_title, pip }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instance_id, video_id, reason }` | 終了またはエラー |
+| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip }` | observe_property の変化を間引いて発火[^statesample] |
+| `player://ended` | `{ instanceId, videoId, reason }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
-| `feed://status` | `{ channel_id?, level, message }` | 取得失敗と復帰 |
+| `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
-| `chat://status` | `{ video_id?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `video_id` が null の全体通知もある） |
-| `sponsor://skipped` | `{ instance_id, video_id, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
+| `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
+| `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
 
 `player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、サンプリングで間引いて送る。
 
