@@ -167,6 +167,8 @@ pub struct MpvPlayer {
     app: AppHandle,
     /// SponsorBlock の区間と発火済みフラグ（設計書 §4.4）。
     sponsor: Mutex<SponsorState>,
+    /// PiP 化で解除した最大化状態。PiP 解除時に復元する。
+    pip_prev_maximized: Mutex<bool>,
 }
 
 /// SponsorBlock の判定状態。区間は再生開始後のバックグラウンド取得で差し込まれる。
@@ -299,6 +301,7 @@ impl MpvPlayer {
             terminal: TerminalTracker::default(),
             app,
             sponsor: Mutex::new(SponsorState::default()),
+            pip_prev_maximized: Mutex::new(false),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -425,16 +428,27 @@ impl MpvPlayer {
     /// いずれのプロパティも実行時に変更可能（mpv 0.34 系で確認済み）。
     ///
     /// 最大化中のウィンドウでは geometry が効かず枠なし最前面の巨大ウィンドウが
-    /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除する。
+    /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除し、
+    /// 解除時に復元する。
     pub async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
         if enabled {
-            self.ipc
-                .command(vec![
-                    json!("set_property"),
-                    json!("window-maximized"),
-                    json!(false),
-                ])
-                .await?;
+            let maximized = self
+                .ipc
+                .command(vec![json!("get_property"), json!("window-maximized")])
+                .await
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            *lock(&self.pip_prev_maximized) = maximized;
+            if maximized {
+                self.ipc
+                    .command(vec![
+                        json!("set_property"),
+                        json!("window-maximized"),
+                        json!(false),
+                    ])
+                    .await?;
+            }
         }
         self.ipc
             .command(vec![json!("set_property"), json!("ontop"), json!(enabled)])
@@ -453,6 +467,20 @@ impl MpvPlayer {
                 json!(if enabled { geometry } else { "" }),
             ])
             .await?;
+        if !enabled {
+            // PiP 化で解除した最大化を復元する（復元失敗は解除自体を失敗にしない）
+            let restore = std::mem::take(&mut *lock(&self.pip_prev_maximized));
+            if restore {
+                let _ = self
+                    .ipc
+                    .command(vec![
+                        json!("set_property"),
+                        json!("window-maximized"),
+                        json!(true),
+                    ])
+                    .await;
+            }
+        }
         lock(&self.state).pip = enabled;
         Ok(())
     }
