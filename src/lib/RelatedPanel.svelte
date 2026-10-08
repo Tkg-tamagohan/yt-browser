@@ -8,6 +8,7 @@
   import { loadLibrary } from "$lib/library";
   import { notify } from "$lib/notices.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
+  import VideoRow from "$lib/VideoRow.svelte";
   import {
     asErrorMessage,
     type Playlist,
@@ -132,33 +133,33 @@
   {:else}
     <ul class="related-list">
       {#each items as r (r.videoId)}
-        <li class="related-item">
-          {#if r.thumbnailUrl}
-            <img class="thumb" src={r.thumbnailUrl} alt="" />
-          {/if}
-          <div class="meta">
-            <div class="title">{r.title}</div>
-            <div class="sub">{r.channelTitle ?? ""}</div>
-            <div class="actions">
-              <button onclick={() => playRelated(r)}>{t("search.play")}</button>
-              {#if r.channelId}
-                <button
-                  class="danger"
-                  onclick={() => blockRelated(r)}
-                >
-                  {t("search.block")}
-                </button>
-              {/if}
-              <VideoActions
-                video={videoRefOf(r)}
-                faved={favIds.has(r.videoId)}
-                {playlists}
-                onfavchange={onFavChange}
-                onplaylistcreated={onPlaylistCreated}
-              />
-            </div>
-          </div>
-        </li>
+        <VideoRow
+          videoId={r.videoId}
+          title={r.title}
+          thumbnailUrl={r.thumbnailUrl}
+          dense={true}
+          onplay={() => playRelated(r)}
+        >
+          {#snippet sub()}{r.channelTitle ?? ""}{/snippet}
+          {#snippet actions()}
+            <button onclick={() => playRelated(r)}>{t("search.play")}</button>
+            {#if r.channelId}
+              <button
+                class="danger"
+                onclick={() => blockRelated(r)}
+              >
+                {t("search.block")}
+              </button>
+            {/if}
+            <VideoActions
+              video={videoRefOf(r)}
+              faved={favIds.has(r.videoId)}
+              {playlists}
+              onfavchange={onFavChange}
+              onplaylistcreated={onPlaylistCreated}
+            />
+          {/snippet}
+        </VideoRow>
       {/each}
     </ul>
   {/if}
@@ -182,47 +183,6 @@
     margin: 0;
     max-height: 320px;
     overflow-y: auto;
-  }
-
-  .related-item {
-    display: flex;
-    gap: 10px;
-    padding: 6px 0;
-    align-items: flex-start;
-  }
-
-  .related-item .thumb {
-    width: 120px;
-    aspect-ratio: 16 / 9;
-    object-fit: cover;
-    border-radius: 6px;
-    background: #26282c;
-  }
-
-  .related-item .meta {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .related-item .title {
-    font-size: 0.9rem;
-    overflow-wrap: anywhere;
-  }
-
-  .related-item .sub {
-    color: #9aa0a6;
-    font-size: 0.8rem;
-    margin: 2px 0 6px;
-  }
-
-  .related-item .actions {
-    display: flex;
-    gap: 8px;
-    font-size: 0.85rem;
-  }
-
-  .related-item .actions .danger {
-    color: #ff7b72;
   }
 
   .subtle {

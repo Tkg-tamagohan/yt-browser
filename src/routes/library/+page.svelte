@@ -8,6 +8,7 @@
   import { notify } from "$lib/notices.svelte";
   import { loadLibrary } from "$lib/library";
   import VideoActions from "$lib/VideoActions.svelte";
+  import VideoRow from "$lib/VideoRow.svelte";
   import type {
     FavoriteEntry,
     Playlist,
@@ -43,10 +44,6 @@
       return String((e as UiError).message);
     }
     return String(e);
-  }
-
-  function thumbOf(videoId: string, url: string | null): string {
-    return url ?? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
   }
 
   function fmtAt(iso: string | null | undefined): string {
@@ -319,34 +316,34 @@
     {:else}
       <ul class="rows">
         {#each history as h (h.videoId)}
-          <li class="row-item">
-            <img class="thumb" src={thumbOf(h.videoId, null)} alt="" loading="lazy" />
-            <div class="meta">
-              <div class="title">{h.title || h.videoId}</div>
-              <div class="sub">
-                {#if h.channelTitle}{h.channelTitle}{/if}
-                {#if progressOf(h)}・{progressOf(h)}{/if}
-                {#if h.lastWatchedAt}
-                  ・{t("library.history.lastWatched", { at: fmtAt(h.lastWatchedAt) })}
-                {/if}
-              </div>
-              <div class="actions">
-                <button onclick={() => play(h.videoId, true)}
-                  >{t("library.play")}</button
+          <VideoRow
+            videoId={h.videoId}
+            title={h.title || h.videoId}
+            onplay={() => play(h.videoId, true)}
+          >
+            {#snippet sub()}
+              {#if h.channelTitle}{h.channelTitle}{/if}
+              {#if progressOf(h)}・{progressOf(h)}{/if}
+              {#if h.lastWatchedAt}
+                ・{t("library.history.lastWatched", { at: fmtAt(h.lastWatchedAt) })}
+              {/if}
+            {/snippet}
+            {#snippet actions()}
+              <button onclick={() => play(h.videoId, true)}
+                >{t("library.play")}</button
+              >
+              {#if !h.completed && h.positionSec > 0}
+                <button class="link" onclick={() => play(h.videoId, false)}
+                  >{t("library.playFromStart")}</button
                 >
-                {#if !h.completed && h.positionSec > 0}
-                  <button class="link" onclick={() => play(h.videoId, false)}
-                    >{t("library.playFromStart")}</button
-                  >
-                {/if}
-                <button
-                  class="link danger"
-                  onclick={() => removeHistory(h.videoId)}
-                  >{t("library.remove")}</button
-                >
-              </div>
-            </div>
-          </li>
+              {/if}
+              <button
+                class="link danger"
+                onclick={() => removeHistory(h.videoId)}
+                >{t("library.remove")}</button
+              >
+            {/snippet}
+          </VideoRow>
         {/each}
       </ul>
     {/if}
@@ -356,39 +353,35 @@
     {:else}
       <ul class="rows">
         {#each favorites as f (f.videoId)}
-          <li class="row-item">
-            <img
-              class="thumb"
-              src={thumbOf(f.videoId, f.thumbnailUrl)}
-              alt=""
-              loading="lazy"
-            />
-            <div class="meta">
-              <div class="title">{f.title}</div>
-              <div class="sub">
-                {#if f.channelTitle}{f.channelTitle}{/if}
-                {#if f.addedAt}・{fmtAt(f.addedAt)}{/if}
-              </div>
-              <div class="actions">
-                <button onclick={() => play(f.videoId, true)}
-                  >{t("library.play")}</button
-                >
-                <button
-                  class="link danger"
-                  onclick={() => removeFavorite(f.videoId)}
-                  >{t("library.favorite.remove")}</button
-                >
-                <VideoActions
-                  video={videoRefOf(f)}
-                  faved={true}
-                  {playlists}
-                  onfavchange={onFavChange}
-                  onplaylistcreated={onPlaylistCreated}
-                  onplaylistadd={onPlaylistAdd}
-                />
-              </div>
-            </div>
-          </li>
+          <VideoRow
+            videoId={f.videoId}
+            title={f.title}
+            thumbnailUrl={f.thumbnailUrl}
+            onplay={() => play(f.videoId, true)}
+          >
+            {#snippet sub()}
+              {#if f.channelTitle}{f.channelTitle}{/if}
+              {#if f.addedAt}・{fmtAt(f.addedAt)}{/if}
+            {/snippet}
+            {#snippet actions()}
+              <button onclick={() => play(f.videoId, true)}
+                >{t("library.play")}</button
+              >
+              <button
+                class="link danger"
+                onclick={() => removeFavorite(f.videoId)}
+                >{t("library.favorite.remove")}</button
+              >
+              <VideoActions
+                video={videoRefOf(f)}
+                faved={true}
+                {playlists}
+                onfavchange={onFavChange}
+                onplaylistcreated={onPlaylistCreated}
+                onplaylistadd={onPlaylistAdd}
+              />
+            {/snippet}
+          </VideoRow>
         {/each}
       </ul>
     {/if}
@@ -451,29 +444,27 @@
         {:else}
           <ul class="rows">
             {#each playlistItems as it (it.videoId)}
-              <li class="row-item">
-                <span class="pos">{it.position + 1}</span>
-                <img
-                  class="thumb"
-                  src={thumbOf(it.videoId, it.thumbnailUrl)}
-                  alt=""
-                  loading="lazy"
-                />
-                <div class="meta">
-                  <div class="title">{it.title}</div>
-                  <div class="sub">{it.channelTitle ?? ""}</div>
-                  <div class="actions">
-                    <button onclick={() => play(it.videoId, true)}
-                      >{t("library.play")}</button
-                    >
-                    <button
-                      class="link danger"
-                      onclick={() => removeItem(it)}
-                      >{t("library.remove")}</button
-                    >
-                  </div>
-                </div>
-              </li>
+              <VideoRow
+                videoId={it.videoId}
+                title={it.title}
+                thumbnailUrl={it.thumbnailUrl}
+                onplay={() => play(it.videoId, true)}
+              >
+                {#snippet leading()}
+                  <span class="pos">{it.position + 1}</span>
+                {/snippet}
+                {#snippet sub()}{it.channelTitle ?? ""}{/snippet}
+                {#snippet actions()}
+                  <button onclick={() => play(it.videoId, true)}
+                    >{t("library.play")}</button
+                  >
+                  <button
+                    class="link danger"
+                    onclick={() => removeItem(it)}
+                    >{t("library.remove")}</button
+                  >
+                {/snippet}
+              </VideoRow>
             {/each}
           </ul>
         {/if}
@@ -514,55 +505,11 @@
     padding: 0;
   }
 
-  .row-item {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    padding: 10px 0;
-    border-bottom: 1px solid #2d2f33;
-  }
-
-  .thumb {
-    width: 120px;
-    aspect-ratio: 16 / 9;
-    object-fit: cover;
-    border-radius: 6px;
-    background: #26282c;
-    flex-shrink: 0;
-  }
-
   .pos {
     width: 24px;
     color: #9aa0a6;
     text-align: right;
     flex-shrink: 0;
-  }
-
-  .meta {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .title {
-    font-weight: 600;
-    overflow-wrap: anywhere;
-  }
-
-  .sub {
-    color: #9aa0a6;
-    font-size: 0.85rem;
-    margin: 4px 0 8px;
-  }
-
-  .actions {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
-  .danger {
-    color: #ff7b72;
   }
 
   .pl-grid {
