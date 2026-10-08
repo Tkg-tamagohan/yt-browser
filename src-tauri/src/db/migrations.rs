@@ -230,4 +230,40 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "videos_ingested_promote_state2",
         sql: "UPDATE videos SET ingested = 1 WHERE ingested = 2;",
     },
+    // 残課題対応: チャットパネルの再オープンでバックログが再取得され
+    // chat_logs に重複行が作られていた問題への対応。イベントの
+    // item_id を列として持たせ、(video_id, item_id) に一意制約を置き
+    // INSERT OR IGNORE で冪等化する。item_id を持たないイベント
+    // （空文字列）は NULL として入れ、UNIQUE 制約の対象外にする
+    // （SQLite は NULL を個別の値として扱い衝突しない）。
+    // 既存行の item_id は raw_json（原文）から復元する。形は 2 通りで、
+    // 通常イベントは {"<renderer名>": {…}} のラッパ形でイベント ID は
+    // 内側オブジェクトの "id"、削除イベントは削除アクションの内側
+    // オブジェクトがそのまま入り、トップレベルの "targetItemId" から
+    // 実行時と同じ合成 ID 'del:<targetItemId>' を作る。
+    // json_each の値がスカラーだと json_extract が malformed JSON で
+    // 失敗するため、内側を辿るのは object 値だけに限定する。
+    // バックフィルで重複が発生し得る（一意制約導入前に重複保存された行）
+    // ので、索引作成の前に最古の 1 行だけ残して掃除する。
+    Migration {
+        version: 9,
+        name: "chat_logs_item_id",
+        sql: "ALTER TABLE chat_logs ADD COLUMN item_id TEXT;
+              UPDATE chat_logs SET item_id = COALESCE(
+                'del:' || json_extract(raw_json, '$.targetItemId'),
+                (SELECT json_extract(je.value, '$.id')
+                   FROM json_each(chat_logs.raw_json) je
+                   WHERE json_type(je.value) = 'object'
+                     AND json_extract(je.value, '$.id') IS NOT NULL
+                   LIMIT 1)
+              ) WHERE json_type(raw_json) = 'object';
+              DELETE FROM chat_logs
+                WHERE item_id IS NOT NULL
+                  AND id NOT IN (
+                    SELECT MIN(id) FROM chat_logs
+                      WHERE item_id IS NOT NULL
+                      GROUP BY video_id, item_id);
+              CREATE UNIQUE INDEX idx_chat_item
+                ON chat_logs(video_id, item_id);",
+    },
 ];

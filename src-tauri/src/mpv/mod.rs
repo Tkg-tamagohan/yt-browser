@@ -899,6 +899,16 @@ impl PlayerManager {
         Ok(id)
     }
 
+    /// 稼働中インスタンスのスナップショット一覧。
+    /// ページ再読み込み後に `player://state` が流れない一時停止中の
+    /// カードを復元するための一覧取得に使う。
+    pub fn list(&self) -> Vec<PlayerState> {
+        lock(&self.players)
+            .values()
+            .map(|e| e.player.snapshot())
+            .collect()
+    }
+
     /// `player_control` の実体。
     /// `Pip` は設定値 `pip.geometry` を参照してここで処理し、
     /// 残りはプレイヤー固有の `control` に委譲する。

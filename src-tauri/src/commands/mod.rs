@@ -10,8 +10,8 @@ use crate::error::UiError;
 use crate::feed::{self, FeedPoller};
 use crate::model::{
     normalize_video_id, parse_channel_ref, Category, Channel, ChannelRef, DbStatus, FavoriteEntry,
-    FeedFilter, FeedItem, FeedNewItems, PlayerAction, Playlist, PlaylistEntry, VideoRef,
-    WatchHistory, YtDlpStatus,
+    FeedFilter, FeedItem, FeedNewItems, PlayerAction, PlayerState, Playlist, PlaylistEntry,
+    VideoRef, WatchHistory, YtDlpStatus,
 };
 use crate::mpv::PlayerManager;
 use crate::yt::{self, YtDlpResolver};
@@ -88,6 +88,14 @@ pub async fn play_video(
         .play(&id, start_sec, ytdl_format, pip.unwrap_or(false))
         .await
         .map_err(UiError::from)
+}
+
+/// `player_list`。稼働中インスタンスのスナップショット一覧を返す。
+/// ページ再読み込み後にカードを復元するため、イベントだけでは
+/// 再通知されない一時停止中インスタンスの状態もここで拾う。
+#[tauri::command]
+pub fn player_list(players: State<'_, PlayerManager>) -> Vec<PlayerState> {
+    players.list()
 }
 
 /// `player_control`（設計書 §3.1）。操作は `PlayerAction` のタグ付き列挙で受け取る。

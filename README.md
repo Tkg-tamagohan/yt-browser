@@ -40,6 +40,7 @@ pnpm check        # svelte-check
 
 | 文書 | 内容 |
 |---|---|
+| [docs/user-guide.md](docs/user-guide.md) | 導入方法と使い方（エンドユーザー向け） |
 | [docs/requirements-definition.md](docs/requirements-definition.md) | 要件定義書。仕様の正 |
 | [docs/decision-records.md](docs/decision-records.md) | 協議で確定した判断の記録（仕様決定 A 以降） |
 | [docs/design.md](docs/design.md) | 概要設計と詳細設計（アーキテクチャ、IPC、DB、チャット、NG、エラー方針） |
