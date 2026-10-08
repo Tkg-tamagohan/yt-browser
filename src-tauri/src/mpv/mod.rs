@@ -217,7 +217,7 @@ impl MpvPlayer {
         opts: SpawnOptions,
         app: AppHandle,
     ) -> Result<(Arc<Self>, JoinHandle<()>), MpvError> {
-        let socket_path = socket_dir.join(format!("mpv-{instance_id}.sock"));
+        let socket_path = ipc_endpoint(socket_dir, instance_id);
         // 同名ソケットが残っていれば掃除する（前回プロセスの残骸対策）
         let _ = tokio::fs::remove_file(&socket_path).await;
 
@@ -682,8 +682,26 @@ async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
     }
 }
 
+/// mpv IPC エンドポイントのパス。Linux は Unix ドメインソケット、
+/// Windows は名前付きパイプ（`--input-ipc-server` が OS ごとに解釈する）。
+#[cfg(unix)]
+fn ipc_endpoint(socket_dir: &Path, instance_id: u32) -> PathBuf {
+    socket_dir.join(format!("mpv-{instance_id}.sock"))
+}
+
+/// Windows の名前付きパイプはファイルシステムに実体を持たず `\\.\pipe\` 仮想
+/// 名前空間に置かれる。アプリ多重起動でパイプ名が衝突しないよう PID を混ぜる。
+#[cfg(windows)]
+fn ipc_endpoint(_socket_dir: &Path, instance_id: u32) -> PathBuf {
+    PathBuf::from(format!(
+        r"\\.\pipe\yt-browser-mpv-{instance_id}-{}",
+        std::process::id()
+    ))
+}
+
 /// mpv の IPC ソケット出現を待つ。プロセスが早期終了した場合はタイムアウトではなく
 /// 起動失敗として扱えるよう、子プロセスの終了も併せて監視する。
+#[cfg(unix)]
 async fn wait_for_socket(
     socket_path: &Path,
     child: &mut tokio::process::Child,
@@ -696,6 +714,37 @@ async fn wait_for_socket(
         if let Some(status) = child.try_wait().ok().flatten() {
             return Err(MpvError::Spawn(std::io::Error::other(format!(
                 "mpv がソケット作成前に終了しました: {status}"
+            ))));
+        }
+        if Instant::now() > deadline {
+            return Err(MpvError::SocketTimeout);
+        }
+        tokio::time::sleep(SOCKET_POLL).await;
+    }
+}
+
+/// Windows 版の待機。名前付きパイプは `Path::exists` で確実に検出できないため、
+/// 実際に接続を試みて成否で判断する（成功分は即 drop。mpv は複数クライアントを
+/// 受け付けるので実接続の妨げにならない）。`ERROR_PIPE_BUSY` (231) は
+/// パイプが存在するが全インスタンス使用中＝待機成功とみなす。
+#[cfg(windows)]
+async fn wait_for_socket(
+    socket_path: &Path,
+    child: &mut tokio::process::Child,
+) -> Result<(), MpvError> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    const ERROR_PIPE_BUSY: i32 = 231;
+
+    let deadline = Instant::now() + SOCKET_WAIT_TIMEOUT;
+    loop {
+        match ClientOptions::new().open(socket_path) {
+            Ok(_) => return Ok(()),
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => return Ok(()),
+            Err(_) => {}
+        }
+        if let Some(status) = child.try_wait().ok().flatten() {
+            return Err(MpvError::Spawn(std::io::Error::other(format!(
+                "mpv がパイプ作成前に終了しました: {status}"
             ))));
         }
         if Instant::now() > deadline {
