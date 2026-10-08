@@ -259,18 +259,28 @@ def check_commands() -> Findings:
 
 
 # ---------------------------------------------------------------------------
-# チェック 2: §3.2 イベント表 ↔ emit / emit_to / listen の第 1 引数
+# チェック 2: §3.2 イベント表 ↔ emit / emit_to / listen のイベント名引数
 # ---------------------------------------------------------------------------
 
 EVENT_NAME_RE = r"[a-z][a-z0-9_]*://[a-z0-9_]+"
 # listen<T>(...) のジェネリクスや改行を挟む呼び出しを拾うため、
-# 関数名と `(` の間は括弧以外なら何でも許す
+# 関数名と `(` の間は括弧以外なら何でも許す。
+# イベント名が第 1 引数の関数: emit / emit_all / emit_filter / listen /
+# listen_any / once（emit_to だけ引数順が違い別扱いする）。
+# trigger は SQL の CREATE TRIGGER と衝突して誤検出になるため対象外。
 EVENT_CALL_LITERAL_RE = re.compile(
-    rf'\b(?:emit|emit_to|listen)\b[^(\n]{{0,60}}\(\s*"({EVENT_NAME_RE})"'
+    rf'\b(?:emit|emit_all|emit_filter|listen|listen_any|once)\b[^(\n]{{0,60}}\(\s*"({EVENT_NAME_RE})"'
 )
-# 第 1 引数がリテラルでない呼び出し（動的生成）は照合不能として警告にする
+# emit_to は第 1 引数が送信先ラベルで第 2 引数がイベント名
+EVENT_TO_LITERAL_RE = re.compile(
+    rf'\bemit_to\b[^(\n]{{0,60}}\(\s*"[^"]*"\s*,\s*"({EVENT_NAME_RE})"'
+)
+# イベント名の位置がリテラルでない呼び出し（動的生成）は照合不能として警告にする
 EVENT_CALL_DYNAMIC_RE = re.compile(
-    r"\b(?:emit|emit_to|listen)\b[^(\n]{0,60}\(\s*[^\s\"'`]"
+    r"\b(?:emit|emit_all|emit_filter|listen|listen_any|once)\b[^(\n]{0,60}\(\s*[^\s\"'`]"
+)
+EVENT_TO_DYNAMIC_RE = re.compile(
+    r"\bemit_to\b[^(\n]{0,60}\(\s*[^\s\"'`]|\bemit_to\b[^(\n]{0,60}\(\s*\"[^\"]*\"\s*,\s*[^\s\"'`]"
 )
 
 
@@ -296,7 +306,12 @@ def check_events() -> Findings:
         text = strip_comments(read_text(path), path.suffix)
         for m in EVENT_CALL_LITERAL_RE.finditer(text):
             code_events.add(m.group(1))
+        for m in EVENT_TO_LITERAL_RE.finditer(text):
+            code_events.add(m.group(1))
         for m in EVENT_CALL_DYNAMIC_RE.finditer(text):
+            line_no = text.count("\n", 0, m.start()) + 1
+            dynamic_calls.append(f"{path.relative_to(ROOT)}:{line_no}")
+        for m in EVENT_TO_DYNAMIC_RE.finditer(text):
             line_no = text.count("\n", 0, m.start()) + 1
             dynamic_calls.append(f"{path.relative_to(ROOT)}:{line_no}")
 
@@ -305,7 +320,7 @@ def check_events() -> Findings:
     for name in sorted(doc_events - code_events):
         f.error(f"イベント `{name}` が §3.2 にあるがコードに無い")
     for loc in dynamic_calls:
-        f.warn(f"{loc}: イベント名がリテラルでなく照合不能（emit/listen の第 1 引数はリテラルで書く）")
+        f.warn(f"{loc}: イベント名がリテラルでなく照合不能（イベント名はリテラルで書く）")
 
     if f.worst() == OK:
         f.ok(f"{len(code_events)} 件のイベントが一致")
@@ -484,7 +499,9 @@ def extract_setting_keys() -> dict[str, str]:
     """SETTING_* 定数のキー名 → 定数名の対応を返す。"""
     keys: dict[str, str] = {}
     for path in iter_files(SRC_TAURI, (".rs",)):
-        for m in SETTING_CONST_RE.finditer(read_text(path)):
+        for m in SETTING_CONST_RE.finditer(
+            strip_comments(read_text(path), path.suffix)
+        ):
             keys[m.group(2)] = f"{path.relative_to(ROOT)} の {m.group(1)}"
     return keys
 
