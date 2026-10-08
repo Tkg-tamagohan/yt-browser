@@ -45,9 +45,31 @@
     Map<number, { open: boolean; items: ChatItem[]; status: string | null }>
   >(new Map());
 
-  // お気に入り・プレイリスト行アクション用（FR-7）
+  // お気に入り・プレイリスト行アクション用（FR-7）。
+  // 他ページ（ライブラリ等）でも編集されるため、「/」へ戻るたびに再取得する
+  // （従来はページのリマウントが暗黙の再取得トリガーだった）。libReq は世代番号で、
+  // 古いロードの完了が新しいロードやローカル編集を上書きしないよう照合する。
   let favIds = $state<Set<string>>(new Set());
   let playlists = $state<Playlist[]>([]);
+  let libReq = 0;
+
+  async function refreshLibrary(): Promise<void> {
+    const req = ++libReq;
+    try {
+      const lib = await loadLibrary();
+      if (req !== libReq) return;
+      favIds = lib.favIds;
+      playlists = lib.playlists;
+    } catch {
+      // 行アクションが出せなくても再生は使えるため静かに握る
+    }
+  }
+
+  // 常時マウントのため onMount だけでは更新されない。パスが「/」に
+  // 変化するたびに（初回マウントを含む）再取得する
+  $effect(() => {
+    if (page.url.pathname === "/") void refreshLibrary();
+  });
 
   function videoRefOf(r: SearchResult): VideoRef {
     return {
@@ -60,6 +82,8 @@
   }
 
   function onFavChange(videoId: string, faved: boolean): void {
+    // ローカル編集が進行中のロードを無効化し、古い結果で戻らないようにする
+    libReq++;
     const next = new Set(favIds);
     if (faved) next.add(videoId);
     else next.delete(videoId);
@@ -67,6 +91,7 @@
   }
 
   function onPlaylistCreated(pl: Playlist): void {
+    libReq++;
     playlists = [...playlists, pl];
   }
 
@@ -361,13 +386,7 @@
 
   onMount(async () => {
     await initPlayerEvents();
-    try {
-      const lib = await loadLibrary();
-      favIds = lib.favIds;
-      playlists = lib.playlists;
-    } catch {
-      // 行アクションが出せなくても再生は使えるため静かに握る
-    }
+    // favIds/playlists の初回ロードは $effect 側（パス変化で再取得）に任せる
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
     unlistenFns.push(
