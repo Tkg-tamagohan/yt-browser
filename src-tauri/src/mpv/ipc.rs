@@ -2,8 +2,9 @@
 //! ソケット接続、`request_id` によるコマンド/応答の対応付け、
 //! 非同期イベント（property-change 等）の配送を担当する。
 //!
-//! Phase 1 は Unix ドメインソケットのみ。Windows の名前付きパイプは
-//! 対応フェーズで `interprocess` 系のクレートに載せ替える。
+//! 転送層は OS ごとに `imp` モジュールへ隔離する。Linux は Unix ドメイン
+//! ソケット、Windows は名前付きパイプ（tokio `windows::named_pipe` で
+//! 追加クレートなしに実装）。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,9 +15,62 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::OwnedWriteHalf;
-use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
+
+/// 転送層の OS 差異を閉じ込める。`connect` がストリームを確立して
+/// 読み/書きの半端に分割して返す。以降の処理は半端の型にだけ依存する。
+#[cfg(unix)]
+mod imp {
+    use std::io;
+    use std::path::Path;
+    use tokio::net::UnixStream;
+
+    pub type ReadHalf = tokio::net::unix::OwnedReadHalf;
+    pub type WriteHalf = tokio::net::unix::OwnedWriteHalf;
+
+    pub async fn connect(path: &Path) -> io::Result<(ReadHalf, WriteHalf)> {
+        Ok(UnixStream::connect(path).await?.into_split())
+    }
+}
+
+#[cfg(windows)]
+mod imp {
+    use std::io;
+    use std::path::Path;
+    use std::time::Duration;
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+    // NamedPipeClient には Owned 型の into_split がないため
+    // tokio::io::split のジェネリック半端を使う。
+    pub type ReadHalf = tokio::io::ReadHalf<NamedPipeClient>;
+    pub type WriteHalf = tokio::io::WriteHalf<NamedPipeClient>;
+
+    /// ERROR_PIPE_BUSY。全パイプインスタンスが使用中＝パイプ自体は存在する。
+    const ERROR_PIPE_BUSY: i32 = 231;
+    /// BUSY 解消を待つ期限。wait_for_socket が存在を確認した直後の一時的な
+    /// 混雑を越えられれば十分な値。
+    const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+    pub async fn connect(path: &Path) -> io::Result<(ReadHalf, WriteHalf)> {
+        // 名前付きパイプの接続自体は同期 API。
+        // 直前の待機プローブや別クライアントがインスタンスを占有していると
+        // ERROR_PIPE_BUSY になるため、期限付きで開き直す。BUSY 以外の失敗は即返す。
+        let deadline = std::time::Instant::now() + CONNECT_DEADLINE;
+        loop {
+            match ClientOptions::new().open(path) {
+                Ok(pipe) => return Ok(tokio::io::split(pipe)),
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(RETRY_INTERVAL).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
 
 /// mpv コマンド応答の待ち時間。loadfile 等は即時返るため十分な値。
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -53,8 +107,8 @@ pub enum IpcEvent {
 }
 
 pub struct IpcClient {
-    /// OwnedWriteHalf は async の await 越えに保持するため tokio Mutex（Send）。
-    writer: AsyncMutex<OwnedWriteHalf>,
+    /// 書き込み半端は async の await 越えに保持するため tokio Mutex（Send）。
+    writer: AsyncMutex<imp::WriteHalf>,
     pending: Arc<Mutex<PendingMap>>,
     next_request_id: AtomicU64,
 }
@@ -63,8 +117,7 @@ impl IpcClient {
     /// ソケットへ接続し、読み取りタスクを起動する。
     /// `events` は読み取った非同期イベントの配送先。
     pub async fn connect(path: &Path, events: mpsc::Sender<IpcEvent>) -> Result<Self, IpcError> {
-        let stream = UnixStream::connect(path).await?;
-        let (read_half, write_half) = stream.into_split();
+        let (read_half, write_half) = imp::connect(path).await?;
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
         spawn_reader(read_half, events, pending.clone());
         Ok(Self {
@@ -106,7 +159,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn spawn_reader(
-    read: tokio::net::unix::OwnedReadHalf,
+    read: imp::ReadHalf,
     events: mpsc::Sender<IpcEvent>,
     pending: Arc<Mutex<PendingMap>>,
 ) {
@@ -159,7 +212,9 @@ fn dispatch_line(line: &str, events: &mpsc::Sender<IpcEvent>, pending: &Arc<Mute
     let _ = events.try_send(ev);
 }
 
-#[cfg(test)]
+/// 疑似 mpv サーバが UnixListener 前提のため Unix のみ。Windows 側は
+/// NamedPipeServer 版の同等テストを Windows 対応フェーズで用意する。
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
