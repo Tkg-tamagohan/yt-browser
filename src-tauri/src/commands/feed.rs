@@ -83,6 +83,8 @@ pub async fn subscribe_channel(
                     },
                 );
             }
+            // 初回投入分も shorts 判定の対象（仕様決定 V）
+            poller.spawn_kind_detection(out.new_video_ids);
             poller.wake_now();
             db.channel_get(&feed.channel_id)?
                 .ok_or_else(|| UiError::internal("購読登録直後のチャンネル取得に失敗"))

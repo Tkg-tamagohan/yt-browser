@@ -47,7 +47,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `commands` | Tauri の invoke ハンドラ。入力検証と UI 向けの直列化に徹する |
 | `mpv` | プロセス起動、ソケット管理、JSON IPC クライアント、プロパティ監視 |
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
-| `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ |
+| `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
@@ -92,7 +92,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
-| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、全項目省略可） | `Result<Vec<FeedItem>>` |
+| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、全項目省略可） | `Result<Vec<FeedItem>>` |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
 | `search` | `query` | `Result<Vec<SearchResult>>` |
@@ -126,6 +126,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip }` | observe_property の変化を間引いて発火[^statesample] |
 | `player://ended` | `{ instanceId, videoId, reason }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
+| `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
@@ -463,6 +464,7 @@ END;
 - `videos` は購読フィード由来の「未読管理を持つ一覧」と、視聴やお気に入りで登場した動画の双方を載せる最小の台帳とする
   検索や関連の結果は揮発データとして DB に積まない。
   `ingested` は 0 がライブラリ由来のプレースホルダ（フィードには表示せず、初回の RSS 到達で本文を補完する）、1 がフィード投入済みを表す。
+  `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - チャット検索は FTS5 の外部コンテンツ方式で本文と投稿者名を対象にし、削除は `chat_logs` 側の行削除に連動させる
   トークナイザは `trigram` とする。
   `unicode61` では日本語の文が語分割されず部分文字列検索に掛からないためで、代わりに 3 文字未満の検索語が部分一致に掛からない制約を受け入れる。
