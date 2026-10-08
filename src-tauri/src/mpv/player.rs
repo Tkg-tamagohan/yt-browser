@@ -263,6 +263,12 @@ impl MpvPlayer {
     pub(crate) async fn load_video(&self, video_id: &str) -> Result<(), MpvError> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
         loadfile_replace(&self.ipc, &url, json!({ "start": "0" })).await?;
+        // --keep-open=yes 下では EOF 後の mpv が pause=true で残るため、
+        // loadfile だけでは次項目が一時停止のまま黒画面で止まる（実機検証で確認）。
+        // 読み替えのたびに pause を明示的に解除する
+        self.ipc
+            .command(vec![json!("set_property"), json!("pause"), json!(false)])
+            .await?;
         {
             let mut st = lock(&self.state);
             st.video_id = video_id.to_string();
