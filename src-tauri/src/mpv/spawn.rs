@@ -127,7 +127,8 @@ mod tests {
     #[cfg(unix)]
     mod ipc_tests {
         use crate::mpv::spawn::{ipc_endpoint, loadfile_replace};
-        use crate::mpv::{lock, IpcClient, IpcEvent};
+        use crate::mpv::{IpcClient, IpcEvent};
+        use crate::util::lock;
         use serde_json::{json, Value};
         use std::path::Path;
         use std::sync::Arc;

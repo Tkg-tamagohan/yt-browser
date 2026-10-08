@@ -1,5 +1,5 @@
 //! 終端イベント（end-file / ソケット切断）と意図的リロードの区別を管理する。
-use super::lock;
+use crate::util::lock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 

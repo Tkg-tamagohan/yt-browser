@@ -16,7 +16,7 @@ pub async fn search(
     query: String,
     db: State<'_, Db>,
     resolver: State<'_, YtDlpResolver>,
-    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+    ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<Vec<crate::model::SearchResult>, UiError> {
     let q = query.trim().to_string();
     if q.is_empty() {
@@ -28,7 +28,7 @@ pub async fn search(
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
     let mut results = yt::search(&path, &q, SEARCH_FETCH_LIMIT).await?;
     let blocked = db.blocked_ids()?;
-    let matcher = poller.matcher();
+    let matcher = ng.get();
     results.retain(|r| {
         r.channel_id
             .as_deref()
@@ -57,12 +57,12 @@ pub async fn get_related(
     video_id: String,
     db: State<'_, Db>,
     innertube: State<'_, Arc<crate::innertube::InnerTube>>,
-    poller: State<'_, Arc<crate::chat::ChatPoller>>,
+    ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<Vec<crate::model::SearchResult>, UiError> {
     let video_id = parse_video_id(&video_id)?;
     let mut results = innertube.related(&video_id).await?;
     let blocked = db.blocked_ids()?;
-    let matcher = poller.matcher();
+    let matcher = ng.get();
     results.retain(|r| {
         r.channel_id
             .as_deref()

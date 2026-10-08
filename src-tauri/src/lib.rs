@@ -11,6 +11,7 @@ mod innertube;
 mod model;
 mod mpv;
 mod sponsor;
+mod util;
 mod yt;
 
 use std::path::PathBuf;
@@ -120,15 +121,21 @@ pub fn run() {
             let innertube = std::sync::Arc::new(innertube::InnerTube::new());
             app.manage(innertube.clone());
 
-            // ライブチャットのポーラー（設計書 §6.2）。起動時にフィルタを読み込む。
+            // NG 評価器の共有所有（chat 表示だけでなくフィード・検索・
+            // 関連動画の動画系 NG 判定も通るため chat ではなく filter 配下に置く）。
+            let ng = std::sync::Arc::new(filter::NgMatcher::new(db.clone(), app.handle().clone()));
+            if let Err(e) = ng.refresh() {
+                tracing::warn!(error = e.message, "NG フィルタの初期読み込みに失敗");
+            }
+            app.manage(ng.clone());
+
+            // ライブチャットのポーラー（設計書 §6.2）。
             let chat = std::sync::Arc::new(chat::ChatPoller::new(
                 db.clone(),
                 app.handle().clone(),
                 innertube,
+                ng,
             ));
-            if let Err(e) = chat.refresh_filters() {
-                tracing::warn!(error = e.message, "NG フィルタの初期読み込みに失敗");
-            }
             app.manage(chat);
 
             // 購読フィードのポーラー（設計書 §1.2）。TICK ごとに期限の来た
