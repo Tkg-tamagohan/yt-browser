@@ -303,7 +303,7 @@
       await invoke("settings_set", { key: "mpv.extra_args", value: extra });
       if (mpvExtraArgs.trim() !== extra) {
         invalid = true;
-        notify(t("settings.pip.unsaved"));
+        notify(t("settings.hdr.unsaved"));
       }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
