@@ -2,13 +2,14 @@
 
 mpv による軽量な再生と、ローカル完結の購読、履歴、NG 管理を一体化した YouTube 専用ブラウザ（専ブラ）。
 
-現在は[実装計画](docs/implementation-plan.md)に沿ったフェーズ別実装の途中である。
+[実装計画](docs/implementation-plan.md)の全フェーズ（Phase 0〜8）が実装済み。
+残る制限と観察メモは実装計画の「残課題」節にまとめている。
 
 ## 開発環境
 
 - Rust（stable）、Node.js 24、pnpm
 - Tauri の Linux 依存：`libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
-- 実行依存（Phase 1 以降）：mpv、yt-dlp
+- 実行依存：mpv、yt-dlp（いずれも PATH から解決。配布物はアプリ本体のみで同梱しない）
 
 ```sh
 pnpm install

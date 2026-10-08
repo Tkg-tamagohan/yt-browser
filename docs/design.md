@@ -418,6 +418,27 @@ END;
 `tracing` + ローリングファイル出力を標準とし、リリースビルドは INFO、開発は DEBUG を既定にする。
 レスポンス原文の保存はデバッグ用途に限定し、継続トークンなど再送可能な値はマスクしてから残す（golden fixture も同様に匿名化する）。
 
+### 9.4 WebKitGTK のヒットずれとプレイヤーカードの常時マウント
+
+GPU なし環境（ソフトウェアレンダリング）の webkit2gtk で、DOM 要素のリマウントをきっかけに入力ヒット領域が描画位置から数十〜160px ずれたまま残る事象が確認された。
+ボタンの見えている位置をクリックしても無反応になり、ずれた先の空白領域のクリックが別のボタンに誤爆として届く。
+ずれた「終了」領域への誤爆で mpv が終了したり、当時存在した `chat_start` のクラッシュに当たってアプリが abort したりする実害もあった。
+
+リフローを促す系の応急措置（display の再設定、ノードの cloneNode 置換、`translateZ`/`will-change` の付与、zoom、visibility、resize イベント送出、`contain`、pointer-events のトグル）はいずれもヒットマップを再同期させられなかった。
+回復は webview の再作成か `location.reload()` に限られ、ずれは長時間運転で蓄積する性質を持つ。
+一方で、リマウントされない要素はこのずれの影響を受けないことが確認できたため、対策は「リマウントを起こさない構造」とした。
+
+プレイヤーカードは `src/lib/PlayerCards.svelte` に切り出し、`src/routes/+layout.svelte` で常時マウントする。
+トップページ以外では wrapper に CSS の `display:none` を当てて隠すだけで、DOM の取り外しは行わない。
+これに伴い、ページの再マウントに乗っていた間接的な処理は明示化した。
+
+- 再生終了後の resumeHint 更新は、`players.svelte.ts` の `playbackHooks` 集合に `+page` がマウント中だけ登録する
+- お気に入りとプレイリストの一覧は `page.url.pathname` を見る `$effect` で `/` へ戻るたびに再取得する
+  取得結果の採用は発行順の最新のみとし、お気に入りやプレイリストのローカル編集はコミット後に必ず再取得して DB の内容に収束させる
+
+ヒットずれ自体がプラットフォーム側の問題なので、ほかのリマウント要素でも同じ事象は起こり得る。
+現行 UI で残る発生源はパネルの開閉やリストの再描画程度であり、今後同じ症状が観測されたら同じ方針（リマウントを避ける常時マウント化）を当てる。
+
 ## 10. セキュリティと権限
 
 - WebView は `csp` を既定 `default-src 'self'`、サムネイル表示のために `img-src https://i.ytimg.com https://*.ggpht.com` だけを許可する
@@ -444,11 +465,11 @@ yt-browser/
       filter/         # NG エンジン
       db/             # rusqlite・マイグレーション
       model/
-    assets/mpv/wheel.lua
+    mpv/wheel.lua     # include_str! でバイナリに埋め込む同梱スクリプト
     tests/fixtures/   # golden fixture
-  src/                # Svelte 5 + TypeScript
-    App.svelte
-    components/
+  src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
+    routes/           # 各画面（トップ・feed・search・library・settings）
+    lib/              # PlayerCards.svelte・VideoActions・共有状態（players.svelte.ts 等）
   tauri.conf.json
   package.json
 ```
