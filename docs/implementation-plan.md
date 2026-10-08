@@ -82,9 +82,14 @@
 
 ### Phase 10：Windows チャット欄クラッシュの修正（BG-1、仕様決定 Q）
 
-- [ ] Windows 環境で「チャット欄を表示」押下による本体終了を再現し、原因を特定する（Windows 子セッション。ログは `%APPDATA%\io.github.tkg-tamagohan.yt-browser\` 配下）
-- [ ] 原因を修正し、Windows 実機で再現しないことを確認する
-- [ ] 受け入れ：Windows でチャット欄が開き、本体プロセスが存続する
+- [x] Windows 環境で「チャット欄を表示」押下による本体終了の再現を試行する（Windows 子セッション。ログは `%APPDATA%\io.github.tkg-tamagohan.yt-browser\` 配下）
+- [x] 受け入れ：Windows でチャット欄が開き、本体プロセスが存続する
+
+結果: main@7ae1720（PR #29 マージ時点）の Windows Server 2022 実機で、ライブ＋チャット開放・高速トグル・関連パネル併存・カード終了・ウィンドウクローズ・非ライブ・release/dev 二重ポーリング競合を約 25 分試行したが panic も異常終了も発生せず、**再現しなかった**。
+チャット経路の静的解析でも通常到達可能な panic 源は見つからず（mutex 毒化連鎖を除く）、報告バイナリが PR #14（チャットポーラーの `tauri::async_runtime::spawn` 化）など既修正以前のスナップショットであった可能性が高いと判断した。
+ほかの要因候補は WebView2 バージョン差と、通常ライブでは出ない renderer（SuperChat・ステッカー等）由来の入力差（該当コードは Option 安全だが経路の網羅性は未証明）。
+受け入れ条件（Windows でチャット欄が開き本体存続）は実機で充足。
+副次発見として、大小文字非依存 FS（Windows/macOS）で `VideoActions.svelte` と `videoActions.svelte.ts` が衝突してビルドが失敗する問題を同 PR で修正した。
 
 ### Phase 11：フィード管理 UI の拡張（FR-13、仕様決定 V）
 
