@@ -135,6 +135,19 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 [^statesample]: 実装は 300ms のティックで状態スナップショットを比較して変化時のみ送出するため、一時停止中はイベントが流れず、ページ再読み込み後のカード復元は `player_list` コマンド（§3.1）が補完経路になる。
 
+### 3.3 設定キー
+
+`settings_get` / `settings_set` で読み書きする永続設定のキー一覧。
+コード側は `SETTING_*` 定数として保持し、CI でこの表と両方向に照合する（scripts/check_docs_consistency.py）。
+
+| キー | 値の形式 | 内容 |
+|---|---|---|
+| `quality.format` | `ytdl-format` 式 | 画質。プリセットまたは自由記述のフォーマット式（§4.3） |
+| `sponsor.categories` | JSON マップ `{"<カテゴリ>":"<動作>"}` | SponsorBlock のカテゴリごとの動作（§4.4）。動作は `skip` / `notify` / `off` |
+| `wheel.volume_delta` | 数値 | ホイール再生中の 1 ノッチあたりの音量変化量（§4.2、mpv script-opts の `wheel-volume_delta`） |
+| `pip.geometry` | `WxH±x±y` | PiP 小窓の位置とサイズ（§4.5、既定 `480x270-40-40`） |
+| `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5） |
+
 ## 4. 動画再生サブシステム
 
 ### 4.1 mpv の起動と制御

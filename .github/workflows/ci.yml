@@ -10,6 +10,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # docs↔コード整合の機械チェック（監査対応）。
+  # Python 標準ライブラリのみで動く軽量ジョブとして独立させ、
+  # 「文書ずれ」だけを即座に識別できるようにする。
+  # Rust 側の DDL 照合テスト（CL-1a）は rust/windows ジョブの cargo test に乗る。
+  consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_docs_consistency.py
+
   frontend:
     runs-on: ubuntu-latest
     steps:
