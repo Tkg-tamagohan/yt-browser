@@ -88,6 +88,15 @@ pub(crate) struct SpawnOptions {
     /// PiP（最前面・枠なしの小窓）で起動するときの `--geometry` 値。
     /// None なら通常ウィンドウで起動する（設計書 §4.5）。
     pub(crate) pip_geometry: Option<String>,
+    /// `--tone-mapping` に渡す方式名（設定 `hdr.tone_mapping`、仕様決定 Y）。
+    /// None なら mpv 既定（auto）。
+    pub(crate) tone_mapping: Option<String>,
+    /// `--hdr-compute-peak` に渡す値（設定 `hdr.compute_peak`、仕様決定 Y）。
+    /// None なら mpv 既定（auto）。
+    pub(crate) hdr_compute_peak: Option<String>,
+    /// 空白区切りの追加 mpv 引数（設定 `mpv.extra_args`、仕様決定 Y）。
+    /// spawn 引数の末尾に置いて固定引数を上書きできるようにする。
+    pub(crate) extra_args: Option<String>,
 }
 
 impl MpvPlayer {
@@ -137,6 +146,18 @@ impl MpvPlayer {
             args.push("--ontop=yes".into());
             args.push("--border=no".into());
             args.push(format!("--geometry={geo}"));
+        }
+        // HDR 関連（仕様決定 Y）。値は呼び出し側で受理集合に検証済み
+        if let Some(tm) = &opts.tone_mapping {
+            args.push(format!("--tone-mapping={tm}"));
+        }
+        if let Some(cp) = &opts.hdr_compute_peak {
+            args.push(format!("--hdr-compute-peak={cp}"));
+        }
+        // 汎用追加引数は末尾に置き、必要なら固定引数を上書きできるようにする。
+        // 無効な引数は mpv の起動失敗として MpvError::Spawn の通知経路に乗る（暫定）
+        if let Some(extra) = &opts.extra_args {
+            args.extend(extra.split_whitespace().map(str::to_string));
         }
         let mut mpv_cmd = tokio::process::Command::new("mpv");
         mpv_cmd.args(&args).kill_on_drop(true);

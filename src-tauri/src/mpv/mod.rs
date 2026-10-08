@@ -23,6 +23,12 @@ pub const WHEEL_LUA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/m
 pub(crate) const SETTING_WHEEL_VOLUME_DELTA: &str = "wheel.volume_delta";
 /// PiP 小窓の `--geometry` 値（設定キー `pip.geometry`）。
 pub(crate) const SETTING_PIP_GEOMETRY: &str = "pip.geometry";
+/// 設定キー: HDR→SDR 変換のトーンマッピング方式（mpv `--tone-mapping`、仕様決定 Y）。
+pub(crate) const SETTING_HDR_TONE_MAPPING: &str = "hdr.tone_mapping";
+/// 設定キー: HDR ピーク輝度のフレーム計測（mpv `--hdr-compute-peak`、仕様決定 Y）。
+pub(crate) const SETTING_HDR_COMPUTE_PEAK: &str = "hdr.compute_peak";
+/// 設定キー: mpv への追加引数（空白区切りで spawn 引数の末尾へ、仕様決定 Y）。
+pub(crate) const SETTING_MPV_EXTRA_ARGS: &str = "mpv.extra_args";
 /// 設定が無い・不正なときの既定値。画面右下寄せの 480x270。
 pub(crate) const DEFAULT_PIP_GEOMETRY: &str = "480x270-40-40";
 
@@ -32,6 +38,30 @@ pub(crate) fn is_valid_pip_geometry(s: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$").unwrap())
         .is_match(s)
+}
+
+/// `hdr.tone_mapping` として受理する値（mpv 0.41 の列挙値のうち、
+/// 本アプリが GUI で出す実用的な集合）。`auto` と空文字は未指定として
+/// mpv 既定（環境に応じた自動）に任せるためここには含めない。
+pub(crate) fn is_valid_tone_mapping(s: &str) -> bool {
+    matches!(
+        s,
+        "clip"
+            | "mobius"
+            | "reinhard"
+            | "hable"
+            | "gamma"
+            | "linear"
+            | "spline"
+            | "bt.2390"
+            | "bt.2446a"
+    )
+}
+
+/// `hdr.compute_peak` として受理する値。`auto` と空文字は未指定扱いで
+/// mpv 既定（ターゲットが HDR のときのみ計測）に任せる。
+pub(crate) fn is_valid_hdr_compute_peak(s: &str) -> bool {
+    matches!(s, "yes" | "no")
 }
 
 #[derive(Debug, Error)]
@@ -48,7 +78,7 @@ pub enum MpvError {
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_pip_geometry;
+    use super::{is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping};
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
     /// WxH 必須・符号付き座標は任意・曖昧な入力は残さない）。
@@ -75,6 +105,26 @@ mod tests {
             "-480x270",
         ] {
             assert!(!is_valid_pip_geometry(ng), "{ng} は拒否されるべき");
+        }
+    }
+
+    /// HDR 設定の受理集合（仕様決定 Y）。`auto`/空/未定義値は未指定扱いにするため拒否。
+    #[test]
+    fn hdr_settings_validation() {
+        for ok in [
+            "clip", "mobius", "reinhard", "hable", "gamma", "linear", "spline", "bt.2390",
+            "bt.2446a",
+        ] {
+            assert!(is_valid_tone_mapping(ok), "{ok} は受理されるべき");
+        }
+        for ng in ["", "auto", "yes", "no", "ACES", "hable; rm -rf"] {
+            assert!(!is_valid_tone_mapping(ng), "{ng} は拒否されるべき");
+        }
+        for ok in ["yes", "no"] {
+            assert!(is_valid_hdr_compute_peak(ok), "{ok} は受理されるべき");
+        }
+        for ng in ["", "auto", "true", "1", "clip"] {
+            assert!(!is_valid_hdr_compute_peak(ng), "{ng} は拒否されるべき");
         }
     }
 }

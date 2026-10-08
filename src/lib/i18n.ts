@@ -145,6 +145,17 @@ const ja = {
   "blocked.unblocked": "{title} のブロックを解除しました",
   "blocked.unblockFailed": "ブロック解除に失敗: {message}",
 
+  // Phase 15: HDR・mpv 引数（仕様決定 Y、INV-1 調査結果の設定化）
+  "settings.hdr.title": "HDR・mpv 引数",
+  "settings.hdr.desc": "HDR 動画の変換方法と mpv への追加引数。次回の再生開始から反映されます（SDR 画面では HDR→SDR 変換に効きます）",
+  "settings.hdr.toneMapping": "トーンマッピング方式",
+  "settings.hdr.computePeak": "ピーク輝度の計測",
+  "settings.hdr.auto": "自動（mpv 既定）",
+  "settings.hdr.yes": "計測する",
+  "settings.hdr.no": "計測しない",
+  "settings.hdr.extraArgs": "mpv 追加引数",
+  "settings.hdr.extraArgs.desc": "空白区切りで起動引数の末尾に追加します（例: --target-colorspace-hint=yes --gpu-api=d3d11）。無効な引数は mpv 起動失敗になります",
+
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",
   "settings.sponsor.desc":

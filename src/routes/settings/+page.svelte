@@ -65,6 +65,24 @@
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
+  // HDR 関連（仕様決定 Y）。auto は「mpv 既定に任せる」＝未設定。
+  // 次回の再生開始から有効（起動時引数なので稼働中インスタンスには即時適用しない）
+  const TONE_MAPPINGS = [
+    "auto",
+    "clip",
+    "hable",
+    "mobius",
+    "reinhard",
+    "gamma",
+    "linear",
+    "spline",
+    "bt.2390",
+    "bt.2446a",
+  ];
+  let toneMapping = $state("auto");
+  let computePeak = $state("auto");
+  let mpvExtraArgs = $state("");
+
   // ブロック中チャンネル（FR-5: 設定画面での解除）
   let blocked = $state<BlockedChannel[]>([]);
 
@@ -256,6 +274,24 @@
         invalid = true;
         notify(t("settings.pip.unsaved"));
       }
+      // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
+      // そのまま保存（auto は未指定として扱う）
+      await invoke("settings_set", {
+        key: "hdr.tone_mapping",
+        value: toneMapping,
+      });
+      await invoke("settings_set", {
+        key: "hdr.compute_peak",
+        value: computePeak,
+      });
+      // mpv.extra_args: 無検証の自由記述（仕様決定 Y の汎用受け皿）。
+      // 無効値は mpv 起動失敗として Spawn エラー通知に乗る
+      const extra = mpvExtraArgs.trim();
+      await invoke("settings_set", { key: "mpv.extra_args", value: extra });
+      if (mpvExtraArgs.trim() !== extra) {
+        invalid = true;
+        notify(t("settings.pip.unsaved"));
+      }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       // （invalid には未保存変更の検出も含む）
@@ -344,6 +380,24 @@
       });
       if (pipQualityRaw !== null) {
         pipQuality = pipQualityRaw.trim();
+      }
+      const toneRaw = await invoke<string | null>("settings_get", {
+        key: "hdr.tone_mapping",
+      });
+      if (toneRaw !== null && TONE_MAPPINGS.includes(toneRaw.trim())) {
+        toneMapping = toneRaw.trim();
+      }
+      const peakRaw = await invoke<string | null>("settings_get", {
+        key: "hdr.compute_peak",
+      });
+      if (peakRaw !== null && ["auto", "yes", "no"].includes(peakRaw.trim())) {
+        computePeak = peakRaw.trim();
+      }
+      const extraRaw = await invoke<string | null>("settings_get", {
+        key: "mpv.extra_args",
+      });
+      if (extraRaw !== null) {
+        mpvExtraArgs = extraRaw;
       }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
@@ -454,6 +508,41 @@
         />
       </label>
       <p class="subtle desc">{t("settings.pip.quality.desc")}</p>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.hdr.title")}</h2>
+    <p class="subtle desc">{t("settings.hdr.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <label class="wheel-row">
+        {t("settings.hdr.toneMapping")}
+        <select bind:value={toneMapping}>
+          {#each TONE_MAPPINGS as m}
+            <option value={m}>{m === "auto" ? t("settings.hdr.auto") : m}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="wheel-row">
+        {t("settings.hdr.computePeak")}
+        <select bind:value={computePeak}>
+          <option value="auto">{t("settings.hdr.auto")}</option>
+          <option value="yes">{t("settings.hdr.yes")}</option>
+          <option value="no">{t("settings.hdr.no")}</option>
+        </select>
+      </label>
+      <label class="wheel-row">
+        {t("settings.hdr.extraArgs")}
+        <input
+          type="text"
+          class="format-input"
+          bind:value={mpvExtraArgs}
+          placeholder="--target-colorspace-hint=yes"
+        />
+      </label>
+      <p class="subtle desc">{t("settings.hdr.extraArgs.desc")}</p>
     {/if}
   </section>
 
