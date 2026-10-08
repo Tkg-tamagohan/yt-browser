@@ -292,8 +292,9 @@ impl FeedPoller {
         }
         let db = self.db.clone();
         let client = self.detect_client.clone();
+        let app = self.app.clone();
         tauri::async_runtime::spawn(async move {
-            detect_shorts(&client, &db, video_ids).await;
+            detect_shorts(&client, &db, &app, video_ids).await;
         });
     }
 
@@ -502,24 +503,49 @@ impl FeedPoller {
 /// 作ること — 非 short は 303 で `/watch?v=` へ転送され、転送先の 200 は
 /// 判定に使わない（実測、2026-10）。判定失敗・タイムアウトは 'video' のまま
 /// 残し、初版ではリトライしない。
-async fn detect_shorts(client: &reqwest::Client, db: &Db, video_ids: Vec<String>) {
-    let mut shorts = Vec::new();
-    for id in &video_ids {
-        let url = format!("https://www.youtube.com/shorts/{id}");
-        match client.head(&url).timeout(SHORTS_TIMEOUT).send().await {
-            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                shorts.push(id.clone());
+async fn detect_shorts(client: &reqwest::Client, db: &Db, app: &AppHandle, video_ids: Vec<String>) {
+    // RSS のエントリは十数件なので全件を並行して投げ、全体時間を最長1件分に抑える
+    // （逐次ならタイムアウト重なりで合計が N 倍に伸びうる）
+    let mut set = tokio::task::JoinSet::new();
+    for id in video_ids {
+        let client = client.clone();
+        set.spawn(async move {
+            let url = format!("https://www.youtube.com/shorts/{id}");
+            match client.head(&url).timeout(SHORTS_TIMEOUT).send().await {
+                Ok(resp) if resp.status() == reqwest::StatusCode::OK => Some(id),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::debug!(video_id = %id, error = %e, "shorts 判定リクエストに失敗");
+                    None
+                }
             }
-            Ok(_) => {}
+        });
+    }
+    let mut shorts = Vec::new();
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Some(id)) => shorts.push(id),
+            Ok(None) => {}
             Err(e) => {
-                tracing::debug!(video_id = %id, error = %e, "shorts 判定リクエストに失敗");
+                tracing::debug!(error = %e, "shorts 判定タスクの join に失敗");
             }
         }
     }
     if !shorts.is_empty() {
         tracing::debug!(count = shorts.len(), "shorts と判定");
-        if let Err(e) = db.videos_set_kind(&shorts, "short") {
-            tracing::warn!(error = %e, "kind=short の保存に失敗");
+        match db.videos_set_kind(&shorts, "short") {
+            Ok(()) => {
+                // kind が確定してから一覧の再読込を促す（保存前に出すと反映が間に合わない）
+                let payload = FeedNewItems {
+                    count: shorts.len(),
+                };
+                if let Err(e) = app.emit("feed://kind_updated", payload) {
+                    tracing::warn!(error = %e, "feed://kind_updated の送出に失敗");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "kind=short の保存に失敗");
+            }
         }
     }
 }

@@ -126,6 +126,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip }` | observe_property の変化を間引いて発火[^statesample] |
 | `player://ended` | `{ instanceId, videoId, reason }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
+| `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |

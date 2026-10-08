@@ -76,8 +76,13 @@
         ),
   );
 
+  // フィルタ切替を重ねたとき古い応答が後着で上書きしないよう、
+  // 最後に開始した呼び出しの結果だけを反映する
+  let loadSeq = 0;
+
   async function loadItems(): Promise<void> {
-    items = await invoke<FeedItem[]>("list_feed", {
+    const seq = ++loadSeq;
+    const res = await invoke<FeedItem[]>("list_feed", {
       filter: {
         unreadOnly,
         categoryId: filterCat,
@@ -85,6 +90,7 @@
         kind: filterKind || null,
       },
     });
+    if (seq === loadSeq) items = res;
   }
 
   async function refreshAll(): Promise<void> {
@@ -225,6 +231,10 @@
       }),
       await listen<FeedStatus>("feed://status", (ev) => {
         notify(t("feed.statusEvent", { message: ev.payload.message }));
+      }),
+      // shorts の非同期判定で kind が確定した（トーストなしで静かに再取得）
+      await listen<FeedNewItems>("feed://kind_updated", () => {
+        void loadItems();
       }),
     );
   });

@@ -1,0 +1,27 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@deno/installer-shell-setup@*": "0.3.4"
+  },
+  "jsr": {
+    "@deno/installer-shell-setup@0.3.4": {
+      "integrity": "48665d1a737d487cce6874bc97bba70a5aeffa7053aca3f60df93c6fab8963b4"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@sveltejs/adapter-static@^3.0.10",
+        "npm:@sveltejs/kit@^2.65.1",
+        "npm:@sveltejs/vite-plugin-svelte@^7.1.2",
+        "npm:@tauri-apps/api@2",
+        "npm:@tauri-apps/cli@2",
+        "npm:@tauri-apps/plugin-opener@2",
+        "npm:svelte-check@^4.6.0",
+        "npm:svelte@^5.56.3",
+        "npm:typescript@~6.0.3",
+        "npm:vite@^8.0.16"
+      ]
+    }
+  }
+}
