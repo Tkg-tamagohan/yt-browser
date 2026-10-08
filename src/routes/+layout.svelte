@@ -3,6 +3,7 @@
   import "../app.css";
   import { t } from "$lib/i18n";
   import { appNotices } from "$lib/notices.svelte";
+  import PlayerCards from "$lib/PlayerCards.svelte";
 
   let { children } = $props();
 </script>
@@ -21,6 +22,9 @@
   >
 </nav>
 {@render children()}
+<!-- プレイヤーカードは常時マウント（webkit2gtk のヒットずれ対策。
+     中身の表示は PlayerCards 側でパス判定して hidden にする） -->
+<PlayerCards />
 
 <div class="toasts" aria-live="polite">
   {#each appNotices as n (n.id)}

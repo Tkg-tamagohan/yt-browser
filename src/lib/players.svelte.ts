@@ -151,6 +151,11 @@ export const playerStates = $state<{
   list: Map<number, PlayerState>;
 }>({ list: new Map() });
 
+/// 再生インスタンスの終了・手動クローズ直後に呼び出すページ側フック
+/// （resumeHint の再取得など）。PlayerCards はレイアウトで常時マウントのため
+/// ページのローカル状態を直接参照できず、+page はマウント中だけここに登録する。
+export const playbackHooks = new Set<() => void>();
+
 let initPromise: Promise<void> | null = null;
 
 /// `player://state` / `player://ended` を購読して共有マップを更新する。
