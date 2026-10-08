@@ -7,6 +7,7 @@
   import { notify } from "$lib/notices.svelte";
   import { loadLibrary } from "$lib/library";
   import VideoActions from "$lib/VideoActions.svelte";
+  import VideoRow from "$lib/VideoRow.svelte";
   import type { Playlist, VideoRef } from "$lib/players.svelte";
 
   interface Channel {
@@ -357,39 +358,43 @@
     {:else}
       <ul class="item-list">
         {#each items as it (it.videoId)}
-          <li class:read={it.isRead}>
-            {#if it.thumbnailUrl}
-              <img class="thumb" src={it.thumbnailUrl} alt="" loading="lazy" />
-            {/if}
-            <div class="item-main">
-              <button class="item-title" onclick={() => playItem(it)}>
-                {it.title}
+          <VideoRow
+            videoId={it.videoId}
+            title={it.title}
+            thumbnailUrl={it.thumbnailUrl}
+            thumbSize="sm"
+            dimmed={it.isRead}
+            actionsPlacement="side"
+            onplay={() => playItem(it)}
+          >
+            {#snippet sub()}
+              <span class="feed-meta">
+                <span>{it.channelTitle ?? it.channelId}</span>
+                <span>{formatPublished(it.publishedAt)}</span>
+              </span>
+            {/snippet}
+            {#snippet actions()}
+              {#if !it.isRead}
+                <button class="link" onclick={() => markRead(it.videoId)}>
+                  {t("feed.items.markRead")}
+                </button>
+              {/if}
+              <button
+                class="link danger"
+                title={t("feed.item.block")}
+                onclick={() => blockItem(it)}
+              >
+                {t("search.block")}
               </button>
-              <div class="subtle meta">
-                {it.channelTitle ?? it.channelId}
-                {formatPublished(it.publishedAt)}
-              </div>
-            </div>
-            {#if !it.isRead}
-              <button class="link" onclick={() => markRead(it.videoId)}>
-                {t("feed.items.markRead")}
-              </button>
-            {/if}
-            <button
-              class="link danger"
-              title={t("feed.item.block")}
-              onclick={() => blockItem(it)}
-            >
-              {t("search.block")}
-            </button>
-            <VideoActions
-              video={videoRefOf(it)}
-              faved={favIds.has(it.videoId)}
-              {playlists}
-              onfavchange={onFavChange}
-              onplaylistcreated={onPlaylistCreated}
-            />
-          </li>
+              <VideoActions
+                video={videoRefOf(it)}
+                faved={favIds.has(it.videoId)}
+                {playlists}
+                onfavchange={onFavChange}
+                onplaylistcreated={onPlaylistCreated}
+              />
+            {/snippet}
+          </VideoRow>
         {/each}
       </ul>
     {/if}
@@ -452,40 +457,7 @@
     gap: 6px;
     font-size: 0.9rem;
   }
-  .item-list li {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 0;
-    border-top: 1px solid #2d2f33;
-  }
-  .item-list li.read {
-    opacity: 0.55;
-  }
-  .thumb {
-    width: 96px;
-    border-radius: 6px;
-    flex-shrink: 0;
-  }
-  .item-main {
-    flex: 1;
-    min-width: 0;
-  }
-  .item-title {
-    display: block;
-    padding: 0;
-    border: none;
-    background: none;
-    text-align: left;
-    font-size: 0.95rem;
-    color: #e8e8e8;
-    cursor: pointer;
-  }
-  .item-title:hover {
-    text-decoration: underline;
-  }
-  .meta {
-    font-size: 0.8rem;
+  .feed-meta {
     display: flex;
     gap: 12px;
   }

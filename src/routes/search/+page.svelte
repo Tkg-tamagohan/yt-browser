@@ -6,6 +6,7 @@
   import { notify } from "$lib/notices.svelte";
   import { loadLibrary } from "$lib/library";
   import VideoActions from "$lib/VideoActions.svelte";
+  import VideoRow from "$lib/VideoRow.svelte";
   import type {
     Playlist,
     SearchResult,
@@ -156,37 +157,37 @@
 
   <ul class="results">
     {#each results as r (r.videoId)}
-      <li class="result">
-        {#if r.thumbnailUrl}
-          <img class="thumb" src={r.thumbnailUrl} alt="" />
-        {/if}
-        <div class="meta">
-          <div class="title">{r.title}</div>
-          <div class="sub">
-            {#if r.channelTitle}{r.channelTitle}{/if}
-            {#if fmtViews(r.viewCount)}・{fmtViews(r.viewCount)}{/if}
-            {#if fmtDuration(r.durationSec)}・{fmtDuration(r.durationSec)}{/if}
-          </div>
-          <div class="actions">
-            <button onclick={() => playItem(r)}>{t("search.play")}</button>
-            {#if r.channelId || r.uploaderId}
-              <button onclick={() => subscribe(r)}>{t("search.subscribe")}</button>
-            {/if}
-            {#if r.channelId}
-              <button class="danger" onclick={() => blockChannel(r)}>
-                {t("search.block")}
-              </button>
-            {/if}
-            <VideoActions
-              video={videoRefOf(r)}
-              faved={favIds.has(r.videoId)}
-              {playlists}
-              onfavchange={onFavChange}
-              onplaylistcreated={onPlaylistCreated}
-            />
-          </div>
-        </div>
-      </li>
+      <VideoRow
+        videoId={r.videoId}
+        title={r.title}
+        thumbnailUrl={r.thumbnailUrl}
+        thumbSize="lg"
+        onplay={() => playItem(r)}
+      >
+        {#snippet sub()}
+          {#if r.channelTitle}{r.channelTitle}{/if}
+          {#if fmtViews(r.viewCount)}・{fmtViews(r.viewCount)}{/if}
+          {#if fmtDuration(r.durationSec)}・{fmtDuration(r.durationSec)}{/if}
+        {/snippet}
+        {#snippet actions()}
+          <button onclick={() => playItem(r)}>{t("search.play")}</button>
+          {#if r.channelId || r.uploaderId}
+            <button onclick={() => subscribe(r)}>{t("search.subscribe")}</button>
+          {/if}
+          {#if r.channelId}
+            <button class="danger" onclick={() => blockChannel(r)}>
+              {t("search.block")}
+            </button>
+          {/if}
+          <VideoActions
+            video={videoRefOf(r)}
+            faved={favIds.has(r.videoId)}
+            {playlists}
+            onfavchange={onFavChange}
+            onplaylistcreated={onPlaylistCreated}
+          />
+        {/snippet}
+      </VideoRow>
     {/each}
   </ul>
 </main>
@@ -210,46 +211,5 @@
     list-style: none;
     padding: 0;
     margin: 0;
-  }
-
-  .result {
-    display: flex;
-    gap: 12px;
-    padding: 10px 0;
-    border-bottom: 1px solid #3c4043;
-    align-items: flex-start;
-  }
-
-  .thumb {
-    width: 160px;
-    aspect-ratio: 16 / 9;
-    object-fit: cover;
-    border-radius: 8px;
-    background: #26282c;
-  }
-
-  .meta {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .title {
-    font-weight: 600;
-    overflow-wrap: anywhere;
-  }
-
-  .sub {
-    color: #9aa0a6;
-    font-size: 0.85rem;
-    margin: 4px 0 8px;
-  }
-
-  .actions {
-    display: flex;
-    gap: 8px;
-  }
-
-  .actions .danger {
-    color: #ff7b72;
   }
 </style>

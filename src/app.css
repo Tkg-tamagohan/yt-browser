@@ -65,6 +65,7 @@ button:disabled {
 
 button.danger {
   border-color: #7c3a3a;
+  color: #ff7b72;
 }
 
 button.link {
