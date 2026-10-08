@@ -78,7 +78,10 @@ pub enum MpvError {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping};
+    use super::{
+        is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
+        player::split_extra_args,
+    };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
     /// WxH 必須・符号付き座標は任意・曖昧な入力は残さない）。
@@ -126,5 +129,31 @@ mod tests {
         for ng in ["", "auto", "true", "1", "clip"] {
             assert!(!is_valid_hdr_compute_peak(ng), "{ng} は拒否されるべき");
         }
+    }
+
+    /// `mpv.extra_args` の分割（仕様決定 Y）。引用符内の空白は保持し、
+    /// バックスラッシュはエスケープに解釈しない（Windows パスをそのまま書ける）。
+    #[test]
+    fn extra_args_split() {
+        // 単純な空白区切り
+        assert_eq!(
+            split_extra_args("--target-colorspace-hint=yes --gpu-api=d3d11"),
+            vec!["--target-colorspace-hint=yes", "--gpu-api=d3d11"]
+        );
+        // 空白を含む値は引用符で 1 引数にまとまる（ICC プロファイルパス想定）
+        assert_eq!(
+            split_extra_args(r#"--icc-profile="C:\Color Profiles\display.icc" --flag"#),
+            vec![r#"--icc-profile=C:\Color Profiles\display.icc"#, "--flag"]
+        );
+        // 単引用符も同様。連続空白・前後空白は無視
+        assert_eq!(
+            split_extra_args("  --a='x y'   --b  "),
+            vec!["--a=x y", "--b"]
+        );
+        // 未終端の引用符は残り全体を 1 引数として扱う
+        assert_eq!(split_extra_args("--a=\"x y"), vec!["--a=x y"]);
+        // 空・空白のみは引数なし
+        assert!(split_extra_args("").is_empty());
+        assert!(split_extra_args("   ").is_empty());
     }
 }

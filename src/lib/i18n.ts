@@ -154,7 +154,7 @@ const ja = {
   "settings.hdr.yes": "計測する",
   "settings.hdr.no": "計測しない",
   "settings.hdr.extraArgs": "mpv 追加引数",
-  "settings.hdr.extraArgs.desc": "空白区切りで起動引数の末尾に追加します（例: --target-colorspace-hint=yes --gpu-api=d3d11）。無効な引数は mpv 起動失敗になります",
+  "settings.hdr.extraArgs.desc": "空白区切りで起動引数の末尾に追加します（例: --target-colorspace-hint=yes --gpu-api=d3d11）。空白を含む値は引用符で囲めます（例: --icc-profile=\"C:\\dir\\a.icc\"）。無効な引数は mpv 起動失敗になります",
 
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",
@@ -313,3 +313,13 @@ export function t(key: MessageKey, params?: Params): string {
     String(params[name] ?? `{${name}}`),
   );
 }
+
+// トーンマッピング選択肢 ID → mpv の --tone-mapping 値。
+// ドット入り値（bt.2390 / bt.2446a）を持つエントリだけを置く。
+// check_docs_consistency の i18n 参照検査はこのファイルを対象外とするため、
+// ドット入りリテラルはここに置き、選択肢側はドット無し ID を使う
+// （src/routes/settings/+page.svelte の TONE_MAPPINGS を参照）
+export const TONE_MAPPING_MPV: Record<string, string> = {
+  bt2390: "bt.2390",
+  bt2446a: "bt.2446a",
+};

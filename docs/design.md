@@ -303,7 +303,7 @@ Windows Auto HDR へ依存させる設定は不要と判断した。
 |---|---|---|
 | `hdr.tone_mapping` | `--tone-mapping=<v>` | 受理集合は `clip` / `mobius` / `reinhard` / `hable` / `gamma` / `linear` / `spline` / `bt.2390` / `bt.2446a` |
 | `hdr.compute_peak` | `--hdr-compute-peak=<v>` | 受理は `yes` / `no` のみ |
-| `mpv.extra_args` | spawn 引数の末尾へ空白分割で追加 | 無検証の汎用受け皿。末尾配置のため固定引数を上書きできる |
+| `mpv.extra_args` | spawn 引数の末尾へ空白分割で追加 | 無検証の汎用受け皿。末尾配置のため固定引数を上書きできる。`"..."`・`'...'` で空白を含む値を 1 引数にできる（バックスラッシュはエスケープに解釈しない） |
 
 `auto`・空・不正値は未指定として mpv 既定に任せる（`PlayerManager::play` で設定読み出し時に検証）。
 いずれも起動時引数のため、変更は次回の再生開始から有効で稼働中インスタンスには即時適用しない。

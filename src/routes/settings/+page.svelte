@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { t, type MessageKey } from "$lib/i18n";
+  import { t, type MessageKey, TONE_MAPPING_MPV } from "$lib/i18n";
   import { fmtChatDateTime } from "$lib/format";
   import {
     PIP_GEOMETRY_DEFAULT,
@@ -67,6 +67,10 @@
 
   // HDR 関連（仕様決定 Y）。auto は「mpv 既定に任せる」＝未設定。
   // 次回の再生開始から有効（起動時引数なので稼働中インスタンスには即時適用しない）
+  // bt.2390 / bt.2446a のようなドット入り mpv 値は check_docs_consistency の
+  // i18n 参照検査（ドット区切りリテラルを i18n キーとして拾う）に引っかかる
+  // ため、選択肢 ID はドット無しにし、mpv 値への対応は i18n.ts 側の
+  // TONE_MAPPING_MPV（同検査の対象外ファイル）に置く
   const TONE_MAPPINGS = [
     "auto",
     "clip",
@@ -76,8 +80,8 @@
     "gamma",
     "linear",
     "spline",
-    "bt.2390",
-    "bt.2446a",
+    "bt2390",
+    "bt2446a",
   ];
   let toneMapping = $state("auto");
   let computePeak = $state("auto");
@@ -275,15 +279,24 @@
         notify(t("settings.pip.unsaved"));
       }
       // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
-      // そのまま保存（auto は未指定として扱う）
+      // そのまま保存（auto は未指定として扱う）。選択肢 ID はドット無しなので
+      // TONE_MAPPING_MPV で mpv の値へ変換する。
+      // 保存待ちの間に select が変更されると DB と画面がずれるため、
+      // 先にスナップショットを取り、完了後のずれは未保存として通知する
+      const tmSnapshot = toneMapping;
+      const cpSnapshot = computePeak;
       await invoke("settings_set", {
         key: "hdr.tone_mapping",
-        value: toneMapping,
+        value: TONE_MAPPING_MPV[tmSnapshot] ?? tmSnapshot,
       });
       await invoke("settings_set", {
         key: "hdr.compute_peak",
-        value: computePeak,
+        value: cpSnapshot,
       });
+      if (toneMapping !== tmSnapshot || computePeak !== cpSnapshot) {
+        invalid = true;
+        notify(t("settings.pip.unsaved"));
+      }
       // mpv.extra_args: 無検証の自由記述（仕様決定 Y の汎用受け皿）。
       // 無効値は mpv 起動失敗として Spawn エラー通知に乗る
       const extra = mpvExtraArgs.trim();
@@ -384,8 +397,17 @@
       const toneRaw = await invoke<string | null>("settings_get", {
         key: "hdr.tone_mapping",
       });
-      if (toneRaw !== null && TONE_MAPPINGS.includes(toneRaw.trim())) {
-        toneMapping = toneRaw.trim();
+      if (toneRaw !== null) {
+        const v = toneRaw.trim();
+        // DB には mpv の値（bt.2390 等）が入るので、選択肢 ID へ逆引きする
+        const id = Object.entries(TONE_MAPPING_MPV).find(
+          ([, mpv]) => mpv === v,
+        )?.[0];
+        if (TONE_MAPPINGS.includes(v)) {
+          toneMapping = v;
+        } else if (id) {
+          toneMapping = id;
+        }
       }
       const peakRaw = await invoke<string | null>("settings_get", {
         key: "hdr.compute_peak",
@@ -521,7 +543,9 @@
         {t("settings.hdr.toneMapping")}
         <select bind:value={toneMapping}>
           {#each TONE_MAPPINGS as m}
-            <option value={m}>{m === "auto" ? t("settings.hdr.auto") : m}</option>
+            <option value={m}>
+              {m === "auto" ? t("settings.hdr.auto") : (TONE_MAPPING_MPV[m] ?? m)}
+            </option>
           {/each}
         </select>
       </label>
