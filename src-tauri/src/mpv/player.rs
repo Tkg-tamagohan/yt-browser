@@ -88,6 +88,15 @@ pub(crate) struct SpawnOptions {
     /// PiP（最前面・枠なしの小窓）で起動するときの `--geometry` 値。
     /// None なら通常ウィンドウで起動する（設計書 §4.5）。
     pub(crate) pip_geometry: Option<String>,
+    /// `--tone-mapping` に渡す方式名（設定 `hdr.tone_mapping`、仕様決定 Y）。
+    /// None なら mpv 既定（auto）。
+    pub(crate) tone_mapping: Option<String>,
+    /// `--hdr-compute-peak` に渡す値（設定 `hdr.compute_peak`、仕様決定 Y）。
+    /// None なら mpv 既定（auto）。
+    pub(crate) hdr_compute_peak: Option<String>,
+    /// 空白区切りの追加 mpv 引数（設定 `mpv.extra_args`、仕様決定 Y）。
+    /// spawn 引数の末尾に置いて固定引数を上書きできるようにする。
+    pub(crate) extra_args: Option<String>,
 }
 
 impl MpvPlayer {
@@ -137,6 +146,18 @@ impl MpvPlayer {
             args.push("--ontop=yes".into());
             args.push("--border=no".into());
             args.push(format!("--geometry={geo}"));
+        }
+        // HDR 関連（仕様決定 Y）。値は呼び出し側で受理集合に検証済み
+        if let Some(tm) = &opts.tone_mapping {
+            args.push(format!("--tone-mapping={tm}"));
+        }
+        if let Some(cp) = &opts.hdr_compute_peak {
+            args.push(format!("--hdr-compute-peak={cp}"));
+        }
+        // 汎用追加引数は末尾に置き、必要なら固定引数を上書きできるようにする。
+        // 無効な引数は mpv の起動失敗として MpvError::Spawn の通知経路に乗る（暫定）
+        if let Some(extra) = &opts.extra_args {
+            args.extend(split_extra_args(extra));
         }
         let mut mpv_cmd = tokio::process::Command::new("mpv");
         mpv_cmd.args(&args).kill_on_drop(true);
@@ -481,6 +502,52 @@ impl MpvPlayer {
             _ => {}
         }
     }
+}
+
+/// `mpv.extra_args`（仕様決定 Y の汎用追加引数）を引数列へ分割する。
+/// 空白区切りに加えて `"..."` と `'...'` による空白保護だけを実装する
+/// （Devin Review BUG: 空白を含む ICC プロファイルパス等を渡せない問題への対応）。
+/// バックスラッシュはエスケープとして解釈しないため、Windows パスがそのまま書ける。
+/// 引用符は引数の先頭または `=` の直後でのみ引用開始とみなし、値の途中の
+/// アポストロフィ等はリテラルとして残す（`O'Brien` のようなパスを壊さないため）。
+/// 未終端の引用符は残り全体を 1 引数として扱う（mpv 側で起動失敗になる入力を
+/// ここで黙って潰さず、そのまま渡す方針）。
+pub(crate) fn split_extra_args(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut has_arg = false;
+    for c in input.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => {
+                // 引用開始は「引数の先頭」か「`=` の直後」のみ。
+                // 値の途中の引用符（O'Brien 等）はリテラルとして残す
+                if (c == '"' || c == '\'') && (cur.is_empty() || cur.ends_with('=')) {
+                    quote = Some(c);
+                    has_arg = true;
+                } else if c.is_whitespace() {
+                    if has_arg {
+                        out.push(std::mem::take(&mut cur));
+                        has_arg = false;
+                    }
+                } else {
+                    cur.push(c);
+                    has_arg = true;
+                }
+            }
+        }
+    }
+    if has_arg {
+        out.push(cur);
+    }
+    out
 }
 
 /// IPC イベントを状態スナップショットと終了通知へ変換するループ。

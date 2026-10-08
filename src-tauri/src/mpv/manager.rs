@@ -1,8 +1,9 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
 use super::player::{MpvPlayer, SpawnOptions};
 use super::{
-    is_valid_pip_geometry, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
-    SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
+    is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping, MpvError,
+    DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT, SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING,
+    SETTING_MPV_EXTRA_ARGS, SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
 };
 use crate::db::Db;
 use crate::model::{PlayerAction, PlayerEnded, PlayerState};
@@ -84,6 +85,29 @@ impl PlayerManager {
             .ok()
             .flatten()
             .filter(|v| v.trim().parse::<f64>().is_ok());
+        // HDR 設定（仕様決定 Y）。値は受理集合に検証してから渡し、
+        // `auto` や空欄・不正値は未指定として mpv 既定に任せる
+        let tone_mapping = self
+            .db
+            .setting_get(SETTING_HDR_TONE_MAPPING)
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_valid_tone_mapping(s));
+        let hdr_compute_peak = self
+            .db
+            .setting_get(SETTING_HDR_COMPUTE_PEAK)
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_valid_hdr_compute_peak(s));
+        let extra_args = self
+            .db
+            .setting_get(SETTING_MPV_EXTRA_ARGS)
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let opts = SpawnOptions {
             video_id: video_id.to_string(),
             start_sec,
@@ -92,6 +116,9 @@ impl PlayerManager {
             wheel_script: self.wheel_script.clone(),
             wheel_volume_delta,
             pip_geometry: pip.then(|| self.pip_geometry()),
+            tone_mapping,
+            hdr_compute_peak,
+            extra_args,
         };
         let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
         let emitter = self.spawn_emitter(player.clone());

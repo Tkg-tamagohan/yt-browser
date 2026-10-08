@@ -165,6 +165,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `pip.geometry` | `WxH±x±y` | PiP 小窓の位置とサイズ（§4.5、既定 `480x270-40-40`） |
 | `pip.quality.format` | `ytdl-format` 式 | PiP インスタンスの既定画質（§4.5）。未設定・空文字は `quality.format` に従う（仕様決定 W） |
 | `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5） |
+| `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
+| `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
+| `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
 
 ## 4. 動画再生サブシステム
 
@@ -287,6 +290,25 @@ true のときフロントはキュー位置を進め、次の次項目を武装
 インスタンスの `video_id`・履歴・SponsorBlock 区間は項目ごとに更新される。
 履歴は読み込み直後に `history_upsert` で行を確保し、SponsorBlock 区間は
 項目ごとに再取得して差し替える。
+
+### 4.7 HDR 設定と mpv 追加引数（INV-1、仕様決定 Y）
+
+Windows 実機調査（INV-1）の結論として、mpv 0.41 は既定 `vo=gpu-next` + `gpu-api=auto`
+（→d3d11）で DXGI swapchain の色空間書き換えによる HDR 出力経路を自力で張れるため、
+Windows Auto HDR へ依存させる設定は不要と判断した。
+アプリ側で露出するのは変換方法の指定のみとし、vo / gpu-api / `target-colorspace-hint`
+等は設定化せず `mpv.extra_args` の汎用受け皿に任せる。
+
+| 設定キー | 反映先 | 備考 |
+|---|---|---|
+| `hdr.tone_mapping` | `--tone-mapping=<v>` | 受理集合は `clip` / `mobius` / `reinhard` / `hable` / `gamma` / `linear` / `spline` / `bt.2390` / `bt.2446a` |
+| `hdr.compute_peak` | `--hdr-compute-peak=<v>` | 受理は `yes` / `no` のみ |
+| `mpv.extra_args` | spawn 引数の末尾へ空白分割で追加 | 無検証の汎用受け皿。末尾配置のため固定引数を上書きできる。`"..."`・`'...'` で空白を含む値を 1 引数にできる（バックスラッシュはエスケープに解釈しない。引用開始は引数先頭または `=` 直後のみで、値の途中の引用符はリテラルとして残る） |
+
+`auto`・空・不正値は未指定として mpv 既定に任せる（`PlayerManager::play` で設定読み出し時に検証）。
+いずれも起動時引数のため、変更は次回の再生開始から有効で稼働中インスタンスには即時適用しない。
+INV-1 調査は HDR ディスプレイの無い環境で行ったため、HDR パススルー・Auto HDR の介入・
+mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不具合）の再現は未検証として残る。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

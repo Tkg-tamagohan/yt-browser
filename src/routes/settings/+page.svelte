@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { t, type MessageKey } from "$lib/i18n";
+  import { t, type MessageKey, TONE_MAPPING_MPV } from "$lib/i18n";
   import { fmtChatDateTime } from "$lib/format";
   import {
     PIP_GEOMETRY_DEFAULT,
@@ -64,6 +64,28 @@
   let pipQuality = $state("");
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
+
+  // HDR 関連（仕様決定 Y）。auto は「mpv 既定に任せる」＝未設定。
+  // 次回の再生開始から有効（起動時引数なので稼働中インスタンスには即時適用しない）
+  // bt.2390 / bt.2446a のようなドット入り mpv 値は check_docs_consistency の
+  // i18n 参照検査（ドット区切りリテラルを i18n キーとして拾う）に引っかかる
+  // ため、選択肢 ID はドット無しにし、mpv 値への対応は i18n.ts 側の
+  // TONE_MAPPING_MPV（同検査の対象外ファイル）に置く
+  const TONE_MAPPINGS = [
+    "auto",
+    "clip",
+    "hable",
+    "mobius",
+    "reinhard",
+    "gamma",
+    "linear",
+    "spline",
+    "bt2390",
+    "bt2446a",
+  ];
+  let toneMapping = $state("auto");
+  let computePeak = $state("auto");
+  let mpvExtraArgs = $state("");
 
   // ブロック中チャンネル（FR-5: 設定画面での解除）
   let blocked = $state<BlockedChannel[]>([]);
@@ -256,6 +278,33 @@
         invalid = true;
         notify(t("settings.pip.unsaved"));
       }
+      // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
+      // そのまま保存（auto は未指定として扱う）。選択肢 ID はドット無しなので
+      // TONE_MAPPING_MPV で mpv の値へ変換する。
+      // 保存待ちの間に select が変更されると DB と画面がずれるため、
+      // 先にスナップショットを取り、完了後のずれは未保存として通知する
+      const tmSnapshot = toneMapping;
+      const cpSnapshot = computePeak;
+      await invoke("settings_set", {
+        key: "hdr.tone_mapping",
+        value: TONE_MAPPING_MPV[tmSnapshot] ?? tmSnapshot,
+      });
+      await invoke("settings_set", {
+        key: "hdr.compute_peak",
+        value: cpSnapshot,
+      });
+      if (toneMapping !== tmSnapshot || computePeak !== cpSnapshot) {
+        invalid = true;
+        notify(t("settings.hdr.unsaved"));
+      }
+      // mpv.extra_args: 無検証の自由記述（仕様決定 Y の汎用受け皿）。
+      // 無効値は mpv 起動失敗として Spawn エラー通知に乗る
+      const extra = mpvExtraArgs.trim();
+      await invoke("settings_set", { key: "mpv.extra_args", value: extra });
+      if (mpvExtraArgs.trim() !== extra) {
+        invalid = true;
+        notify(t("settings.hdr.unsaved"));
+      }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       // （invalid には未保存変更の検出も含む）
@@ -344,6 +393,33 @@
       });
       if (pipQualityRaw !== null) {
         pipQuality = pipQualityRaw.trim();
+      }
+      const toneRaw = await invoke<string | null>("settings_get", {
+        key: "hdr.tone_mapping",
+      });
+      if (toneRaw !== null) {
+        const v = toneRaw.trim();
+        // DB には mpv の値（bt.2390 等）が入るので、選択肢 ID へ逆引きする
+        const id = Object.entries(TONE_MAPPING_MPV).find(
+          ([, mpv]) => mpv === v,
+        )?.[0];
+        if (TONE_MAPPINGS.includes(v)) {
+          toneMapping = v;
+        } else if (id) {
+          toneMapping = id;
+        }
+      }
+      const peakRaw = await invoke<string | null>("settings_get", {
+        key: "hdr.compute_peak",
+      });
+      if (peakRaw !== null && ["auto", "yes", "no"].includes(peakRaw.trim())) {
+        computePeak = peakRaw.trim();
+      }
+      const extraRaw = await invoke<string | null>("settings_get", {
+        key: "mpv.extra_args",
+      });
+      if (extraRaw !== null) {
+        mpvExtraArgs = extraRaw;
       }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
@@ -454,6 +530,43 @@
         />
       </label>
       <p class="subtle desc">{t("settings.pip.quality.desc")}</p>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.hdr.title")}</h2>
+    <p class="subtle desc">{t("settings.hdr.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <label class="wheel-row">
+        {t("settings.hdr.toneMapping")}
+        <select bind:value={toneMapping}>
+          {#each TONE_MAPPINGS as m}
+            <option value={m}>
+              {m === "auto" ? t("settings.hdr.auto") : (TONE_MAPPING_MPV[m] ?? m)}
+            </option>
+          {/each}
+        </select>
+      </label>
+      <label class="wheel-row">
+        {t("settings.hdr.computePeak")}
+        <select bind:value={computePeak}>
+          <option value="auto">{t("settings.hdr.auto")}</option>
+          <option value="yes">{t("settings.hdr.yes")}</option>
+          <option value="no">{t("settings.hdr.no")}</option>
+        </select>
+      </label>
+      <label class="wheel-row">
+        {t("settings.hdr.extraArgs")}
+        <input
+          type="text"
+          class="format-input"
+          bind:value={mpvExtraArgs}
+          placeholder="--target-colorspace-hint=yes"
+        />
+      </label>
+      <p class="subtle desc">{t("settings.hdr.extraArgs.desc")}</p>
     {/if}
   </section>
 
