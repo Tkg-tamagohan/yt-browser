@@ -7,6 +7,7 @@
     PIP_GEOMETRY_DEFAULT,
     isValidPipGeometry,
   } from "$lib/pip";
+  import { QUALITY_PRESETS } from "$lib/quality";
   import {
     asErrorMessage,
     initPlayerEvents,
@@ -17,24 +18,8 @@
     type UiError,
   } from "$lib/players.svelte";
 
-  // 設計書 §4.3 のプリセット表
-  const PRESETS = [
-    {
-      key: "settings.quality.preset.1080" as const,
-      format: "bv*[height<=1080]+ba/b[height<=1080]",
-    },
-    {
-      key: "settings.quality.preset.1080p60" as const,
-      format:
-        "bv*[height<=1080][fps>30]+ba/bv*[height<=1080]+ba/b[height<=1080]",
-    },
-    {
-      key: "settings.quality.preset.av1" as const,
-      format:
-        "bv*[vcodec^=av01][height<=1080]+ba/bv*[vcodec^=vp9][height<=1080]+ba/b[height<=1080]",
-    },
-    { key: "settings.quality.preset.best" as const, format: "bv*+ba/b" },
-  ];
+  // 設計書 §4.3 のプリセット表（プレイヤーカードの画質選択と共有）
+  const PRESETS = QUALITY_PRESETS;
   const CUSTOM = "custom";
 
   // SponsorBlock のカテゴリ一覧（src-tauri/src/sponsor/mod.rs の設定キーに対応）
@@ -73,6 +58,9 @@
   // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する。
   // 空欄での保存は「既定値へ戻す」操作として扱い、UI 表示も既定に戻す
   let pipGeometry = $state(PIP_GEOMETRY_DEFAULT);
+  // PiP 既定画質式（pip.quality.format）。空欄は「全体の画質設定に従う」
+  // （未設定として扱われる。仕様決定 W）
+  let pipQuality = $state("");
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -255,6 +243,12 @@
         invalid = true;
         notify(t("settings.failed", { message: `pip.geometry: ${geo}` }));
       }
+      // pip.quality.format: 空欄は未設定（全体画質に従う）。値は自由記述の
+      // フォーマット式なのでバリデーションせずそのまま保存する
+      await invoke("settings_set", {
+        key: "pip.quality.format",
+        value: pipQuality.trim(),
+      });
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       // （invalid には未保存変更の検出も含む）
@@ -334,6 +328,12 @@
       });
       if (pipGeoRaw !== null && isValidPipGeometry(pipGeoRaw.trim())) {
         pipGeometry = pipGeoRaw.trim();
+      }
+      const pipQualityRaw = await invoke<string | null>("settings_get", {
+        key: "pip.quality.format",
+      });
+      if (pipQualityRaw !== null) {
+        pipQuality = pipQualityRaw.trim();
       }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
@@ -434,6 +434,16 @@
           placeholder={PIP_GEOMETRY_DEFAULT}
         />
       </label>
+      <label class="wheel-row">
+        {t("settings.pip.quality")}
+        <input
+          type="text"
+          class="format-input"
+          bind:value={pipQuality}
+          placeholder="bv*[height<=480]+ba/b[height<=480]"
+        />
+      </label>
+      <p class="subtle desc">{t("settings.pip.quality.desc")}</p>
     {/if}
   </section>
 

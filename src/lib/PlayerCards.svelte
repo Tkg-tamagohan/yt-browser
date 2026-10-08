@@ -11,6 +11,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
+  import { QUALITY_PRESETS } from "$lib/quality";
   import { notify } from "$lib/notices.svelte";
   import ChatPanel from "$lib/ChatPanel.svelte";
   import RelatedPanel from "$lib/RelatedPanel.svelte";
@@ -334,6 +335,27 @@
             {#each SPEED_OPTIONS as s}
               <option value={s} selected={s === p.speed}>{s}x</option>
             {/each}
+          </select>
+        </label>
+        <label>
+          {t("player.quality")}
+          <select
+            value={p.format}
+            title={t("player.quality.hint")}
+            onchange={(e) =>
+              control(p.instanceId, {
+                type: "quality",
+                format: e.currentTarget.value,
+              })}
+          >
+            {#each QUALITY_PRESETS as q}
+              <option value={q.format} selected={q.format === p.format}>
+                {t(q.key)}
+              </option>
+            {/each}
+            {#if !QUALITY_PRESETS.some((q) => q.format === p.format)}
+              <option value={p.format} selected>{p.format}</option>
+            {/if}
           </select>
         </label>
         <button

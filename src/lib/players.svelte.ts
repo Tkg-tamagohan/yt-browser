@@ -19,6 +19,8 @@ export type PlayerState = {
   mediaTitle: string;
   /// PiP（最前面・枠なしの小窓）表示中かどうか（設計書 §4.5）。
   pip: boolean;
+  /// 現在適用中の画質式（`ytdl-format`）。
+  format: string;
 };
 
 export type PlayerEnded = { instanceId: number; videoId: string; reason: string };
