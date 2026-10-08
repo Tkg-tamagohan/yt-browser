@@ -293,14 +293,19 @@ mod tests {
     async fn disconnect_fails_pending_and_notifies() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("t.sock");
-        // 接続を受けて応答せず保持するサーバ。drop_tx を落とすとストリームも drop される
+        // 接続を受けて応答せず保持するサーバ。コマンド行を 1 つ読んだ時点で「送信済み」を
+        // got_tx で通知し、drop_tx を落とすとストリームも drop される
         let listener = UnixListener::bind(&sock).unwrap();
         let (drop_tx, drop_rx) = oneshot::channel::<()>();
+        let (got_tx, got_rx) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let _hold = stream;
+            let mut lines = BufReader::new(stream).lines();
+            if lines.next_line().await.unwrap().is_some() {
+                let _ = got_tx.send(());
+            }
             let _ = drop_rx.await;
-            // _hold drop で切断
+            // lines 内の stream drop で切断
         });
         let (tx, mut rx) = mpsc::channel(8);
         let client = IpcClient::connect(&sock, tx).await.unwrap();
@@ -310,8 +315,8 @@ mod tests {
                 .command(vec![json!("get_property"), json!("pause")])
                 .await
         });
-        // コマンド送信が済むまでの小待機
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // サーバがコマンド行を読み取る＝送信完了を待ってから切断（固定待機は置かない）
+        got_rx.await.unwrap();
         drop(drop_tx);
         server.await.unwrap();
         // in-flight コマンドは Closed で失敗する
@@ -425,13 +430,19 @@ mod tests {
     #[tokio::test]
     async fn disconnect_fails_pending_and_notifies() {
         let pipe = pipe_path();
-        // 接続を受けて応答せず保持するサーバ。drop_tx を落とすとサーバも drop される
+        // 接続を受けて応答せず保持するサーバ。コマンド行を 1 つ読んだ時点で「送信済み」を
+        // got_tx で通知し、drop_tx を落とすとサーバも drop される
         let server = ServerOptions::new().create(&pipe).unwrap();
         let (drop_tx, drop_rx) = oneshot::channel::<()>();
+        let (got_tx, got_rx) = oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server.connect().await.unwrap();
+            let mut lines = BufReader::new(server).lines();
+            if lines.next_line().await.unwrap().is_some() {
+                let _ = got_tx.send(());
+            }
             let _ = drop_rx.await;
-            // server drop で切断
+            // lines 内の server drop で切断
         });
         let (tx, mut rx) = mpsc::channel(8);
         let client = IpcClient::connect(&pipe, tx).await.unwrap();
@@ -441,7 +452,8 @@ mod tests {
                 .command(vec![json!("get_property"), json!("pause")])
                 .await
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // サーバがコマンド行を読み取る＝送信完了を待ってから切断（固定待機は置かない）
+        got_rx.await.unwrap();
         drop(drop_tx);
         server_task.await.unwrap();
         // in-flight コマンドは Closed で失敗する
