@@ -20,7 +20,7 @@ use crate::db::Db;
 use crate::model::{PlayStatus, PlayerAction, PlayerEnded, PlayerState};
 
 pub use ipc::IpcClient;
-use ipc::IpcEvent;
+use ipc::{IpcError, IpcEvent};
 
 /// `player://state` の送出間隔（設計書 §3.2 の 200〜500ms の中を取る）。
 const EMIT_INTERVAL: Duration = Duration::from_millis(300);
@@ -255,11 +255,11 @@ impl MpvPlayer {
             args.push("--border=no".into());
             args.push(format!("--geometry={geo}"));
         }
-        let mut child = tokio::process::Command::new("mpv")
-            .args(&args)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(MpvError::Spawn)?;
+        let mut mpv_cmd = tokio::process::Command::new("mpv");
+        mpv_cmd.args(&args).kill_on_drop(true);
+        #[cfg(windows)]
+        mpv_cmd.creation_flags(crate::CREATE_NO_WINDOW);
+        let mut child = mpv_cmd.spawn().map_err(MpvError::Spawn)?;
 
         if let Err(e) = wait_for_socket(&socket_path, &mut child).await {
             cleanup_failed_spawn(&mut child, &socket_path).await;
@@ -316,18 +316,16 @@ impl MpvPlayer {
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
         let pump = tokio::spawn(event_pump(player.clone(), ev_rx));
 
-        // ファイルロード（レジューム位置つき）。loadfile の第 3 引数は mpv のオプション表。
+        // ファイルロード（レジューム位置つき）。mpv 0.38 で loadfile の引数形式が
+        // 変わったため loadfile_replace が新旧両形式に対応する。
         // options の値は文字列のみ受ける mpv（0.34 系など）があるため文字列で渡す。
         let url = format!("https://www.youtube.com/watch?v={}", player.video_id());
-        if let Err(e) = player
-            .ipc
-            .command(vec![
-                json!("loadfile"),
-                json!(url),
-                json!("replace"),
-                json!({ "start": format!("{}", opts.start_sec) }),
-            ])
-            .await
+        if let Err(e) = loadfile_replace(
+            &player.ipc,
+            &url,
+            json!({ "start": format!("{}", opts.start_sec) }),
+        )
+        .await
         {
             // この時点ではまだマネージャ未登録なので、ここで mpv を確実に止める。
             pump.abort();
@@ -403,15 +401,8 @@ impl MpvPlayer {
                 let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
                 // replace で発生する旧ファイルの end-file は終了とみなさない
                 self.terminal.begin_replace();
-                if let Err(e) = self
-                    .ipc
-                    .command(vec![
-                        json!("loadfile"),
-                        json!(url),
-                        json!("replace"),
-                        json!({ "start": format!("{}", pos) }),
-                    ])
-                    .await
+                if let Err(e) =
+                    loadfile_replace(&self.ipc, &url, json!({ "start": format!("{}", pos) })).await
                 {
                     self.terminal.cancel_replace();
                     return Err(MpvError::Ipc(e));
@@ -679,6 +670,39 @@ async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
     };
     if let Err(e) = player.app.emit("sponsor://skipped", payload) {
         tracing::warn!(error = %e, "sponsor://skipped の送出に失敗");
+    }
+}
+
+/// mpv に `loadfile <url> replace <options>` を送る。
+/// mpv 0.38 で `index` 引数が options の前に挿入された（`loadfile url flags index
+/// options`）ため、先に 4 引数形を試し、`invalid parameter` なら旧 3 引数形へ
+/// フォールバックする。`mpv-version` 文字列はディストリ由来のハッシュ表示に
+/// なることがあるため、バージョン解析ではなく応答エラーで分岐する。
+async fn loadfile_replace(
+    ipc: &IpcClient,
+    url: &str,
+    options: serde_json::Value,
+) -> Result<(), IpcError> {
+    let res = ipc
+        .command(vec![
+            json!("loadfile"),
+            json!(url),
+            json!("replace"),
+            json!(-1),
+            options.clone(),
+        ])
+        .await;
+    match res {
+        Err(IpcError::Mpv(msg)) if msg == "invalid parameter" => ipc
+            .command(vec![
+                json!("loadfile"),
+                json!(url),
+                json!("replace"),
+                options,
+            ])
+            .await
+            .map(|_| ()),
+        other => other.map(|_| ()),
     }
 }
 
