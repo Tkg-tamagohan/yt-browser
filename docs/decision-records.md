@@ -22,7 +22,7 @@
 | S | 連続再生の方式 | プレイリストに「連続再生」の開始点を設け、同一インスタンスで次項目へ切り替える。末尾到達で停止し、ループは持たない |
 | T | プレイリスト項目の並べ替え | 「上へ」「下へ」ボタンとドラッグ＆ドロップの双方を提供する。投稿日時順ソートは `position` を一括で書き換える操作とし、`published_at` を持たない項目は末尾に置く |
 | U | 再生中チャンネルの購読導線 | プレイヤーカードに購読ボタンを設ける。チャンネル ID は videos / watch_history の既知情報を優先し、無ければ yt-dlp で解決する。購読済みはボタン無効化＋「購読済み」表示、ブロック中のチャンネルは購読可でブロックは維持する |
-| V | kind（live / short）検出 | RSS は kind を持たないため、shorts は `youtube.com/shorts/<id>` への判定を新規投入時に非同期で行い `videos.kind` を付与する。live / upcoming の検出は初版の対象外とする。フィルタ UI は live / short / video の選択肢を提供する |
+| V | kind（live / short）検出 | RSS は kind を持たないため、shorts は `youtube.com/shorts/<id>` への HEAD 判定（200=short、303=非 short、実測確認）を新規投入時に非同期で行い `videos.kind` を付与する。live / upcoming の検出は初版の対象外とする。フィルタ UI は live / short / video の選択肢を提供する |
 | W | PiP 向け解像度設定 | 「解像度」はストリーム画質と解釈し、PiP で起動するインスタンスの既定画質式を `pip.quality.format` として新設する。未設定は `quality.format` に従う。窓サイズは既存の `pip.geometry` が担う |
 | X | インスタンス別画質 | 稼働中インスタンスごとの画質変更をプレイヤーカードから行えるようにする。変更値はセッション内に限り有効とし DB には保存しない（次回再生は既定画質に戻る） |
 | Y | 自動 HDR 対応 | Windows 11 の自動 HDR に mpv の表示経路を認識させられるかを Windows 環境で調査する。可能なら設定項目として組み込み、不可なら対象外として記録する |
@@ -174,9 +174,9 @@
 | フィード画面の 2 カラム構成 | 左カラムに購読管理（購読入力・カテゴリ作成・登録チャンネルリスト）、右カラムにフィード一覧を配置する。狭い画面幅では縦積みにフォールバックする。UI 変更のため実装時に browser preview のモックをユーザーへ先行提示する |
 | 購読チャンネル一覧のカテゴリフィルタ | フィード一覧と同じ選択肢（すべて・未分類・各カテゴリ）で登録リストを絞り込む。選択状態は画面ローカルとする |
 | フィードの種別フィルタ | `list_feed` のフィルタ引数に種別を追加し、`feed_list_filtered` の後段フィルタ方式を踏襲する。kind が未検出（`'video'` のまま）の項目は video として扱う |
-| shorts の判定方式 | 新規投入アイテムに限り非同期で `https://www.youtube.com/shorts/<video_id>` へ HEAD を送り、shorts として応答する場合に `kind='short'` に更新する。判定失敗やタイムアウトは `'video'` のままとし、初版ではリトライを持たない（暫定） |
+| shorts の判定方式 | 新規投入アイテムに限り非同期で `https://www.youtube.com/shorts/<video_id>` へ HEAD を送り、`200` を返す場合に `kind='short'` に更新する。非 short は `303` で `/watch?v=<video_id>` へリダイレクトされることを実測で確認した（2026-10、匿名アクセス）。判定失敗やタイムアウトは `'video'` のままとし、初版ではリトライを持たない |
 | YouTube プレイリスト取り込み | `yt-dlp --flat-playlist` でプレイリスト URL の項目を取得し、新規ローカルプレイリストとして保存する。各項目のメタは `video_upsert` 経路で `videos` 台帳へ流し、フィード未経由の項目はプレースホルダ（`ingested=0`）になる |
-| 連続再生のキュー | 連続再生の文脈はフロント側が保持し、`player://ended`（自然終了）を契機に同一インスタンスで次項目を再生する。途中項目のエラー終了時は次項目へ進み、通知で表す（暫定） |
-| 再生中チャンネルの解決順 | `videos.channel_id` → `watch_history.channel_id` → yt-dlp メタ取得（`channel_id` / `uploader_id` / `channel_url`）の順で解決し、`subscribe_channel` の既存解決経路（UC / @handle / URL 受理）へ渡す |
+| 連続再生のキュー | 連続再生の文脈はフロント側が保持し、`player://ended`（自然終了）を契機に同一インスタンスで次項目を再生する。現行は `player://ended` の送出直後に管理表から削除して `player.shutdown()` まで走る（`spawn_emitter`）ため、キュー継続時はこの終了処理を分岐させて同じ mpv プロセスへ `loadfile` で次項目を送る経路を設計する。途中項目のエラー終了時は次項目へ進み、通知で表す（暫定） |
+| 再生中チャンネルの解決順 | `videos.channel_id` → `watch_history.channel_id` → yt-dlp メタ取得（`channel_id` / `uploader_id` / `channel_url`）の順で解決し、`subscribe_channel` の既存解決経路（UC / @handle / URL 受理）へ渡す。各段の値が空文字または NULL の場合は「未知」として次段へ進む |
 | PiP 画質の解決順 | インスタンス起動時の画質は「インスタンス別の指定 > PiP なら `pip.quality.format` > `quality.format`」の順とする |
 | 自動 HDR 調査の範囲 | mpv の vo / gpu-api 設定と Windows の自動 HDR 認識の可否を Windows 子セッションで確認する。実現に mpv 起動引数の追加が要る場合の設定化の形（個別キーか汎用の追加分引数か）は実装段階で判断する |
