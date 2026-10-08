@@ -432,14 +432,22 @@ impl MpvPlayer {
     /// 解除時に復元する。
     pub async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
         if enabled {
-            let maximized = self
-                .ipc
-                .command(vec![json!("get_property"), json!("window-maximized")])
-                .await
-                .ok()
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            *lock(&self.pip_prev_maximized) = maximized;
+            // 最大化の記録は false→true の遷移時だけ行う。
+            // PiP 中の再適用（enabled=true の重複送信）で保存値を上書きしない
+            let maximized = if !lock(&self.state).pip {
+                let m = self
+                    .ipc
+                    .command(vec![json!("get_property"), json!("window-maximized")])
+                    .await
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                *lock(&self.pip_prev_maximized) = m;
+                m
+            } else {
+                // 既に PiP 中: 解除済みだが念のため解除を再送する
+                true
+            };
             if maximized {
                 self.ipc
                     .command(vec![
