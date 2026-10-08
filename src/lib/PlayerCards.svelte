@@ -6,7 +6,7 @@
   // チャットと関連動画のパネルは ChatPanel / RelatedPanel に切り出し、
   // チャットの状態とイベント購読は chat.svelte.ts の共有ストアが持つ。
   import { page } from "$app/state";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t, type MessageKey } from "$lib/i18n";
@@ -38,6 +38,110 @@
   // 関連動画パネルの開閉（インスタンス ID ごと）。パネルの内容は
   // RelatedPanel が開くたびのマウントで取り直す
   let relatedOpen = $state<Set<number>>(new Set());
+
+  // 再生中チャンネルの購読導線（FR-12）。解決結果は videoId ごとに 1 回だけ取る。
+  // null は「解決不能」（yt-dlp 失敗・メタ無し）で、ボタンは無効表示のままにする
+  type PlayingChannel = {
+    input: string | null;
+    title: string | null;
+    subscribed: boolean;
+  };
+  let channelInfos = $state<Map<string, PlayingChannel | null>>(new Map());
+  let subscribing = $state<Set<string>>(new Set());
+  // fetch 要求済み videoId（channelInfos とは別管理: 同じキーの二重起動を防ぐ）。
+  // プレイ中は失敗しても再要求しないが、カードが閉じられて同じ動画が
+  // 再度再生されたときはエントリを外れているので再解決できる
+  const channelReq = new Set<string>();
+
+  $effect(() => {
+    const active = new Set([...players.values()].map((p) => p.videoId));
+    for (const id of channelReq) {
+      if (!active.has(id)) channelReq.delete(id);
+    }
+    for (const p of players.values()) {
+      if (p.videoId && !channelReq.has(p.videoId)) {
+        channelReq.add(p.videoId);
+        void fetchChannel(p.videoId);
+      }
+    }
+  });
+
+  // 「/」へ戻ったとき購読状態を取り直す（feed 画面等での購読・解除を
+  // カード側にも反映させる。players の定期更新に乗らないよう
+  // pathname だけを追う別エフェクトに分ける。対象は再生中のカードだけで、
+  // 閉じたカードのキャッシュは再解決しない）
+  $effect(() => {
+    if (page.url.pathname === "/") {
+      const active = new Set(
+        [...untrack(() => players).values()].map((p) => p.videoId),
+      );
+      for (const id of active) {
+        if (untrack(() => channelInfos).has(id)) void refreshChannel(id);
+      }
+    }
+  });
+
+  async function fetchChannel(videoId: string): Promise<void> {
+    let info: PlayingChannel | null = null;
+    try {
+      info = await invoke<PlayingChannel>("playing_channel", { videoId });
+    } catch {
+      // 解決失敗は無効ボタンとして表す（トーストは出さない）
+    }
+    const next = new Map(channelInfos);
+    next.set(videoId, info);
+    channelInfos = next;
+  }
+
+  // 購読状態だけの取り直し。input は既に解決済みの値を優先して残す
+  // （再取得で yt-dlp が失敗しても購読ボタンを後退させない）
+  async function refreshChannel(videoId: string): Promise<void> {
+    try {
+      const fresh = await invoke<PlayingChannel>("playing_channel", {
+        videoId,
+      });
+      const prev = channelInfos.get(videoId);
+      const next = new Map(channelInfos);
+      next.set(videoId, {
+        input: fresh.input ?? prev?.input ?? null,
+        title: fresh.title ?? prev?.title ?? null,
+        subscribed: fresh.subscribed,
+      });
+      channelInfos = next;
+    } catch {
+      // 取り直し失敗は既存表示のまま（feed 側の操作には影響しない）
+    }
+  }
+
+  async function subscribePlaying(videoId: string): Promise<void> {
+    const info = channelInfos.get(videoId);
+    if (!info?.input || subscribing.has(videoId)) return;
+    subscribing = new Set(subscribing).add(videoId);
+    try {
+      const ch = await invoke<{ channel_id?: string; channelId?: string; title: string }>(
+        "subscribe_channel",
+        { input: info.input, categoryId: null },
+      );
+      notify(t("feed.subscribed", { title: ch.title }));
+      // 同じ UC を入力に持つ他の再生中カードも購読済みへ
+      // （@handle 形で解決中のカードは subscribe_channel 側の解決結果と
+      // 突き合わせできないため対象外）
+      const uc = ch.channelId ?? ch.channel_id;
+      const next = new Map(channelInfos);
+      for (const [vid, e] of next) {
+        if (e && (vid === videoId || (uc != null && e.input === uc))) {
+          next.set(vid, { ...e, subscribed: true });
+        }
+      }
+      channelInfos = next;
+    } catch (e) {
+      notify(t("feed.subscribeFailed", { message: asErrorMessage(e) }));
+    } finally {
+      const s = new Set(subscribing);
+      s.delete(videoId);
+      subscribing = s;
+    }
+  }
 
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
@@ -151,6 +255,7 @@
   class:hidden={page.url.pathname !== "/"}
 >
   {#each [...players.values()] as p (p.instanceId)}
+    {@const info = channelInfos.get(p.videoId)}
     <section class="player">
       <div class="player-title">
         {p.mediaTitle || p.videoId}
@@ -247,6 +352,18 @@
         <button class="link" onclick={() => toggleChat(p.instanceId, p.videoId)}>
           {chatPanel(p.instanceId)?.open ? t("chat.hide") : t("chat.show")}
         </button>
+        {#if info?.subscribed}
+          <button class="link" disabled>{t("player.subscribed")}</button>
+        {:else}
+          <button
+            class="link"
+            title={info?.title ?? undefined}
+            disabled={!info?.input || subscribing.has(p.videoId)}
+            onclick={() => subscribePlaying(p.videoId)}
+          >
+            {t("player.subscribe")}
+          </button>
+        {/if}
       </div>
 
       {#if chatPanel(p.instanceId)?.open}

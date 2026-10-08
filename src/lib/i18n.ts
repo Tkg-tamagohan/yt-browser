@@ -40,6 +40,8 @@ const ja = {
   "player.playPip": "PiP で再生",
   "player.pip": "PiP",
   "player.unpip": "PiP 解除",
+  "player.subscribe": "チャンネル購読",
+  "player.subscribed": "購読済み",
   "player.pip.hint":
     "最前面・枠なしの小窓で再生。mpv のショートカット（q で終了、m でミュート）は小窓上でも使えます",
 

@@ -87,6 +87,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
+| `playing_channel` | `video_id` | `Result<PlayingChannel>`（FR-12。videos → watch_history → yt-dlp メタの順に `subscribe_channel` へ渡せる入力と表示名を解決し、UC 確定時は購読済みかも返す） |
 | `unsubscribe_channel` | `channel_id` | `Result<()>` |
 | `list_channels` | なし | `Result<Vec<Channel>>` |
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |

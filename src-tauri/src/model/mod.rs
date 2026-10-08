@@ -157,6 +157,19 @@ pub struct FeedItem {
 pub struct FeedNewItems {
     pub count: usize,
 }
+
+/// `playing_channel` コマンドの返却（FR-12、仕様決定 U）。
+/// `input` は `subscribe_channel` にそのまま渡せるチャンネル参照
+/// （UC ID・@handle・channel URL のいずれか）。解決できない場合は None。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayingChannel {
+    pub input: Option<String>,
+    pub title: Option<String>,
+    /// UC ID で購読済みと確認できた場合のみ true。
+    /// @handle・URL 形しか解決できていない場合は未確定として false を返す。
+    pub subscribed: bool,
+}
 /// `search` / `get_related` コマンドの結果行（設計書 §3.1 の SearchResult）。
 /// 検索（yt-dlp flat playlist）と関連動画（InnerTube `next`）の共通型。
 /// 片方の経路でしか取れない値は Option にする。
