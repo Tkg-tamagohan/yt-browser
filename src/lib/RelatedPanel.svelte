@@ -5,15 +5,16 @@
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
-  import { loadLibrary } from "$lib/library";
   import { notify } from "$lib/notices.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
   import {
+    createVideoActionState,
+    videoRefOf,
+  } from "$lib/videoActions.svelte";
+  import {
     asErrorMessage,
-    type Playlist,
     type SearchResult,
-    type VideoRef,
   } from "$lib/players.svelte";
 
   // instanceId はカード側がパネルをインスタンスへ対応づけるためのキー
@@ -28,24 +29,9 @@
   // お気に入り・プレイリスト行アクション用（FR-7）。
   // 他ページ（ライブラリ等）でも編集されるため、パネルを開くたびに再取得する
   // （従来はページのリマウントと「/」復帰が暗黙の再取得トリガーだった）。
-  // loadSeq は発行順：より新しいロードが走っていれば古い応答は丸ごと捨てる。
-  // ローカル編集は表示を即時反映したうえで再取得を投げ、DB の truth に収束させる
+  // resyncOnChange で、ローカル編集の表示即時反映のあと DB の truth に収束させる
   // （コールバックは書き込みコミット後に発火するため、再取得は編集済みの値を含む）。
-  let favIds = $state<Set<string>>(new Set());
-  let playlists = $state<Playlist[]>([]);
-  let loadSeq = 0;
-
-  async function refreshLibrary(): Promise<void> {
-    const seq = ++loadSeq;
-    try {
-      const lib = await loadLibrary();
-      if (seq !== loadSeq) return;
-      favIds = lib.favIds;
-      playlists = lib.playlists;
-    } catch {
-      // 行アクションが出せなくても再生は使えるため静かに握る
-    }
-  }
+  const va = createVideoActionState({ resyncOnChange: true });
 
   async function loadRelated(): Promise<void> {
     loading = true;
@@ -85,30 +71,6 @@
     }
   }
 
-  function videoRefOf(r: SearchResult): VideoRef {
-    return {
-      videoId: r.videoId,
-      title: r.title,
-      channelId: r.channelId,
-      channelTitle: r.channelTitle,
-      thumbnailUrl: r.thumbnailUrl,
-    };
-  }
-
-  function onFavChange(videoId: string, faved: boolean): void {
-    const next = new Set(favIds);
-    if (faved) next.add(videoId);
-    else next.delete(videoId);
-    favIds = next;
-    // 他ページでの編集も含め DB と再同期（古い進行中ロードは loadSeq で捨てる）
-    void refreshLibrary();
-  }
-
-  function onPlaylistCreated(pl: Playlist): void {
-    playlists = [...playlists, pl];
-    void refreshLibrary();
-  }
-
   onMount(() => {
     void loadRelated();
   });
@@ -116,7 +78,7 @@
   // 開いている間も他ページ（ライブラリ等）での編集を取り込めるよう、
   // 「/」へ戻るたびに再取得する（分割前の暗黙リフレッシュ契機を維持）
   $effect(() => {
-    if (page.url.pathname === "/") void refreshLibrary();
+    if (page.url.pathname === "/") void va.refresh();
   });
 
   onDestroy(() => {
@@ -153,10 +115,10 @@
             {/if}
             <VideoActions
               video={videoRefOf(r)}
-              faved={favIds.has(r.videoId)}
-              {playlists}
-              onfavchange={onFavChange}
-              onplaylistcreated={onPlaylistCreated}
+              faved={va.favIds.has(r.videoId)}
+              playlists={va.playlists}
+              onfavchange={va.onFavChange}
+              onplaylistcreated={va.onPlaylistCreated}
             />
           {/snippet}
         </VideoRow>

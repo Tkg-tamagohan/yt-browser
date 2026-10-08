@@ -2,10 +2,11 @@
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
+  import { fmtDuration } from "$lib/format";
   import {
+    asErrorMessage,
     playbackHooks,
     type DbStatus,
-    type UiError,
     type WatchHistory,
     type YtDlpStatus,
   } from "$lib/players.svelte";
@@ -20,28 +21,11 @@
   let ytdlpChecking = $state(true);
   let ytdlpUpdating = $state(false);
 
-  function fmt(sec: number): string {
-    if (!Number.isFinite(sec) || sec <= 0) return "0:00";
-    const s = Math.floor(sec);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const ss = s % 60;
-    const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
-    return `${h > 0 ? h + ":" : ""}${mm}:${String(ss).padStart(2, "0")}`;
-  }
-
   function notify(msg: string): void {
     notices = [...notices.slice(-4), msg];
     setTimeout(() => {
       notices = notices.filter((n) => n !== msg);
     }, 6000);
-  }
-
-  function asErrorMessage(e: unknown): string {
-    if (typeof e === "object" && e !== null && "message" in e) {
-      return String((e as UiError).message);
-    }
-    return String(e);
   }
 
   async function refreshResumeHint(): Promise<void> {
@@ -68,7 +52,7 @@
         pip,
       });
       if (resume && resumeHint) {
-        notify(t("player.resumeApplied", { position: fmt(resumeHint.positionSec) }));
+        notify(t("player.resumeApplied", { position: fmtDuration(resumeHint.positionSec) }));
       }
     } catch (e) {
       notify(t("player.error", { message: asErrorMessage(e) }));
@@ -142,7 +126,7 @@
   </div>
   {#if resumeHint}
     <p class="hint">
-      {t("player.history.hint", { position: fmt(resumeHint.positionSec) })}
+      {t("player.history.hint", { position: fmtDuration(resumeHint.positionSec) })}
       {#if resumeHint.title}（{resumeHint.title}）{/if}
     </p>
   {/if}

@@ -2,7 +2,13 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t, type MessageKey } from "$lib/i18n";
+  import { fmtChatDateTime } from "$lib/format";
   import {
+    PIP_GEOMETRY_DEFAULT,
+    isValidPipGeometry,
+  } from "$lib/pip";
+  import {
+    asErrorMessage,
     initPlayerEvents,
     playerStates,
     type BlockedChannel,
@@ -66,9 +72,7 @@
   let wheelDelta = $state<number | undefined>(2);
   // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する。
   // 空欄での保存は「既定値へ戻す」操作として扱い、UI 表示も既定に戻す
-  const PIP_GEOMETRY_DEFAULT = "480x270-40-40";
   let pipGeometry = $state(PIP_GEOMETRY_DEFAULT);
-  const PIP_GEOMETRY_RE = /^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$/;
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -162,15 +166,6 @@
     return s === key ? kind : s;
   }
 
-  function fmtChatTime(usec: number): string {
-    return new Date(usec / 1000).toLocaleString("ja-JP", {
-      month: "numeric",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
-
   async function loadBlocked(): Promise<void> {
     try {
       blocked = await invoke<BlockedChannel[]>("blocked_channels");
@@ -198,13 +193,6 @@
     setTimeout(() => {
       notices = notices.filter((n) => n !== msg);
     }, 6000);
-  }
-
-  function asErrorMessage(e: unknown): string {
-    if (typeof e === "object" && e !== null && "message" in e) {
-      return String((e as UiError).message);
-    }
-    return String(e);
   }
 
   async function save(): Promise<void> {
@@ -261,7 +249,7 @@
           invalid = true;
           notify(t("settings.pip.unsaved"));
         }
-      } else if (PIP_GEOMETRY_RE.test(geo)) {
+      } else if (isValidPipGeometry(geo)) {
         await invoke("settings_set", { key: "pip.geometry", value: geo });
       } else {
         invalid = true;
@@ -344,7 +332,7 @@
       const pipGeoRaw = await invoke<string | null>("settings_get", {
         key: "pip.geometry",
       });
-      if (pipGeoRaw !== null && PIP_GEOMETRY_RE.test(pipGeoRaw.trim())) {
+      if (pipGeoRaw !== null && isValidPipGeometry(pipGeoRaw.trim())) {
         pipGeometry = pipGeoRaw.trim();
       }
       if (wheelRaw !== null) {
@@ -443,7 +431,7 @@
           type="text"
           class="format-input"
           bind:value={pipGeometry}
-          placeholder="480x270-40-40"
+          placeholder={PIP_GEOMETRY_DEFAULT}
         />
       </label>
     {/if}
@@ -565,7 +553,7 @@
         <ul class="chat-hits">
           {#each chatResults as e (e)}
             <li>
-              <span class="chat-time">{fmtChatTime(e.postedAtUsec)}</span>
+              <span class="chat-time">{fmtChatDateTime(e.postedAtUsec)}</span>
               <span class="ch-title">{e.authorName ?? "-"}</span>
               {#if e.kind !== "text"}<span class="f-kind">{e.kind}</span>{/if}
               <span class="hit-msg">{e.message}</span>

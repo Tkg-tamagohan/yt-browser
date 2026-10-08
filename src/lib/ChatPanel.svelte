@@ -3,6 +3,7 @@
   // 表示済みメッセージは chat.svelte.ts の共有ストアにあり、
   // 閉じている間も受信は蓄積され続ける。
   import { t } from "$lib/i18n";
+  import { fmtChatTime } from "$lib/format";
   import { chatPanels } from "$lib/chat.svelte";
 
   let { instanceId }: { instanceId: number } = $props();
@@ -19,14 +20,6 @@
     listEl.scrollTop = listEl.scrollHeight;
   });
 
-  function fmtChatTime(usec: number): string {
-    const d = new Date(usec / 1000);
-    return d.toLocaleTimeString("ja-JP", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  }
 </script>
 
 <div class="chat-panel">

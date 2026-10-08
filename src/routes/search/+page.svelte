@@ -3,15 +3,17 @@
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
+  import { fmtDuration, fmtViews } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
-  import { loadLibrary } from "$lib/library";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
-  import type {
-    Playlist,
-    SearchResult,
-    UiError,
-    VideoRef,
+  import {
+    createVideoActionState,
+    videoRefOf,
+  } from "$lib/videoActions.svelte";
+  import {
+    asErrorMessage,
+    type SearchResult,
   } from "$lib/players.svelte";
 
   let query = $state("");
@@ -20,64 +22,11 @@
   let searchedOnce = $state(false);
 
   // お気に入り・プレイリスト行アクション用（FR-7）
-  let favIds = $state<Set<string>>(new Set());
-  let playlists = $state<Playlist[]>([]);
-
-  function videoRefOf(r: SearchResult): VideoRef {
-    return {
-      videoId: r.videoId,
-      title: r.title,
-      channelId: r.channelId,
-      channelTitle: r.channelTitle,
-      thumbnailUrl: r.thumbnailUrl,
-    };
-  }
-
-  function onFavChange(videoId: string, faved: boolean): void {
-    const next = new Set(favIds);
-    if (faved) next.add(videoId);
-    else next.delete(videoId);
-    favIds = next;
-  }
-
-  function onPlaylistCreated(pl: Playlist): void {
-    playlists = [...playlists, pl];
-  }
+  const va = createVideoActionState();
 
   onMount(async () => {
-    try {
-      const lib = await loadLibrary();
-      favIds = lib.favIds;
-      playlists = lib.playlists;
-    } catch {
-      // 行アクションが出せなくても検索は使えるため静かに握る
-    }
+    await va.refresh();
   });
-
-  function asErrorMessage(e: unknown): string {
-    if (typeof e === "object" && e !== null && "message" in e) {
-      return String((e as UiError).message);
-    }
-    return String(e);
-  }
-
-  function fmtDuration(sec: number | null): string {
-    if (sec === null) return "";
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = sec % 60;
-    const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
-    return `${h > 0 ? h + ":" : ""}${mm}:${String(s).padStart(2, "0")}`;
-  }
-
-  function fmtViews(n: number | null): string {
-    if (n === null) return "";
-    if (n >= 100_000_000)
-      return t("search.views.oku", { count: (n / 100_000_000).toFixed(1) });
-    if (n >= 10_000)
-      return t("search.views.man", { count: (n / 10_000).toFixed(1) });
-    return t("search.views.count", { count: n.toLocaleString() });
-  }
 
   async function doSearch(): Promise<void> {
     const q = query.trim();
@@ -181,10 +130,10 @@
           {/if}
           <VideoActions
             video={videoRefOf(r)}
-            faved={favIds.has(r.videoId)}
-            {playlists}
-            onfavchange={onFavChange}
-            onplaylistcreated={onPlaylistCreated}
+            faved={va.favIds.has(r.videoId)}
+            playlists={va.playlists}
+            onfavchange={va.onFavChange}
+            onplaylistcreated={va.onPlaylistCreated}
           />
         {/snippet}
       </VideoRow>

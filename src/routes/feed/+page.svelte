@@ -4,11 +4,15 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
+  import { fmtDateTime } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
-  import { loadLibrary } from "$lib/library";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
-  import type { Playlist, VideoRef } from "$lib/players.svelte";
+  import {
+    createVideoActionState,
+    videoRefOf,
+  } from "$lib/videoActions.svelte";
+  import { asErrorMessage } from "$lib/players.svelte";
 
   interface Channel {
     channelId: string;
@@ -41,10 +45,6 @@
     level: string;
     message: string;
   }
-  interface UiError {
-    code?: string;
-    message?: string;
-  }
 
   let items = $state<FeedItem[]>([]);
   let channels = $state<Channel[]>([]);
@@ -59,36 +59,7 @@
   let unlistens: UnlistenFn[] = [];
 
   // お気に入り・プレイリスト行アクション用（FR-7）
-  let favIds = $state<Set<string>>(new Set());
-  let playlists = $state<Playlist[]>([]);
-
-  function videoRefOf(it: FeedItem): VideoRef {
-    return {
-      videoId: it.videoId,
-      title: it.title,
-      channelId: it.channelId,
-      channelTitle: it.channelTitle,
-      thumbnailUrl: it.thumbnailUrl,
-    };
-  }
-
-  function onFavChange(videoId: string, faved: boolean): void {
-    const next = new Set(favIds);
-    if (faved) next.add(videoId);
-    else next.delete(videoId);
-    favIds = next;
-  }
-
-  function onPlaylistCreated(pl: Playlist): void {
-    playlists = [...playlists, pl];
-  }
-
-  function asErrorMessage(e: unknown): string {
-    if (typeof e === "object" && e !== null && "message" in e) {
-      return String((e as UiError).message);
-    }
-    return String(e);
-  }
+  const va = createVideoActionState();
 
   async function loadItems(): Promise<void> {
     items = await invoke<FeedItem[]>("list_feed", {
@@ -228,22 +199,9 @@
     }
   }
 
-  function formatPublished(iso: string | null): string {
-    if (!iso) return "";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleString("ja-JP");
-  }
-
   onMount(async () => {
     await refreshAll();
-    try {
-      const lib = await loadLibrary();
-      favIds = lib.favIds;
-      playlists = lib.playlists;
-    } catch {
-      // 行アクションが出せなくてもフィードは使えるため静かに握る
-    }
+    void va.refresh();
     unlistens.push(
       await listen<FeedNewItems>("feed://new_items", (ev) => {
         notify(t("feed.newItems", { count: ev.payload.count }));
@@ -370,7 +328,7 @@
             {#snippet sub()}
               <span class="feed-meta">
                 <span>{it.channelTitle ?? it.channelId}</span>
-                <span>{formatPublished(it.publishedAt)}</span>
+                <span>{fmtDateTime(it.publishedAt)}</span>
               </span>
             {/snippet}
             {#snippet actions()}
@@ -388,10 +346,10 @@
               </button>
               <VideoActions
                 video={videoRefOf(it)}
-                faved={favIds.has(it.videoId)}
-                {playlists}
-                onfavchange={onFavChange}
-                onplaylistcreated={onPlaylistCreated}
+                faved={va.favIds.has(it.videoId)}
+                playlists={va.playlists}
+                onfavchange={va.onFavChange}
+                onplaylistcreated={va.onPlaylistCreated}
               />
             {/snippet}
           </VideoRow>
