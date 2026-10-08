@@ -68,11 +68,15 @@
 
   // 「/」へ戻ったとき購読状態を取り直す（feed 画面等での購読・解除を
   // カード側にも反映させる。players の定期更新に乗らないよう
-  // pathname だけを追う別エフェクトに分ける）
+  // pathname だけを追う別エフェクトに分ける。対象は再生中のカードだけで、
+  // 閉じたカードのキャッシュは再解決しない）
   $effect(() => {
     if (page.url.pathname === "/") {
-      for (const id of untrack(() => channelInfos).keys()) {
-        void refreshChannel(id);
+      const active = new Set(
+        [...untrack(() => players).values()].map((p) => p.videoId),
+      );
+      for (const id of active) {
+        if (untrack(() => channelInfos).has(id)) void refreshChannel(id);
       }
     }
   });
