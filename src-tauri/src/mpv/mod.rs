@@ -423,7 +423,19 @@ impl MpvPlayer {
     /// PiP 表示の切り替え（設計書 §4.5）。ontop・枠なし・小窓配置をまとめて適用し、
     /// 解除時は geometry を空に戻す（mpv は空文字で既定配置に戻す）。
     /// いずれのプロパティも実行時に変更可能（mpv 0.34 系で確認済み）。
+    ///
+    /// 最大化中のウィンドウでは geometry が効かず枠なし最前面の巨大ウィンドウが
+    /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除する。
     pub async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
+        if enabled {
+            self.ipc
+                .command(vec![
+                    json!("set_property"),
+                    json!("window-maximized"),
+                    json!(false),
+                ])
+                .await?;
+        }
         self.ipc
             .command(vec![json!("set_property"), json!("ontop"), json!(enabled)])
             .await?;
