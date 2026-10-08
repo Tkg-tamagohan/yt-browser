@@ -47,17 +47,19 @@
 
   // お気に入り・プレイリスト行アクション用（FR-7）。
   // 他ページ（ライブラリ等）でも編集されるため、「/」へ戻るたびに再取得する
-  // （従来はページのリマウントが暗黙の再取得トリガーだった）。libReq は世代番号で、
-  // 古いロードの完了が新しいロードやローカル編集を上書きしないよう照合する。
+  // （従来はページのリマウントが暗黙の再取得トリガーだった）。
+  // loadSeq は発行順：より新しいロードが走っていれば古い応答は丸ごと捨てる。
+  // ローカル編集は表示を即時反映したうえで再取得を投げ、DB の truth に収束させる
+  // （コールバックは書き込みコミット後に発火するため、再取得は編集済みの値を含む）。
   let favIds = $state<Set<string>>(new Set());
   let playlists = $state<Playlist[]>([]);
-  let libReq = 0;
+  let loadSeq = 0;
 
   async function refreshLibrary(): Promise<void> {
-    const req = ++libReq;
+    const seq = ++loadSeq;
     try {
       const lib = await loadLibrary();
-      if (req !== libReq) return;
+      if (seq !== loadSeq) return;
       favIds = lib.favIds;
       playlists = lib.playlists;
     } catch {
@@ -82,17 +84,17 @@
   }
 
   function onFavChange(videoId: string, faved: boolean): void {
-    // ローカル編集が進行中のロードを無効化し、古い結果で戻らないようにする
-    libReq++;
     const next = new Set(favIds);
     if (faved) next.add(videoId);
     else next.delete(videoId);
     favIds = next;
+    // 他ページでの編集も含め DB と再同期（古い進行中ロードは loadSeq で捨てる）
+    void refreshLibrary();
   }
 
   function onPlaylistCreated(pl: Playlist): void {
-    libReq++;
     playlists = [...playlists, pl];
+    void refreshLibrary();
   }
 
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
