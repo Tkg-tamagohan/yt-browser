@@ -54,6 +54,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
 | `db` | 接続、マイグレーション、クエリ |
 | `model` | `Video`、`ChatEvent`、`FeedItem` などの共通型 |
+| `error` | `UiError { code, message }` への直列化と、各エラー型からの変換 |
 
 依存方向は `commands` → 各モジュール → `db` / `model` の一方向に揃え、モジュール間の直接参照を避ける。
 
@@ -63,42 +64,74 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | コマンド | 引数 | 戻り値 |
 |---|---|---|
+| `db_status` | なし | `Result<DbStatus>`（`schema_version`） |
+| `settings_get` | `key` | `Result<Option<String>>` |
+| `settings_set` | `key`, `value` | `Result<()>` |
 | `play_video` | `video_id`, `resume`, `pip?` | `Result<instance_id>` |
-| `player_control` | `instance_id`, `action`（pause / resume / seek / volume / speed / quality / frame_step / frame_back_step / pip） | `Result<()>` |
+| `player_list` | なし | `Vec<PlayerState>` |
+| `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
-| `subscribe_channel` | `input`（UC ID・channel URL・`@handle`）, `category_id?` | `Result<Channel>` |
-| `unsubscribe_channel` / `list_channels` / `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` / `Vec<Channel>` |
-| `list_categories` / `create_category` | `name` | `Vec<Category>` / `Result<Category>` |
-| `list_feed` | `filter`（未読のみ、カテゴリ、期間） | `Vec<FeedItem>` |
-| `mark_read` | `video_ids` または `all` | `Result<()>` |
+| `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
+| `history_list` | `limit?`（既定 500、上限 1000） | `Result<Vec<WatchHistory>>` |
+| `history_remove` | `video_id` | `Result<()>` |
+| `favorite_add` | `video`（`VideoRef`） | `Result<()>` |
+| `favorite_remove` | `video_id` | `Result<()>` |
+| `favorite_list` | なし | `Result<Vec<FavoriteEntry>>` |
+| `playlist_list` | なし | `Result<Vec<Playlist>>` |
+| `playlist_create` | `name` | `Result<Playlist>` |
+| `playlist_rename` | `playlist_id`, `name` | `Result<()>` |
+| `playlist_delete` | `playlist_id` | `Result<()>` |
+| `playlist_items` | `playlist_id` | `Result<Vec<PlaylistEntry>>` |
+| `playlist_add` | `playlist_id`, `video`（`VideoRef`） | `Result<()>` |
+| `playlist_remove` | `playlist_id`, `video_id` | `Result<()>` |
+| `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
+| `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
+| `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
+| `unsubscribe_channel` | `channel_id` | `Result<()>` |
+| `list_channels` | なし | `Result<Vec<Channel>>` |
+| `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
+| `list_categories` | なし | `Result<Vec<Category>>` |
+| `create_category` | `name` | `Result<Category>` |
+| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、全項目省略可） | `Result<Vec<FeedItem>>` |
+| `mark_read` | `video_ids?`, `all?` | `Result<u64>`（既読化した件数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
-| `block_channel` / `unblock_channel` / `blocked_channels` | `channel_id`, `title` | `Result<()>` / `Vec<BlockedChannel>` |
-| `search` | `query` | `Vec<SearchResult>` |
-| `get_related` | `video_id` | `Vec<SearchResult>` |
-| `chat_start` / `chat_stop` | `video_id` | `Result<()>` |
-| `chat_history_search` | `video_id?`, `query`, `limit` | `Vec<ChatEvent>` |
-| `filter_add` / `filter_remove` / `filter_list` | `Filter` または `id` | `Result<()>` / `Vec<Filter>` |
-| `history_list` / `playlist_*` / `settings_get` / `settings_set` | 略 | 略 |
+| `search` | `query` | `Result<Vec<SearchResult>>` |
+| `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
+| `block_channel` | `channel_id`, `title` | `Result<()>` |
+| `unblock_channel` | `channel_id` | `Result<()>` |
+| `blocked_channels` | なし | `Result<Vec<BlockedChannel>>` |
+| `chat_start` | `video_id` | `Result<()>` |
+| `chat_stop` | `video_id` | `Result<()>` |
+| `chat_history_search` | `video_id?`, `query`, `limit?` | `Result<Vec<ChatEvent>>` |
+| `filter_add` | `target`, `kind`, `pattern` | `Result<Filter>` |
+| `filter_remove` | `id` | `Result<()>` |
+| `filter_list` | なし | `Result<Vec<Filter>>` |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 `play_video` が返す `instance_id` が制御対象の識別子で、UI はアクティブな窓の ID を保持して全操作に付ける。
 単一再生でも必須引数に揃え、マルチビュー時の操作経路を初期から担保する（FR-1）。
 `player_control` に操作を集約するのは、mpv 側への転送層を一箇所に保つためである。
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
+`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}` を取る。
+`player_list` は稼働中インスタンスのスナップショット一覧を返す。
+一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
+`list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
 
 ### 3.2 イベント（Rust → フロント）
 
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
-| `player://state` | `{ instance_id, pause, position, duration, fps, state, pip }` | observe_property の変化を間引いて発火 |
-| `player://ended` | `{ instance_id, reason }` | 終了またはエラー |
-| `feed://new_items` | `{ count }` | ポーラーが新着を検出 |
+| `player://state` | `{ instance_id, video_id, pause, position, duration, fps, state, volume, speed, media_title, pip }` | observe_property の変化を間引いて発火[^statesample] |
+| `player://ended` | `{ instance_id, video_id, reason }` | 終了またはエラー |
+| `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
 | `feed://status` | `{ channel_id?, level, message }` | 取得失敗と復帰 |
-| `chat://message` | `Vec<ChatEvent>` | 正規化済みイベントのバッチ（送信は 4〜10Hz に間引く） |
-| `chat://status` | `{ video_id, level, message }` | ポーラーの劣化と停止 |
-| `sponsor://skipped` | `{ video_id, category, segment }` | 自動スキップ発火 |
+| `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
+| `chat://status` | `{ video_id?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `video_id` が null の全体通知もある） |
+| `sponsor://skipped` | `{ instance_id, video_id, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
 
-`player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、200〜500ms 間隔でサンプリングして送る。
+`player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、サンプリングで間引いて送る。
+
+[^statesample]: 実装は 300ms のティックで状態スナップショットを比較して変化時のみ送出するため、一時停止中はイベントが流れず、ページ再読み込み後のカード復元は `player_list` コマンド（§3.1）が補完経路になる。
 
 ## 4. 動画再生サブシステム
 
@@ -117,12 +150,14 @@ mpv --idle=yes
     --hwdec=auto-safe
     --keep-open=yes
     --script=<app_data>/mpv/wheel.lua
-    --script-opts=ytdl_hook-ytdl_path=<yt-dlp のパス>
+    --script-opts=ytdl_hook-ytdl_path=<yt-dlp のパス>,wheel-volume_delta=<設定値>
 ```
 
 Windows の `--input-ipc-server` は `\\.\pipe\yt-browser-mpv-<instance>-<pid>`（名前付きパイプ、アプリ多重起動の衝突回避にプロセス ID を含める）を渡す。名前付きパイプはファイルシステムに実体を持たないため、出現待ちは `Path::exists` ではなく接続プローブで判定する。
 
 `ytdl_path` を明示するのは、同梱 yt-dlp とシステム yt-dlp が混在する環境でどちらが使われるかを確定させるためである。
+`wheel-volume_delta` も同じ `--script-opts` の値に併合される。
+mpv のリスト型オプションは同じ指定を重ねると後が前を上書きするため、全エントリを 1 つのカンマ区切り値にまとめて渡す（設定キーは `wheel.volume_delta`、§4.2）。
 
 送受信の例。
 
@@ -149,9 +184,13 @@ Windows の `--input-ipc-server` は `\\.\pipe\yt-browser-mpv-<instance>-<pid>`�
 ホイールの条件分岐は mpv の input 機構に属するため、アプリ同梱の Lua スクリプトで実装する。
 
 ```lua
--- wheel.lua: 一時停止中はコマ送り、再生中は音量
+-- wheel.lua: 一時停止中はコマ送り、再生中は音量（設計書 §4.2 / 仕様決定 D）
+-- 音量の変化量は script-opts の wheel-volume_delta（設定キー wheel.volume_delta）で上書きできる
+local options = { volume_delta = 2 }
+require("mp.options").read_options(options, "wheel")
+
 local function wheel(ev, paused_cmd, playing_delta)
-  -- ホイールのノッチは複合バインドでは press として届く
+  -- マウスホイールのノッチは複合バインドで press として届く（down が来るバックエンドも一応許容）
   if ev.event ~= "press" and ev.event ~= "down" then return end
   if mp.get_property_bool("pause") then
     mp.command(paused_cmd)
@@ -159,15 +198,17 @@ local function wheel(ev, paused_cmd, playing_delta)
     mp.commandv("add", "volume", playing_delta)
   end
 end
-mp.add_key_binding("WHEEL_UP",   "yb_wheel_up",   function(e) wheel(e, "frame-step",      2) end, {complex=true})
-mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-back-step", -2) end, {complex=true})
+
+mp.add_key_binding("WHEEL_UP",   "yb_wheel_up",   function(e) wheel(e, "frame-step",       options.volume_delta) end, {complex=true})
+mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-back-step", -options.volume_delta) end, {complex=true})
 ```
 
 アプリ側 UI ボタンとキーバインドは `player_control` 経由で同じコマンドを叩く。
-割り当ての既定は仕様決定 D、変更は `settings` 経由で Lua スクリプト側に反映する方法を Phase 2 で確定する[^wheelconf]。
+割り当ての既定は仕様決定 D、音量の変化量は設定 `wheel.volume_delta` を script-opts の `wheel-volume_delta` として mpv 起動時に注入する[^wheelconf]。
+`--script-opts` への注入は起動時に限られるため、設定の変更は次回の再生から有効になり、稼働中のインスタンスには適用されない。
 
 [^drift]: yt-frame-scrub で発生した「`currentTime * fps` の丸めによる着地ずれ」はシークでフレームに寄せる方式固有の問題であり、mpv のコマ送りはデコーダが 1 フレーム進める方式のため推定自体を行わない。
-[^wheelconf]: 単純な実装は mpv 起動オプションの `--script-opts` で挙動を渡す方式で、起動中に変えるには Lua 側で `options` を読み直すかスクリプトメッセージで差し替える。
+[^wheelconf]: Phase 2 で確定した注入方式で、Lua 側は `mp.options.read_options(options, "wheel")` が起動時に 1 度だけ読むため、スクリプト側での再読み込みや差し替えの経路は持たない。
 
 ### 4.3 画質選択
 
@@ -207,12 +248,15 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 | 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む） |
 | チャンネル一覧の補完 | `yt-dlp <channel_url> --flat-playlist --dump-json` |
 
-運用上の論点を次に置く。
+運用面の決定を次に置く（Phase 1 確定事項）。
 
-- **更新機構**：暫定案は同梱バイナリ＋アプリ内更新ボタン＋起動時の定期チェックで、システムインストール優先のフォールバックも設計に含める
-  最終選択は未決事項として Phase 1 で確定する（要件定義 §8）
-- **JS ランタイム**：YouTube 解読に Deno 等を要求する環境では、同梱 Deno か手順ドキュメントで補う（Phase 1 時点の要件で確定）
-- **PO Token**：必要になる環境向けに、外部プロバイダの設定手順をドキュメント化する
+- **解決順**：`settings` の `ytdlp.path`（ユーザー指定）→ 同梱リソースの `yt-dlp` → PATH の `yt-dlp` の順に解決する
+- **更新機構**：アプリ内の `ytdlp_update` コマンドが解決済みパスに対して `yt-dlp -U` を実行する
+  システム管理のパスでは権限不足で失敗し得るため、失敗時は yt-dlp の出力をそのまま UI に返す。
+- **状態表示**：`ytdlp_status` コマンドが解決パスと `--version` の出力を返し、解決不能時は UI に警告を出す
+- **JS ランタイム**：yt-dlp の YouTube 解読用に deno を PATH で解決する前提とし、同梱の要否は配布フェーズで再検討する
+- **PO Token**：要求される環境では yt-dlp 側の手順（`--cookies-from-browser` や外部プロバイダ）を利用する
+  アプリからの伝達経路は後フェーズの課題とし、README に手順へのポインタを置く。
 - **失敗の扱い**：タイムアウト、非ゼロ終了、JSON パース失敗を区別して記録し、解析失敗は生の先頭部分をログに残す
 
 ## 6. InnerTube クライアントとチャットパイプライン
@@ -255,7 +299,9 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 保存は NG に関わらず原文を残し、UI 側の表示だけをフィルタで制御する。
 これにより「ログは完全・表示は絞る」専ブラの基本線を保つ。
 
-保存は 1 メッセージごとの `INSERT` を逐次実行せず、ポーラー内部で数秒または数百件単位のトランザクションに束ねる。
+保存は 1 メッセージごとの `INSERT` を逐次実行せず、ポーリング応答 1 回分を 1 トランザクションで書き込む。
+重複除去は二段構えとする。
+セッション内では既処理 `item_id` の集合（上限 1 万件、超過分は古い順に破棄）が応答内と処理済みの重複を除き、DB 側では `chat_logs` の `(video_id, item_id)` 一意制約（§8）がセッションを跨ぐ再取得の重複を防ぐ第 2 層になる。
 
 ## 7. NG フィルタエンジン（技術方針 M）
 
@@ -307,6 +353,7 @@ CREATE TABLE videos (
   kind TEXT NOT NULL DEFAULT 'video'
     CHECK (kind IN ('video','short','live','upcoming')),
   is_read INTEGER NOT NULL DEFAULT 1,      -- フィード由来の新着のみ 0 で入る
+  ingested INTEGER NOT NULL DEFAULT 0,     -- 0=ライブラリ由来のプレースホルダ、1=フィード投入済み
   first_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -349,11 +396,13 @@ CREATE TABLE chat_logs (
     CHECK (kind IN ('text','superchat','membership','deleted','other')),
   message TEXT NOT NULL,
   amount_display TEXT,
-  raw_json TEXT NOT NULL
+  raw_json TEXT NOT NULL,
+  item_id TEXT
 );
 
 CREATE VIRTUAL TABLE chat_logs_fts USING fts5(
-  message, author_name, content='chat_logs', content_rowid='id'
+  message, author_name, content='chat_logs', content_rowid='id',
+  tokenize='trigram'
 );
 
 CREATE TABLE filters (
@@ -382,6 +431,7 @@ CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC);
 CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);
 CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
 CREATE INDEX idx_chat_video_ts ON chat_logs(video_id, posted_at_usec);
+CREATE UNIQUE INDEX idx_chat_item ON chat_logs(video_id, item_id);
 
 CREATE TRIGGER chat_logs_ai AFTER INSERT ON chat_logs BEGIN
   INSERT INTO chat_logs_fts(rowid, message, author_name)
@@ -393,11 +443,16 @@ CREATE TRIGGER chat_logs_ad AFTER DELETE ON chat_logs BEGIN
 END;
 ```
 
-設計上の注意を三点置く。
+設計上の注意を四点置く。
 
 - `videos` は購読フィード由来の「未読管理を持つ一覧」と、視聴やお気に入りで登場した動画の双方を載せる最小の台帳とする
   検索や関連の結果は揮発データとして DB に積まない。
+  `ingested` は 0 がライブラリ由来のプレースホルダ（フィードには表示せず、初回の RSS 到達で本文を補完する）、1 がフィード投入済みを表す。
 - チャット検索は FTS5 の外部コンテンツ方式で本文と投稿者名を対象にし、削除は `chat_logs` 側の行削除に連動させる
+  トークナイザは `trigram` とする。
+  `unicode61` では日本語の文が語分割されず部分文字列検索に掛からないためで、代わりに 3 文字未満の検索語が部分一致に掛からない制約を受け入れる。
+- `chat_logs.item_id` は InnerTube が振るイベント ID で、`(video_id, item_id)` の一意索引と `INSERT OR IGNORE` で保存を冪等化する
+  `item_id` を持たない行は NULL として入り、SQLite が NULL を個別の値として扱うため一意制約の対象外になる。
 - 履歴とログの保持は無期限を既定とし、手動削除のみとする（仕様決定 I）
 
 ## 9. エラーハンドリングと変更耐性
@@ -465,11 +520,12 @@ yt-browser/
       filter/         # NG エンジン
       db/             # rusqlite・マイグレーション
       model/
+      error.rs        # UiError { code, message } への直列化と各エラー型からの変換
     mpv/wheel.lua     # include_str! でバイナリに埋め込む同梱スクリプト
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings）
-    lib/              # PlayerCards.svelte・VideoActions・共有状態（players.svelte.ts 等）
+    lib/              # PlayerCards.svelte・VideoActions・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・notices.svelte.ts・library.ts）
   tauri.conf.json
   package.json
 ```
