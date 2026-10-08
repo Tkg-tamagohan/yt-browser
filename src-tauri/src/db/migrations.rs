@@ -236,10 +236,13 @@ pub const MIGRATIONS: &[Migration] = &[
     // INSERT OR IGNORE で冪等化する。item_id を持たないイベント
     // （空文字列）は NULL として入れ、UNIQUE 制約の対象外にする
     // （SQLite は NULL を個別の値として扱い衝突しない）。
-    // 既存行の item_id は raw_json（renderer 原文）から復元する。
-    // raw_json は {"<renderer名>": {…}} のラッパ形で、イベント ID は
-    // 内側オブジェクトの "id" にある。削除イベントは内側の
-    // "targetItemId" から実行時と同じ合成 ID 'del:<targetItemId>' を作る。
+    // 既存行の item_id は raw_json（原文）から復元する。形は 2 通りで、
+    // 通常イベントは {"<renderer名>": {…}} のラッパ形でイベント ID は
+    // 内側オブジェクトの "id"、削除イベントは削除アクションの内側
+    // オブジェクトがそのまま入り、トップレベルの "targetItemId" から
+    // 実行時と同じ合成 ID 'del:<targetItemId>' を作る。
+    // json_each の値がスカラーだと json_extract が malformed JSON で
+    // 失敗するため、内側を辿るのは object 値だけに限定する。
     // バックフィルで重複が発生し得る（一意制約導入前に重複保存された行）
     // ので、索引作成の前に最古の 1 行だけ残して掃除する。
     Migration {
@@ -247,15 +250,13 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "chat_logs_item_id",
         sql: "ALTER TABLE chat_logs ADD COLUMN item_id TEXT;
               UPDATE chat_logs SET item_id = COALESCE(
-                (SELECT 'del:' || json_extract(je.value, '$.targetItemId')
-                   FROM json_each(chat_logs.raw_json) je
-                   WHERE json_extract(je.value, '$.targetItemId') IS NOT NULL
-                   LIMIT 1),
+                'del:' || json_extract(raw_json, '$.targetItemId'),
                 (SELECT json_extract(je.value, '$.id')
                    FROM json_each(chat_logs.raw_json) je
-                   WHERE json_extract(je.value, '$.id') IS NOT NULL
+                   WHERE json_type(je.value) = 'object'
+                     AND json_extract(je.value, '$.id') IS NOT NULL
                    LIMIT 1)
-              );
+              ) WHERE json_type(raw_json) = 'object';
               DELETE FROM chat_logs
                 WHERE item_id IS NOT NULL
                   AND id NOT IN (

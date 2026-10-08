@@ -1461,7 +1461,9 @@ mod tests {
         };
         ins(r#"{"liveChatTextMessageRenderer":{"id":"item-1"}}"#);
         ins(r#"{"liveChatTextMessageRenderer":{"id":"item-1"}}"#);
-        ins(r#"{"markChatItemAsDeletedAction":{"targetItemId":"t-9"}}"#);
+        // 削除イベントはラッパなしのフラット形（deleted_to_event が
+        // 内側オブジェクトをそのまま raw_json に保存する）
+        ins(r#"{"targetItemId":"t-9","deletedStateMessage":{"runs":[{"text":"deleted"}]}}"#);
         ins("{}"); // id を持たない行は NULL のまま
         for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 9) {
             conn.execute_batch(m.sql).unwrap();
