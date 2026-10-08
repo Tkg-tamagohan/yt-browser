@@ -295,7 +295,7 @@
       });
       if (toneMapping !== tmSnapshot || computePeak !== cpSnapshot) {
         invalid = true;
-        notify(t("settings.pip.unsaved"));
+        notify(t("settings.hdr.unsaved"));
       }
       // mpv.extra_args: 無検証の自由記述（仕様決定 Y の汎用受け皿）。
       // 無効値は mpv 起動失敗として Spawn エラー通知に乗る

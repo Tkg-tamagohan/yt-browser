@@ -133,6 +133,7 @@ mod tests {
 
     /// `mpv.extra_args` の分割（仕様決定 Y）。引用符内の空白は保持し、
     /// バックスラッシュはエスケープに解釈しない（Windows パスをそのまま書ける）。
+    /// 引用開始は引数先頭または `=` 直後のみで、値の途中の引用符はリテラル。
     #[test]
     fn extra_args_split() {
         // 単純な空白区切り
@@ -152,6 +153,13 @@ mod tests {
         );
         // 未終端の引用符は残り全体を 1 引数として扱う
         assert_eq!(split_extra_args("--a=\"x y"), vec!["--a=x y"]);
+        // 値の途中のアポストロフィはリテラル（引用開始は先頭または `=` 直後のみ）
+        assert_eq!(
+            split_extra_args("--icc-profile=/home/O'Brien/d.icc --gpu-api=opengl"),
+            vec!["--icc-profile=/home/O'Brien/d.icc", "--gpu-api=opengl"]
+        );
+        // 引数先頭の引用符は区切りとして働く
+        assert_eq!(split_extra_args("--a 'x y' --b"), vec!["--a", "x y", "--b"]);
         // 空・空白のみは引数なし
         assert!(split_extra_args("").is_empty());
         assert!(split_extra_args("   ").is_empty());

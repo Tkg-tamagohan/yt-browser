@@ -155,6 +155,8 @@ const ja = {
   "settings.hdr.no": "計測しない",
   "settings.hdr.extraArgs": "mpv 追加引数",
   "settings.hdr.extraArgs.desc": "空白区切りで起動引数の末尾に追加します（例: --target-colorspace-hint=yes --gpu-api=d3d11）。空白を含む値は引用符で囲めます（例: --icc-profile=\"C:\\dir\\a.icc\"）。無効な引数は mpv 起動失敗になります",
+  "settings.hdr.unsaved":
+    "保存中に HDR・mpv 引数の値が変更されました。DB には変更前の値が保存されたため、もう一度保存してください",
 
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",
@@ -291,6 +293,7 @@ const ja = {
     "空欄なら全体の画質設定に従う。小窓向けに低めの画質を指定しておくと起動が軽くなる",
   "settings.pip.unsaved":
     "保存中に PiP の値が変更されました。DB には既定値が保存されたため、もう一度保存してください",
+
 } as const;
 
 export type MessageKey = keyof typeof ja;

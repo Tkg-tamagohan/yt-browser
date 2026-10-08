@@ -502,6 +502,8 @@ impl MpvPlayer {
 /// 空白区切りに加えて `"..."` と `'...'` による空白保護だけを実装する
 /// （Devin Review BUG: 空白を含む ICC プロファイルパス等を渡せない問題への対応）。
 /// バックスラッシュはエスケープとして解釈しないため、Windows パスがそのまま書ける。
+/// 引用符は引数の先頭または `=` の直後でのみ引用開始とみなし、値の途中の
+/// アポストロフィ等はリテラルとして残す（`O'Brien` のようなパスを壊さないため）。
 /// 未終端の引用符は残り全体を 1 引数として扱う（mpv 側で起動失敗になる入力を
 /// ここで黙って潰さず、そのまま渡す方針）。
 pub(crate) fn split_extra_args(input: &str) -> Vec<String> {
@@ -519,7 +521,9 @@ pub(crate) fn split_extra_args(input: &str) -> Vec<String> {
                 }
             }
             None => {
-                if c == '"' || c == '\'' {
+                // 引用開始は「引数の先頭」か「`=` の直後」のみ。
+                // 値の途中の引用符（O'Brien 等）はリテラルとして残す
+                if (c == '"' || c == '\'') && (cur.is_empty() || cur.ends_with('=')) {
                     quote = Some(c);
                     has_arg = true;
                 } else if c.is_whitespace() {
