@@ -23,7 +23,13 @@ export type PlayerState = {
   format: string;
 };
 
-export type PlayerEnded = { instanceId: number; videoId: string; reason: string };
+export type PlayerEnded = {
+  instanceId: number;
+  videoId: string;
+  reason: string;
+  /// 連続再生で同一インスタンスが次項目へ進んだとき true（FR-10、仕様決定 S）
+  continued: boolean;
+};
 
 /// `sponsor://skipped` イベント（設計書 §3.2）。action は "skip" | "notify"。
 export type SponsorSkipped = {
@@ -80,6 +86,8 @@ export type PlaylistEntry = {
   channelId: string | null;
   channelTitle: string | null;
   thumbnailUrl: string | null;
+  /// 投稿日時（フィード投入済み項目のみ。未取得は null、ソート時は末尾）
+  publishedAt: string | null;
 };
 
 export type UiError = { code: string; message: string };
@@ -193,6 +201,9 @@ export function initPlayerEvents(): Promise<void> {
       });
       await listen<PlayerEnded>("player://ended", (ev) => {
         inFlight.add(ev.payload.instanceId);
+        // 連続再生で次項目へ進んだインスタンスは稼働中のまま残す
+        // （FR-10、仕様決定 S。カードが消えずに新しい状態へ移行する）
+        if (ev.payload.continued) return;
         const next = new Map(playerStates.list);
         next.delete(ev.payload.instanceId);
         playerStates.list = next;

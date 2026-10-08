@@ -32,6 +32,7 @@
     type PlayerState,
     type SponsorSkipped,
   } from "$lib/players.svelte";
+  import { initQueueEvents } from "$lib/queue.svelte";
 
   // 再生中インスタンスの状態は共有ストア（ページ遷移で消えないようコンポーネント外に置く）
   const players = $derived(playerStates.list);
@@ -239,6 +240,7 @@
 
   onMount(async () => {
     await initPlayerEvents();
+    await initQueueEvents();
     await initChatEvents();
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する

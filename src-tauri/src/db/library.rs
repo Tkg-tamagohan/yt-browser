@@ -134,7 +134,7 @@ impl Db {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT i.position, i.video_id, v.title, NULLIF(v.channel_id, ''),
-                    v.channel_title, v.thumbnail_url
+                    v.channel_title, v.thumbnail_url, v.published_at
              FROM playlist_items i JOIN videos v ON v.video_id = i.video_id
              WHERE i.playlist_id = ?1
              ORDER BY i.position, i.rowid",
@@ -149,6 +149,7 @@ impl Db {
                 channel_id: row.get(3)?,
                 channel_title: row.get(4)?,
                 thumbnail_url: row.get(5)?,
+                published_at: row.get(6)?,
             });
         }
         Ok(out)
@@ -180,6 +181,62 @@ impl Db {
                                WHERE playlist_id = ?1), 0))",
             rusqlite::params![playlist_id, v.video_id],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 取り込みなどの一括追加。`playlist_add` の末尾追加を 1 トランザクションで
+    /// まとめて行う（重複は位置を維持して無視）。
+    pub fn playlist_add_many(
+        &self,
+        playlist_id: i64,
+        items: &[crate::model::VideoRef],
+    ) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
+            [playlist_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(DbError::NotFound);
+        }
+        for v in items {
+            Self::video_upsert(&tx, v)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id, position)
+                 VALUES (?1, ?2,
+                         COALESCE((SELECT MAX(position) + 1 FROM playlist_items
+                                   WHERE playlist_id = ?1), 0))",
+                rusqlite::params![playlist_id, v.video_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 項目順の一括書き換え（仕様決定 T）。`video_ids` は現項目と
+    /// 同一集合であることを呼び出し側で検証済みとし、渡した順に
+    /// position を振り直す。存在しないプレイリストは `DbError::NotFound`。
+    pub fn playlist_reorder(&self, playlist_id: i64, video_ids: &[String]) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
+            [playlist_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(DbError::NotFound);
+        }
+        for (pos, vid) in video_ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE playlist_items SET position = ?3
+                 WHERE playlist_id = ?1 AND video_id = ?2",
+                rusqlite::params![playlist_id, vid, pos as i64],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }

@@ -38,7 +38,6 @@ const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
 /// mpv プロセス 1 台分の制御ハンドル。
 pub(crate) struct MpvPlayer {
     instance_id: u32,
-    video_id: String,
     ipc: IpcClient,
     /// wait/kill のため tokio Mutex で保持（async 文脈で &mut を取る）。
     child: tokio::sync::Mutex<tokio::process::Child>,
@@ -55,6 +54,9 @@ pub(crate) struct MpvPlayer {
     sponsor: Mutex<SponsorState>,
     /// PiP 化で解除した最大化状態。PiP 解除時に復元する。
     pip_prev_maximized: Mutex<bool>,
+    /// 連続再生で武装した次項目の動画 ID（FR-10、仕様決定 S）。
+    /// 自然終了・途中失敗の終端で emitter が取り出して同一 mpv で再生する。
+    next_item: Mutex<Option<String>>,
     /// set_pip の遷移を直列化する。並行呼び出しが state.pip のチェックを
     /// 同時に通過して保存値や mpv プロパティを競合させるのを防ぐ
     pip_op: tokio::sync::Mutex<()>,
@@ -169,7 +171,6 @@ impl MpvPlayer {
         let (ended_tx, _) = broadcast::channel(8);
         let player = Arc::new(Self {
             instance_id,
-            video_id: opts.video_id.clone(),
             ipc,
             child: tokio::sync::Mutex::new(child),
             socket_path,
@@ -193,6 +194,7 @@ impl MpvPlayer {
             sponsor: Mutex::new(SponsorState::default()),
             pip_prev_maximized: Mutex::new(false),
             pip_op: tokio::sync::Mutex::new(()),
+            next_item: Mutex::new(None),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -222,7 +224,7 @@ impl MpvPlayer {
     }
 
     pub(crate) fn video_id(&self) -> String {
-        self.video_id.clone()
+        lock(&self.state).video_id.clone()
     }
 
     /// 現在状態のスナップショット。
@@ -243,6 +245,36 @@ impl MpvPlayer {
     /// バックグラウンドで取得した SponsorBlock 区間を差し込む（設計書 §4.4）。
     pub(crate) fn set_sponsor_segments(&self, segments: Vec<crate::sponsor::ActiveSegment>) {
         lock(&self.sponsor).segments = segments;
+    }
+
+    /// 連続再生の次項目を武装・解除する（`player_set_next` 経路）。
+    pub(crate) fn set_next(&self, video_id: Option<String>) {
+        *lock(&self.next_item) = video_id;
+    }
+
+    /// 武装済みの次項目を取り出す（emitter の終端分岐で 1 回消費）。
+    pub(crate) fn take_next(&self) -> Option<String> {
+        lock(&self.next_item).take()
+    }
+
+    /// 連続再生: 同じ mpv プロセスで別動画を先頭から再生する。
+    /// 旧ファイルの end-file は emitter が既に消費済みなので replace 抑止は張らない。
+    /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
+    pub(crate) async fn load_video(&self, video_id: &str) -> Result<(), MpvError> {
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        loadfile_replace(&self.ipc, &url, json!({ "start": "0" })).await?;
+        {
+            let mut st = lock(&self.state);
+            st.video_id = video_id.to_string();
+            st.media_title.clear();
+            st.position = 0.0;
+            st.duration = 0.0;
+            st.fps = 0.0;
+            st.state = PlayStatus::Idle;
+            st.pause = false;
+        }
+        *lock(&self.sponsor) = SponsorState::default();
+        Ok(())
     }
 
     /// `player_control` の操作を mpv コマンドへ変換して送る。

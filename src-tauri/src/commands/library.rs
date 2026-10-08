@@ -4,6 +4,7 @@ use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{FavoriteEntry, Playlist, PlaylistEntry, VideoRef, WatchHistory};
+use crate::yt::{self, YtDlpResolver};
 use tauri::State;
 
 /// 動画 1 件分の視聴履歴。`video_id` は `play_video` と同じ正規化を経る。
@@ -144,4 +145,92 @@ pub fn playlist_remove(
     }
     let id = parse_video_id(&video_id)?;
     Ok(db.playlist_remove(playlist_id, &id)?)
+}
+
+/// `playlist_import`（FR-10、仕様決定 R）。
+/// YouTube プレイリストを yt-dlp の `--flat-playlist` で取り込み、
+/// ローカルのプレイリストへ登録する。各項目は `video_upsert` 経由で
+/// `videos` 台帳に集約し、`published_at` は未取得のまま（ソート時は末尾）。
+/// `name` 省略時は取り込んだプレイリストのタイトルを使い、
+/// それも取れないときは「取り込みプレイリスト」とする（暫定）。
+/// 戻り値は作成したプレイリスト（件数集計済み）。
+#[tauri::command]
+pub async fn playlist_import(
+    url: String,
+    name: Option<String>,
+    resolver: State<'_, YtDlpResolver>,
+    db: State<'_, Db>,
+) -> Result<Playlist, UiError> {
+    let path = resolver
+        .resolve(&db)
+        .await
+        .ok_or_else(|| UiError::from(yt::YtError::NotFound))?;
+    let (fetched_title, items) = yt::playlist_meta(&path, &url).await?;
+    if items.is_empty() {
+        return Err(UiError::invalid_input(
+            "プレイリストから動画を取得できませんでした",
+        ));
+    }
+    let name = match name {
+        Some(n) => validate_playlist_name(&n)?,
+        None => {
+            let t = fetched_title.unwrap_or_default();
+            let t = t.trim();
+            if t.is_empty() {
+                "取り込みプレイリスト".to_string()
+            } else {
+                validate_playlist_name(t)?
+            }
+        }
+    };
+    let mut playlist = db.playlist_create(&name)?;
+    db.playlist_add_many(playlist.id, &items)?;
+    // INSERT OR IGNORE で既存項目は位置維持されるため実件数を取り直す
+    playlist.item_count = db.playlist_items(playlist.id)?.len() as i64;
+    Ok(playlist)
+}
+
+/// `playlist_reorder`（FR-11、仕様決定 T）。
+/// 項目順の一括書き換え。渡した `video_ids` は現在の項目と同一集合である
+/// 必要があり、一致しない場合は変更せずエラーとする（並行編集の誤適用防止）。
+#[tauri::command]
+pub fn playlist_reorder(
+    playlist_id: i64,
+    video_ids: Vec<String>,
+    db: State<'_, Db>,
+) -> Result<(), UiError> {
+    if playlist_id <= 0 {
+        return Err(UiError::invalid_input("playlist_id が不正です"));
+    }
+    let ids: Vec<String> = video_ids
+        .iter()
+        .map(|v| parse_video_id(v))
+        .collect::<Result<_, _>>()?;
+    let current = db.playlist_items(playlist_id)?;
+    let same = ids.len() == current.len() && current.iter().all(|it| ids.contains(&it.video_id));
+    if !same {
+        return Err(UiError::invalid_input(
+            "並べ替え後の項目が現在のプレイリスト内容と一致しません",
+        ));
+    }
+    Ok(db.playlist_reorder(playlist_id, &ids)?)
+}
+
+/// `playlist_sort`（FR-11、仕様決定 T）。
+/// 投稿日時の昇順で一括ソートする（one-shot）。`published_at` の無い項目は
+/// 末尾に寄せ、同キー内は現在順を保つ。
+#[tauri::command]
+pub fn playlist_sort(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
+    if playlist_id <= 0 {
+        return Err(UiError::invalid_input("playlist_id が不正です"));
+    }
+    let mut items = db.playlist_items(playlist_id)?;
+    items.sort_by(|a, b| match (&a.published_at, &b.published_at) {
+        (Some(x), Some(y)) => x.cmp(y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    let ids: Vec<String> = items.into_iter().map(|i| i.video_id).collect();
+    Ok(db.playlist_reorder(playlist_id, &ids)?)
 }

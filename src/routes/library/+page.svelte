@@ -21,6 +21,13 @@
     type PlaylistEntry,
     type WatchHistory,
   } from "$lib/players.svelte";
+  import {
+    queue,
+    queueActive,
+    queuePlayingAt,
+    startQueue,
+    stopQueue,
+  } from "$lib/queue.svelte";
 
   type Tab = "history" | "favorites" | "playlists";
   let tab = $state<Tab>("history");
@@ -40,6 +47,17 @@
   let newPlaylistName = $state("");
   let renamingId = $state<number | null>(null);
   let renameText = $state("");
+
+  // プレイリスト取り込み（FR-10、仕様決定 R）。URL と任意の名前を受ける
+  let importUrl = $state("");
+  let importing = $state(false);
+
+  // 項目の並べ替え（FR-11、仕様決定 T）。DnD はドラッグ中の行番号と
+  // ホバー先の番号を持ち、ドロップ時に一括 reorder として保存する
+  let dragFrom = $state<number | null>(null);
+  let dragOver = $state<number | null>(null);
+  let reorderBusy = $state(false);
+  let sortBusy = $state(false);
 
   // 行アクションの共通配線（FR-7）。ライブラリ固有の後処理
   // （お気に入り一覧からの除去・プレイリスト一覧の世代進め）だけ差し込む
@@ -242,6 +260,158 @@
     }
   }
 
+  /// YouTube プレイリストの取り込み（FR-10、仕様決定 R）。
+  /// `playlist_import` が作成から項目登録まで行う。名前は未指定なら
+  /// バックエンドが取り込んだタイトルを使う
+  async function importPlaylist(): Promise<void> {
+    const url = importUrl.trim();
+    if (!url || importing) return;
+    importing = true;
+    try {
+      const pl = await invoke<Playlist>("playlist_import", { url });
+      ++listsReq;
+      va.playlists = [...va.playlists, pl];
+      importUrl = "";
+      notify(
+        t("library.playlist.imported", { name: pl.name, count: pl.itemCount }),
+      );
+      await selectPlaylist(pl);
+    } catch (e) {
+      notify(
+        t("library.playlist.importFailed", { message: asErrorMessage(e) }),
+      );
+    } finally {
+      importing = false;
+    }
+  }
+
+  /// 現在の項目順で playlist_reorder を呼び、失敗時は一覧を取り直す。
+  /// 操作直後のローカル順を維持して再取得はしない（他操作との競合で
+  /// 古い応答が上書きしないよう世代チェックは selectPlaylist 側に委ねる）
+  async function persistOrder(): Promise<void> {
+    if (selectedId === null || reorderBusy) return;
+    reorderBusy = true;
+    const plId = selectedId;
+    try {
+      await invoke("playlist_reorder", {
+        playlistId: plId,
+        videoIds: playlistItems.map((i) => i.videoId),
+      });
+    } catch (e) {
+      notify(
+        t("library.playlist.reorderFailed", { message: asErrorMessage(e) }),
+      );
+      // 失敗時は DB の内容に収束させる
+      if (selectedId === plId) {
+        try {
+          playlistItems = await invoke<PlaylistEntry[]>("playlist_items", {
+            playlistId: plId,
+          });
+        } catch {
+          // 取り直しの失敗は既存表示のまま
+        }
+      }
+    } finally {
+      reorderBusy = false;
+    }
+  }
+
+  /// 上下ボタンでの入れ替え（仕様決定 T）。隣と交換して保存する
+  function moveItem(index: number, dir: -1 | 1): void {
+    const to = index + dir;
+    if (to < 0 || to >= playlistItems.length) return;
+    const items = [...playlistItems];
+    const [m] = items.splice(index, 1);
+    items.splice(to, 0, m);
+    playlistItems = items;
+    void persistOrder();
+  }
+
+  /// DnD: ドラッグ開始。データ転送は識別だけ渡し、実体は dragFrom で管理
+  function itemDragStart(index: number, e: DragEvent): void {
+    dragFrom = index;
+    e.dataTransfer?.setData("text/plain", playlistItems[index].videoId);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+
+  function itemDragOver(index: number, e: DragEvent): void {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    dragOver = index;
+  }
+
+  function itemDragLeave(index: number): void {
+    if (dragOver === index) dragOver = null;
+  }
+
+  /// DnD: ドロップ位置へ移動して保存（仕様決定 T）
+  function itemDrop(index: number, e: DragEvent): void {
+    e.preventDefault();
+    if (dragFrom !== null && dragFrom !== index) {
+      const items = [...playlistItems];
+      const [m] = items.splice(dragFrom, 1);
+      items.splice(index, 0, m);
+      playlistItems = items;
+      void persistOrder();
+    }
+    dragFrom = null;
+    dragOver = null;
+  }
+
+  function itemDragEnd(): void {
+    dragFrom = null;
+    dragOver = null;
+  }
+
+  /// 投稿日時の昇順で一括ソート（仕様決定 T）。取得日の無い項目は末尾
+  async function sortByPublished(): Promise<void> {
+    if (selectedId === null || sortBusy) return;
+    sortBusy = true;
+    const plId = selectedId;
+    try {
+      await invoke("playlist_sort", { playlistId: plId });
+      playlistItems = await invoke<PlaylistEntry[]>("playlist_items", {
+        playlistId: plId,
+      });
+      notify(t("library.playlist.sorted"));
+    } catch (e) {
+      notify(
+        t("library.playlist.reorderFailed", { message: asErrorMessage(e) }),
+      );
+    } finally {
+      sortBusy = false;
+    }
+  }
+
+  /// その項目からの連続再生（FR-10、仕様決定 S）。選択項目を通常再生で起動し、
+  /// 残りをキューに登録する。起動に使う resume は通常の再生と同じく true
+  /// （暫定: キュー先頭項目もレジュームする）
+  async function playQueue(index: number): Promise<void> {
+    const it = playlistItems[index];
+    if (!it || selectedId === null) return;
+    try {
+      stopQueue();
+      const instanceId = await invoke<number>("play_video", {
+        videoId: it.videoId,
+        resume: true,
+      });
+      const pl = va.playlists.find((p) => p.id === selectedId);
+      await startQueue(
+        selectedId,
+        pl?.name ?? "",
+        playlistItems.map((i) => i.videoId),
+        index,
+        instanceId,
+      );
+      goto("/");
+    } catch (e) {
+      stopQueue();
+      notify(
+        t("library.playlist.queueFailed", { message: asErrorMessage(e) }),
+      );
+    }
+  }
+
   async function removeItem(entry: PlaylistEntry): Promise<void> {
     if (selectedId === null) return;
     try {
@@ -371,6 +541,20 @@
             {t("library.playlist.create")}
           </button>
         </div>
+        <div class="pl-new">
+          <input
+            type="text"
+            bind:value={importUrl}
+            placeholder={t("library.playlist.importUrl")}
+            onkeydown={(e) => e.key === "Enter" && void importPlaylist()}
+          />
+          <button
+            onclick={() => void importPlaylist()}
+            disabled={!importUrl.trim() || importing}
+          >
+            {importing ? t("library.playlist.importing") : t("library.playlist.import")}
+          </button>
+        </div>
         {#if va.playlists.length === 0}
           <p class="subtle">{t("library.playlists.empty")}</p>
         {:else}
@@ -414,21 +598,66 @@
         {:else if playlistItems.length === 0}
           <p class="subtle">{t("library.playlist.empty")}</p>
         {:else}
+          <div class="pl-tools">
+            {#if selectedId !== null && queueActive(selectedId)}
+              <span class="queue-badge">
+                {t("library.playlist.queueActive", {
+                  name: queue.playlistName,
+                  index: queue.index + 1,
+                  count: queue.items.length,
+                })}
+                <button class="link" onclick={() => stopQueue()}
+                  >{t("library.playlist.queueStop")}</button
+                >
+              </span>
+            {/if}
+            <button
+              class="link"
+              disabled={sortBusy}
+              onclick={() => void sortByPublished()}
+              >{t("library.playlist.sort")}</button
+            >
+            <span class="subtle drag-hint">{t("library.playlist.dragHint")}</span>
+          </div>
           <ul class="rows">
-            {#each playlistItems as it (it.videoId)}
+            {#each playlistItems as it, index (it.videoId)}
               <VideoRow
                 videoId={it.videoId}
                 title={it.title}
                 thumbnailUrl={it.thumbnailUrl}
                 onplay={() => play(it.videoId, true)}
+                draggable={true}
+                dropTarget={dragOver === index && dragFrom !== index}
+                ondragstart={(e) => itemDragStart(index, e)}
+                ondragover={(e) => itemDragOver(index, e)}
+                ondragleave={() => itemDragLeave(index)}
+                ondrop={(e) => itemDrop(index, e)}
+                ondragend={() => itemDragEnd()}
               >
                 {#snippet leading()}
-                  <span class="pos">{it.position + 1}</span>
+                  <span class="pos">{index + 1}</span>
                 {/snippet}
                 {#snippet sub()}{it.channelTitle ?? ""}{/snippet}
                 {#snippet actions()}
+                  <button
+                    onclick={() => void playQueue(index)}
+                    disabled={queuePlayingAt(it.videoId)}
+                    >{t("library.playlist.queue")}</button
+                  >
                   <button onclick={() => play(it.videoId, true)}
                     >{t("library.play")}</button
+                  >
+                  <button
+                    class="link"
+                    title={t("library.playlist.moveUp")}
+                    disabled={index === 0 || reorderBusy}
+                    onclick={() => moveItem(index, -1)}>↑</button
+                  >
+                  <button
+                    class="link"
+                    title={t("library.playlist.moveDown")}
+                    disabled={index === playlistItems.length - 1 || reorderBusy}
+                    onclick={() => moveItem(index, 1)}>↓</button
                   >
                   <button
                     class="link danger"
@@ -540,6 +769,23 @@
 
   .pl-items {
     min-width: 0;
+  }
+
+  .pl-tools {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  .queue-badge {
+    color: #8ab4f8;
+    font-size: 0.85rem;
+  }
+
+  .drag-hint {
+    font-size: 0.8rem;
+    margin-left: auto;
   }
 
   @media (max-width: 700px) {

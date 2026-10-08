@@ -96,25 +96,7 @@ impl PlayerManager {
         let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
         let emitter = self.spawn_emitter(player.clone());
 
-        // SponsorBlock の区間取得をバックグラウンドで行い、判定用にプレイヤーへ差し込む。
-        // 取得失敗は再生を阻害しない（スキップが動かないだけ）。
-        {
-            let player = player.clone();
-            let http = self.http.clone();
-            let video_id = video_id.to_string();
-            let categories = self
-                .db
-                .setting_get(crate::sponsor::SETTING_CATEGORIES)
-                .ok()
-                .flatten();
-            tokio::spawn(async move {
-                let cats = crate::sponsor::parse_categories(categories.as_deref());
-                match crate::sponsor::fetch_segments(&http, &video_id, &cats).await {
-                    Ok(segs) => player.set_sponsor_segments(segs),
-                    Err(e) => tracing::warn!(video_id, error = %e, "SponsorBlock の区間取得に失敗"),
-                }
-            });
-        }
+        Self::spawn_sponsor_fetch(&self.db, &self.http, player.clone(), video_id.to_string());
 
         lock(&self.players).insert(
             id,
@@ -129,6 +111,45 @@ impl PlayerManager {
             tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
         }
         Ok(id)
+    }
+
+    /// SponsorBlock の区間取得をバックグラウンドで行い、判定用にプレイヤーへ差し込む。
+    /// 取得失敗は再生を阻害しない（スキップが動かないだけ）。連続再生の次項目でも再利用する。
+    fn spawn_sponsor_fetch(
+        db: &Db,
+        http: &reqwest::Client,
+        player: Arc<MpvPlayer>,
+        video_id: String,
+    ) {
+        let http = http.clone();
+        let categories = db
+            .setting_get(crate::sponsor::SETTING_CATEGORIES)
+            .ok()
+            .flatten();
+        tokio::spawn(async move {
+            let cats = crate::sponsor::parse_categories(categories.as_deref());
+            match crate::sponsor::fetch_segments(&http, &video_id, &cats).await {
+                Ok(segs) => player.set_sponsor_segments(segs),
+                Err(e) => tracing::warn!(video_id, error = %e, "SponsorBlock の区間取得に失敗"),
+            }
+        });
+    }
+
+    /// 連続再生の次項目を武装・解除する（`player_set_next` 経路、FR-10、仕様決定 S）。
+    /// 渡した動画 ID は次の終端（自然終了・途中失敗）で同一 mpv が先頭から再生する。
+    /// None は次項目の解除。キュー先頭項目やキュー外のインスタンスでは MpvError::NoSuchInstance。
+    pub async fn set_next(
+        &self,
+        instance_id: u32,
+        video_id: Option<String>,
+    ) -> Result<(), MpvError> {
+        let player = {
+            let g = lock(&self.players);
+            g.get(&instance_id).map(|e| e.player.clone())
+        }
+        .ok_or(MpvError::NoSuchInstance(instance_id))?;
+        player.set_next(video_id);
+        Ok(())
     }
 
     /// 稼働中インスタンスのスナップショット一覧。
@@ -214,6 +235,7 @@ impl PlayerManager {
     fn spawn_emitter(&self, player: Arc<MpvPlayer>) -> JoinHandle<()> {
         let app = self.app.clone();
         let db = self.db.clone();
+        let http = self.http.clone();
         let players = Arc::clone(&self.players);
         let mut ended_rx = player.subscribe_ended();
         tokio::spawn(async move {
@@ -239,13 +261,36 @@ impl PlayerManager {
                         let reason = reason.unwrap_or_else(|_| "unknown".into());
                         let completed = reason == "eof";
                         persist_now(&db, &player, completed);
+                        let ended_video = player.video_id();
+                        // 連続再生: 武装した次項目があれば同一 mpv で先頭から読み込む
+                        // （FR-10、仕様決定 S。途中失敗の終端でも次へ進む暫定仕様）。
+                        // ロードに失敗した場合は通常どおり終端処理へ進む。
+                        let mut continued = false;
+                        if let Some(next_id) = player.take_next() {
+                            match player.load_video(&next_id).await {
+                                Ok(()) => {
+                                    continued = true;
+                                    if let Err(e) = db.history_upsert(&next_id) {
+                                        tracing::warn!(video_id = %next_id, error = %e, "履歴行の作成に失敗");
+                                    }
+                                    Self::spawn_sponsor_fetch(&db, &http, player.clone(), next_id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(video_id = %next_id, error = %e, "連続再生の次項目ロードに失敗");
+                                }
+                            }
+                        }
                         let payload = PlayerEnded {
                             instance_id: player.instance_id(),
-                            video_id: player.video_id(),
+                            video_id: ended_video,
                             reason,
+                            continued,
                         };
                         if let Err(e) = app.emit("player://ended", &payload) {
                             tracing::warn!(error = %e, "player://ended の送出に失敗");
+                        }
+                        if continued {
+                            continue;
                         }
                         // 管理表から外し、ポンプを止めて mpv を終了させる。
                         // close() との競合は先に外した側が掃除を担い、後着側は冪等に成功する。
