@@ -5,7 +5,11 @@
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
-  import type { Playlist, UiError, VideoRef } from "$lib/players.svelte";
+  import {
+    asErrorMessage,
+    type Playlist,
+    type VideoRef,
+  } from "$lib/players.svelte";
 
   type Props = {
     video: VideoRef;
@@ -28,13 +32,6 @@
   let menuOpen = $state(false);
   let newName = $state("");
 
-  function err(e: unknown): string {
-    if (typeof e === "object" && e !== null && "message" in e) {
-      return String((e as UiError).message);
-    }
-    return String(e);
-  }
-
   async function toggleFav(): Promise<void> {
     try {
       if (faved) {
@@ -46,7 +43,7 @@
       }
       onfavchange?.(video.videoId, !faved);
     } catch (e) {
-      notify(t("library.favorite.failed", { message: err(e) }));
+      notify(t("library.favorite.failed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -57,7 +54,7 @@
       menuOpen = false;
       onplaylistadd?.(pl.id);
     } catch (e) {
-      notify(t("library.playlist.addFailed", { message: err(e) }));
+      notify(t("library.playlist.addFailed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -70,7 +67,7 @@
       newName = "";
       await addTo(pl);
     } catch (e) {
-      notify(t("library.playlist.createFailed", { message: err(e) }));
+      notify(t("library.playlist.createFailed", { message: asErrorMessage(e) }));
     }
   }
 </script>

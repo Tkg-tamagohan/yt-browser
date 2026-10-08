@@ -5,17 +5,21 @@
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
+  import { fmtDateTime } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
   import { loadLibrary } from "$lib/library";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
-  import type {
-    FavoriteEntry,
-    Playlist,
-    PlaylistEntry,
-    UiError,
-    VideoRef,
-    WatchHistory,
+  import {
+    createVideoActionState,
+    videoRefOf,
+  } from "$lib/videoActions.svelte";
+  import {
+    asErrorMessage,
+    type FavoriteEntry,
+    type Playlist,
+    type PlaylistEntry,
+    type WatchHistory,
   } from "$lib/players.svelte";
 
   type Tab = "history" | "favorites" | "playlists";
@@ -23,8 +27,6 @@
 
   let history = $state<WatchHistory[]>([]);
   let favorites = $state<FavoriteEntry[]>([]);
-  let playlists = $state<Playlist[]>([]);
-  let favIds = $state<Set<string>>(new Set());
 
   // 選択中プレイリストとその中身。reqId は選択ごとに進み、
   // 遅れて返る旧リクエストが表示を上書きしないようにする世代番号
@@ -39,18 +41,18 @@
   let renamingId = $state<number | null>(null);
   let renameText = $state("");
 
-  function err(e: unknown): string {
-    if (typeof e === "object" && e !== null && "message" in e) {
-      return String((e as UiError).message);
-    }
-    return String(e);
-  }
-
-  function fmtAt(iso: string | null | undefined): string {
-    if (!iso) return "";
-    const d = new Date(iso.includes("T") ? iso : iso.replace(" ", "T") + "Z");
-    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("ja-JP");
-  }
+  // 行アクションの共通配線（FR-7）。ライブラリ固有の後処理
+  // （お気に入り一覧からの除去・プレイリスト一覧の世代進め）だけ差し込む
+  const va = createVideoActionState({
+    onFavChange: (videoId, faved) => {
+      if (!faved) {
+        favorites = favorites.filter((f) => f.videoId !== videoId);
+      }
+    },
+    onPlaylistCreated: () => {
+      ++listsReq;
+    },
+  });
 
   function progressOf(h: WatchHistory): string {
     if (h.completed) return t("library.history.completed");
@@ -70,8 +72,8 @@
 
   async function loadFavorites(): Promise<void> {
     const lib = await loadLibrary();
-    favIds = lib.favIds;
-    playlists = lib.playlists;
+    va.favIds = lib.favIds;
+    va.playlists = lib.playlists;
     favorites = await invoke<FavoriteEntry[]>("favorite_list");
   }
 
@@ -79,7 +81,7 @@
     try {
       await Promise.all([loadHistory(), loadFavorites()]);
     } catch (e) {
-      notify(t("library.failed", { message: err(e) }));
+      notify(t("library.failed", { message: asErrorMessage(e) }));
     }
   });
 
@@ -88,7 +90,7 @@
       await invoke("play_video", { videoId, resume });
       goto("/");
     } catch (e) {
-      notify(t("player.error", { message: err(e) }));
+      notify(t("player.error", { message: asErrorMessage(e) }));
     }
   }
 
@@ -98,33 +100,18 @@
       history = history.filter((h) => h.videoId !== videoId);
       notify(t("library.removed"));
     } catch (e) {
-      notify(t("library.removeFailed", { message: err(e) }));
-    }
-  }
-
-  function onFavChange(videoId: string, faved: boolean): void {
-    const next = new Set(favIds);
-    if (faved) next.add(videoId);
-    else next.delete(videoId);
-    favIds = next;
-    if (!faved) {
-      favorites = favorites.filter((f) => f.videoId !== videoId);
+      notify(t("library.removeFailed", { message: asErrorMessage(e) }));
     }
   }
 
   async function removeFavorite(videoId: string): Promise<void> {
     try {
       await invoke("favorite_remove", { videoId });
-      onFavChange(videoId, false);
+      va.onFavChange(videoId, false);
       notify(t("library.favorite.removed"));
     } catch (e) {
-      notify(t("library.favorite.failed", { message: err(e) }));
+      notify(t("library.favorite.failed", { message: asErrorMessage(e) }));
     }
-  }
-
-  function onPlaylistCreated(pl: Playlist): void {
-    ++listsReq;
-    playlists = [...playlists, pl];
   }
 
   async function createPlaylist(): Promise<void> {
@@ -133,13 +120,13 @@
     try {
       const pl = await invoke<Playlist>("playlist_create", { name });
       ++listsReq;
-      playlists = [...playlists, pl];
+      va.playlists = [...va.playlists, pl];
       newPlaylistName = "";
       selectedId = pl.id;
       playlistItems = [];
       notify(t("library.playlist.created", { name: pl.name }));
     } catch (e) {
-      notify(t("library.playlist.createFailed", { message: err(e) }));
+      notify(t("library.playlist.createFailed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -157,13 +144,13 @@
     try {
       await invoke("playlist_rename", { playlistId: pl.id, name });
       ++listsReq;
-      playlists = playlists.map((p) =>
+      va.playlists = va.playlists.map((p) =>
         p.id === pl.id ? { ...p, name } : p,
       );
       renamingId = null;
       notify(t("library.playlist.renamed"));
     } catch (e) {
-      notify(t("library.failed", { message: err(e) }));
+      notify(t("library.failed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -171,14 +158,14 @@
     try {
       await invoke("playlist_delete", { playlistId: pl.id });
       ++listsReq;
-      playlists = playlists.filter((p) => p.id !== pl.id);
+      va.playlists = va.playlists.filter((p) => p.id !== pl.id);
       if (selectedId === pl.id) {
         selectedId = null;
         playlistItems = [];
       }
       notify(t("library.playlist.deleted"));
     } catch (e) {
-      notify(t("library.playlist.deleteFailed", { message: err(e) }));
+      notify(t("library.playlist.deleteFailed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -195,7 +182,7 @@
       if (req !== itemsReq || selectedId !== pl.id) return;
       playlistItems = items;
     } catch (e) {
-      if (req === itemsReq) notify(t("library.failed", { message: err(e) }));
+      if (req === itemsReq) notify(t("library.failed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -220,7 +207,7 @@
           listAgain = false;
           const req = ++listsReq;
           const list = await invoke<Playlist[]>("playlist_list");
-          if (req === listsReq) playlists = list;
+          if (req === listsReq) va.playlists = list;
           // 最新の応答を反映でき、かつ飛行中に新しい要求も無ければ終了。
           // どちらかが成り立たなければもう一周する
           if (req === listsReq && !listAgain) return;
@@ -251,7 +238,7 @@
         }
       }
     } catch (e) {
-      notify(t("library.failed", { message: err(e) }));
+      notify(t("library.failed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -267,30 +254,15 @@
       playlistItems = playlistItems.filter(
         (i) => i.videoId !== entry.videoId,
       );
-      playlists = playlists.map((p) =>
+      va.playlists = va.playlists.map((p) =>
         p.id === selectedId ? { ...p, itemCount: p.itemCount - 1 } : p,
       );
       notify(t("library.removed"));
     } catch (e) {
-      notify(t("library.removeFailed", { message: err(e) }));
+      notify(t("library.removeFailed", { message: asErrorMessage(e) }));
     }
   }
 
-  function videoRefOf(v: {
-    videoId: string;
-    title: string;
-    channelId: string | null;
-    channelTitle: string | null;
-    thumbnailUrl: string | null;
-  }): VideoRef {
-    return {
-      videoId: v.videoId,
-      title: v.title,
-      channelId: v.channelId,
-      channelTitle: v.channelTitle,
-      thumbnailUrl: v.thumbnailUrl,
-    };
-  }
 </script>
 
 <main class="container library">
@@ -325,7 +297,7 @@
               {#if h.channelTitle}{h.channelTitle}{/if}
               {#if progressOf(h)}・{progressOf(h)}{/if}
               {#if h.lastWatchedAt}
-                ・{t("library.history.lastWatched", { at: fmtAt(h.lastWatchedAt) })}
+                ・{t("library.history.lastWatched", { at: fmtDateTime(h.lastWatchedAt) })}
               {/if}
             {/snippet}
             {#snippet actions()}
@@ -361,7 +333,7 @@
           >
             {#snippet sub()}
               {#if f.channelTitle}{f.channelTitle}{/if}
-              {#if f.addedAt}・{fmtAt(f.addedAt)}{/if}
+              {#if f.addedAt}・{fmtDateTime(f.addedAt)}{/if}
             {/snippet}
             {#snippet actions()}
               <button onclick={() => play(f.videoId, true)}
@@ -375,9 +347,9 @@
               <VideoActions
                 video={videoRefOf(f)}
                 faved={true}
-                {playlists}
-                onfavchange={onFavChange}
-                onplaylistcreated={onPlaylistCreated}
+                playlists={va.playlists}
+                onfavchange={va.onFavChange}
+                onplaylistcreated={va.onPlaylistCreated}
                 onplaylistadd={onPlaylistAdd}
               />
             {/snippet}
@@ -399,11 +371,11 @@
             {t("library.playlist.create")}
           </button>
         </div>
-        {#if playlists.length === 0}
+        {#if va.playlists.length === 0}
           <p class="subtle">{t("library.playlists.empty")}</p>
         {:else}
           <ul class="pl-names">
-            {#each playlists as pl (pl.id)}
+            {#each va.playlists as pl (pl.id)}
               <li class:active={selectedId === pl.id}>
                 {#if renamingId === pl.id}
                   <input

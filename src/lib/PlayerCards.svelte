@@ -10,6 +10,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t, type MessageKey } from "$lib/i18n";
+  import { fmtDuration } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
   import ChatPanel from "$lib/ChatPanel.svelte";
   import RelatedPanel from "$lib/RelatedPanel.svelte";
@@ -39,16 +40,6 @@
   let relatedOpen = $state<Set<number>>(new Set());
 
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
-
-  function fmt(sec: number): string {
-    if (!Number.isFinite(sec) || sec <= 0) return "0:00";
-    const s = Math.floor(sec);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const ss = s % 60;
-    const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
-    return `${h > 0 ? h + ":" : ""}${mm}:${String(ss).padStart(2, "0")}`;
-  }
 
   function runPlaybackHooks(): void {
     for (const f of playbackHooks) f();
@@ -128,6 +119,11 @@
         notify(t("player.ended", { reason: ev.payload.reason }));
         // 再生終了したインスタンスのチャットパネルも片付け、ポーラーを解放する
         cleanupChatPanel(ev.payload.instanceId, ev.payload.videoId);
+        // 関連パネルの開閉エントリも除去する（手動 close と同じ片付け。
+        // ended ではカード自体はマップから消えるが、ここに残ると残存になる）
+        const rel = new Set(relatedOpen);
+        rel.delete(ev.payload.instanceId);
+        relatedOpen = rel;
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直させる
         runPlaybackHooks();
       }),
@@ -183,7 +179,7 @@
         }}
       />
       <div class="times">
-        <span>{fmt(seekPreview.get(p.instanceId) ?? p.position)} / {p.duration > 0 ? fmt(p.duration) : t("player.noDuration")}</span>
+        <span>{fmtDuration(seekPreview.get(p.instanceId) ?? p.position)} / {p.duration > 0 ? fmtDuration(p.duration) : t("player.noDuration")}</span>
         {#if p.fps > 0}<span class="subtle">{t("player.fps", { fps: p.fps.toFixed(2) })}</span>{/if}
         {#if statusLabel(p)}<span class="buffering">{statusLabel(p)}</span>{/if}
       </div>
