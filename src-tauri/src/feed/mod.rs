@@ -1,4 +1,4 @@
-//! チャンネル RSS ポーラー（設計書 §1.2 の `feed` モジュール、§3.2 の feed:// イベント）。
+//! チャンネル RSS ポーラー（設計書 §2 の `feed` モジュール、§3.2 の feed:// イベント）。
 //!
 //! YouTube のチャンネル RSS（`https://www.youtube.com/feeds/videos.xml?channel_id=`）
 //! を購読チャンネルごとにポーリングし、新着動画を `videos` へ未読（is_read=0）で積む。

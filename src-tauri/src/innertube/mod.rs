@@ -1,4 +1,4 @@
-//! InnerTube クライアント（設計書 §6.1、FR-4）。
+//! InnerTube クライアント（設計書 §6.1、FR-4、FR-6）。
 //! watch ページの `ytcfg`（`INNERTUBE_API_KEY` / `INNERTUBE_CONTEXT_CLIENT_VERSION` /
 //! `VISITOR_DATA`）を一度だけ取得してキャッシュし、`post_json` を提供する。
 //! Phase 5 では関連動画取得（`next`）が、Phase 6 のチャットポーラーがこれを共用する。

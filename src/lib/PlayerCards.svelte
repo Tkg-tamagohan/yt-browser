@@ -193,7 +193,7 @@
   }
 
   /// チャットパネルの開閉。開くと chat_start、閉じると chat_stop を呼ぶ。
-  /// メッセージの表示件数は直近 500 件に絞る（設計書 §6.2 の表示間引き）。
+  /// メッセージの表示件数は直近 500 件に絞る（決定記録『Phase 6 で確定した事項』の表示上限）。
   const CHAT_CAP = 500;
   async function toggleChat(id: number, videoId: string): Promise<void> {
     const cur = chatPanels.get(id);

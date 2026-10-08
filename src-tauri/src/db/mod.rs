@@ -1314,7 +1314,7 @@ mod tests {
             .is_empty());
     }
 
-    /// DB-CH-01: チャットのバッチ保存と FTS5 検索（FR-8）。
+    /// DB-CH-01: チャットのバッチ保存と FTS5 検索（FR-6）。
     /// 本文・投稿者のどちらにもヒットし、video_id で絞り込める。
     #[test]
     fn chat_insert_and_search() {
@@ -1361,7 +1361,7 @@ mod tests {
         assert_eq!(hits.len(), 0);
     }
 
-    /// DB-CH-02: NG フィルタの登録・一覧・削除（FR-7）。
+    /// DB-CH-02: NG フィルタの登録・一覧・削除（FR-9）。
     #[test]
     fn filter_roundtrip() {
         let db = Db::connect_in_memory().unwrap();

@@ -75,7 +75,7 @@
   // ブロック中チャンネル（FR-5: 設定画面での解除）
   let blocked = $state<BlockedChannel[]>([]);
 
-  // NG フィルタ（FR-7）。対象・種別は DDL の CHECK と同じ値集合
+  // NG フィルタ（FR-9）。対象・種別は DDL の CHECK と同じ値集合
   const FILTER_TARGETS = [
     "video_title",
     "video_desc",
@@ -90,7 +90,7 @@
   let fKind = $state<string>("literal");
   let fPattern = $state("");
 
-  // チャット履歴検索（FR-8）
+  // チャット履歴検索（FR-6）
   let chatQuery = $state("");
   let chatVideoId = $state("");
   let chatResults = $state<ChatEvent[] | null>(null);
