@@ -71,6 +71,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
+| `player_set_next` | `instance_id`, `video_id?` | `Result<()>` |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
 | `history_list` | `limit?`（既定 500、上限 1000） | `Result<Vec<WatchHistory>>` |
 | `history_remove` | `video_id` | `Result<()>` |
@@ -84,6 +85,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_items` | `playlist_id` | `Result<Vec<PlaylistEntry>>` |
 | `playlist_add` | `playlist_id`, `video`（`VideoRef`） | `Result<()>` |
 | `playlist_remove` | `playlist_id`, `video_id` | `Result<()>` |
+| `playlist_import` | `url`, `name?` | `Result<Playlist>` |
+| `playlist_reorder` | `playlist_id`, `video_ids` | `Result<()>` |
+| `playlist_sort` | `playlist_id` | `Result<()>` |
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
@@ -118,6 +122,17 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}` を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
+`player_set_next` は連続再生の次項目を事前登録（武装）する。`video_id` 省略時は武装の解除。
+登録済み項目は次の終端（自然終了・途中失敗）で同一 mpv が先頭から読み込む。
+`playlist_import` は YouTube プレイリストを `yt-dlp --flat-playlist` で取り込み、
+各項目を `video_upsert` で `videos` 台帳に集約したうえで新規プレイリストへ登録する（FR-10、仕様決定 R）。
+`url` は YouTube 系ホスト（youtube.com / youtu.be / music.youtube.com）のみ受け付け、
+項目登録に失敗したときは作成済みの空プレイリストを削除してからエラーを返す。
+`name` 省略時は取り込んだプレイリストのタイトル、それも無いときは「取り込みプレイリスト」とする（暫定）。
+`playlist_reorder` は項目順の一括書き換え（FR-11、仕様決定 T）。渡した `video_ids` が
+現在の項目と同一集合でない場合は変更せずエラーとする（並行編集の誤適用防止。
+検証は `playlist_items` の更新と同じ書き込みトランザクション内で行う）。
+`playlist_sort` は `published_at` 昇順の一括ソート（one-shot）。`published_at` の無い項目は末尾に寄せ、同キー内は現在順を保つ。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
 
 ### 3.2 イベント（Rust → フロント）
@@ -125,7 +140,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instanceId, videoId, reason }` | 終了またはエラー |
+| `player://ended` | `{ instanceId, videoId, reason, continued }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
 | `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
@@ -258,6 +273,21 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 
 起動時の画質式は「`play_video` の `format` 引数（インスタンス別指定）> PiP なら `pip.quality.format` > `quality.format`」の順で解決する（仕様決定 W、実装レベル細目「PiP 画質の解決順」）。稼働中インスタンスの画質はプレイヤーカードの画質選択から `player_control` の `quality` アクションで変えられる。この変更は DB に保存せずセッション内に限り有効で、次回再生は既定画質に戻る（仕様決定 X）。現在の適用値は `PlayerState.format` としてカードへ伝える。
 
+### 4.6 連続再生キュー（FR-10、仕様決定 S）
+
+キューはフロント側のセッション状態（`queue.svelte.ts`）に持つ。
+ライブラリの項目から「ここから連続再生」を選ぶと、その項目を通常の `play_video` で起動し、
+同時に次項目を `player_set_next` でバックエンドへ武装する。
+mpv が終端（自然終了・途中失敗）を迎えると emitter が武装済みの次項目を取り出し、
+同一 mpv で `loadfile` により先頭から読み込む。`player://ended` の `continued` が
+true のときフロントはキュー位置を進め、次の次項目を武装する。
+武装は終端ごとに 1 回消費されるため、終端のたびに張り直す形になる。
+プレイリスト側の編集やキュー位置のずれ（queue drift）は仕様上の制約として許容し、
+武装した時点の項目が流れる。
+インスタンスの `video_id`・履歴・SponsorBlock 区間は項目ごとに更新される。
+履歴は読み込み直後に `history_upsert` で行を確保し、SponsorBlock 区間は
+項目ごとに再取得して差し替える。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -267,6 +297,7 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 | 動画詳細 | `yt-dlp -J <url>` |
 | 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む） |
 | チャンネル一覧の補完 | `yt-dlp <channel_url> --flat-playlist --dump-json` |
+| プレイリスト取り込み | `yt-dlp <playlist_url> --flat-playlist --dump-single-json` |
 
 運用面の決定を次に置く（Phase 1 確定事項）。
 

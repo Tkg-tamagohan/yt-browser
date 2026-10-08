@@ -54,6 +54,9 @@ pub struct PlayerEnded {
     pub instance_id: u32,
     pub video_id: String,
     pub reason: String,
+    /// 連続再生で同一インスタンスが次項目へ進んだとき true（FR-10、仕様決定 S）。
+    /// true の場合インスタンスは生きており、新しい動画の読み込みを開始済み。
+    pub continued: bool,
 }
 
 /// `player_control` の操作指定（設計書 §3.1）。
@@ -352,6 +355,8 @@ pub struct PlaylistEntry {
     pub channel_id: Option<String>,
     pub channel_title: Option<String>,
     pub thumbnail_url: Option<String>,
+    /// 投稿日時（フィード投入済み項目のみ。未取得は NULL、ソート時は末尾）
+    pub published_at: Option<String>,
 }
 
 /// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。

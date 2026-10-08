@@ -42,6 +42,8 @@ pub enum DbError {
     },
     #[error("対象が存在しない")]
     NotFound,
+    #[error("並べ替え対象の項目集合が現在の内容と一致しない")]
+    MismatchedItems,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }

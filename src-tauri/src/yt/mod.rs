@@ -255,6 +255,67 @@ fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
     out
 }
 
+/// YouTube プレイリストのメタと項目一覧（FR-10、仕様決定 R）。
+/// `--flat-playlist --dump-single-json` で取り、項目を `VideoRef` へ変換する。
+/// 戻り値は `(プレイリスト名, 登録順の VideoRef 列)`。
+/// 項目は動画 ID の取れたものだけを返し、ID の無いエントリは飛ばす。
+pub async fn playlist_meta(
+    path: &str,
+    url: &str,
+) -> Result<(Option<String>, Vec<crate::model::VideoRef>), YtError> {
+    let out = run_with_timeout(
+        Command::new(path)
+            .arg(url)
+            .arg("--flat-playlist")
+            .arg("--dump-single-json"),
+    )
+    .await?;
+    if !out.status.success() {
+        return Err(YtError::Exit {
+            code: out.status.code().unwrap_or(-1),
+            stderr: combined_output(&out),
+        });
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    Ok(parse_playlist_meta(&v))
+}
+
+/// プレイリスト JSON のパース。`entries[]` を順に `VideoRef` へ写す。
+/// `channel_id` は UC 形だけ採用し、チャンネル名は `channel` → `uploader` の順で拾う。
+fn parse_playlist_meta(v: &serde_json::Value) -> (Option<String>, Vec<crate::model::VideoRef>) {
+    let title = v.get("title").and_then(|x| x.as_str()).map(str::to_string);
+    let mut items = Vec::new();
+    if let Some(entries) = v.get("entries").and_then(|e| e.as_array()) {
+        for e in entries {
+            let Some(id) = e.get("id").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let channel_id = e
+                .get("channel_id")
+                .and_then(|x| x.as_str())
+                .filter(|s| crate::model::is_channel_id(s))
+                .map(str::to_string);
+            let channel_title = e
+                .get("channel")
+                .or_else(|| e.get("uploader"))
+                .and_then(|x| x.as_str())
+                .map(str::to_string);
+            items.push(crate::model::VideoRef {
+                video_id: id.to_string(),
+                title: e
+                    .get("title")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                channel_id,
+                channel_title,
+                thumbnail_url: pick_thumbnail(e, id),
+            });
+        }
+    }
+    (title, items)
+}
+
 /// PATH 解決可否。`--version` が起動できれば存在するとみなす。
 /// 応答しない実行ファイルに引きずられないよう 10 秒で打ち切る。
 async fn which_exists(name: &str) -> bool {

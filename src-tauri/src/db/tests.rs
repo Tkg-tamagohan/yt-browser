@@ -676,6 +676,108 @@ fn playlist_crud_and_order() {
     ));
 }
 
+/// DB-LD-07: 項目順の一括書き換え（FR-11、仕様決定 T）。
+/// 渡した順に position が振り直され、未登録プレイリストは NotFound。
+/// 同一集合の検証はこの書き込みトランザクション内で行い、集合不一致・
+/// 重複・件数違いは `MismatchedItems` で変更を破棄する。
+#[test]
+fn playlist_reorder_renumbers_positions() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl = db.playlist_create("並べ替え").unwrap();
+    db.playlist_add_many(
+        pl.id,
+        &[
+            vref("aaaaaaaaaa1", "A"),
+            vref("bbbbbbbbbb2", "B"),
+            vref("cccccccccc3", "C"),
+        ],
+    )
+    .unwrap();
+    db.playlist_reorder(
+        pl.id,
+        &[
+            "cccccccccc3".to_string(),
+            "aaaaaaaaaa1".to_string(),
+            "bbbbbbbbbb2".to_string(),
+        ],
+    )
+    .unwrap();
+    let items = db.playlist_items(pl.id).unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["cccccccccc3", "aaaaaaaaaa1", "bbbbbbbbbb2"]
+    );
+    assert_eq!(
+        items.iter().map(|i| i.position).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert!(matches!(
+        db.playlist_reorder(999, &[]),
+        Err(DbError::NotFound)
+    ));
+    // 集合不一致・重複・件数違いは MismatchedItems で既存順を破壊しない
+    for bad in [
+        vec!["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"], // 未登録項目
+        vec!["aaaaaaaaaa1", "bbbbbbbbbb2", "bbbbbbbbbb2"], // 重複
+        vec!["aaaaaaaaaa1", "bbbbbbbbbb2"],                // 件数不足
+    ] {
+        let ids: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
+        assert!(matches!(
+            db.playlist_reorder(pl.id, &ids),
+            Err(DbError::MismatchedItems)
+        ));
+    }
+    assert_eq!(
+        db.playlist_items(pl.id)
+            .unwrap()
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["cccccccccc3", "aaaaaaaaaa1", "bbbbbbbbbb2"]
+    );
+}
+
+/// DB-LD-08: 取り込み用の一括追加（FR-10、仕様決定 R）。
+/// 1 トランザクションで末尾追加し、重複は位置を維持して無視。
+/// `published_at` は取り込み時点では未取得のまま（ソート時は末尾扱い）。
+#[test]
+fn playlist_add_many_appends_and_dedupes() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl = db.playlist_create("取り込み").unwrap();
+    db.playlist_add_many(
+        pl.id,
+        &[
+            vref("aaaaaaaaaa1", "A"),
+            vref("bbbbbbbbbb2", "B"),
+            vref("cccccccccc3", "C"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(db.playlist_items(pl.id).unwrap().len(), 3);
+    // 途中に既存項目が混ざった再投入: 新規分だけ末尾追加、既存は位置維持
+    db.playlist_add_many(pl.id, &[vref("bbbbbbbbbb2", "B"), vref("dddddddddd4", "D")])
+        .unwrap();
+    let items = db.playlist_items(pl.id).unwrap();
+    assert_eq!(items.len(), 4);
+    assert_eq!(
+        items
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3", "dddddddddd4"]
+    );
+    // published_at は未投入のまま None
+    assert!(items.iter().all(|i| i.published_at.is_none()));
+    assert_eq!(db.playlist_list().unwrap()[0].item_count, 4);
+    assert!(matches!(
+        db.playlist_add_many(999, &[]),
+        Err(DbError::NotFound)
+    ));
+}
+
 /// DB-LD-04: 履歴一覧は新しい順、history_remove で個別削除（FR-7、仕様決定 I）。
 #[test]
 fn history_list_and_remove() {

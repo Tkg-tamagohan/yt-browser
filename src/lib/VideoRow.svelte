@@ -37,6 +37,16 @@
     sub: Snippet;
     /// アクション群。再生・ブロック・VideoActions など各ページの現行ボタンを受ける。
     actions: Snippet;
+    /// ドラッグアンドドロップによる並べ替え（仕様決定 T、プレイリスト項目で使用）。
+    /// 行自体をドラッグ可能にし、ハンドラは呼び出し側が全て管理する
+    draggable?: boolean;
+    /// ドロップ先としての強調表示（呼び出し側が dragover 中に立てる）
+    dropTarget?: boolean;
+    ondragstart?: (e: DragEvent) => void;
+    ondragover?: (e: DragEvent) => void;
+    ondragleave?: (e: DragEvent) => void;
+    ondrop?: (e: DragEvent) => void;
+    ondragend?: (e: DragEvent) => void;
   };
   let {
     videoId,
@@ -50,6 +60,13 @@
     leading,
     sub,
     actions,
+    draggable = false,
+    dropTarget = false,
+    ondragstart,
+    ondragover,
+    ondragleave,
+    ondrop,
+    ondragend,
   }: Props = $props();
 
   let thumbSrc = $derived(
@@ -62,6 +79,13 @@
   class:side={actionsPlacement === "side"}
   class:dense
   class:dimmed
+  class:drop-target={dropTarget}
+  {draggable}
+  {ondragstart}
+  {ondragover}
+  {ondragleave}
+  {ondrop}
+  {ondragend}
 >
   {@render leading?.()}
   <img
@@ -107,6 +131,14 @@
     gap: 10px;
     padding: 6px 0;
     border-bottom: none;
+  }
+
+  .vr.drop-target {
+    border-top: 2px solid #8ab4f8;
+  }
+
+  .vr[draggable="true"] {
+    cursor: grab;
   }
 
   .thumb {

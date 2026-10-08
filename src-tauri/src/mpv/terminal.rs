@@ -26,8 +26,13 @@ impl TerminalTracker {
     }
 
     /// 新しいファイルのロード完了。end-file の取りこぼしでカウンタが残った場合の掃除。
+    /// mpv は同一ソケット上で旧ファイルの end-file を新ファイルの file-loaded より
+    /// 先に送るため、この時点で記録済みの終端理由は必ず旧ファイルのもの。
+    /// 連続再生（次項目の loadfile）ではここで ended_reason をリセットしないと
+    /// 2 本目以降の終端が受理されずキューが停止する。
     pub(crate) fn on_file_loaded(&self) {
         self.pending_replaces.store(0, Ordering::SeqCst);
+        *lock(&self.ended_reason) = None;
     }
 
     /// end-file を終端イベントとして処理するなら true を返し理由を記録する。
@@ -132,6 +137,23 @@ mod tests {
         t.on_file_loaded();
         // 予約が残っていないので次の end-file は終端になる
         assert!(t.on_end_file("eof"));
+    }
+
+    /// 連続再生: 前項目の file-loaded で終端理由がリセットされ、
+    /// 2 本目の EOF も終端として受理される（キュー停滞の回帰テスト）。
+    /// 2 本目で途中終了したときは completed=false を引き継がない。
+    #[test]
+    fn file_loaded_resets_ended_reason_for_next_item() {
+        let t = TerminalTracker::default();
+        // 1 本目が EOF 終了
+        assert!(t.on_eof());
+        assert!(t.completed());
+        // 連続再生で次項目のロード完了 → 終端理由は新ファイル用にリセット
+        t.on_file_loaded();
+        assert!(!t.completed());
+        // 2 本目の途中終了が受理される
+        assert!(t.on_end_file("error"));
+        assert!(!t.completed());
     }
 
     /// 終端判定: replace 予約中に届いた旧ファイルの eof-reached は
