@@ -265,23 +265,69 @@ def check_commands() -> Findings:
 EVENT_NAME_RE = r"[a-z][a-z0-9_]*://[a-z0-9_]+"
 # listen<T>(...) のジェネリクスや改行を挟む呼び出しを拾うため、
 # 関数名と `(` の間は括弧以外なら何でも許す。
-# イベント名が第 1 引数の関数: emit / emit_all / emit_filter / listen /
-# listen_any / once（emit_to だけ引数順が違い別扱いする）。
-# trigger は SQL の CREATE TRIGGER と衝突して誤検出になるため対象外。
-EVENT_CALL_LITERAL_RE = re.compile(
-    rf'\b(?:emit|emit_all|emit_filter|listen|listen_any|once)\b[^(\n]{{0,60}}\(\s*"({EVENT_NAME_RE})"'
+# イベント名を取る関数: emit / emit_all / emit_filter / listen /
+# listen_any / once は第 1 引数、emit_to は第 2 引数（第 1 引数は
+# 送信先ラベル）。trigger は SQL の CREATE TRIGGER と衝突して
+# 誤検出になるため対象外。
+EVENT_CALL_RE = re.compile(
+    r"\b(emit|emit_all|emit_filter|listen|listen_any|once|emit_to)\b[^(\n]{0,60}\("
 )
-# emit_to は第 1 引数が送信先ラベルで第 2 引数がイベント名
-EVENT_TO_LITERAL_RE = re.compile(
-    rf'\bemit_to\b[^(\n]{{0,60}}\(\s*"[^"]*"\s*,\s*"({EVENT_NAME_RE})"'
-)
-# イベント名の位置がリテラルでない呼び出し（動的生成）は照合不能として警告にする
-EVENT_CALL_DYNAMIC_RE = re.compile(
-    r"\b(?:emit|emit_all|emit_filter|listen|listen_any|once)\b[^(\n]{0,60}\(\s*[^\s\"'`]"
-)
-EVENT_TO_DYNAMIC_RE = re.compile(
-    r"\bemit_to\b[^(\n]{0,60}\(\s*[^\s\"'`]|\bemit_to\b[^(\n]{0,60}\(\s*\"[^\"]*\"\s*,\s*[^\s\"'`]"
-)
+
+
+def split_call_args(text: str, open_paren: int, rust: bool) -> list[str]:
+    """`text[open_paren]` の `(` に対応する呼び出しの引数をトップレベルの
+    カンマで分割して返す。
+
+    引数内の文字列リテラルは対として読み飛ばし、入れ子の括弧
+    （丸・角・波）は深さを数える。`rust=True` では `'` を char
+    リテラル（`'x'` / `'\\x'`）のときだけ引用符として扱い、
+    ライフタイムは読み飛ばさない。
+    """
+    args: list[str] = []
+    depth = 1
+    start = open_paren + 1
+    i = start
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            if c == "'" and rust:
+                # char リテラルだけスキップ。'a / 'static はライフタイム
+                if i + 2 < n and text[i + 2] == "'":
+                    i += 3
+                    continue
+                if i + 3 < n and text[i + 1] == "\\" and text[i + 3] == "'":
+                    i += 4
+                    continue
+                i += 1
+                continue
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == c:
+                    break
+                i += 1
+            i += 1
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                args.append(text[start:i])
+                return args
+        elif c == "," and depth == 1:
+            args.append(text[start:i])
+            start = i + 1
+        i += 1
+    return args
+
+
+def is_string_literal(arg: str) -> bool:
+    """引数式が文字列リテラル（Rust の生文字列・byte string・テンプレート含む）か。"""
+    return bool(re.match(r'^(?:b?r#*|rb#*)?["\'`]', arg.strip()))
 
 
 def check_events() -> Findings:
@@ -304,23 +350,32 @@ def check_events() -> Findings:
     )
     for path in targets:
         text = strip_comments(read_text(path), path.suffix)
-        for m in EVENT_CALL_LITERAL_RE.finditer(text):
-            code_events.add(m.group(1))
-        for m in EVENT_TO_LITERAL_RE.finditer(text):
-            code_events.add(m.group(1))
-        for m in EVENT_CALL_DYNAMIC_RE.finditer(text):
+        rust = path.suffix == ".rs"
+        for m in EVENT_CALL_RE.finditer(text):
+            # イベント名の位置は emit_to だけ第 2 引数
+            idx = 1 if m.group(1) == "emit_to" else 0
+            args = split_call_args(text, m.end() - 1, rust)
+            if len(args) <= idx:
+                continue
+            event_arg = args[idx].strip()
             line_no = text.count("\n", 0, m.start()) + 1
-            dynamic_calls.append(f"{path.relative_to(ROOT)}:{line_no}")
-        for m in EVENT_TO_DYNAMIC_RE.finditer(text):
-            line_no = text.count("\n", 0, m.start()) + 1
-            dynamic_calls.append(f"{path.relative_to(ROOT)}:{line_no}")
+            loc = f"{path.relative_to(ROOT)}:{line_no}"
+            if not is_string_literal(event_arg):
+                dynamic_calls.append(loc)
+                continue
+            names = re.findall(EVENT_NAME_RE, event_arg)
+            if names:
+                code_events.update(names)
+            else:
+                # リテラルなのに `name://` 形式でない = §3.2 に載せられない命名
+                dynamic_calls.append(loc)
 
     for name in sorted(code_events - doc_events):
         f.error(f"イベント `{name}` がコードにあるが §3.2 に無い")
     for name in sorted(doc_events - code_events):
         f.error(f"イベント `{name}` が §3.2 にあるがコードに無い")
     for loc in dynamic_calls:
-        f.warn(f"{loc}: イベント名がリテラルでなく照合不能（イベント名はリテラルで書く）")
+        f.warn(f"{loc}: イベント名が `name://` 形式のリテラルでなく照合不能（イベント名はリテラルで書く）")
 
     if f.worst() == OK:
         f.ok(f"{len(code_events)} 件のイベントが一致")
