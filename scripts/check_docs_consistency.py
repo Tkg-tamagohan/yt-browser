@@ -325,9 +325,28 @@ def split_call_args(text: str, open_paren: int, rust: bool) -> list[str]:
     return args
 
 
-def is_string_literal(arg: str) -> bool:
-    """引数式が文字列リテラル（Rust の生文字列・byte string・テンプレート含む）か。"""
-    return bool(re.match(r'^(?:b?r#*|rb#*)?["\'`]', arg.strip()))
+def single_string_literal(arg: str) -> str | None:
+    """引数式が「単一の補間なし文字列リテラル」ならその中身を返す。
+
+    `"x" + y` のような連結、`player://${x}` のような補間、`"x".into()`
+    のようなメソッド呼び出しは None を返す（照合不能として警告される）。
+    Rust の `r#"..."#` 生文字列と byte string も受理する。
+    イベント名にエスケープ・補間は要らないため、`\\` と `${` を含む
+    中身も None とする。
+    """
+    a = arg.strip()
+    m = re.match(r'^(?:b?r|rb)?(#*)(["\'`])', a)
+    if not m:
+        return None
+    quote_at = m.end() - 1
+    closing = m.group(2) + m.group(1)  # 引用符 + # の順で閉じる（r#"..."#）
+    # 引用符で始まり引用符で終わること（後続の式・連結を許さない）
+    if not a.endswith(closing) or quote_at + 1 > len(a) - len(closing):
+        return None
+    inner = a[quote_at + 1 : len(a) - len(closing)]
+    if "${" in inner or "\\" in inner:
+        return None
+    return inner
 
 
 def check_events() -> Findings:
@@ -360,12 +379,12 @@ def check_events() -> Findings:
             event_arg = args[idx].strip()
             line_no = text.count("\n", 0, m.start()) + 1
             loc = f"{path.relative_to(ROOT)}:{line_no}"
-            if not is_string_literal(event_arg):
+            inner = single_string_literal(event_arg)
+            if inner is None:
                 dynamic_calls.append(loc)
                 continue
-            names = re.findall(EVENT_NAME_RE, event_arg)
-            if names:
-                code_events.update(names)
+            if re.fullmatch(EVENT_NAME_RE, inner):
+                code_events.add(inner)
             else:
                 # リテラルなのに `name://` 形式でない = §3.2 に載せられない命名
                 dynamic_calls.append(loc)
