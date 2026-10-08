@@ -9,8 +9,11 @@ use crate::error::UiError;
 use crate::feed::{self, FeedPoller};
 use crate::model::{
     parse_channel_ref, Category, Channel, ChannelRef, FeedFilter, FeedItem, FeedNewItems,
+    PlayingChannel,
 };
 use crate::yt::{self, YtDlpResolver};
+
+use super::parse_video_id;
 
 /// `subscribe_channel`（設計書 §3.1）。UC ID・channel URL・@handle を受け取り、
 /// RSS を 1 回取得して存在確認と初期一覧の投入を行う。取得したエントリは未読で積む
@@ -94,6 +97,59 @@ pub async fn subscribe_channel(
             Err(UiError::internal("初回取得が NotModified を返した"))
         }
     }
+}
+
+/// 再生中動画のチャンネル解決（FR-12、仕様決定 U）。
+/// `videos.channel_id` → `watch_history.channel_id` → yt-dlp メタの順に
+/// `subscribe_channel` へ渡せる入力を決めて返す。各段の値が空文字・NULL の
+/// 場合は「未知」として次段へ進む。解決不能は `input: null`。
+#[tauri::command]
+pub async fn playing_channel(
+    video_id: String,
+    db: State<'_, Db>,
+    resolver: State<'_, YtDlpResolver>,
+) -> Result<PlayingChannel, UiError> {
+    let id = parse_video_id(&video_id)?;
+    let mut input: Option<String> = None;
+    let mut title: Option<String> = None;
+    // 1) videos 台帳（フィード・お気に入り・プレイリスト経由で既知情報がある）
+    let (cid, ct) = db.video_channel(&id)?;
+    input = cid;
+    title = ct;
+    // 2) watch_history（台帳に無い動画も履歴の再視聴で拾う）
+    if input.is_none() {
+        if let Some(h) = db.history_get(&id)? {
+            input = h.channel_id.filter(|s| !s.is_empty());
+            if title.is_none() {
+                title = h.channel_title;
+            }
+        }
+    }
+    // 3) yt-dlp メタ（DB に知識が無いときだけ。失敗は解決不能扱い）
+    if input.is_none() {
+        if let Some(path) = resolver.resolve(&db).await {
+            if let Ok(cands) = yt::video_channel_ref(&path, &id).await {
+                // 受理できない形（解釈不能な channel_id 等）は次候補へ
+                input = cands.into_iter().find(|c| parse_channel_ref(c).is_some());
+            }
+        }
+    }
+    // 購読済み判定は UC ID が確定しているときだけ可能
+    // （@handle は subscribe_channel が解決するまで ID が分からない）
+    let subscribed = input
+        .as_deref()
+        .and_then(parse_channel_ref)
+        .and_then(|r| match r {
+            ChannelRef::Id(cid) => Some(cid),
+            _ => None,
+        })
+        .map(|cid| db.channel_get(&cid).map(|c| c.is_some()).unwrap_or(false))
+        .unwrap_or(false);
+    Ok(PlayingChannel {
+        input,
+        title,
+        subscribed,
+    })
 }
 
 /// `unsubscribe_channel`。購読解除し、そのチャンネルの未読を既読化する。

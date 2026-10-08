@@ -187,6 +187,24 @@ impl Db {
         Ok(())
     }
 
+    /// 再生中チャンネル解決の第 1 段（FR-12、仕様決定 U）。
+    /// `(channel_id, channel_title)` を返す。行なし・channel_id 空文字は
+    /// 「未知」として None に揃え、呼び出し側が次段（watch_history）へ進む。
+    pub fn video_channel(
+        &self,
+        video_id: &str,
+    ) -> Result<(Option<String>, Option<String>), DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT NULLIF(channel_id, ''), channel_title FROM videos WHERE video_id = ?1",
+        )?;
+        let mut rows = stmt.query([video_id])?;
+        match rows.next()? {
+            Some(row) => Ok((row.get(0)?, row.get(1)?)),
+            None => Ok((None, None)),
+        }
+    }
+
     /// 個別既読（設計書 §3.1 の `mark_read`）。
     pub fn videos_mark_read(&self, video_ids: &[String]) -> Result<(), DbError> {
         if video_ids.is_empty() {

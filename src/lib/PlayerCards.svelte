@@ -39,6 +39,61 @@
   // RelatedPanel が開くたびのマウントで取り直す
   let relatedOpen = $state<Set<number>>(new Set());
 
+  // 再生中チャンネルの購読導線（FR-12）。解決結果は videoId ごとに 1 回だけ取る。
+  // null は「解決不能」（yt-dlp 失敗・メタ無し）で、ボタンは無効表示のままにする
+  type PlayingChannel = {
+    input: string | null;
+    title: string | null;
+    subscribed: boolean;
+  };
+  let channelInfos = $state<Map<string, PlayingChannel | null>>(new Map());
+  let subscribing = $state<Set<string>>(new Set());
+  // fetch 要求済み videoId（channelInfos とは別管理: 同じキーの二重起動を防ぐ）
+  const channelReq = new Set<string>();
+
+  $effect(() => {
+    for (const p of players.values()) {
+      if (p.videoId && !channelReq.has(p.videoId)) {
+        channelReq.add(p.videoId);
+        void fetchChannel(p.videoId);
+      }
+    }
+  });
+
+  async function fetchChannel(videoId: string): Promise<void> {
+    let info: PlayingChannel | null = null;
+    try {
+      info = await invoke<PlayingChannel>("playing_channel", { videoId });
+    } catch {
+      // 解決失敗は無効ボタンとして表す（トーストは出さない）
+    }
+    const next = new Map(channelInfos);
+    next.set(videoId, info);
+    channelInfos = next;
+  }
+
+  async function subscribePlaying(videoId: string): Promise<void> {
+    const info = channelInfos.get(videoId);
+    if (!info?.input || subscribing.has(videoId)) return;
+    subscribing = new Set(subscribing).add(videoId);
+    try {
+      const ch = await invoke<{ title: string }>("subscribe_channel", {
+        input: info.input,
+        categoryId: null,
+      });
+      notify(t("feed.subscribed", { title: ch.title }));
+      const next = new Map(channelInfos);
+      next.set(videoId, { ...info, subscribed: true });
+      channelInfos = next;
+    } catch (e) {
+      notify(t("feed.subscribeFailed", { message: asErrorMessage(e) }));
+    } finally {
+      const s = new Set(subscribing);
+      s.delete(videoId);
+      subscribing = s;
+    }
+  }
+
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
   function runPlaybackHooks(): void {
@@ -151,6 +206,7 @@
   class:hidden={page.url.pathname !== "/"}
 >
   {#each [...players.values()] as p (p.instanceId)}
+    {@const info = channelInfos.get(p.videoId)}
     <section class="player">
       <div class="player-title">
         {p.mediaTitle || p.videoId}
@@ -247,6 +303,18 @@
         <button class="link" onclick={() => toggleChat(p.instanceId, p.videoId)}>
           {chatPanel(p.instanceId)?.open ? t("chat.hide") : t("chat.show")}
         </button>
+        {#if info?.subscribed}
+          <button class="link" disabled>{t("player.subscribed")}</button>
+        {:else}
+          <button
+            class="link"
+            title={info?.title ?? undefined}
+            disabled={!info?.input || subscribing.has(p.videoId)}
+            onclick={() => subscribePlaying(p.videoId)}
+          >
+            {t("player.subscribe")}
+          </button>
+        {/if}
       </div>
 
       {#if chatPanel(p.instanceId)?.open}

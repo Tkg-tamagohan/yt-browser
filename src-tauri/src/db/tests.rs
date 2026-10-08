@@ -958,6 +958,50 @@ fn videos_set_kind_only_upgrades_video() {
     assert_eq!(kind_of("live00000001"), "live");
 }
 
+/// 再生中チャンネル解決の第 1 段（FR-12）。
+/// 空文字 channel_id の行は「未知」として None を返す。
+#[test]
+fn video_channel_normalizes_empty() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[NewVideo {
+            video_id: "video0000001",
+            channel_id: ch,
+            channel_title: "CH",
+            title: "v1",
+            thumbnail_url: None,
+            published_at: Some("2026-10-08T00:00:00+00:00"),
+            kind: "video",
+        }],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    // channel_id 空文字の行はお気に入り経由の台帳登録で作る
+    db.favorite_add(&crate::model::VideoRef {
+        video_id: "video0000002".to_string(),
+        title: "v2".to_string(),
+        channel_id: None,
+        channel_title: Some("手動登録".to_string()),
+        thumbnail_url: None,
+    })
+    .unwrap();
+
+    let (cid, ct) = db.video_channel("video0000001").unwrap();
+    assert_eq!(cid.as_deref(), Some(ch));
+    assert_eq!(ct.as_deref(), Some("CH"));
+    let (cid, ct) = db.video_channel("video0000002").unwrap();
+    assert!(cid.is_none());
+    assert_eq!(ct.as_deref(), Some("手動登録"));
+    let (cid, _) = db.video_channel("missing00001").unwrap();
+    assert!(cid.is_none());
+}
+
 // ---------------------------------------------------------------------------
 // docs↔コード整合の機械チェック: §8 DDL と適用後スキーマの照合
 // （Python 側は scripts/check_docs_consistency.py、計画書 CL-1a）。

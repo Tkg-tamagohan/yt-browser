@@ -161,6 +161,70 @@ pub async fn channel_id(path: &str, url: &str) -> Result<String, YtError> {
         .ok_or(YtError::NoChannelId)
 }
 
+/// 再生中動画のチャンネル参照候補をメタから取る（FR-12、仕様決定 U）。
+/// `channel_id` → `uploader_id` → `channel_url` の順に非空の値を
+/// `subscribe_channel` が受理できる形に正規化して返す。
+/// 動画視聴ページは単一項目のプレイリストとして `--flat-playlist` で軽く取る。
+pub async fn video_channel_ref(path: &str, video_id: &str) -> Result<Vec<String>, YtError> {
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let out = run_with_timeout(
+        Command::new(path)
+            .arg(&url)
+            .arg("--flat-playlist")
+            .arg("--dump-single-json"),
+    )
+    .await?;
+    if !out.status.success() {
+        return Err(YtError::Exit {
+            code: out.status.code().unwrap_or(-1),
+            stderr: combined_output(&out),
+        });
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    // 単一動画ではトップレベルにメタが来る。プレイリスト形で返る場合は
+    // entries[0] を同じ優先順で見る
+    let cands = channel_ref_candidates(&v);
+    if !cands.is_empty() {
+        return Ok(cands);
+    }
+    if let Some(first) = v.get("entries").and_then(|e| e.get(0)) {
+        let cands = channel_ref_candidates(first);
+        if !cands.is_empty() {
+            return Ok(cands);
+        }
+    }
+    Err(YtError::NoChannelId)
+}
+
+/// メタ JSON から `channel_id` → `uploader_id` → `channel_url` の順に
+/// 購読解決へ渡せる候補を拾う。`uploader_id` が `@` なしで来た場合は
+/// `@` を補う（暫定: ハンドルとみなす）。yt-dlp が文字列 "None" を
+/// 出力することがあるため空扱いする（実測確認済み、ytsearch と同じ罠）。
+fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
+    let get = |key: &str| -> Option<String> {
+        v.get(key)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "None")
+            .map(str::to_string)
+    };
+    let mut out = Vec::new();
+    if let Some(cid) = get("channel_id") {
+        out.push(cid);
+    }
+    if let Some(up) = get("uploader_id") {
+        out.push(if up.starts_with('@') {
+            up
+        } else {
+            format!("@{up}")
+        });
+    }
+    if let Some(url) = get("channel_url") {
+        out.push(url);
+    }
+    out
+}
+
 /// PATH 解決可否。`--version` が起動できれば存在するとみなす。
 /// 応答しない実行ファイルに引きずられないよう 10 秒で打ち切る。
 async fn which_exists(name: &str) -> bool {
@@ -356,5 +420,42 @@ mod tests {
         let out = parse_search_jsonl(input);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].video_id, "abc123def45");
+    }
+
+    #[test]
+    fn channel_ref_candidates_orders_and_normalizes() {
+        // channel_id 優先、uploader_id は @ を補う、"None" 文字列は空扱い
+        let v = serde_json::json!({
+            "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+            "uploader_id": "RickAstley",
+            "channel_url": "https://www.youtube.com/channel/UCuAXFkgsw1L7xaCfnd5JJOw",
+        });
+        let c = channel_ref_candidates(&v);
+        assert_eq!(
+            c,
+            vec![
+                "UCuAXFkgsw1L7xaCfnd5JJOw".to_string(),
+                "@RickAstley".to_string(),
+                "https://www.youtube.com/channel/UCuAXFkgsw1L7xaCfnd5JJOw".to_string()
+            ]
+        );
+
+        let v = serde_json::json!({
+            "channel_id": "None",
+            "uploader_id": "@handle1",
+        });
+        assert_eq!(channel_ref_candidates(&v), vec!["@handle1".to_string()]);
+
+        let v = serde_json::json!({
+            "channel_id": "",
+            "uploader_id": null,
+            "channel_url": "https://www.youtube.com/channel/UCabc",
+        });
+        assert_eq!(
+            channel_ref_candidates(&v),
+            vec!["https://www.youtube.com/channel/UCabc".to_string()]
+        );
+
+        assert!(channel_ref_candidates(&serde_json::json!({})).is_empty());
     }
 }

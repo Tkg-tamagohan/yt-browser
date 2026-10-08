@@ -169,6 +169,7 @@ pub fn run() {
             commands::ytdlp_status,
             commands::ytdlp_update,
             commands::subscribe_channel,
+            commands::playing_channel,
             commands::unsubscribe_channel,
             commands::list_channels,
             commands::set_channel_category,
