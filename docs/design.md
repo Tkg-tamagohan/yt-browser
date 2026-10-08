@@ -279,7 +279,7 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 ライブラリの項目から「ここから連続再生」を選ぶと、その項目を通常の `play_video` で起動し、
 同時に次項目を `player_set_next` でバックエンドへ武装する。
 mpv が終端（自然終了・途中失敗）を迎えると emitter が武装済みの次項目を取り出し、
-同一 mpv で `loadfile` により先頭から読み込む。`player://ended` の `continued` が
+同一 mpv で `loadfile` により先頭から読み込む。`--keep-open=yes` 下では EOF 後の mpv が `pause=true` で残るため、読み替え時に `set_property pause false` も送って一時停止を解除する。`player://ended` の `continued` が
 true のときフロントはキュー位置を進め、次の次項目を武装する。
 武装は終端ごとに 1 回消費されるため、終端のたびに張り直す形になる。
 プレイリスト側の編集やキュー位置のずれ（queue drift）は仕様上の制約として許容し、

@@ -180,5 +180,5 @@
 | 再生中チャンネルの解決順 | `videos.channel_id` → `watch_history.channel_id` → yt-dlp メタ取得（`channel_id` / `uploader_id` / `channel_url`）の順で解決し、`subscribe_channel` の既存解決経路（UC / @handle / URL 受理）へ渡す。各段の値が空文字または NULL の場合は「未知」として次段へ進む |
 | PiP 画質の解決順 | インスタンス起動時の画質は「インスタンス別の指定 > PiP なら `pip.quality.format` > `quality.format`」の順とする |
 | 自動 HDR 調査の範囲 | mpv の vo / gpu-api 設定と Windows の自動 HDR 認識の可否を Windows 子セッションで確認する。実現に mpv 起動引数の追加が要る場合の設定化の形（個別キーか汎用の追加分引数か）は実装段階で判断する |
-| 連続再生の次項目登録 | 次項目はフロントのキュー状態から `player_set_next` でバックエンドへ事前登録（武装）する。mpv 終端で emitter が取り出して同一プロセスへ `loadfile` し、`player://ended` に `continued` を付けてフロントがキュー位置を進める。途中失敗の終端も次項目へ進む（暫定）。キュー先頭項目の起動は通常の `play_video` と同じレジューム解決に従う（暫定） |
+| 連続再生の次項目登録 | 次項目はフロントのキュー状態から `player_set_next` でバックエンドへ事前登録（武装）する。mpv 終端で emitter が取り出して同一プロセスへ `loadfile` し、`player://ended` に `continued` を付けてフロントがキュー位置を進める。途中失敗の終端も次項目へ進む（暫定）。`--keep-open=yes` 下では EOF 後の mpv が `pause=true` で残るため、`load_video` では `loadfile` 後に `set_property pause false` を送って解除する（実機検証で遷移先が一時停止のまま黒画面になる不具合を確認・修正）。キュー先頭項目の起動は通常の `play_video` と同じレジューム解決に従う（暫定） |
 | 項目順の一括書き換え | 任意順並べ替えと投稿日時ソートは共に `playlist_items.position` の一括更新として保存する。DnD・上下ボタンは同一経路（`playlist_reorder`。渡した順と現項目の同一集合検証は書き込みトランザクション内で行い、不一致なら `MismatchedItems` で変更しない）、投稿日時ソートは `playlist_sort` で `published_at` 昇順・NULL 末尾・同キーは安定順（回帰テスト DB-LD-07・DB-LD-08） |
