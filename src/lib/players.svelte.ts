@@ -82,6 +82,15 @@ export type PlaylistEntry = {
 
 export type UiError = { code: string; message: string };
 
+/// invoke の失敗を通知表示用の文字列にする。UiError は message を持つので
+/// それを取り出し、それ以外は文字列化する。
+export function asErrorMessage(e: unknown): string {
+  if (typeof e === "object" && e !== null && "message" in e) {
+    return String((e as UiError).message);
+  }
+  return String(e);
+}
+
 export type YtDlpStatus = { path: string | null; version: string | null };
 
 export type DbStatus = { schemaVersion: number };

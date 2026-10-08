@@ -73,6 +73,11 @@
 - [x] AppImage / MSI のビルドと Tauri updater の検討（AppImage は `pnpm tauri build` で生成確認。MSI は Windows 子セッションでビルドと実機検証を完了（PR #12）。updater の方針は決定記録に記録）
 - [x] 受け入れ：2 窓同時再生と小窓 PiP が動き、配布物が生成される（AppImage は mpv/yt-dlp を同梱しない。実行には両者を PATH から参照できることが前提。yt-dlp 同梱は今後の選択肢として残す）
 
+### Phase 9：監査対応の構造整理（仮採番）
+
+- [x] `src/lib/PlayerCards.svelte` の分割：チャットの状態とイベント購読を `src/lib/chat.svelte.ts`、チャットパネルと関連動画パネルの描画を `src/lib/ChatPanel.svelte` / `src/lib/RelatedPanel.svelte` へ移す
+  フェーズ番号は仮採番で、監査の集約側で正式番号を確定する
+
 ## 残課題（全フェーズ完了後の既知事項）
 
 実装フェーズはすべて完了した。
