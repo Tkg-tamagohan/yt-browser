@@ -64,12 +64,16 @@ function enqueueArm(
   plan: () => { items: string[]; loop: boolean },
 ): Promise<void> {
   const prev = armRuns.get(instanceId) ?? Promise.resolve();
-  const run = prev.then(() =>
-    invoke("player_set_queue", {
+  const run = prev.then(() => {
+    const p = plan();
+    // コマンド引数は items / loopAll（loop_all の camelCase）。
+    // 計画側のキー名（loop）と混ざらないよう明示的に渡す
+    return invoke("player_set_queue", {
       instanceId,
-      ...plan(),
-    }).then(() => undefined),
-  );
+      items: p.items,
+      loopAll: p.loop,
+    }).then(() => undefined);
+  });
   // 後続のチェーンは失敗に関わらず進める（失敗処理は呼び出し側の catch）
   const stored = run.catch(() => {});
   armRuns.set(instanceId, stored);
@@ -115,7 +119,9 @@ export async function cycleLoop(instanceId: number): Promise<void> {
 
 /// 今後の項目列をバックエンドへ武装する。ループモードに応じて順序を選ぶ
 /// （対象の決定は armPlanFor、LP-NN 系回帰テストで検証）。
-/// 以後の継続はバックエンドのキューが担うので、遷移ごとの再武装はしない。
+/// 即時の継続はバックエンドのキューが担う。遷移イベント後の呼び出しは
+/// 遷移中に変わったモードやキューを次周回以降の意図へ直すためのもので、
+/// この登録が遅れても継続自体は保たれる（仕様決定 AD）。
 async function armNext(): Promise<void> {
   if (queue.instanceId === null) return;
   const id = queue.instanceId;
@@ -200,18 +206,29 @@ export function initQueueEvents(): Promise<void> {
           return;
         }
         if (p.instanceId === queue.instanceId) {
-          // 実際に読み込みが始まった項目で位置を照合する。
-          // 継続はバックエンドの武装キューが担うので再武装は不要
-          // （表示用の位置照合のみ。仕様決定 AD）
+          // 実際に読み込みが始まった項目で位置を照合する
           queue.index = reconcileIndex(
             queue.items,
             queue.index,
             p.continuedVideoId,
           );
+          // 遷移中に変わったモードやキューを最新の意図へ直すため、
+          // 照合済みの位置で登録を張り直す。即時の継続はバックエンドの
+          // 武装キューが担うので、この再登録は次周回以降の意図の更新
+          // であり、到着が遅れても継続は保たれる（仕様決定 AD）
+          void armNext();
           return;
         }
-        // キュー外インスタンスの繰り返しもバックエンドの巡回で継続する
-        // （再武装は不要。loopMode が残っていればそのまま回る）
+        // キュー外インスタンスの繰り返し。継続自体はバックエンドの
+        // 巡回が担うが、遷移中の stopQueue/モード変更で古い項目のまま
+        // 登録されるのを防ぐため、実際に読まれた項目で張り直す
+        if (loopMode(p.instanceId) !== "none") {
+          const vid = p.continuedVideoId ?? p.videoId;
+          void enqueueArm(p.instanceId, () => ({
+            items: [vid],
+            loop: true,
+          })).catch(() => clearLoop(p.instanceId));
+        }
       });
     })();
   }
