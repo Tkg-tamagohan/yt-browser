@@ -428,11 +428,10 @@ impl MpvPlayer {
                 self.ipc.command(vec![json!("frame-back-step")]).await?;
             }
             PlayerAction::Pip { enabled } => {
-                // 設定値（pip.geometry / pip.fit_aspect）の解決は
-                // PlayerManager::control で行う。ここに直接届いた場合は
-                // 既定値と保持中の追従フラグで切り替える。
-                let fit = *lock(&self.pip_fit);
-                self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY, fit).await?;
+                // 設定値（pip.geometry）の解決は PlayerManager::control で行う。
+                // ここに直接届いた場合は既定値で切り替える。追従フラグは
+                // 保持中の値（spawn 時の解決値＋set_pip_fit の反映分）を使う
+                self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY).await?;
             }
         }
         Ok(())
@@ -509,12 +508,7 @@ impl MpvPlayer {
     /// 最大化中のウィンドウでは geometry が効かず枠なし最前面の巨大ウィンドウが
     /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除し、
     /// 解除時に復元する。
-    pub(crate) async fn set_pip(
-        &self,
-        enabled: bool,
-        geometry: &str,
-        fit: bool,
-    ) -> Result<(), MpvError> {
+    pub(crate) async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
         // 遷移全体を直列化する。並行する set_pip が state.pip チェックを
         // 同時に通過して pip_prev_maximized を上書きしたり、mpv への
         // プロパティ送信を交互させたりするのを防ぐ
@@ -548,10 +542,12 @@ impl MpvPlayer {
                 tokio::time::sleep(PWM_TRANSITION_WAIT).await;
             }
         }
-        // 基底値と追従フラグを記録してから geometry を適用する
-        // （追従時は pip_target_geometry が映像比率へ内接させる）
+        // 基底値を記録してから geometry を適用する
+        // （追従時は pip_target_geometry が映像比率へ内接させる）。
+        // 追従フラグはここでは書き換えない。設定変更の正規経路は
+        // set_pip_fit で、切替遷移中に呼び出し側が解決した古い値で
+        // 上書きすると遷移中の設定変更が失われるため
         *lock(&self.pip_base) = enabled.then(|| geometry.to_string());
-        *lock(&self.pip_fit) = fit;
         self.ipc
             .command(vec![json!("set_property"), json!("ontop"), json!(enabled)])
             .await?;
@@ -695,18 +691,19 @@ pub(crate) fn split_extra_args(input: &str) -> Vec<String> {
 }
 
 /// `video-params` プロパティから表示アスペクト比を取る（FR-19）。
-/// `aspect`（表示比率）を優先し、無ければ `dw`/`dh`、さらに無ければ
-/// `w`/`h` から算出する。取得不能・非正値・非有限は None。
-fn video_aspect_of(data: &serde_json::Value) -> Option<f64> {
+/// `aspect`（表示比率）を優先し、無効・未取得なら `dw`/`dh`、さらに
+/// `w`/`h` から算出する。各候補は正の有限値だけ受理し、非正値・非有限・
+/// 取得不能は次の候補へフォールバックする。
+pub(crate) fn video_aspect_of(data: &serde_json::Value) -> Option<f64> {
     let dim_ratio = |w: Option<f64>, h: Option<f64>| match (w, h) {
         (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
         _ => None,
     };
     let f = |k: &str| data.get(k).and_then(|v| v.as_f64());
-    f("aspect")
+    let valid = |a: Option<f64>| a.filter(|v| v.is_finite() && *v > 0.0);
+    valid(f("aspect"))
         .or_else(|| dim_ratio(f("dw"), f("dh")))
         .or_else(|| dim_ratio(f("w"), f("h")))
-        .filter(|a| a.is_finite() && *a > 0.0)
 }
 
 /// IPC イベントを状態スナップショットと終了通知へ変換するループ。

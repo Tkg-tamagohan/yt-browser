@@ -140,9 +140,9 @@ pub enum MpvError {
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_pip_geometry, is_valid_hdr_compute_peak, is_valid_pip_geometry,
-        is_valid_tone_mapping, pip_default_enabled, pip_fit_aspect_enabled,
-        player::split_extra_args,
+        fit_pip_geometry, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
+        pip_default_enabled, pip_fit_aspect_enabled,
+        player::{split_extra_args, video_aspect_of},
     };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
@@ -221,10 +221,7 @@ mod tests {
             "480x201-40-40"
         );
         // 位置部なしの geometry も受理される
-        assert_eq!(
-            fit_pip_geometry("480x270", Some(854.0 / 358.0)),
-            "480x201"
-        );
+        assert_eq!(fit_pip_geometry("480x270", Some(854.0 / 358.0)), "480x201");
     }
 
     /// DB-PF-03: 枠内フィット（FR-19）。枠より縦長の動画は幅が縮む。
@@ -271,6 +268,41 @@ mod tests {
         // 受理形式でない文字列は無加工で返す（呼び出し側は検証済み前提だが
         // 壊れた値を増幅させない）
         assert_eq!(fit_pip_geometry("garbage", Some(1.0)), "garbage");
+    }
+
+    /// DB-PF-06: `video-params` からのアスペクト取得（FR-19）。`aspect`
+    /// を優先し、無効値（0・負・非数）は `dw`/`dh`、さらに `w`/`h` へ
+    /// フォールバックする。全候補が無効なら None。
+    #[test]
+    fn video_aspect_of_fallbacks() {
+        use serde_json::json;
+        // aspect 優先
+        assert_eq!(
+            video_aspect_of(&json!({"aspect": 2.385, "w": 854, "h": 358})),
+            Some(2.385)
+        );
+        // aspect が 0/負/非数でも dw/dh へ落ちる（or_else の前に有効性判定する）
+        for bad in [json!(0), json!(-1.0), json!("x")] {
+            assert_eq!(
+                video_aspect_of(&json!({"aspect": bad, "dw": 854, "dh": 358})),
+                Some(854.0 / 358.0),
+                "{bad} なら dw/dh を使うべき"
+            );
+        }
+        // dw/dh が無ければ w/h へ
+        assert_eq!(
+            video_aspect_of(&json!({"w": 854, "h": 358})),
+            Some(854.0 / 358.0)
+        );
+        // 寸法が 0・欠損・非数なら None
+        for bad in [
+            json!({}),
+            json!(null),
+            json!({"w": 854, "h": 0}),
+            json!({"aspect": -2.0, "w": 0, "h": 358}),
+        ] {
+            assert_eq!(video_aspect_of(&bad), None, "{bad} は None になるべき");
+        }
     }
 
     /// HDR 設定の受理集合（仕様決定 Y）。`auto`/空/未定義値は未指定扱いにするため拒否。

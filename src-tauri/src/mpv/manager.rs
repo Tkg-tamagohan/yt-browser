@@ -132,11 +132,16 @@ impl PlayerManager {
         lock(&self.players).insert(
             id,
             PlayerEntry {
-                player,
+                player: player.clone(),
                 pump,
                 emitter,
             },
         );
+        // `pip.fit_aspect` の起動中変更を取りこぼさない。spawn 時の解決値を
+        // 持って登録されるが、set_pip_fit_all は管理表を見るため、登録前に
+        // 保存された変更は届かない。登録時点の DB 値を読み直して反映する
+        // （変化がなければ set_pip_fit 側で早期 return する）
+        player.set_pip_fit(self.pip_fit_aspect()).await;
         // 再生開始時点で履歴行を確保（タイトルは media-title 変化で追従）
         if let Err(e) = self.db.history_upsert(video_id) {
             tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
@@ -209,9 +214,7 @@ impl PlayerManager {
         match action {
             PlayerAction::Pip { enabled } => {
                 let geometry = self.pip_geometry();
-                player
-                    .set_pip(*enabled, &geometry, self.pip_fit_aspect())
-                    .await
+                player.set_pip(*enabled, &geometry).await
             }
             _ => player.control(action).await,
         }
@@ -230,12 +233,7 @@ impl PlayerManager {
 
     /// `pip.fit_aspect` 設定値の解釈（仕様決定 AL）。未設定・その他は on。
     fn pip_fit_aspect(&self) -> bool {
-        pip_fit_aspect_enabled(
-            self.db
-                .setting_get(SETTING_PIP_FIT_ASPECT)
-                .ok()
-                .flatten(),
-        )
+        pip_fit_aspect_enabled(self.db.setting_get(SETTING_PIP_FIT_ASPECT).ok().flatten())
     }
 
     /// `pip.fit_aspect` の変更を稼働中の全インスタンスへ反映する
