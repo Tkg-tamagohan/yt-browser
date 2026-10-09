@@ -175,6 +175,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `pip.geometry` | `WxH±x±y` | PiP 小窓の位置とサイズ（§4.5、既定 `480x270-40-40`） |
 | `pip.quality.format` | `ytdl-format` 式 | PiP インスタンスの既定画質（§4.5）。未設定・空文字は `quality.format` に従う（仕様決定 W） |
 | `pip.default` | `on` / `off` | 再生の既定表示を PiP 小窓にするか（§4.5、仕様決定 AJ）。未設定・その他の値は `on`（PiP が既定） |
+| `pip.fit_aspect` | `on` / `off` | PiP 小窓のサイズを動画の表示アスペクト比へ追従させるか（§4.5、仕様決定 AL）。未設定・その他の値は `on`（追従する）。受理集合は `pip.default` と同一 |
 | `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5） |
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
@@ -349,6 +350,10 @@ mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-ba
 PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動したものを指す。
 アプリのウィンドウにはピクセルを持ち込まないので、WebView との合成は発生しない。
 `ontop`・`border`・`geometry` はいずれも起動後に `set_property` で変更できるため、稼働中インスタンスを後から PiP 化・解除できる（`player_control` の `pip` アクション、`PlayerState.pip` で状態を伝える）。小窓の位置とサイズは設定 `pip.geometry`（mpv の `WxH±x±y` 形式のみ受理、既定 `480x270-40-40`）で変更する。
+
+PiP 小窓のサイズは動画の表示アスペクト比へ追従する（FR-19、仕様決定 AL）。
+追従が有効なとき `pip.geometry` の WxH は上限枠として扱い、映像の表示比率を保ったまま内接するサイズへ丸める（例: `480x270-40-40` の枠に対し約 2.39:1 の動画は約 `480x201`、9:16 の縦動画は約 `152x270`）。位置指定（±x±y）はそのまま維持する。
+アスペクト比は監視済み `video-params` プロパティの `aspect`（代替は `dw`/`dh`、`w`/`h`）から取り、比率が変わったとき・PiP 化したとき・設定変更時に `set_property geometry` で再適用する。比率の再通知や取得不能な変化ではサイズを動かさず、同一値の再送信も抑止するため、ユーザーの手動リサイズは次の比率変化まで維持される。追従の切替は `settings_set` が稼働中インスタンスへ即時反映する。連続再生・ループ遷移では同一プロセスの `video-params` 更新経由で追従が継続する。
 
 起動時の画質式は「`play_video` の `format` 引数（インスタンス別指定）> PiP なら `pip.quality.format` > `quality.format`」の順で解決する（仕様決定 W、実装レベル細目「PiP 画質の解決順」）。稼働中インスタンスの画質はプレイヤーカードの画質選択から `player_control` の `quality` アクションで変えられる。この変更は DB に保存せずセッション内に限り有効で、次回再生は既定画質に戻る（仕様決定 X）。現在の適用値は `PlayerState.format` としてカードへ伝える。
 
