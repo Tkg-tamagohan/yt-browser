@@ -18,6 +18,7 @@
     type Filter,
     type UiError,
   } from "$lib/players.svelte";
+  import { appUpdate, checkForUpdate } from "$lib/updater.svelte";
 
   // 設計書 §4.3 のプリセット表（プレイヤーカードの画質選択と共有）
   const PRESETS = QUALITY_PRESETS;
@@ -695,6 +696,21 @@
         </ul>
       {/if}
     {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.update.title")}</h2>
+    <p class="subtle desc">{t("settings.update.desc")}</p>
+    <div class="row">
+      <button
+        onclick={() => void checkForUpdate(true)}
+        disabled={appUpdate.checking}
+      >
+        {appUpdate.checking
+          ? t("settings.update.checking")
+          : t("settings.update.check")}
+      </button>
+    </div>
   </section>
 
   <button

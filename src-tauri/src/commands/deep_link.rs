@@ -3,16 +3,14 @@
 
 use tauri::State;
 
-use crate::deep_link::PendingOpenUrls;
+use crate::deep_link::{OpenUrlItem, PendingOpenUrls};
 use crate::error::UiError;
 
 /// 保留中の open URL を取り出して空にする。フロントの初期化時に 1 回呼ぶ。
 /// 呼び出しで `ready` が立ち、以後の URL はバッファへ積まず emit だけで届ける。
+/// フロントは listen 完了後に呼ぶこと（先に ready が立つと、リスナー不在の
+/// 間に届いた URL がイベントだけでは届かず失われる）。
 #[tauri::command]
-pub fn take_open_urls(pending: State<'_, PendingOpenUrls>) -> Result<Vec<String>, UiError> {
-    // ロック中に ready を立てる。ここから drain までの間に届いた URL は
-    // バッファを通らず emit で処理される（重複させないための順序）
-    let mut urls = pending.urls.lock().unwrap();
-    pending.mark_ready();
-    Ok(urls.drain(..).collect())
+pub fn take_open_urls(pending: State<'_, PendingOpenUrls>) -> Result<Vec<OpenUrlItem>, UiError> {
+    Ok(pending.drain())
 }

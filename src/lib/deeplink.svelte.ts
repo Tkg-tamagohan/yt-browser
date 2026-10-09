@@ -1,7 +1,7 @@
 /// カスタムスキーム `yt-browser://open?url=<encoded>` で受け取った URL の
 /// 解析と振り分け（FR-17、仕様決定 AC）。
 ///
-/// 受信は Rust 側（src-tauri/src/deep_link.rs）が `app://open-url`
+/// 受信は Rust 側（src-tauri/src/deep_link.rs）が `app://open_url`
 /// イベントと `take_open_urls` の保留バッファで担う。ここではアプリ起動中の
 /// 受信（listen）と起動直前に溜まった分のドレインを両方処理する。
 /// 振り分けは: 動画 URL → その場で再生、プレイリスト URL → ローカル取り込み、
@@ -97,19 +97,22 @@ async function dispatch(target: OpenTarget): Promise<void> {
   }
 }
 
-/// 直近に処理した URL。初期ドレインが emit で処理済みの URL を
-/// 再度拾う稀な競合への重複除去（小さいリングで十分）
-const handled = new Set<string>();
+type OpenUrlItem = { seq: number; url: string };
 
-async function handleRaw(raw: string): Promise<void> {
-  if (handled.has(raw)) return;
-  handled.add(raw);
-  if (handled.size > 50) {
+/// 処理済みの配送 seq。保留ドレインとイベントで同一配送が二度届く場合の
+/// 重複除去に使う。URL ではなく配送単位で識別するので、同じリンクを
+/// 後で再度開く操作は新しい seq を持ち、常に処理される
+const handledSeq = new Set<number>();
+
+async function handleItem(item: OpenUrlItem): Promise<void> {
+  if (handledSeq.has(item.seq)) return;
+  handledSeq.add(item.seq);
+  if (handledSeq.size > 200) {
     // Set は挿入順に走査するので先頭を捨てれば古い順に減らせる
-    const first = handled.values().next().value;
-    if (first !== undefined) handled.delete(first);
+    const first = handledSeq.values().next().value;
+    if (first !== undefined) handledSeq.delete(first);
   }
-  const target = parseOpenUrl(raw);
+  const target = parseOpenUrl(item.url);
   if (target === null) {
     notify(t("deeplink.unsupported"));
     return;
@@ -118,17 +121,28 @@ async function handleRaw(raw: string): Promise<void> {
 }
 
 /// deep link 処理を開始する。返した関数は解除用（$effect のクリーンアップ）。
+/// 初期化は listen 登録の完了を待ってから take_open_urls を呼ぶ
+/// （先に drain すると Rust 側の ready が立ち、リスナー不在のまま
+/// emit だけになった URL が失われる）
 export function initDeepLinks(): () => void {
-  // イベント名はリテラルで書く（docs 整合チェックが emit/listen の
-  // イベント名引数を設計書 §3.2 と照合するため定数化しない）
-  const unlisten = listen<string>("app://open_url", (ev) => {
-    void handleRaw(ev.payload);
-  });
-  // リスナー登録前に溜まった分を回収する（cold start や登録前受信）
-  void invoke<string[]>("take_open_urls").then((urls) => {
-    for (const url of urls) void handleRaw(url);
-  });
-  return () => {
-    void unlisten.then((f) => f());
-  };
+  let unlisten: (() => void) | undefined;
+  void (async () => {
+    try {
+      // イベント名はリテラルで書く（docs 整合チェックが emit/listen の
+      // イベント名引数を設計書 §3.2 と照合するため定数化しない）
+      unlisten = await listen<OpenUrlItem>("app://open_url", (ev) => {
+        void handleItem(ev.payload);
+      });
+    } catch (e) {
+      // リスナー登録に失敗しても保留分だけは回収を試みる
+      notify(t("deeplink.playFailed", { message: asErrorMessage(e) }));
+    }
+    try {
+      const items = await invoke<OpenUrlItem[]>("take_open_urls");
+      for (const item of items) void handleItem(item);
+    } catch (e) {
+      notify(t("deeplink.playFailed", { message: asErrorMessage(e) }));
+    }
+  })();
+  return () => unlisten?.();
 }

@@ -138,7 +138,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `playlist_reverse` は項目順の一括反転（one-shot、FR-11、仕様決定 Z）。読み出しと書き込みを同一トランザクションで行い、YouTube が新しい順で返すプレイリストを古い順へ変える用途に使う。
 フロント側では一括操作（`playlist_sort`・`playlist_reverse`）の実行中に行の並べ替え保存を開始せず、開始前に飛行中の `playlist_reorder` の確定を待つ。一括操作と個別並べ替えの適用順を「確定した並べ替え → 一括操作」に固定し、結果の反映は項目取得の世代管理で行う（操作後は必ず確定済みの DB 順を再取得して表示する）。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
-`take_open_urls` は deep link の保留分を取り出す初期ドレイン用で、呼び出し後は `app://open_url` イベント経路のみで届く（§3.4）。
+`take_open_urls` は deep link の保留分を取り出す初期ドレイン用で、呼び出し後は `app://open_url` イベント経路のみで届く。戻り値とイベントは `{seq, url}` で、seq は重複除去用の配送識別子（§3.4）。
 
 ### 3.2 イベント（Rust → フロント）
 
@@ -152,7 +152,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
-| `app://open_url` | URL 文字列 | deep link（`yt-browser://open?url=`）の受信（§3.4） |
+| `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=`）の受信（§3.4） |
 
 `player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、サンプリングで間引いて送る。
 
@@ -186,8 +186,13 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
   その argv をコールバックで既存プロセスへ渡す
 
 リスナー登録前に届いた分は `PendingOpenUrls` へ溜め、`take_open_urls`
-コマンドの初回ドレインで回収する。ドレインで `ready` が立ち、以後は
-イベント経路のみを使う（両方へ渡すと重複処理になる）。
+コマンドの初回ドレインで回収する。フロントは listen 登録の完了後に
+drain を呼ぶ（先に drain すると ready が立ち、リスナー不在の間に届いた
+URL がイベントだけでは届かず失われる）。ドレインで `ready` が立ち以後は
+イベント経路のみを使う。ready 判定とバッファ挿入は同じ Mutex 内で行い、
+切替中の URL 損失を防ぐ。各配送には `seq` を振り、保留分とイベントで
+同一配送が二度届く場合にフロントが seq で重複除去する（URL ではなく
+配送単位で識別するため、同じリンクの再オープンは常に処理される）。
 フロント側の振り分け（`deeplink.svelte.ts`）は、動画 URL → `play_video` で
 その場で再生、プレイリスト URL → `playlist_import` で取り込み、
 `watch`+`list` 複合は動画として扱う。非対応 URL は通知のみで落とさない。
@@ -613,6 +618,7 @@ GPU なし環境（ソフトウェアレンダリング）の webkit2gtk で、D
 - WebView は `csp` を既定 `default-src 'self'`、サムネイル表示のために `img-src https://i.ytimg.com https://*.ggpht.com` だけを許可する
 - 外部リンクは WebView 内遷移ではなくシステムブラウザに開く
 - アカウント連携を持たないため Cookie やトークンの保存は発生しない（仕様決定 H）
+- アプリの自動更新は tauri-plugin-updater で `latest.json`（GitHub Releases の `releases/latest/download/latest.json`）を確認する。起動時の自動確認と設定画面の手動確認を併用し、検知時は確認ダイアログ→承認でダウンロード・インストール・再起動する（FR-15、仕様決定 AB）。対象は AppImage と NSIS。更新成果物は minisign で署名し、公開鍵を `tauri.conf.json` の `plugins.updater.pubkey`、秘密鍵を GitHub Secrets（`TAURI_SIGNING_PRIVATE_KEY`）に置く。確認・ダウンロードはネイティブ側で行うため WebView の CSP には影響しない
 
 ## 11. リポジトリ構成
 
@@ -640,7 +646,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings）
-    lib/              # PlayerCards.svelte・パネル描画（ChatPanel.svelte・RelatedPanel.svelte）・VideoActions・行骨格（VideoRow.svelte）・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・chat.svelte.ts・notices.svelte.ts・library.ts）・表示フォーマッタ（format.ts）・行アクション配線（videoActions.svelte.ts）・PiP 設定の UI 側定数（pip.ts）・deep link の解析と振り分け（deeplink.svelte.ts）
+    lib/              # PlayerCards.svelte・パネル描画（ChatPanel.svelte・RelatedPanel.svelte）・VideoActions・行骨格（VideoRow.svelte）・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・chat.svelte.ts・notices.svelte.ts・library.ts）・表示フォーマッタ（format.ts）・行アクション配線（videoActions.svelte.ts）・PiP 設定の UI 側定数（pip.ts）・自動更新の共有状態（updater.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）
   extension/          # MV3 拡張（yt-browser:// を開く launcher。manifest.json + background.js）
   tauri.conf.json
   package.json
