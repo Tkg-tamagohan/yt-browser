@@ -778,6 +778,51 @@ fn playlist_add_many_appends_and_dedupes() {
     ));
 }
 
+/// DB-LD-09: 項目順の一括反転（FR-11、仕様決定 Z）。
+/// 現在の項目が逆順で保存され、未登録プレイリストは NotFound。
+/// 反転は冪等で、2 回適用すると元の順に戻る。
+#[test]
+fn playlist_reverse_flips_positions() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl = db.playlist_create("反転").unwrap();
+    db.playlist_add_many(
+        pl.id,
+        &[
+            vref("aaaaaaaaaa1", "A"),
+            vref("bbbbbbbbbb2", "B"),
+            vref("cccccccccc3", "C"),
+        ],
+    )
+    .unwrap();
+    db.playlist_reverse(pl.id).unwrap();
+    let items = db.playlist_items(pl.id).unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["cccccccccc3", "bbbbbbbbbb2", "aaaaaaaaaa1"]
+    );
+    assert_eq!(
+        items.iter().map(|i| i.position).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    db.playlist_reverse(pl.id).unwrap();
+    assert_eq!(
+        db.playlist_items(pl.id)
+            .unwrap()
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3"]
+    );
+    // 空のプレイリストは成功のまま何もしない
+    let empty = db.playlist_create("空").unwrap();
+    db.playlist_reverse(empty.id).unwrap();
+    assert!(db.playlist_items(empty.id).unwrap().is_empty());
+    assert!(matches!(db.playlist_reverse(999), Err(DbError::NotFound)));
+}
+
 /// DB-LD-04: 履歴一覧は新しい順、history_remove で個別削除（FR-7、仕様決定 I）。
 #[test]
 fn history_list_and_remove() {

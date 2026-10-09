@@ -258,3 +258,14 @@ pub fn playlist_sort(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError>
         e => e.into(),
     })
 }
+
+/// `playlist_reverse`（FR-11、仕様決定 Z）。
+/// 項目順を一括で反転する（one-shot）。YouTube が新しい順で返す
+/// プレイリストを投稿日時の昇順へ変える用途に使う。
+#[tauri::command]
+pub fn playlist_reverse(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
+    if playlist_id <= 0 {
+        return Err(UiError::invalid_input("playlist_id が不正です"));
+    }
+    Ok(db.playlist_reverse(playlist_id)?)
+}

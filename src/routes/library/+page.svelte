@@ -389,6 +389,27 @@
     }
   }
 
+  /// 現在の項目順を一括で反転（仕様決定 Z）。
+  /// 新しい順で取り込んだプレイリストを古い順へ変える用途
+  async function reverseItems(): Promise<void> {
+    if (selectedId === null || sortBusy) return;
+    sortBusy = true;
+    const plId = selectedId;
+    try {
+      await invoke("playlist_reverse", { playlistId: plId });
+      playlistItems = await invoke<PlaylistEntry[]>("playlist_items", {
+        playlistId: plId,
+      });
+      notify(t("library.playlist.reversed"));
+    } catch (e) {
+      notify(
+        t("library.playlist.reorderFailed", { message: asErrorMessage(e) }),
+      );
+    } finally {
+      sortBusy = false;
+    }
+  }
+
   /// その項目からの連続再生（FR-10、仕様決定 S）。選択項目を通常再生で起動し、
   /// 残りをキューに登録する。起動に使う resume は通常の再生と同じく true
   /// （暫定: キュー先頭項目もレジュームする）
@@ -628,6 +649,12 @@
               disabled={sortBusy}
               onclick={() => void sortByPublished()}
               >{t("library.playlist.sort")}</button
+            >
+            <button
+              class="link"
+              disabled={sortBusy}
+              onclick={() => void reverseItems()}
+              >{t("library.playlist.reverse")}</button
             >
             <span class="subtle drag-hint">{t("library.playlist.dragHint")}</span>
           </div>

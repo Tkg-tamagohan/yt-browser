@@ -88,6 +88,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_import` | `url`, `name?` | `Result<Playlist>` |
 | `playlist_reorder` | `playlist_id`, `video_ids` | `Result<()>` |
 | `playlist_sort` | `playlist_id` | `Result<()>` |
+| `playlist_reverse` | `playlist_id` | `Result<()>` |
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
@@ -133,6 +134,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 現在の項目と同一集合でない場合は変更せずエラーとする（並行編集の誤適用防止。
 検証は `playlist_items` の更新と同じ書き込みトランザクション内で行う）。
 `playlist_sort` は `published_at` 昇順の一括ソート（one-shot）。`published_at` の無い項目は末尾に寄せ、同キー内は現在順を保つ。
+`playlist_reverse` は項目順の一括反転（one-shot、FR-11、仕様決定 Z）。読み出しと書き込みを同一トランザクションで行い、YouTube が新しい順で返すプレイリストを古い順へ変える用途に使う。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
 
 ### 3.2 イベント（Rust → フロント）
