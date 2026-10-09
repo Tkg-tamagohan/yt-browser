@@ -162,21 +162,25 @@ impl PlayerManager {
         });
     }
 
-    /// 連続再生の次項目を武装・解除する（`player_set_next` 経路、FR-10、仕様決定 S）。
-    /// 渡した動画 ID は次の終端（自然終了・途中失敗）で同一 mpv が先頭から再生する。
-    /// None は次項目の解除。キュー先頭項目やキュー外のインスタンスでは MpvError::NoSuchInstance。
-    pub async fn set_next(
+    /// 連続再生の武装キューを登録する（`player_set_queue` 経路、FR-10、仕様決定 S・AD）。
+    /// `items` は今後再生する項目の順序列。終端（自然終了・途中失敗）のたびに
+    /// 同一 mpv が先頭から再生する。`loop_all` で取り出し分を末尾へ戻して巡回する。
+    /// 空列は武装の解除。存在しないインスタンスでは MpvError::NoSuchInstance。
+    /// `base_seq` 指定時は取り出し世代が一致するときだけ適用し、
+    /// 拒否した場合は Ok(false) を返す（世代ずれはエラーではない）。
+    pub async fn set_queue(
         &self,
         instance_id: u32,
-        video_id: Option<String>,
-    ) -> Result<(), MpvError> {
+        items: Vec<String>,
+        loop_all: bool,
+        base_seq: Option<u64>,
+    ) -> Result<bool, MpvError> {
         let player = {
             let g = lock(&self.players);
             g.get(&instance_id).map(|e| e.player.clone())
         }
         .ok_or(MpvError::NoSuchInstance(instance_id))?;
-        player.set_next(video_id);
-        Ok(())
+        Ok(player.set_queue(items, loop_all, base_seq))
     }
 
     /// 稼働中インスタンスのスナップショット一覧。
@@ -315,6 +319,7 @@ impl PlayerManager {
                             reason,
                             continued,
                             continued_video_id,
+                            armed_seq: player.armed_seq(),
                         };
                         if let Err(e) = app.emit("player://ended", &payload) {
                             tracing::warn!(error = %e, "player://ended の送出に失敗");

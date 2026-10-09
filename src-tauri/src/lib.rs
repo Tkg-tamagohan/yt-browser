@@ -173,7 +173,7 @@ pub fn run() {
             commands::player_list,
             commands::player_control,
             commands::player_close,
-            commands::player_set_next,
+            commands::player_set_queue,
             commands::history_get,
             commands::history_list,
             commands::history_remove,

@@ -1,15 +1,18 @@
-//! 連続再生キューとループ（FR-10、仕様決定 S・AA）。
-//! キューはフロント側のセッション状態として持つ。次項目は `player_set_next`
-//! でバックエンドへ事前登録（武装）し、mpv の終端イベントで同一インスタンスが
-//! 読み替える。登録済みプレイリストと実際に流れた項目がずれる
-//! （queue drift）のは仕様上の制約として許容する。
+//! 連続再生キューとループ（FR-10、仕様決定 S・AA・AD）。
+//! キューはフロント側のセッション状態として持つ。今後の項目は
+//! `player_set_queue` で順序列入れてバックエンドへ事前登録（武装）し、
+//! mpv の終端イベントで同一インスタンスが読み替える。
+//! 遷移のたびにフロントへ再登録を要求しない（再登録が終端に間に合わず
+//! 途切れる競合への対策、仕様決定 AD）。登録済みプレイリストと実際に流れた
+//! 項目がずれる（queue drift）のは仕様上の制約として許容する。
 //! ループ状態もインスタンス別にフロントが持ち、武装対象の選択で実現する
-//! （1 項目は現在項目を、全体は末尾到達で先頭を、キュー無しは現在項目を武装）。
+//! （1 項目は現在項目のみ、全体は末尾到達で先頭へ戻る回転順、キュー無しは
+//! 現在項目を巡回登録）。
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { playerStates, type PlayerEnded } from "$lib/players.svelte";
-import { armTargetFor, reconcileIndex } from "./queue-logic";
+import { armPlanFor, reconcileIndex } from "./queue-logic";
 
 /// 稼働中キューの状態。`items` は動画 ID 列、`index` は現在の再生位置。
 /// `instanceId` はキューを背負うプレイヤーインスタンス。
@@ -48,25 +51,57 @@ export function clearLoop(instanceId: number): void {
   setLoopMode(instanceId, "none");
 }
 
-// `player_set_next` の直列化（インスタンスごと）。
+// `player_set_queue` の直列化（インスタンスごと）。
 // invoke の到着順は保証されないため、武装・解除・再武装を一本の
 // Promise チェーンに載せ、各操作は実行時点で対象を評価する。
 // これにより最後に予約した意図だけが必ず backend へ届く。
 const armRuns = new Map<number, Promise<void>>();
 
-/// インスタンスへの `player_set_next` を直列化して送る。
-/// `target` は実行時点で評価し、送信順序をチェーンで固定する。
+// `player://ended` で観測した取り出し世代（インスタンスごと）。
+// 武装要求はこの値を `baseSeq` に載せ、世代がずれていれば backend が
+// 拒否する（古いイベントに基づく置換で消費済み項目が復活しないため）
+const armedSeqs = new Map<number, number>();
+
+// 世代ずれで backend に拒否されたまま未反映の意図を持つインスタンス。
+// 次の ended イベント（最新世代）で再適用する。
+const rearmPending = new Set<number>();
+
+/// インスタンスへの `player_set_queue` を直列化して送る。
+/// `plan` は実行時点で評価し、送信順序をチェーンで固定する。
 function enqueueArm(
   instanceId: number,
-  target: () => string | null,
+  plan: () => { items: string[]; loop: boolean },
 ): Promise<void> {
   const prev = armRuns.get(instanceId) ?? Promise.resolve();
-  const run = prev.then(() =>
-    invoke("player_set_next", {
+  const run = prev.then(() => {
+    const p = plan();
+    // コマンド引数は items / loopAll / baseSeq（snake_case の camelCase）。
+    // 計画側のキー名（loop）と混ざらないよう明示的に渡す。
+    // baseSeq は計画を評価した時点の観測世代に束ねる
+    const sentSeq = armedSeqs.get(instanceId) ?? 0;
+    return invoke<boolean>("player_set_queue", {
       instanceId,
-      videoId: target(),
-    }).then(() => undefined),
-  );
+      items: p.items,
+      loopAll: p.loop,
+      baseSeq: sentSeq,
+    }).then((applied) => {
+      if (applied) {
+        rearmPending.delete(instanceId);
+        return;
+      }
+      // 世代ずれで拒否された意図は保留して再適用する。
+      // 拒否応答が世代を進めた終端イベントより遅れることがあるため、
+      // 観測世代が送信時より新しければ次イベントを待たず即時に
+      // 最新意図で再送する（武装が尽きると意図が失われるため）。
+      // 未着なら次の ended イベント（最新世代）で再適用する
+      rearmPending.add(instanceId);
+      if ((armedSeqs.get(instanceId) ?? 0) > sentSeq) {
+        void enqueueArm(instanceId, () => latestPlan(instanceId)).catch(
+          () => {},
+        );
+      }
+    });
+  });
   // 後続のチェーンは失敗に関わらず進める（失敗処理は呼び出し側の catch）
   const stored = run.catch(() => {});
   armRuns.set(instanceId, stored);
@@ -76,6 +111,17 @@ function enqueueArm(
     if (armRuns.get(instanceId) === stored) armRuns.delete(instanceId);
   });
   return run;
+}
+
+/// 実行時点の最新意図から武装計画を作る（世代ずれ拒否後の即時再適用用）。
+/// キュー中は armPlanFor、キュー外はループモードに応じた単独項目または解除
+function latestPlan(instanceId: number): { items: string[]; loop: boolean } {
+  if (instanceId === queue.instanceId) {
+    return armPlanFor(loopMode(instanceId), queue.items, queue.index);
+  }
+  if (loopMode(instanceId) === "none") return { items: [], loop: false };
+  const vid = playerStates.list.get(instanceId)?.videoId;
+  return { items: vid ? [vid] : [], loop: true };
 }
 
 /// ループ状態を なし → 全体 → 1 項目 の順に切り替える（仕様決定 AA）。
@@ -88,15 +134,20 @@ export async function cycleLoop(instanceId: number): Promise<void> {
   try {
     if (instanceId === queue.instanceId) {
       await enqueueArm(instanceId, () =>
-        armTargetFor(loopMode(instanceId), queue.items, queue.index),
+        armPlanFor(loopMode(instanceId), queue.items, queue.index),
       );
       return;
     }
-    // キュー外インスタンス: none 以外は現在項目を武装（繰り返し）。none は解除
+    // キュー外インスタンス: none 以外は現在項目のみの巡回（繰り返し）。none は解除
     await enqueueArm(instanceId, () =>
       loopMode(instanceId) === "none"
-        ? null
-        : (playerStates.list.get(instanceId)?.videoId ?? null),
+        ? { items: [], loop: false }
+        : {
+            items: [playerStates.list.get(instanceId)?.videoId ?? ""].filter(
+              (v) => v !== "",
+            ),
+            loop: true,
+          },
     );
   } catch {
     // インスタンスが既に無い場合はキュー・ループ状態を畳む
@@ -105,14 +156,17 @@ export async function cycleLoop(instanceId: number): Promise<void> {
   }
 }
 
-/// 次項目をバックエンドへ武装する。ループモードに応じて対象を選ぶ
-/// （対象の決定は armTargetFor、LP-NN 系回帰テストで検証）。
+/// 今後の項目列をバックエンドへ武装する。ループモードに応じて順序を選ぶ
+/// （対象の決定は armPlanFor、LP-NN 系回帰テストで検証）。
+/// 即時の継続はバックエンドのキューが担う。遷移イベント後の呼び出しは
+/// 遷移中に変わったモードやキューを次周回以降の意図へ直すためのもので、
+/// この登録が遅れても継続自体は保たれる（仕様決定 AD）。
 async function armNext(): Promise<void> {
   if (queue.instanceId === null) return;
   const id = queue.instanceId;
   try {
     await enqueueArm(id, () =>
-      armTargetFor(loopMode(id), queue.items, queue.index),
+      armPlanFor(loopMode(id), queue.items, queue.index),
     );
   } catch {
     // インスタンスが既に無い場合はキューを畳む
@@ -152,7 +206,9 @@ export function stopQueue(): void {
       null;
     queue.instanceId = null;
     void enqueueArm(id, () =>
-      loopMode(id) === "none" ? null : vid,
+      loopMode(id) === "none"
+        ? { items: [], loop: false }
+        : { items: vid === null ? [] : [vid], loop: true },
     ).catch(() => {});
   }
   queue.playlistId = null;
@@ -182,31 +238,39 @@ export function initQueueEvents(): Promise<void> {
     initPromise = (async () => {
       await listen<PlayerEnded>("player://ended", (ev) => {
         const p = ev.payload;
+        // 観測世代を更新してから各分岐で使う
+        armedSeqs.set(p.instanceId, p.armedSeq);
         if (!p.continued) {
           // 終端（末尾・途中失敗・手動停止）: キューとループ状態を畳む
           if (p.instanceId === queue.instanceId) stopQueue();
           clearLoop(p.instanceId);
+          armedSeqs.delete(p.instanceId);
+          rearmPending.delete(p.instanceId);
           return;
         }
         if (p.instanceId === queue.instanceId) {
-          // 実際に読み込みが始まった項目で位置を照合する。
-          // 遷移とモード変更が重なってもイベント到着時のモードは
-          // 直前の遷移を表さないため、位置はロード済み項目で決める
+          // 実際に読み込みが始まった項目で位置を照合する
           queue.index = reconcileIndex(
             queue.items,
             queue.index,
             p.continuedVideoId,
           );
-          void armNext();
+          // 意図の変更が世代ずれで backend に拒否されていたときだけ
+          // 最新世代で再適用する。通常の遷移では deque を置き換えない
+          // （古い置換が消費済み項目を復活させるのを防ぐ、仕様決定 AD）
+          if (rearmPending.has(p.instanceId)) void armNext();
           return;
         }
-        // キュー外インスタンスの繰り返し（ループで武装した項目）。
-        // モードが継続していれば次周回のために再武装する
-        if (loopMode(p.instanceId) !== "none") {
+        // キュー外インスタンス。継続は backend の巡回が担うので、
+        // 未反映の意図があるときだけ再適用する（遷移中の stopQueue や
+        // モード変更が世代ずれで省かれたケース。実際に読まれた項目で張り直す）
+        if (rearmPending.has(p.instanceId)) {
           const vid = p.continuedVideoId ?? p.videoId;
-          void enqueueArm(p.instanceId, () => vid).catch(() =>
-            clearLoop(p.instanceId),
-          );
+          void enqueueArm(p.instanceId, () =>
+            loopMode(p.instanceId) === "none"
+              ? { items: [], loop: false }
+              : { items: [vid], loop: true },
+          ).catch(() => clearLoop(p.instanceId));
         }
       });
     })();

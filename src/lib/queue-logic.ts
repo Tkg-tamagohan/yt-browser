@@ -4,16 +4,24 @@
 
 import type { LoopMode } from "./queue.svelte";
 
-/// 次に武装すべき項目。1 項目ループは現在項目、全体ループは末尾到達で
-/// 先頭、なしは次項目（末尾なら null で武装解除）。
-export function armTargetFor(
+/// バックエンドへ登録する武装キュー（FR-16、仕様決定 AA・AD）。
+/// `items` は今後再生する順序列、`loop` は取り出し分を末尾へ戻す巡回。
+/// - `one`: 現在項目だけの巡回（同項目の繰り返し）
+/// - `all`: 次項目以降 + 先頭〜現在項目の回転順を巡回（末尾→先頭巻き戻り）
+/// - `none`: 次項目以降を順に消費（空なら武装解除）
+export function armPlanFor(
   mode: LoopMode,
   items: string[],
   index: number,
-): string | null {
-  if (mode === "one") return items[index] ?? null;
-  if (mode === "all") return items[index + 1] ?? items[0] ?? null;
-  return items[index + 1] ?? null;
+): { items: string[]; loop: boolean } {
+  if (mode === "one") {
+    const cur = items[index];
+    return { items: cur === undefined ? [] : [cur], loop: true };
+  }
+  if (mode === "all") {
+    return { items: [...items.slice(index + 1), ...items.slice(0, index + 1)], loop: true };
+  }
+  return { items: items.slice(index + 1), loop: false };
 }
 
 /// `player://ended` の `continuedVideoId`（実際に読み込みが始まった項目）から

@@ -6,7 +6,7 @@ use super::{IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
 use crate::model::{PlayStatus, PlayerAction, PlayerState};
 use crate::util::lock;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -54,12 +54,29 @@ pub(crate) struct MpvPlayer {
     sponsor: Mutex<SponsorState>,
     /// PiP 化で解除した最大化状態。PiP 解除時に復元する。
     pip_prev_maximized: Mutex<bool>,
-    /// 連続再生で武装した次項目の動画 ID（FR-10、仕様決定 S）。
-    /// 自然終了・途中失敗の終端で emitter が取り出して同一 mpv で再生する。
-    next_item: Mutex<Option<String>>,
+    /// 連続再生の武装キュー（FR-10、仕様決定 S・AD）。
+    /// 終端のたびに emitter が先頭を取り出して同一 mpv で再生する。
+    /// 将来の項目をまとめて登録する方式で、継続のたびにフロントの
+    /// 再武装を待つ設計（再武装が終端に間に合わず途切れる競合があった）を
+    /// 置き換えたもの（仕様決定 AD）。
+    armed: Mutex<ArmedQueue>,
     /// set_pip の遷移を直列化する。並行呼び出しが state.pip のチェックを
     /// 同時に通過して保存値や mpv プロパティを競合させるのを防ぐ
     pip_op: tokio::sync::Mutex<()>,
+}
+
+/// 連続再生の武装キュー。終端ごとに先頭を消費し、`loop_all` なら
+/// 消費分を末尾へ戻して循環させる。フロントの再武装を待たずに
+/// 複数項目先まで継続できる（仕様決定 AD）。
+/// `seq` は取り出しの世代番号（取り出しのたびに +1）。set_queue の
+/// 置き換え時に世代を比較し、古いイベントに基づく置換を拒否する。
+/// set_queue ではリセットしない（置き換えは意図の更新であり、
+/// 消費済み項目を取り消さない）。
+#[derive(Default)]
+struct ArmedQueue {
+    items: VecDeque<String>,
+    loop_all: bool,
+    seq: u64,
 }
 
 /// SponsorBlock の判定状態。区間は再生開始後のバックグラウンド取得で差し込まれる。
@@ -215,7 +232,7 @@ impl MpvPlayer {
             sponsor: Mutex::new(SponsorState::default()),
             pip_prev_maximized: Mutex::new(false),
             pip_op: tokio::sync::Mutex::new(()),
-            next_item: Mutex::new(None),
+            armed: Mutex::new(ArmedQueue::default()),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -268,14 +285,48 @@ impl MpvPlayer {
         lock(&self.sponsor).segments = segments;
     }
 
-    /// 連続再生の次項目を武装・解除する（`player_set_next` 経路）。
-    pub(crate) fn set_next(&self, video_id: Option<String>) {
-        *lock(&self.next_item) = video_id;
+    /// 連続再生の武装を登録する（`player_set_queue` 経路）。
+    /// `items` は今後再生する項目の順序列（現在項目は含まないが、
+    /// 全体ループではフロント側が現在項目を末尾に置いて渡す）。
+    /// `loop_all` が true のとき、取り出した項目を末尾へ戻して巡回する。
+    /// 1 項目のみのキューは同一項目の繰り返しになる（1 項目ループ）。
+    ///
+    /// `base_seq` はフロントが計画した時点で見ていた取り出し世代。
+    /// 指定があり現在世代と食い違うとき（その間に別の項目を取り出した）
+    /// 置き換えを拒否して false を返す。古い置換で消費済みの項目が
+    /// 復活する順序ずれを防ぐため。`None` は無条件に適用する。
+    /// seq は置き換えでリセットしない。
+    pub(crate) fn set_queue(
+        &self,
+        items: Vec<String>,
+        loop_all: bool,
+        base_seq: Option<u64>,
+    ) -> bool {
+        let mut g = lock(&self.armed);
+        if base_seq.is_some_and(|s| s != g.seq) {
+            return false;
+        }
+        g.items = items.into();
+        g.loop_all = loop_all;
+        true
     }
 
-    /// 武装済みの次項目を取り出す（emitter の終端分岐で 1 回消費）。
+    /// 武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
+    /// `loop_all` のとき取り出した項目を末尾へ戻し、キューが枯渇しない。
+    /// 取り出しのたびに世代番号を進める（空なら世代も据え置き）。
     pub(crate) fn take_next(&self) -> Option<String> {
-        lock(&self.next_item).take()
+        let mut g = lock(&self.armed);
+        let next = g.items.pop_front()?;
+        g.seq += 1;
+        if g.loop_all {
+            g.items.push_back(next.clone());
+        }
+        Some(next)
+    }
+
+    /// 取り出し世代（`player://ended` に載せてフロントの置換基準に使う）。
+    pub(crate) fn armed_seq(&self) -> u64 {
+        lock(&self.armed).seq
     }
 
     /// 連続再生: 同じ mpv プロセスで別動画を先頭から再生する。
