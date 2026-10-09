@@ -170,6 +170,7 @@ pub fn run() {
             commands::playlist_import,
             commands::playlist_reorder,
             commands::playlist_sort,
+            commands::playlist_reverse,
             commands::ytdlp_status,
             commands::ytdlp_update,
             commands::subscribe_channel,

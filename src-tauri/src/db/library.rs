@@ -261,6 +261,41 @@ impl Db {
         Ok(())
     }
 
+    /// 項目順の一括反転（FR-11、仕様決定 Z）。
+    /// 読み出しと書き込みを同一書き込みトランザクションで行い、
+    /// 並行編集の途中状態を拾わない。存在しないプレイリストは `DbError::NotFound`。
+    pub fn playlist_reverse(&self, playlist_id: i64) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
+            [playlist_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(DbError::NotFound);
+        }
+        let mut current: Vec<String> = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT video_id FROM playlist_items WHERE playlist_id = ?1 ORDER BY position",
+            )?;
+            let mut rows = stmt.query([playlist_id])?;
+            while let Some(row) = rows.next()? {
+                current.push(row.get(0)?);
+            }
+        }
+        for (pos, vid) in current.iter().rev().enumerate() {
+            tx.execute(
+                "UPDATE playlist_items SET position = ?3
+                 WHERE playlist_id = ?1 AND video_id = ?2",
+                rusqlite::params![playlist_id, vid, pos as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn playlist_remove(&self, playlist_id: i64, video_id: &str) -> Result<(), DbError> {
         let conn = self.lock()?;
         conn.execute(

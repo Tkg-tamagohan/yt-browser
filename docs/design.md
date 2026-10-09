@@ -88,6 +88,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_import` | `url`, `name?` | `Result<Playlist>` |
 | `playlist_reorder` | `playlist_id`, `video_ids` | `Result<()>` |
 | `playlist_sort` | `playlist_id` | `Result<()>` |
+| `playlist_reverse` | `playlist_id` | `Result<()>` |
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
@@ -133,6 +134,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 現在の項目と同一集合でない場合は変更せずエラーとする（並行編集の誤適用防止。
 検証は `playlist_items` の更新と同じ書き込みトランザクション内で行う）。
 `playlist_sort` は `published_at` 昇順の一括ソート（one-shot）。`published_at` の無い項目は末尾に寄せ、同キー内は現在順を保つ。
+`playlist_reverse` は項目順の一括反転（one-shot、FR-11、仕様決定 Z）。読み出しと書き込みを同一トランザクションで行い、YouTube が新しい順で返すプレイリストを古い順へ変える用途に使う。
+フロント側では一括操作（`playlist_sort`・`playlist_reverse`）の実行中に行の並べ替え保存を開始せず、開始前に飛行中の `playlist_reorder` の確定を待つ。一括操作と個別並べ替えの適用順を「確定した並べ替え → 一括操作」に固定し、結果の反映は項目取得の世代管理で行う（操作後は必ず確定済みの DB 順を再取得して表示する）。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
 
 ### 3.2 イベント（Rust → フロント）

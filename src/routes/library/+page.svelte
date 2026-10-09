@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
-  import { t } from "$lib/i18n";
+  import { t, type MessageKey } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
   import { loadLibrary } from "$lib/library";
@@ -291,39 +291,72 @@
     }
   }
 
+  /// 並べ替え保存の直列化。飛行中に次の変更が来たら最新順で追い送りし、
+  /// 一括操作（ソート・反転）の実行中は新しい保存を始めない。
+  /// 一括操作側は reorderRun を await して保存の確定を待つ
+  let reorderRun: Promise<void> | null = null;
+  let reorderAgain = false;
+
   /// 現在の項目順で playlist_reorder を呼び、失敗時は一覧を取り直す。
   /// 操作直後のローカル順を維持して再取得はしない（他操作との競合で
   /// 古い応答が上書きしないよう世代チェックは selectPlaylist 側に委ねる）
   async function persistOrder(): Promise<void> {
-    if (selectedId === null || reorderBusy) return;
-    reorderBusy = true;
-    const plId = selectedId;
-    try {
-      await invoke("playlist_reorder", {
-        playlistId: plId,
-        videoIds: playlistItems.map((i) => i.videoId),
-      });
-    } catch (e) {
-      notify(
-        t("library.playlist.reorderFailed", { message: asErrorMessage(e) }),
-      );
-      // 失敗時は DB の内容に収束させる
-      if (selectedId === plId) {
-        try {
-          playlistItems = await invoke<PlaylistEntry[]>("playlist_items", {
-            playlistId: plId,
-          });
-        } catch {
-          // 取り直しの失敗は既存表示のまま
-        }
-      }
-    } finally {
-      reorderBusy = false;
+    if (selectedId === null || sortBusy) return;
+    if (reorderRun) {
+      // 実行中の保存に合流し、最新の表示順で一周追加させる。
+      // 合流で捨てると先の確定順が巻き戻って保存されるため
+      reorderAgain = true;
+      return reorderRun;
     }
+    reorderBusy = true;
+    reorderRun = (async () => {
+      try {
+        for (;;) {
+          reorderAgain = false;
+          const plId = selectedId;
+          if (plId === null) return;
+          try {
+            await invoke("playlist_reorder", {
+              playlistId: plId,
+              videoIds: playlistItems.map((i) => i.videoId),
+            });
+          } catch (e) {
+            notify(
+              t("library.playlist.reorderFailed", {
+                message: asErrorMessage(e),
+              }),
+            );
+            // 失敗時は DB の内容に収束させる（自分の取得を最新世代にする）
+            if (selectedId === plId) {
+              const req = ++itemsReq;
+              try {
+                const items = await invoke<PlaylistEntry[]>(
+                  "playlist_items",
+                  { playlistId: plId },
+                );
+                if (req === itemsReq && selectedId === plId) {
+                  playlistItems = items;
+                }
+              } catch {
+                // 取り直しの失敗は既存表示のまま
+              }
+            }
+            return;
+          }
+          if (!reorderAgain) return;
+        }
+      } finally {
+        reorderRun = null;
+        reorderBusy = false;
+      }
+    })();
+    return reorderRun;
   }
 
   /// 上下ボタンでの入れ替え（仕様決定 T）。隣と交換して保存する
   function moveItem(index: number, dir: -1 | 1): void {
+    // 一括操作の実行中は行操作を受け付けない（適用順を確定操作→一括操作に固定）
+    if (sortBusy) return;
     const to = index + dir;
     if (to < 0 || to >= playlistItems.length) return;
     const items = [...playlistItems];
@@ -353,6 +386,7 @@
   /// DnD: ドロップ位置へ移動して保存（仕様決定 T）
   function itemDrop(index: number, e: DragEvent): void {
     e.preventDefault();
+    if (sortBusy) return;
     if (dragFrom !== null && dragFrom !== index) {
       const items = [...playlistItems];
       const [m] = items.splice(dragFrom, 1);
@@ -369,17 +403,28 @@
     dragOver = null;
   }
 
-  /// 投稿日時の昇順で一括ソート（仕様決定 T）。取得日の無い項目は末尾
-  async function sortByPublished(): Promise<void> {
+  /// 一括操作（ソート・反転）の共通直列化。飛行中の並べ替え保存を
+  /// 先に確定させてから一括操作を実行し、結果の反映は自分の取得を
+  /// 最新世代にして行う（選択切り替えや古い応答の上書きを防ぐ）。
+  /// op がエラーを投げた場合だけ失敗を通知する
+  async function runBulkOp(
+    op: (plId: number) => Promise<void>,
+    doneKey: MessageKey,
+  ): Promise<void> {
     if (selectedId === null || sortBusy) return;
     sortBusy = true;
     const plId = selectedId;
     try {
-      await invoke("playlist_sort", { playlistId: plId });
-      playlistItems = await invoke<PlaylistEntry[]>("playlist_items", {
+      await reorderRun;
+      if (selectedId !== plId) return;
+      const req = ++itemsReq;
+      await op(plId);
+      const items = await invoke<PlaylistEntry[]>("playlist_items", {
         playlistId: plId,
       });
-      notify(t("library.playlist.sorted"));
+      if (req !== itemsReq || selectedId !== plId) return;
+      playlistItems = items;
+      notify(t(doneKey));
     } catch (e) {
       notify(
         t("library.playlist.reorderFailed", { message: asErrorMessage(e) }),
@@ -387,6 +432,23 @@
     } finally {
       sortBusy = false;
     }
+  }
+
+  /// 投稿日時の昇順で一括ソート（仕様決定 T）。取得日の無い項目は末尾
+  async function sortByPublished(): Promise<void> {
+    await runBulkOp(
+      (plId) => invoke("playlist_sort", { playlistId: plId }),
+      "library.playlist.sorted",
+    );
+  }
+
+  /// 現在の項目順を一括で反転（仕様決定 Z）。
+  /// 新しい順で取り込んだプレイリストを古い順へ変える用途
+  async function reverseItems(): Promise<void> {
+    await runBulkOp(
+      (plId) => invoke("playlist_reverse", { playlistId: plId }),
+      "library.playlist.reversed",
+    );
   }
 
   /// その項目からの連続再生（FR-10、仕様決定 S）。選択項目を通常再生で起動し、
@@ -629,6 +691,12 @@
               onclick={() => void sortByPublished()}
               >{t("library.playlist.sort")}</button
             >
+            <button
+              class="link"
+              disabled={sortBusy}
+              onclick={() => void reverseItems()}
+              >{t("library.playlist.reverse")}</button
+            >
             <span class="subtle drag-hint">{t("library.playlist.dragHint")}</span>
           </div>
           <ul class="rows">
@@ -638,7 +706,7 @@
                 title={it.title}
                 thumbnailUrl={it.thumbnailUrl}
                 onplay={() => play(it.videoId, true)}
-                draggable={true}
+                draggable={!sortBusy}
                 dropTarget={dragOver === index && dragFrom !== index}
                 ondragstart={(e) => itemDragStart(index, e)}
                 ondragover={(e) => itemDragOver(index, e)}
@@ -662,13 +730,15 @@
                   <button
                     class="link"
                     title={t("library.playlist.moveUp")}
-                    disabled={index === 0 || reorderBusy}
+                    disabled={index === 0 || reorderBusy || sortBusy}
                     onclick={() => moveItem(index, -1)}>↑</button
                   >
                   <button
                     class="link"
                     title={t("library.playlist.moveDown")}
-                    disabled={index === playlistItems.length - 1 || reorderBusy}
+                    disabled={index === playlistItems.length - 1 ||
+                      reorderBusy ||
+                      sortBusy}
                     onclick={() => moveItem(index, 1)}>↓</button
                   >
                   <button

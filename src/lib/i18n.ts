@@ -266,6 +266,8 @@ const ja = {
   "library.playlist.importFailed": "取り込みに失敗: {message}",
   "library.playlist.sort": "投稿日時で並べ替え",
   "library.playlist.sorted": "投稿日時順に並べ替えました",
+  "library.playlist.reverse": "逆順にする",
+  "library.playlist.reversed": "項目順を反転しました",
   "library.playlist.moveUp": "上へ",
   "library.playlist.moveDown": "下へ",
   "library.playlist.reorderFailed": "並べ替えに失敗: {message}",
