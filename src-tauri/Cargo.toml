@@ -47,6 +47,10 @@ tauri-plugin-deep-link = "2.6.1"
 tauri-plugin-single-instance = "2.5.2"
 tauri-plugin-updater = "2.13.2"
 tauri-plugin-process = "2.4.0"
+open = { version = "5", features = ["shellexecute-on-windows"] }
+
+[target."cfg(windows)".dependencies]
+windows-registry = "0.6"
 
 [dev-dependencies]
 tempfile = "3"

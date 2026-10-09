@@ -11,6 +11,7 @@ mod filter;
 mod innertube;
 mod model;
 mod mpv;
+pub mod native_host;
 mod sponsor;
 mod util;
 mod yt;
@@ -105,6 +106,9 @@ pub fn run() {
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
             tracing::info!(path = %dir.display(), "DB 接続を確立");
             app.manage(db.clone());
+
+            // Chrome 拡張の Native Messaging ホスト定義を冪等に自己登録する（仕様決定 AH）
+            native_host::register(app.path().config_dir().ok(), &dir);
 
             // mpv の IPC ソケット置き場。runtime_dir が取れない環境では app_data 配下に退避する
             let socket_dir = app.path().runtime_dir().unwrap_or_else(|_| dir.join("run"));

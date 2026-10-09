@@ -194,3 +194,17 @@
 | 項目順の一括反転 | 逆順化は `playlist_reverse` コマンドとして実装する。`playlist_sort` と違い反転は並び替えキーを持たないため、項目 ID 列の往復を要らず読み出しと書き込みを 1 つの書き込みトランザクションに閉じる `db.playlist_reverse` で行う（回帰テスト DB-LD-09） |
 | ループのイベント設計 | 継続先の再生項目を `player://ended` の `continuedVideoId` に載せる（仕様決定 AA の「再生項目をペイロードに含める」の実装決定）。キュー位置は `continuedVideoId`（実際に読み込みが始まった項目）で照合する（遷移とモード変更が重なると到着時のモードは直前の遷移を表さないため）。終了した `videoId` と同一なら現在項目の繰り返しとして位置を据え置く。終了トーストは `continued` かつループモードが「なし」以外の間は抑制する（ループが継続している間は自動遷移でセッションが終わらないため）。ループ状態はインスタンス別にフロントが持ち、武装対象の選択（1 項目 → 現在項目のみ、全体 → 次項目以降＋先頭〜現在項目の回転順、キュー無し → 現在項目）を `player_set_queue` で張り替える形で実現する。巡回はバックエンド側の `loop_all`（取り出し分を末尾へ戻す）で行い、遷移ごとの再武装はしない。`player_set_queue` は invoke の到着順が保証されないためインスタンスごとに Promise チェーンで直列化し、各操作は実行時点で対象を評価する（最後に予約した意図だけが backend に届く）。キュー停止時にループモードが残るインスタンスは単独ループへ移行する（現在項目を武装）。武装対象・位置照合は `queue-logic.ts` の純粋関数に分離し vitest の LP-NN 系回帰テストで検証する |
 | HDR 設定の構成（仕様決定 Y の結論） | INV-1 の Windows 実機調査で、mpv 0.41 は既定の `vo=gpu-next` + `gpu-api=auto`（→d3d11）で DXGI swapchain の色空間書き換えによる HDR 出力経路を自力で張れることが分かったため、Auto HDR に依存する設定は導入しない。露出するのは変換方法の指定のみ: `hdr.tone_mapping`（`--tone-mapping`、受理集合 `clip`/`mobius`/`reinhard`/`hable`/`gamma`/`linear`/`spline`/`bt.2390`/`bt.2446a`）、`hdr.compute_peak`（`--hdr-compute-peak`、`yes`/`no`）、`mpv.extra_args`（空白分割で spawn 引数の末尾へ追加する汎用受け皿、無検証・mpv 起動失敗は Spawn エラー経路。`"..."`・`'...'` による空白保護のみ実装し、引用開始は引数先頭または `=` 直後のみ（値の途中のアポストロフィはリテラルとして残る）。バックスラッシュはエスケープに解釈しないので Windows パスもそのまま書ける）。`auto`/空/不正値は未指定として mpv 既定に任せる。vo・gpu-api・`target-colorspace-hint`・`d3d11-output-csp`・ICC 系は extra_args に任せて設定化しない（vo/gpu-api の明示指定失敗は起動不能になる、hint 系は issue #15268 の環境依存不具合が残るため）。HDR パススルー・Auto HDR 介入・issue #15268 の再現は HDR 実機が無いため未検証として残る |
+
+## Phase 23 で確定した事項
+
+仕様決定 AH の Native Messaging 化を実装し、設計書 §3.4.1 で定めていなかった細目を定めた。
+
+| 項目 | 決定内容 |
+|------|----------|
+| 拡張の固定 ID | `extension/manifest.json` の `key` に RSA 公開鍵を置き、ID を `hmfhiknpeefgjdmkjoofahdpkflfnkdl` に固定する。未パッケージ読み込みの ID は公開鍵だけから導出されるので、対応する秘密鍵はリポジトリに置かない。ホスト側は同じ ID を `native_host::EXTENSION_ID` として `allowed_origins` に書く |
+| ホストの応答コード | `invalid_message`、`invalid_url`、`open_failed` の 3 種とし、拡張はツールチップの理由表示にそのまま使う。受け取る要求は URL 1 本なので長さの上限を 64KiB とする |
+| スキーム URL の開き方 | `open` クレートの `that_detached` を使う。Linux では xdg-open 系を二重 fork と `setsid` で切り離して起動し、標準入出力を閉じるので、起動したプロセスは Chrome との標準出力に書き込まない。Chrome がホストを終了させる際に本体が巻き込まれないかは実機で確かめる（Windows は Phase 23 の実機確認項目）。Windows では `ShellExecuteExW` を使う（`shellexecute-on-windows` は tauri-plugin-opener が既に有効にしている機能） |
+| Windows のレジストリ書き込み | tauri-plugin-deep-link が依存している `windows-registry` クレートを使い、既定値が同じなら書き換えない |
+| フォールバックのタブ | 従来方式どおり 5 秒後に閉じる挙動は変えず、`active: true` で開く点だけを変える |
+| 失敗表示 | バッジ `!` とツールチップはタブ単位ではなく拡張全体に出し、次回の成功時に消す |
+

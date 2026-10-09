@@ -184,11 +184,11 @@
 Linux の Devin VM ではホストモード、登録、拡張の実機動作まで検証できる。
 Windows の登録（HKCU レジストリ）とホストの起動は Windows 実機が必要になる。
 
-- [ ] `main.rs` のホストモード分岐と `native_host.rs` のメッセージ読み書き（長さ付き JSON の 1 往復、`url` の検証、OS の既定ハンドラで `yt-browser://open?url=` を開く）
-- [ ] setup でのホスト定義の自己登録（Linux は JSON、Windows は JSON と HKCU レジストリ、AppImage は `$APPIMAGE`、内容が同じなら書き換えない、失敗は警告ログ）
-- [ ] 拡張の更新（`manifest.json` の `key` による ID 固定、`nativeMessaging` 権限、`sendNativeMessage` 経路、アクティブタブでのフォールバック、失敗時のバッジとツールチップ、拡張の版を 0.2.0 へ）
-- [ ] メッセージの読み書きと `url` 検証、ホスト定義 JSON の生成の単体テスト
-- [ ] user-guide の「Chrome 拡張から開く」節の更新（確認ダイアログが出ないこと、初回はアプリを一度起動してから使うこと、フォールバック時の挙動）
+- [x] `main.rs` のホストモード分岐と `native_host.rs` のメッセージ読み書き（長さ付き JSON の 1 往復、`url` の検証、OS の既定ハンドラで `yt-browser://open?url=` を開く）
+- [x] setup でのホスト定義の自己登録（Linux は JSON、Windows は JSON と HKCU レジストリ、AppImage は `$APPIMAGE`、内容が同じなら書き換えない、失敗は警告ログ）
+- [x] 拡張の更新（`manifest.json` の `key` による ID 固定、`nativeMessaging` 権限、`sendNativeMessage` 経路、アクティブタブでのフォールバック、失敗時のバッジとツールチップ、拡張の版を 0.2.0 へ）
+- [x] メッセージの読み書きと `url` 検証、ホスト定義 JSON の生成の単体テスト
+- [x] user-guide の「Chrome 拡張から開く」節の更新（確認ダイアログが出ないこと、初回はアプリを一度起動してから使うこと、フォールバック時の挙動）
 - [ ] Windows 実機の確認：GUI サブシステムの exe で Chrome との標準入出力が通ること、ホストが開いたあとに本体が終了させられずに起動し続けること（Chrome がホストのプロセスを終了させる際に子孫まで巻き込む可能性があるため）
 - [ ] 受け入れ：アプリを一度起動したあと、拡張のアクション実行とリンク右クリックから、確認ダイアログも新規タブも出さずに yt-browser で開ける（未起動からの起動と起動中への転送の両方）。ホスト未登録の状態ではアクティブなタブで従来の確認ダイアログが出て開ける
 

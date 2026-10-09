@@ -1,12 +1,20 @@
 // yt-browser opener — YouTube の動画・プレイリストを yt-browser で開く
-// （yt-browser Phase 19、仕様決定 AC）
+// （yt-browser Phase 19・23、仕様決定 AC・AH）
 //
 // - アクション（ツールバーボタン）: 動画画面・プレイリスト画面で有効。
 //   対象外ページでは無効化して押せないようにする
 // - 右クリックメニュー: YouTube の動画・プレイリストへのリンク上でのみ表示
-// - 起動はカスタムスキーム yt-browser://open?url=<encoded> へのタブ遷移。
-//   Chrome が「外部アプリで開きますか」の確認を出し、承認で yt-browser が
-//   起動する（起動中なら起動中インスタンスへ URL が渡る）
+// - 起動は Native Messaging で yt-browser 本体のホストモードへ URL を渡す。
+//   ホストが OS 経由で yt-browser://open?url=<encoded> を開くので、
+//   Chrome の外部アプリ確認も新規タブも出ない（起動中なら起動中
+//   インスタンスへ URL が渡る）
+// - ホストが使えない（アプリ未起動で未登録など）か失敗を返したときは、
+//   従来のスキーム方式でタブをアクティブで開き、バッジ「!」と
+//   ツールチップで理由を示す
+
+const HOST_NAME = "io.github.tkg_tamagohan.yt_browser";
+
+const DEFAULT_TITLE = "yt-browser で開く";
 
 const SCHEME_PREFIX = "yt-browser://open?url=";
 
@@ -36,18 +44,47 @@ function classify(url) {
   return /^\/(shorts|live)\/[A-Za-z0-9_-]{11}/.test(path);
 }
 
-// ページ遷移でスキームを踏ませて OS 経由でアプリを起動する。
-// 現タブを書き換えるとページが失われるので専用タブを開き、
-// Chrome の確認ダイアログ承認後に自動で閉じる
+// Native Messaging で本体のホストへ URL を渡す。応答が ok でなければ
+// スキーム方式へフォールバックする
 function openInApp(targetUrl) {
+  chrome.runtime.sendNativeMessage(HOST_NAME, { url: targetUrl }, (response) => {
+    const err = chrome.runtime.lastError;
+    if (!err && response && response.ok === true) {
+      void clearFailure();
+      return;
+    }
+    const reason = err
+      ? `アプリに接続できません（${err.message}）。yt-browser を一度起動すると登録されます`
+      : `アプリが失敗を返しました（${response?.error ?? "unknown"}）`;
+    void showFailure(reason);
+    openViaScheme(targetUrl);
+  });
+}
+
+// 従来方式: スキームを踏ませて OS 経由でアプリを起動する。
+// 現タブを書き換えるとページが失われるので専用タブをアクティブで開き、
+// Chrome の確認ダイアログをその場で承認できるようにする。
+// 承認後に残るタブは少し待って閉じる（承認/拒否どちらでも閉じてよい）
+function openViaScheme(targetUrl) {
   const scheme = SCHEME_PREFIX + encodeURIComponent(targetUrl);
-  chrome.tabs.create({ url: scheme, active: false }, (tab) => {
-    // 外部アプリ起動の確認を出すとタブは about:blank 相当に留まる。
-    // 少し待って閉じる（承認/拒否どちらでも閉じてよい）
+  chrome.tabs.create({ url: scheme, active: true }, (tab) => {
     if (tab.id !== undefined) {
       setTimeout(() => chrome.tabs.remove(tab.id), 5000);
     }
   });
+}
+
+// --- 失敗表示（バッジとツールチップ）。成功時は何も表示しない ---
+
+async function showFailure(reason) {
+  await chrome.action.setBadgeText({ text: "!" });
+  await chrome.action.setBadgeBackgroundColor({ color: "#d93025" });
+  await chrome.action.setTitle({ title: `${DEFAULT_TITLE}\n前回の失敗: ${reason}` });
+}
+
+async function clearFailure() {
+  await chrome.action.setBadgeText({ text: "" });
+  await chrome.action.setTitle({ title: DEFAULT_TITLE });
 }
 
 // --- アクション（対象ページでのみ有効） ---

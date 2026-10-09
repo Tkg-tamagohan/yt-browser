@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "yt-browser opener",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "YouTube の動画・プレイリストを yt-browser で開く",
-  "permissions": ["contextMenus", "tabs"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuRMf61Pscg/0MUlJ89FVmFuez5q1n2Sj2l2HsZGm3hhLMhBG/coy98VZn+N3QaK97OSLveuU5L9fHVPOAihOVaRAAm0Zh1GBHUeGtiocH0QrOFsPzRM4Rl9mzf2GwU/m2rNHOTp82ESkHIjHXummkGyL7KoOioHSrfQT/38z7Hclj1AHXcC3LPvrartwXenBdxwfxJZDCjAurjO4oI5G21VtTclghlx2d+d4g0/PQTwFwhxJr/V0iW1n6wY2Nmrn1Y5cpzqEo18f1tI690aox2ttaKDpVSV8m+OOTCZdpcEJed73ESbfQvr4ZqSuycJOvp3bB1aTvpjZvltwtfxrfQIDAQAB",
+  "permissions": ["contextMenus", "tabs", "nativeMessaging"],
   "host_permissions": [],
   "background": {
     "service_worker": "background.js"
