@@ -199,9 +199,46 @@ URL がイベントだけでは届かず失われる）。ドレインで `ready
 `watch`+`list` 複合は動画として扱う。非対応 URL は通知のみで落とさない。
 
 `extension/` の MV3 拡張（ストア未公開、パッケージ化なし読み込み）は
-YouTube ページ上のアクション実行とリンク右クリックメニューから
-`yt-browser://open?url=` へ遷移させ、OS 経由でアプリを起動する。
+YouTube ページ上のアクション実行とリンク右クリックメニューから起動する。
 対象外ページではアクションを無効化し、メニューは YouTube リンク上のみ出る。
+
+#### 3.4.1 Native Messaging ホスト（仕様決定 AH、Phase 23 で実装予定）
+
+Phase 19 の拡張は `yt-browser://open?url=` を非アクティブの新規タブで開いていた。
+Chrome の外部アプリ確認はそのタブ上に出るため、利用者は毎回タブを移動して承認する必要があった。
+Phase 23 では拡張からの受け渡しを Native Messaging に切り替え、Chrome を経由せずに OS からスキームを開く。
+
+```mermaid
+sequenceDiagram
+    participant Ext as 拡張（background.js）
+    participant Host as yt-browser（ホストモード）
+    participant OS as OS の既定ハンドラ
+    participant App as yt-browser（本体）
+    Ext->>Host: sendNativeMessage {url}
+    Host->>OS: yt-browser://open?url=<encoded> を開く
+    Host-->>Ext: {ok: true}
+    OS->>App: 新規起動、または single-instance で起動中へ転送
+```
+
+- ホスト名：`io.github.tkg_tamagohan.yt_browser`（Native Messaging のホスト名は英小文字、数字、`_`、`.` に限られるため、識別子のハイフンを `_` に置き換える）
+- ホストモードの判定：`main.rs` で、Chrome がホスト起動時に渡す引数 `chrome-extension://<ID>/` を検出したら `run()` を呼ばずにホスト処理へ分岐する。
+  Windows では `--parent-window=<hwnd>` も渡されるが使わない。
+  Tauri の Builder を組む前に分岐するため、single-instance や deep link の初期化は走らない
+- 通信：標準入出力で、4 バイトのネイティブエンディアン長と UTF-8 JSON の組を 1 往復だけ行う。
+  要求は `{"url": "<対象 URL>"}`、応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` とする。
+  ホストは `url` が http(s) の URL として解析できることだけを確かめ、動画とプレイリストの振り分けは従来どおり本体の `deeplink.svelte.ts` が行う
+- 起動：ホストは `yt-browser://open?url=<encoded>` を OS の既定ハンドラで開く（Windows は ShellExecute 相当、Linux は xdg-open 相当）。
+  既存の deep link 受信経路（未起動なら `get_current()`、起動中なら single-instance）をそのまま通るので、本体側の受信処理は変えない
+- 登録：本体の setup で毎回、ホスト定義 JSON を書き、内容が同じなら書き換えない。
+  JSON の `path` は実行中のバイナリの絶対パスとし、AppImage では `$APPIMAGE` を使う（マウント先の一時パスを登録しないため）。
+  `allowed_origins` は拡張の固定 ID（`manifest.json` の `key` で固定する）の `chrome-extension://<ID>/` とする。
+  登録の失敗は警告ログに留め、起動は止めない
+  - Windows：JSON をアプリデータ配下に置き、`HKCU\Software\Google\Chrome\NativeMessagingHosts\<ホスト名>` の既定値にそのパスを書く
+  - Linux：`~/.config/google-chrome/NativeMessagingHosts/<ホスト名>.json` に書く
+  - 開発ビルド（`pnpm tauri dev`）も同じ処理で登録するため、最後に起動したバイナリのパスが有効になる
+- 拡張側：`nativeMessaging` 権限を足し、`sendNativeMessage` の応答で分岐する。
+  `chrome.runtime.lastError`（ホスト未登録など）か `ok: false` のときは、従来のスキーム方式でタブを**アクティブ**で開いてフォールバックし、バッジ `!` とツールチップに理由を出す。
+  成功時はバッジを消す
 
 ## 4. 動画再生サブシステム
 
@@ -647,6 +684,7 @@ yt-browser/
       db/             # rusqlite・マイグレーション
       model/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
+      native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録（Phase 23 で追加予定）
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
     mpv/wheel.lua     # include_str! でバイナリに埋め込む同梱スクリプト
     tests/fixtures/   # golden fixture
