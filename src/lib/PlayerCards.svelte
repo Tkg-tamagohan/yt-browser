@@ -32,7 +32,13 @@
     type PlayerState,
     type SponsorSkipped,
   } from "$lib/players.svelte";
-  import { initQueueEvents } from "$lib/queue.svelte";
+  import {
+    clearLoop,
+    cycleLoop,
+    initQueueEvents,
+    loopMode,
+    type LoopMode,
+  } from "$lib/queue.svelte";
 
   // 再生中インスタンスの状態は共有ストア（ページ遷移で消えないようコンポーネント外に置く）
   const players = $derived(playerStates.list);
@@ -148,6 +154,14 @@
 
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
+  // ループボタンの表示（仕様決定 AA）。ボタンは現在の状態を示し、
+  // 押すたび なし → 全体 → 1 項目 の順に回る
+  const LOOP_LABEL: Record<LoopMode, MessageKey> = {
+    none: "player.loop.none",
+    all: "player.loop.all",
+    one: "player.loop.one",
+  };
+
   function runPlaybackHooks(): void {
     for (const f of playbackHooks) f();
   }
@@ -214,6 +228,7 @@
       rel.delete(id);
       relatedOpen = rel;
       formatOverrides.delete(id);
+      clearLoop(id);
       // 閉じた時点の位置で履歴が更新されているのでページ側のヒントを取り直させる
       runPlaybackHooks();
     } catch (e) {
@@ -246,7 +261,14 @@
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
     unlistenFns.push(
       await listen<PlayerEnded>("player://ended", (ev) => {
-        notify(t("player.ended", { reason: ev.payload.reason }));
+        // ループが継続している間は終了トーストを抑制する（仕様決定 AA。
+        // 継続再生による自動遷移ではセッションが終わらないため通知しない。
+        // ループなしのキュー進行・末端の終了では従来どおり通知する）
+        const looping =
+          ev.payload.continued && loopMode(ev.payload.instanceId) !== "none";
+        if (!looping) {
+          notify(t("player.ended", { reason: ev.payload.reason }));
+        }
         // 再生終了したインスタンスのチャットパネルも片付け、ポーラーを解放する
         cleanupChatPanel(ev.payload.instanceId, ev.payload.videoId);
         // 関連パネルの開閉エントリも除去する（手動 close と同じ片付け。
@@ -381,6 +403,12 @@
             {/if}
           </select>
         </label>
+        <button
+          title={t("player.loop.hint")}
+          onclick={() => void cycleLoop(p.instanceId)}
+        >
+          {t(LOOP_LABEL[loopMode(p.instanceId)])}
+        </button>
         <button
           title={t("player.pip.hint")}
           disabled={pipBusy.has(p.instanceId)}

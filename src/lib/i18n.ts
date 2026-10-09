@@ -48,6 +48,13 @@ const ja = {
   "player.pip.hint":
     "最前面・枠なしの小窓で再生。mpv のショートカット（q で終了、m でミュート）は小窓上でも使えます",
 
+  // Phase 17: ループ再生（FR-16、仕様決定 AA）
+  "player.loop.none": "ループ: なし",
+  "player.loop.all": "ループ: 全体",
+  "player.loop.one": "ループ: 1 項目",
+  "player.loop.hint":
+    "ループ再生の切り替え。押すたび なし → 全体 → 1 項目 の順に変わります",
+
   "ytdlp.checking": "yt-dlp を確認中…",
   "ytdlp.ok": "yt-dlp {version}（{path}）",
   "ytdlp.missing":

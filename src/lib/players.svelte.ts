@@ -29,6 +29,9 @@ export type PlayerEnded = {
   reason: string;
   /// 連続再生で同一インスタンスが次項目へ進んだとき true（FR-10、仕様決定 S）
   continued: boolean;
+  /// 継続先として読み込みを開始した項目（FR-16、仕様決定 AA）。
+  /// videoId と同一なら現在項目の繰り返し（ループ）。非継続時は null
+  continuedVideoId: string | null;
 };
 
 /// `sponsor://skipped` イベント（設計書 §3.2）。action は "skip" | "notify"。

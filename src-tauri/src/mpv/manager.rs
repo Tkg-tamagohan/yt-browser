@@ -293,10 +293,12 @@ impl PlayerManager {
                         // （FR-10、仕様決定 S。途中失敗の終端でも次へ進む暫定仕様）。
                         // ロードに失敗した場合は通常どおり終端処理へ進む。
                         let mut continued = false;
+                        let mut continued_video_id: Option<String> = None;
                         if let Some(next_id) = player.take_next() {
                             match player.load_video(&next_id).await {
                                 Ok(()) => {
                                     continued = true;
+                                    continued_video_id = Some(next_id.clone());
                                     if let Err(e) = db.history_upsert(&next_id) {
                                         tracing::warn!(video_id = %next_id, error = %e, "履歴行の作成に失敗");
                                     }
@@ -312,6 +314,7 @@ impl PlayerManager {
                             video_id: ended_video,
                             reason,
                             continued,
+                            continued_video_id,
                         };
                         if let Err(e) = app.emit("player://ended", &payload) {
                             tracing::warn!(error = %e, "player://ended の送出に失敗");
