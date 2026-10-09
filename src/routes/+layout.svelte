@@ -4,8 +4,19 @@
   import { t } from "$lib/i18n";
   import { appNotices } from "$lib/notices.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
+  import {
+    appUpdate,
+    applyUpdate,
+    checkForUpdateAtStartup,
+  } from "$lib/updater.svelte";
 
   let { children } = $props();
+
+  // 起動時の自動更新確認（FR-15、仕様決定 AB）。更新検出時のみ
+  // 下の確認ダイアログが出る
+  $effect(() => {
+    checkForUpdateAtStartup();
+  });
 </script>
 
 <nav class="app-nav">
@@ -32,6 +43,30 @@
   {/each}
 </div>
 
+{#if appUpdate.pending && !appUpdate.dismissed}
+  <!-- 更新確認ダイアログ（仕様決定 AB: 検知時は確認→承認で DL/適用/再起動） -->
+  <div class="update-overlay">
+    <div class="update-dialog" role="dialog" aria-label={t("update.title")}>
+      <h2>{t("update.title")}</h2>
+      <p>
+        {t("update.body", { version: appUpdate.pending.version })}
+      </p>
+      <div class="update-actions">
+        {#if appUpdate.installing}
+          <p class="subtle">{t("update.installing")}</p>
+        {:else}
+          <button onclick={() => (appUpdate.dismissed = true)}>
+            {t("update.later")}
+          </button>
+          <button class="primary" onclick={() => void applyUpdate()}>
+            {t("update.apply")}
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .toasts {
     position: fixed;
@@ -45,5 +80,32 @@
   }
   .toasts .notice {
     margin-top: 0;
+  }
+  .update-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+  }
+  .update-dialog {
+    background: #202124;
+    border: 1px solid #3c4043;
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 420px;
+  }
+  .update-dialog h2 {
+    margin-top: 0;
+  }
+  .update-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .update-actions .primary {
+    font-weight: 600;
   }
 </style>

@@ -588,6 +588,7 @@ GPU なし環境（ソフトウェアレンダリング）の webkit2gtk で、D
 - WebView は `csp` を既定 `default-src 'self'`、サムネイル表示のために `img-src https://i.ytimg.com https://*.ggpht.com` だけを許可する
 - 外部リンクは WebView 内遷移ではなくシステムブラウザに開く
 - アカウント連携を持たないため Cookie やトークンの保存は発生しない（仕様決定 H）
+- アプリの自動更新は tauri-plugin-updater で `latest.json`（GitHub Releases の `releases/latest/download/latest.json`）を確認する。起動時の自動確認と設定画面の手動確認を併用し、検知時は確認ダイアログ→承認でダウンロード・インストール・再起動する（FR-15、仕様決定 AB）。対象は AppImage と NSIS。更新成果物は minisign で署名し、公開鍵を `tauri.conf.json` の `plugins.updater.pubkey`、秘密鍵を GitHub Secrets（`TAURI_SIGNING_PRIVATE_KEY`）に置く。確認・ダウンロードはネイティブ側で行うため WebView の CSP には影響しない
 
 ## 11. リポジトリ構成
 
@@ -614,7 +615,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings）
-    lib/              # PlayerCards.svelte・パネル描画（ChatPanel.svelte・RelatedPanel.svelte）・VideoActions・行骨格（VideoRow.svelte）・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・chat.svelte.ts・notices.svelte.ts・library.ts）・表示フォーマッタ（format.ts）・行アクション配線（videoActions.svelte.ts）・PiP 設定の UI 側定数（pip.ts）
+    lib/              # PlayerCards.svelte・パネル描画（ChatPanel.svelte・RelatedPanel.svelte）・VideoActions・行骨格（VideoRow.svelte）・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・chat.svelte.ts・notices.svelte.ts・library.ts）・表示フォーマッタ（format.ts）・行アクション配線（videoActions.svelte.ts）・PiP 設定の UI 側定数（pip.ts）・自動更新の共有状態（updater.svelte.ts）
   tauri.conf.json
   package.json
 ```

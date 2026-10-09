@@ -165,6 +165,21 @@ const ja = {
   "settings.hdr.unsaved":
     "保存中に HDR・mpv 引数の値が変更されました。DB には変更前の値が保存されたため、もう一度保存してください",
 
+  // Phase 18: アプリの自動更新（FR-15、仕様決定 AB）
+  "update.title": "アプリの更新",
+  "update.body": "新しいバージョン {version} を利用できます。ダウンロードして適用し、再起動しますか？",
+  "update.apply": "更新する",
+  "update.later": "後で",
+  "update.installing": "更新を適用しています…",
+  "update.found": "バージョン {version} の更新があります",
+  "update.upToDate": "最新のバージョンです",
+  "update.failed": "更新の確認に失敗: {message}",
+  "update.installFailed": "更新の適用に失敗: {message}",
+  "settings.update.title": "アプリの更新",
+  "settings.update.desc": "AppImage / NSIS 版は自動更新に対応しています。起動時にも自動で確認します（deb / rpm / MSI 版は対象外です）",
+  "settings.update.check": "今すぐ確認",
+  "settings.update.checking": "確認中…",
+
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",
   "settings.sponsor.desc":
