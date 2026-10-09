@@ -1,28 +1,30 @@
-// 連続再生キュー・ループの純粋ロジックの回帰テスト（FR-16、仕様決定 AA）。
-// LP-01: 武装対象の選定（1 項目は現在項目、全体は末尾で先頭、なしは次項目）
+// 連続再生キュー・ループの純粋ロジックの回帰テスト（FR-16、仕様決定 AA・AD）。
+// LP-01: 武装キューの選定（1 項目は現在項目のみ、全体は回転順、なしは次項目以降）
 // LP-02: 終了イベントの継続項目によるキュー位置の照合
 import { describe, expect, test } from "vitest";
-import { armTargetFor, reconcileIndex } from "./queue-logic";
+import { armPlanFor, reconcileIndex } from "./queue-logic";
 
-describe("LP-01 armTargetFor", () => {
+describe("LP-01 armPlanFor", () => {
   const items = ["A", "B", "C"];
 
-  test("none は次項目を返し、末尾では null（武装解除）", () => {
-    expect(armTargetFor("none", items, 0)).toBe("B");
-    expect(armTargetFor("none", items, 1)).toBe("C");
-    expect(armTargetFor("none", items, 2)).toBeNull();
+  test("none は次項目以降を順に登録し、末尾では空列（武装解除）", () => {
+    expect(armPlanFor("none", items, 0)).toEqual({ items: ["B", "C"], loop: false });
+    expect(armPlanFor("none", items, 1)).toEqual({ items: ["C"], loop: false });
+    expect(armPlanFor("none", items, 2)).toEqual({ items: [], loop: false });
   });
 
-  test("all は次項目を返し、末尾では先頭へ戻る", () => {
-    expect(armTargetFor("all", items, 0)).toBe("B");
-    expect(armTargetFor("all", items, 2)).toBe("A");
-    // 1 項目だけのキューでも先頭＝現在項目へ戻る（繰り返し）
-    expect(armTargetFor("all", ["A"], 0)).toBe("A");
+  test("all は次項目以降＋先頭〜現在項目の回転順を巡回登録する", () => {
+    // [A]再生中: 今後は B,C,A,B,C,... と巡回する（B→C→A→B の回転）
+    expect(armPlanFor("all", items, 0)).toEqual({ items: ["B", "C", "A"], loop: true });
+    // [C]再生中（末尾）: 今後は A,B,C,A,... と先頭へ巻き戻る
+    expect(armPlanFor("all", items, 2)).toEqual({ items: ["A", "B", "C"], loop: true });
+    // 1 項目だけのキューでも回転順＝現在項目のみ（繰り返し）
+    expect(armPlanFor("all", ["A"], 0)).toEqual({ items: ["A"], loop: true });
   });
 
-  test("one は常に現在項目を返す（キュー中も次へ進まない）", () => {
-    expect(armTargetFor("one", items, 0)).toBe("A");
-    expect(armTargetFor("one", items, 2)).toBe("C");
+  test("one は常に現在項目のみを巡回登録する（キュー中も次へ進まない）", () => {
+    expect(armPlanFor("one", items, 0)).toEqual({ items: ["A"], loop: true });
+    expect(armPlanFor("one", items, 2)).toEqual({ items: ["C"], loop: true });
   });
 });
 

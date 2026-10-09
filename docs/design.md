@@ -71,7 +71,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
-| `player_set_next` | `instance_id`, `video_id?` | `Result<()>` |
+| `player_set_queue` | `instance_id`, `items`, `loop_all` | `Result<()>` |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
 | `history_list` | `limit?`（既定 500、上限 1000） | `Result<Vec<WatchHistory>>` |
 | `history_remove` | `video_id` | `Result<()>` |
@@ -124,7 +124,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}` を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
-`player_set_next` は連続再生の次項目を事前登録（武装）する。`video_id` 省略時は武装の解除。
+`player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する動画 ID の順序列（空列は武装の解除）、`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。
 登録済み項目は次の終端（自然終了・途中失敗）で同一 mpv が先頭から読み込む。
 `playlist_import` は YouTube プレイリストを `yt-dlp --flat-playlist` で取り込み、
 各項目を `video_upsert` で `videos` 台帳に集約したうえで新規プレイリストへ登録する（FR-10、仕様決定 R）。
@@ -314,10 +314,12 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 キューはフロント側のセッション状態（`queue.svelte.ts`）に持つ。
 ライブラリの項目から「ここから連続再生」を選ぶと、その項目を通常の `play_video` で起動し、
 同時に次項目を `player_set_next` でバックエンドへ武装する。
-mpv が終端（自然終了・途中失敗）を迎えると emitter が武装済みの次項目を取り出し、
+mpv が終端（自然終了・途中失敗）を迎えると emitter が武装キューの先頭を取り出し、
 同一 mpv で `loadfile` により先頭から読み込む。`--keep-open=yes` 下では EOF 後の mpv が `pause=true` で残るため、読み替え時に `set_property pause false` も送って一時停止を解除する。`player://ended` の `continued` が
-true のときフロントはキュー位置を進め、次の次項目を武装する。
-武装は終端ごとに 1 回消費されるため、終端のたびに張り直す形になる。
+true のときフロントはキュー位置を進めるだけで、再武装は行わない。
+武装キューは将来分をまとめて持つため、継続のたびにフロントの再登録を待たない
+（再登録が終端に間に合わず継続が途切れる競合の対策、仕様決定 AD）。
+キューやループモードが変わったときだけフロントが登録を張り直す。
 プレイリスト側の編集やキュー位置のずれ（queue drift）は仕様上の制約として許容し、
 武装した時点の項目が流れる。
 インスタンスの `video_id`・履歴・SponsorBlock 区間は項目ごとに更新される。
