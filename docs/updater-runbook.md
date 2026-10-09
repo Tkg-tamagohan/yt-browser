@@ -20,7 +20,7 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 
 ## リリースの作り方（`v*` タグ push）
 
-1. バージョンを上げる（`src-tauri/tauri.conf.json` の `version`、必要に応じて `package.json`）
+1. `scripts/bump_version.py X.Y.Z` でバージョンを一括更新し、コミットする（`tauri.conf.json`・`package.json`・`Cargo.toml`・`Cargo.lock` の 4 箇所を揃える。`--check` で現在の整合を確認できる）
 2. `git tag vX.Y.Z && git push origin vX.Y.Z` で release ワークフローが起動する
 3. `ubuntu-latest` と `windows-latest` の両ビルドジョブが成功すると、release ジョブが成果物を集めて `latest.json` を生成し、**ドラフト作成→全アセット添付→公開**まで自動で行う
    - `latest.json` には AppImage（linux-x86_64）と NSIS（windows-x86_64）のエントリだけが入る（deb/rpm/MSI は対象外。`scripts/make_latest_json.py` が生成する）
@@ -37,7 +37,7 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 ## 手動でタグを作成するときの注意点
 
 - **タグ名は `vX.Y.Z`**（`v*` がトリガー）。`latest.json` の `version` にはスクリプトが先頭の `v` を除いた semver を書く
-- **タグを打つ前に `src-tauri/tauri.conf.json` の `version` を X.Y.Z に更新しておく**。ずれていると成果物名（`*_0.2.0_*` 等）と `latest.json` のバージョンが食い違い、アプリ側の更新判定が誤判定しうる（v0.3.0 タグで version 0.2.0 のままだった例あり）
+- **タグを打つ前に `scripts/bump_version.py X.Y.Z` でバージョンを更新しておく**（`tauri.conf.json`・`package.json`・`Cargo.toml`・`Cargo.lock` の 4 箇所を一括更新。`--check` で整合を確認できる）。ずれていると成果物名（`*_0.2.0_*` 等）と `latest.json` のバージョンが食い違い、アプリ側の更新判定が誤判定しうる（v0.3.0 タグで version 0.2.0 のままだった例あり）
 - **タグは修正を含んだコミットに打つ**。ビルドと release ジョブはタグの指すコミットをチェックアウトするため、修正が main へマージ済みでも古いコミットのタグを打つと古いワークフロー・スクリプトで実行される。Actions の「失敗したジョブの再実行（Re-run）」も同じコミットを見るため、ワークフローやスクリプトの修正は再実行では反映されない
 - **タグの張り替え**: 修正後に同じバージョン名で出し直す場合は `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` で削除してから再打ち、または `git tag -f vX.Y.Z && git push -f origin vX.Y.Z`。出し直しが面倒なら次のタグ（`vX.Y.(Z+1)`）を打つ方が安全
 - **途中失敗でリリースが作られていた場合**: 再実行時に `gh release upload --clobber` でアセットが差し替え添付されるので手動削除は不要（ドラフトのまま残った場合も公開状態に揃える）
