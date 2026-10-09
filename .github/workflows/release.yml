@@ -72,6 +72,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: bundles-*
+          # 成果物は専用ディレクトリに集める。リポジトリルートに混ざると
+          # 後段の `gh release upload` のワイルドカードがディレクトリを
+          # 拾って失敗する
+          path: dist
           merge-multiple: true
       - name: Generate updater manifest (latest.json)
         env:
@@ -81,24 +85,24 @@ jobs:
           # （$(...) 等を含むタグ名がコマンドとして実行されるのを防ぐ）
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          python3 scripts/make_latest_json.py "$GH_REPO" "$TAG_NAME" . > latest.json
-          cat latest.json
+          python3 scripts/make_latest_json.py "$GH_REPO" "$TAG_NAME" dist > dist/latest.json
+          cat dist/latest.json
       - name: Create GitHub Release with assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          ls -la
+          ls -la dist
           if gh release view "$TAG_NAME" > /dev/null 2>&1; then
             # 前回実行が途中で失敗した場合など、既存リリースには差し替え添付する
-            gh release upload "$TAG_NAME" --clobber -- *
+            gh release upload "$TAG_NAME" --clobber -- dist/*
           else
             # ドラフトで作り、アセット添付が揃ってから公開する
             # （添付途中の不完全なリリースが見えないよう公開は最後に行う）
             gh release create "$TAG_NAME" \
               --title "$TAG_NAME" --generate-notes --draft
-            gh release upload "$TAG_NAME" --clobber -- *
+            gh release upload "$TAG_NAME" --clobber -- dist/*
           fi
           # 既存リリースがドラフトのまま残った場合もここで公開状態に揃える
           gh release edit "$TAG_NAME" --draft=false
