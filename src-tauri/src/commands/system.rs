@@ -1,10 +1,10 @@
 //! DB・設定・yt-dlp のシステム系コマンド。
 
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::db::Db;
 use crate::error::UiError;
-use crate::model::{DbStatus, YtDlpStatus};
+use crate::model::{DbStatus, SettingChanged, YtDlpStatus};
 use crate::yt::{self, YtDlpResolver};
 
 const MAX_SETTING_KEY_LEN: usize = 128;
@@ -37,14 +37,23 @@ pub fn settings_get(db: State<'_, Db>, key: String) -> Result<Option<String>, Ui
 }
 
 #[tauri::command]
-pub fn settings_set(db: State<'_, Db>, key: String, value: String) -> Result<(), UiError> {
+pub fn settings_set(
+    app: AppHandle,
+    db: State<'_, Db>,
+    key: String,
+    value: String,
+) -> Result<(), UiError> {
     validate_setting_key(&key)?;
     if value.len() > MAX_SETTING_VALUE_LEN {
         return Err(UiError::invalid_input(format!(
             "value が長すぎます（{MAX_SETTING_VALUE_LEN} バイト上限）"
         )));
     }
-    Ok(db.setting_set(&key, &value)?)
+    db.setting_set(&key, &value)?;
+    // コミット済みの値を載せて変更を通知する。設定値を保持する画面は
+    // 再読み取りなしで同期できる。購読者がいなくても正常なので失敗は捨てる
+    let _ = app.emit("settings://changed", SettingChanged { key, value });
+    Ok(())
 }
 
 /// yt-dlp の解決パスとバージョン（設計書 §5 の運用確認用）。

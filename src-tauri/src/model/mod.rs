@@ -10,6 +10,16 @@ pub struct DbStatus {
     pub schema_version: u32,
 }
 
+/// `settings://changed` イベントのペイロード（設計書 §3.2）。
+/// `settings_set` がコミットしたキーと保存後の値をそのまま載せるため、
+/// 購読側は再読み取りせずこの値で同期できる。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingChanged {
+    pub key: String,
+    pub value: String,
+}
+
 /// 再生状態の区分。`player://state` の `state` フィールドに載せる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
