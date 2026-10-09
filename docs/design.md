@@ -202,7 +202,7 @@ URL がイベントだけでは届かず失われる）。ドレインで `ready
 YouTube ページ上のアクション実行とリンク右クリックメニューから起動する。
 対象外ページではアクションを無効化し、メニューは YouTube リンク上のみ出る。
 
-#### 3.4.1 Native Messaging ホスト（仕様決定 AH、Phase 23 で実装予定）
+#### 3.4.1 Native Messaging ホスト（仕様決定 AH、Phase 23）
 
 Phase 19 の拡張は `yt-browser://open?url=` を非アクティブの新規タブで開いていた。
 Chrome の外部アプリ確認はそのタブ上に出るため、利用者は毎回タブを移動して承認する必要があった。
@@ -226,6 +226,7 @@ sequenceDiagram
   Tauri の Builder を組む前に分岐するため、single-instance や deep link の初期化は走らない
 - 通信：標準入出力で、4 バイトのネイティブエンディアン長と UTF-8 JSON の組を 1 往復だけ行う。
   要求は `{"url": "<対象 URL>"}`、応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` とする。
+  エラーコードは `invalid_message`（長さ付き JSON として読めない、または `url` が文字列でない）、`invalid_url`（http(s) の URL でない）、`open_failed`（OS の既定ハンドラで開けない）の 3 種で、受け取る要求の長さは 64KiB までとする。
   ホストは `url` が http(s) の URL として解析できることだけを確かめ、動画とプレイリストの振り分けは従来どおり本体の `deeplink.svelte.ts` が行う
 - 起動：ホストは `yt-browser://open?url=<encoded>` を OS の既定ハンドラで開く（Windows は ShellExecute 相当、Linux は xdg-open 相当）。
   既存の deep link 受信経路（未起動なら `get_current()`、起動中なら single-instance）をそのまま通るので、本体側の受信処理は変えない
@@ -233,8 +234,8 @@ sequenceDiagram
   JSON の `path` は実行中のバイナリの絶対パスとし、AppImage では `$APPIMAGE` を使う（マウント先の一時パスを登録しないため）。
   `allowed_origins` は拡張の固定 ID（`manifest.json` の `key` で固定する）の `chrome-extension://<ID>/` とする。
   登録の失敗は警告ログに留め、起動は止めない
-  - Windows：JSON をアプリデータ配下に置き、`HKCU\Software\Google\Chrome\NativeMessagingHosts\<ホスト名>` の既定値にそのパスを書く
-  - Linux：`~/.config/google-chrome/NativeMessagingHosts/<ホスト名>.json` に書く
+  - Windows：JSON をアプリデータ配下の `native-messaging/<ホスト名>.json` に置き、`HKCU\Software\Google\Chrome\NativeMessagingHosts\<ホスト名>` の既定値にそのパスを書く
+  - Linux：`~/.config/google-chrome/NativeMessagingHosts/<ホスト名>.json` に書く（`XDG_CONFIG_HOME` があればその配下）
   - 開発ビルド（`pnpm tauri dev`）も同じ処理で登録するため、最後に起動したバイナリのパスが有効になる
 - 拡張側：`nativeMessaging` 権限を足し、`sendNativeMessage` の応答で分岐する。
   `chrome.runtime.lastError`（ホスト未登録など）か `ok: false` のときは、従来のスキーム方式でタブを**アクティブ**で開いてフォールバックし、バッジ `!` とツールチップに理由を出す。
