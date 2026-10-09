@@ -142,7 +142,7 @@
 - [x] tauri-plugin-updater の導入と更新確認コマンドと確認ダイアログ（プラグイン JS API で確認、確認ダイアログは +layout のオーバーレイ）
 - [x] 起動時の自動確認と設定画面の手動確認ボタン
 - [x] 署名鍵の生成と公開鍵の `tauri.conf.json` への登録、秘密鍵の GitHub Secrets 登録はユーザー作業として手順書で依頼する（docs/updater-runbook.md）
-- [x] リリースワークフローの tauri-action 化と `latest.json` の生成
+- [x] リリースワークフローの `latest.json` 生成（release ジョブの `scripts/make_latest_json.py`。tauri-action 任せでは matrix 並列でエントリが失われるため自前生成）
 - [ ] 受け入れ：旧バージョンの起動で新リリースを検知し、承認で更新から再起動まで通る（実際の更新適用はリリース運用が始まってから。未検証）
 
 ### Phase 19：Chrome 拡張と外部起動（FR-17、仕様決定 AC）

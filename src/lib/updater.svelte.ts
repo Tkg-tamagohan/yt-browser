@@ -28,6 +28,8 @@ export async function checkForUpdate(manual = false): Promise<void> {
   try {
     const update = await check();
     if (update) {
+      // 前回の確認結果はネイティブリソースを保持するため差し替え前に閉じる
+      await appUpdate.pending?.close();
       appUpdate.pending = update;
       appUpdate.dismissed = false;
       if (manual) notify(t("update.found", { version: update.version }));
@@ -39,6 +41,13 @@ export async function checkForUpdate(manual = false): Promise<void> {
   } finally {
     appUpdate.checking = false;
   }
+}
+
+/// 検出済みの更新を閉じて状態を畳む（「後で」押下）。
+export async function dismissUpdate(): Promise<void> {
+  appUpdate.dismissed = true;
+  await appUpdate.pending?.close();
+  appUpdate.pending = null;
 }
 
 /// 起動時の自動確認（1 セッション 1 回）。開発ビルドでは走らない

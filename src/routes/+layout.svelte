@@ -8,6 +8,7 @@
     appUpdate,
     applyUpdate,
     checkForUpdateAtStartup,
+    dismissUpdate,
   } from "$lib/updater.svelte";
 
   let { children } = $props();
@@ -55,7 +56,7 @@
         {#if appUpdate.installing}
           <p class="subtle">{t("update.installing")}</p>
         {:else}
-          <button onclick={() => (appUpdate.dismissed = true)}>
+          <button onclick={() => void dismissUpdate()}>
             {t("update.later")}
           </button>
           <button class="primary" onclick={() => void applyUpdate()}>

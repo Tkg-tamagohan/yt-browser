@@ -22,10 +22,10 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 
 1. バージョンを上げる（`src-tauri/tauri.conf.json` の `version`、必要に応じて `package.json`）
 2. `git tag vX.Y.Z && git push origin vX.Y.Z` で release ワークフローが起動する
-3. `ubuntu-latest` と `windows-latest` の両ジョブで tauri-action がビルドし、**同じドラフトリリース**に成果物を添付する（AppImage+署名、NSIS+署名、MSI、deb、rpm、`latest.json`）
-4. 両ジョブが成功したことを確認してから、GitHub Releases ページでドラフトを **Publish** する
+3. `ubuntu-latest` と `windows-latest` の両ビルドジョブが成功すると、release ジョブが成果物を集めて `latest.json` を生成し、**ドラフト作成→全アセット添付→公開**まで自動で行う
+   - `latest.json` には AppImage（linux-x86_64）と NSIS（windows-x86_64）のエントリだけが入る（deb/rpm/MSI は対象外。`scripts/make_latest_json.py` が生成する）
    - 公開後に `releases/latest/download/latest.json` が有効になり、アプリ側の更新確認が検知できる
-   - 片方のジョブが失敗したまま公開しない（`latest.json` が片 OS 分の成果物しか指さない不完全な状態になる）
+   - 片方のビルドジョブが失敗すると release ジョブは走らずリリース自体が作られない（不完全な公開を防ぐ仕組み）
 
 ## 確認
 
@@ -37,4 +37,4 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 
 - **秘密鍵を紛失すると更新が配布できなくなる**。`yt-browser.key` はリポジトリへコミットせず、安全な場所に保管する（公開鍵とペアでない鍵で署名してもインストール側で検証失敗になる）
 - ドラフトのままのリリースでは `latest.json` が公開 URL に出ないため、公開前は更新確認が「更新なし／確認失敗」に見える（正常）
-- CI のビルド成果物検証（署名・latest.json の中身）は release ワークフロー実行時に初めて行われる。初回リリース時はドラフトの添付物一覧で `latest.json` と `*.sig` が揃っているか確認する
+- CI のビルド成果物検証（署名・latest.json の中身）は release ワークフロー実行時に初めて行われる。初回リリース時はリリースの添付物一覧で `latest.json` と `*.sig` が揃っているか確認する
