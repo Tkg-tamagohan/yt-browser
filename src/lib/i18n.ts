@@ -187,7 +187,7 @@ const ja = {
   "update.failed": "更新の確認に失敗: {message}",
   "update.installFailed": "更新の適用に失敗: {message}",
   "settings.update.title": "アプリの更新",
-  "settings.update.desc": "AppImage / NSIS 版は自動更新に対応しています。起動時にも自動で確認します（deb / rpm / MSI 版は対象外です）",
+  "settings.update.desc": "AppImage / NSIS 版は自動更新に対応しています。起動時にも自動で確認します（deb / rpm 版は対象外です）",
   "settings.update.check": "今すぐ確認",
   "settings.update.checking": "確認中…",
 
