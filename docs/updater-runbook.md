@@ -24,6 +24,7 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 2. `git tag vX.Y.Z && git push origin vX.Y.Z` で release ワークフローが起動する
 3. `ubuntu-latest` と `windows-latest` の両ビルドジョブが成功すると、release ジョブが成果物を集めて `latest.json` を生成し、**ドラフト作成→全アセット添付→公開**まで自動で行う
    - `latest.json` には AppImage（linux-x86_64）と NSIS（windows-x86_64）のエントリだけが入る（deb/rpm/MSI は対象外。`scripts/make_latest_json.py` が生成する）
+   - Chrome 拡張は `extension/` を zip 化した `yt-browser-extension-<タグ名>.zip` として添付される（ストア未公開のため未パッケージ読み込み用。仕様決定 AC）
    - 公開後に `releases/latest/download/latest.json` が有効になり、アプリ側の更新確認が検知できる
    - 片方のビルドジョブが失敗すると release ジョブは走らずリリース自体が作られない（不完全な公開を防ぐ仕組み）
 
@@ -32,6 +33,14 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 - 公開済みリリースがある状態で AppImage / NSIS 版を起動すると、新バージョン検知時に確認ダイアログが出る。承認でダウンロード→適用→再起動まで通る
 - 設定画面の「今すぐ確認」ボタンで手動確認もできる
 - deb / rpm / MSI 版は自動更新対象外（従来どおり手動更新）
+
+## 手動でタグを作成するときの注意点
+
+- **タグ名は `vX.Y.Z`**（`v*` がトリガー）。`latest.json` の `version` にはスクリプトが先頭の `v` を除いた semver を書く
+- **タグを打つ前に `src-tauri/tauri.conf.json` の `version` を X.Y.Z に更新しておく**。ずれていると成果物名（`*_0.2.0_*` 等）と `latest.json` のバージョンが食い違い、アプリ側の更新判定が誤判定しうる（v0.3.0 タグで version 0.2.0 のままだった例あり）
+- **タグは修正を含んだコミットに打つ**。ビルドと release ジョブはタグの指すコミットをチェックアウトするため、修正が main へマージ済みでも古いコミットのタグを打つと古いワークフロー・スクリプトで実行される。Actions の「失敗したジョブの再実行（Re-run）」も同じコミットを見るため、ワークフローやスクリプトの修正は再実行では反映されない
+- **タグの張り替え**: 修正後に同じバージョン名で出し直す場合は `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` で削除してから再打ち、または `git tag -f vX.Y.Z && git push -f origin vX.Y.Z`。出し直しが面倒なら次のタグ（`vX.Y.Z+1`）を打つ方が安全
+- **途中失敗でリリースが作られていた場合**: 再実行時に `gh release upload --clobber` でアセットが差し替え添付されるので手動削除は不要（ドラフトのまま残った場合も公開状態に揃える）
 
 ## 注意点
 

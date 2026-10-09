@@ -2,6 +2,12 @@
 """updater の latest.json を生成する（FR-15、仕様決定 AB）。
 
 対象は AppImage（linux-x86_64）と NSIS（windows-x86_64）のみ。
+Tauri CLI 2.x の createUpdaterArtifacts はバンドル本体に直接署名する
+（*.AppImage + *.AppImage.sig / *-setup.exe + *-setup.exe.sig）ため、
+旧来の *.AppImage.tar.gz 形式は存在しない。
+
+tag は vX.Y.Z 形式を想定するが、latest.json の version には
+セマンティックバージョンだけを入れるため先頭の v を取り除く。
 deb / rpm / MSI 用のプラットフォームキーは書かないので、それらの
 バンドル形態からの check() はマッチする更新を持たず手動更新運用に留まる。
 
@@ -21,7 +27,7 @@ from pathlib import Path
 
 # updater 対象の成果物パターン → latest.json のプラットフォームキー
 PLATFORMS = {
-    "linux-x86_64": "*.AppImage.tar.gz",
+    "linux-x86_64": "*.AppImage",
     "windows-x86_64": "*-setup.exe",
 }
 
@@ -58,7 +64,8 @@ def main() -> None:
         }
 
     manifest = {
-        "version": tag,
+        # updater が比較するバージョンは semver なのでタグの v 接頭辞を外す
+        "version": tag.removeprefix("v"),
         "notes": "",
         "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platforms": platforms,

@@ -112,6 +112,7 @@ pnpm tauri build      # AppImage / deb / rpm を生成（src-tauri/target/releas
 
 1. Chrome で `chrome://extensions` を開き、「デベロッパーモード」を有効にする
 2. 「パッケージ化されていない拡張機能を読み込む」でリポジトリの `extension/` フォルダを選ぶ
+   - GitHub Releases から使う場合は、添付の `yt-browser-extension-<タグ名>.zip` を展開して同じ手順で読み込みます
 3. YouTube の動画画面・プレイリスト画面でツールバーの拡張ボタンを押すか、YouTube へのリンク上で右クリック→「yt-browser で開く」を選ぶ
 4. 初回は Chrome の「外部アプリで開きますか」確認が出ます。承認すると yt-browser が起動します（起動中ならそのインスタンスへ URL が渡ります）
 
