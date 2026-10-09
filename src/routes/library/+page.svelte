@@ -1,9 +1,10 @@
 <script lang="ts">
   // ローカルデータ画面（FR-7）: 視聴履歴・お気に入り・プレイリストの
   // 一覧・編集・削除をここで完結させる。
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
@@ -96,12 +97,30 @@
     favorites = await invoke<FavoriteEntry[]>("favorite_list");
   }
 
+  // 画面外からのプレイリスト変更通知（library://playlists_changed、
+  // 設計書 §3.2）の購読解除関数。マウント中だけ listen する
+  let unlistens: UnlistenFn[] = [];
+
   onMount(async () => {
+    // 購読の失敗で初回ロードまで止めないよう、独立して試す
+    try {
+      unlistens.push(
+        await listen<Playlist>("library://playlists_changed", (ev) => {
+          void onPlaylistsChanged(ev.payload);
+        }),
+      );
+    } catch (e) {
+      notify(t("library.failed", { message: asErrorMessage(e) }));
+    }
     try {
       await Promise.all([loadHistory(), loadFavorites()]);
     } catch (e) {
       notify(t("library.failed", { message: asErrorMessage(e) }));
     }
+  });
+
+  onDestroy(() => {
+    unlistens.forEach((u) => u());
   });
 
   async function play(videoId: string, resume: boolean): Promise<void> {
@@ -238,6 +257,21 @@
     return listRun;
   }
 
+  /// 画面外からのプレイリスト取り込み（library://playlists_changed）の反映。
+  /// 一覧を再取得し、取り込まれたプレイリストを選択する
+  /// （画面内取り込みの importPlaylist → selectPlaylist と同等の UX）。
+  /// 一覧の再取得に失敗しても選択と項目取得は試行する
+  /// （取り込み成功自体はイベントの発火が保証している）
+  async function onPlaylistsChanged(pl: Playlist): Promise<void> {
+    tab = "playlists";
+    try {
+      await refreshPlaylists();
+    } catch (e) {
+      notify(t("library.failed", { message: asErrorMessage(e) }));
+    }
+    await selectPlaylist(pl);
+  }
+
   /// VideoActions からのプレイリスト追加通知（FR-7）。
   /// 追加先が表示中なら項目一覧も読み直す（重複追加は冪等なので再取得で吸収）。
   /// itemsReq は選択中プレイリストの項目取得だけの世代なので、
@@ -275,7 +309,13 @@
         name: name === "" ? null : name,
       });
       ++listsReq;
-      va.playlists = [...va.playlists, pl];
+      // バックエンドの emit が invoke 応答より先に届くと、イベント側の
+      // refreshPlaylists が新しいプレイリストを含む一覧で上書き済みになる。
+      // その場合に無条件で追加すると同 ID の行が重複するため、未登録の
+      // ときだけ追加する
+      if (!va.playlists.some((p) => p.id === pl.id)) {
+        va.playlists = [...va.playlists, pl];
+      }
       importUrl = "";
       importName = "";
       notify(

@@ -154,6 +154,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=`）の受信（§3.4） |
+| `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
 
 `player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、サンプリングで間引いて送る。
 

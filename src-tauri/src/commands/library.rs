@@ -5,7 +5,7 @@ use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{FavoriteEntry, Playlist, PlaylistEntry, VideoRef, WatchHistory};
 use crate::yt::{self, YtDlpResolver};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 /// 動画 1 件分の視聴履歴。`video_id` は `play_video` と同じ正規化を経る。
 #[tauri::command]
@@ -154,12 +154,16 @@ pub fn playlist_remove(
 /// `name` 省略時は取り込んだプレイリストのタイトルを使い、
 /// それも取れないときは「取り込みプレイリスト」とする（暫定）。
 /// 戻り値は作成したプレイリスト（件数集計済み）。
+/// 成功時は `library://playlists_changed` で作成したプレイリストを通知し、
+/// deep link など画面外からの取り込みを表示中の /library が検知できるようにする
+/// （設計書 §3.2）。
 #[tauri::command]
 pub async fn playlist_import(
     url: String,
     name: Option<String>,
     resolver: State<'_, YtDlpResolver>,
     db: State<'_, Db>,
+    app: AppHandle,
 ) -> Result<Playlist, UiError> {
     // 取り込み対象は YouTube の URL のみ（yt-dlp の任意 extractor 呼び出しを防ぐ）
     let parsed =
@@ -207,6 +211,7 @@ pub async fn playlist_import(
     }
     // INSERT OR IGNORE で既存項目は位置維持されるため実件数を取り直す
     playlist.item_count = db.playlist_items(playlist.id)?.len() as i64;
+    let _ = app.emit("library://playlists_changed", &playlist);
     Ok(playlist)
 }
 
