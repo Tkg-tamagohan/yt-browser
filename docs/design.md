@@ -116,6 +116,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
+`pip` は省略時に設定 `pip.default`（§4.5、仕様決定 AJ）で解決し、明示の `true`/`false` は強制 PiP・強制通常窓として既定に優先する。
 `play_video` が返す `instance_id` が制御対象の識別子で、UI はアクティブな窓の ID を保持して全操作に付ける。
 単一再生でも必須引数に揃え、マルチビュー時の操作経路を初期から担保する（FR-1）。
 `player_control` に操作を集約するのは、mpv 側への転送層を一箇所に保つためである。
@@ -155,6 +156,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=`）の受信（§3.4） |
 | `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
+| `settings://changed` | `{ key, value }` | `settings_set` のコミット毎に発火。コミット済みの値を載せるため購読側の再読み取りは不要。設定値を保持する画面（ホームの逆モードボタンが使う `pip.default` など）が画面外の変更に追従するために使う |
 
 `player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、サンプリングで間引いて送る。
 
@@ -172,6 +174,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `wheel.volume_delta` | 数値 | ホイール再生中の 1 ノッチあたりの音量変化量（§4.2、mpv script-opts の `wheel-volume_delta`） |
 | `pip.geometry` | `WxH±x±y` | PiP 小窓の位置とサイズ（§4.5、既定 `480x270-40-40`） |
 | `pip.quality.format` | `ytdl-format` 式 | PiP インスタンスの既定画質（§4.5）。未設定・空文字は `quality.format` に従う（仕様決定 W） |
+| `pip.default` | `on` / `off` | 再生の既定表示を PiP 小窓にするか（§4.5、仕様決定 AJ）。未設定・その他の値は `on`（PiP が既定） |
 | `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5） |
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
@@ -348,6 +351,8 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 `ontop`・`border`・`geometry` はいずれも起動後に `set_property` で変更できるため、稼働中インスタンスを後から PiP 化・解除できる（`player_control` の `pip` アクション、`PlayerState.pip` で状態を伝える）。小窓の位置とサイズは設定 `pip.geometry`（mpv の `WxH±x±y` 形式のみ受理、既定 `480x270-40-40`）で変更する。
 
 起動時の画質式は「`play_video` の `format` 引数（インスタンス別指定）> PiP なら `pip.quality.format` > `quality.format`」の順で解決する（仕様決定 W、実装レベル細目「PiP 画質の解決順」）。稼働中インスタンスの画質はプレイヤーカードの画質選択から `player_control` の `quality` アクションで変えられる。この変更は DB に保存せずセッション内に限り有効で、次回再生は既定画質に戻る（仕様決定 X）。現在の適用値は `PlayerState.format` としてカードへ伝える。
+
+再生の既定表示は PiP とする（FR-18、仕様決定 AJ）。`play_video` の `pip` 引数は省略時に設定 `pip.default`（`on`/`off`、未設定・その他の値は `on`）で解決し、明示の `true`/`false` は強制 PiP・強制通常窓として既定に優先する。PiP が既定のため `pip.quality.format` はほぼ全再生の起動画質式として機能する（解決順自体は変更しない）。連続再生・ループの遷移は同一 mpv プロセスで行われ、`ontop`・`border`・`geometry` は遷移を跨いで維持される。
 
 ### 4.6 連続再生キュー（FR-10、仕様決定 S）
 

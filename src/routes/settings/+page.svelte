@@ -6,6 +6,7 @@
   import {
     PIP_GEOMETRY_DEFAULT,
     isValidPipGeometry,
+    pipDefaultEnabled,
   } from "$lib/pip";
   import { QUALITY_PRESETS } from "$lib/quality";
   import {
@@ -57,6 +58,8 @@
   // ホイール 1 ノッチの音量変化量（mpv script-opts の wheel-volume_delta。
   // 次回再生から有効。既定 2、undefined は「Lua 既定のまま」＝保存スキップ）
   let wheelDelta = $state<number | undefined>(2);
+  // 再生の既定表示を PiP にするか（pip.default、仕様決定 AJ）。既定は on
+  let pipDefault = $state(true);
   // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する。
   // 空欄での保存は「既定値へ戻す」操作として扱い、UI 表示も既定に戻す
   let pipGeometry = $state(PIP_GEOMETRY_DEFAULT);
@@ -243,6 +246,17 @@
           });
         }
       }
+      // pip.default: チェックボックスの 2 値を on/off で保存する（仕様決定 AJ）。
+      // 保存待ちの間に再操作された場合は DB と画面がずれるため未保存と通知する
+      const pd = pipDefault;
+      await invoke("settings_set", {
+        key: "pip.default",
+        value: pd ? "on" : "off",
+      });
+      if (pipDefault !== pd) {
+        invalid = true;
+        notify(t("settings.pip.unsaved"));
+      }
       // pip.geometry: mpv の geometry 形式だけ保存する（ここで弾く）。
       // 空欄は既定値へのリセットとして扱い、不正形式は失敗通知のみ
       const geo = pipGeometry.trim();
@@ -383,6 +397,10 @@
       const wheelRaw = await invoke<string | null>("settings_get", {
         key: "wheel.volume_delta",
       });
+      const pipDefaultRaw = await invoke<string | null>("settings_get", {
+        key: "pip.default",
+      });
+      pipDefault = pipDefaultEnabled(pipDefaultRaw);
       const pipGeoRaw = await invoke<string | null>("settings_get", {
         key: "pip.geometry",
       });
@@ -512,6 +530,11 @@
     {#if loading}
       <p class="subtle">…</p>
     {:else}
+      <label class="wheel-row">
+        <input type="checkbox" bind:checked={pipDefault} />
+        {t("settings.pip.default")}
+      </label>
+      <p class="subtle desc">{t("settings.pip.default.desc")}</p>
       <label class="wheel-row">
         {t("settings.pip.geometry")}
         <input

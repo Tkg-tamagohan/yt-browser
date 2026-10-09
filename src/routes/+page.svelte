@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
   import { parseTimeParam } from "$lib/deeplink.svelte";
+  import { pipDefaultEnabled } from "$lib/pip";
   import {
     asErrorMessage,
     playbackHooks,
@@ -18,6 +20,9 @@
   let input = $state("");
   let resumeHint = $state<WatchHistory | null>(null);
   let notices = $state<string[]>([]);
+  // 再生の既定表示モード（設定 `pip.default`。未設定は PiP 既定、仕様決定 AJ）
+  let pipDefault = $state(true);
+  let unlistenSettings: (() => void) | undefined;
   let ytdlp = $state<YtDlpStatus | null>(null);
   let ytdlpChecking = $state(true);
   let ytdlpUpdating = $state(false);
@@ -45,7 +50,9 @@
     }
   }
 
-  async function play(resume: boolean, pip = false): Promise<void> {
+  // pip を省略して呼ぶとバックエンドが設定 `pip.default` で解決する
+  // （false の明示は「強制通常窓」の意味を持つため既定値にしない、仕様決定 AJ）
+  async function play(resume: boolean, pip?: boolean): Promise<void> {
     try {
       await invoke<number>("play_video", {
         videoId: input.trim(),
@@ -95,6 +102,29 @@
     // プレイヤーカード（PlayerCards）はレイアウト側で常時マウントされるため、
     // 終了/クローズ後の resumeHint 再取得はフック登録で受け取る
     playbackHooks.add(refreshResumeHint);
+    // 設定画面の保存中に遷移してきた場合、初期読み取りが保存前の値を
+    // 拾うことがある。コミット済みの値を持つ settings://changed を先に購読し、
+    // 届いた以降はイベント側を正とする（Devin Review #59 指摘）
+    let pipChanged = false;
+    const unlistenPromise = listen<{ key: string; value: string }>(
+      "settings://changed",
+      (ev) => {
+        if (ev.payload.key !== "pip.default") return;
+        pipChanged = true;
+        pipDefault = pipDefaultEnabled(ev.payload.value);
+      },
+    );
+    unlistenSettings = () =>
+      void unlistenPromise.then((u) => u()).catch(() => {});
+    try {
+      const raw = await invoke<string | null>("settings_get", {
+        key: "pip.default",
+      });
+      // 購読中に届いたイベントの値を正とし、初期読み取りの遅延解決で戻さない
+      if (!pipChanged) pipDefault = pipDefaultEnabled(raw);
+    } catch {
+      // 読み取り失敗時は PiP 既定のままにする
+    }
     try {
       dbStatus = await invoke<DbStatus>("db_status");
     } catch (e) {
@@ -105,6 +135,8 @@
 
   onDestroy(() => {
     playbackHooks.delete(refreshResumeHint);
+    unlistenSettings?.();
+    unlistenSettings = undefined;
   });
 </script>
 
@@ -127,11 +159,11 @@
       {t("player.playResume")}
     </button>
     <button
-      title={t("player.pip.hint")}
-      onclick={() => play(false, true)}
+      title={pipDefault ? t("player.window.hint") : t("player.pip.hint")}
+      onclick={() => play(false, !pipDefault)}
       disabled={!input.trim()}
     >
-      {t("player.playPip")}
+      {pipDefault ? t("player.playWindow") : t("player.playPip")}
     </button>
   </div>
   {#if resumeHint}

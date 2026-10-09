@@ -23,6 +23,9 @@ pub const WHEEL_LUA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/m
 pub(crate) const SETTING_WHEEL_VOLUME_DELTA: &str = "wheel.volume_delta";
 /// PiP 小窓の `--geometry` 値（設定キー `pip.geometry`）。
 pub(crate) const SETTING_PIP_GEOMETRY: &str = "pip.geometry";
+/// 設定キー: 再生の既定表示を PiP 小窓にするか（仕様決定 AJ）。
+/// 値は "on" / "off"。未設定・その他の値は "on"（PiP が既定）として扱う。
+pub(crate) const SETTING_PIP_DEFAULT: &str = "pip.default";
 /// 設定キー: HDR→SDR 変換のトーンマッピング方式（mpv `--tone-mapping`、仕様決定 Y）。
 pub(crate) const SETTING_HDR_TONE_MAPPING: &str = "hdr.tone_mapping";
 /// 設定キー: HDR ピーク輝度のフレーム計測（mpv `--hdr-compute-peak`、仕様決定 Y）。
@@ -38,6 +41,20 @@ pub(crate) fn is_valid_pip_geometry(s: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}[+-]\d{1,5})?$").unwrap())
         .is_match(s)
+}
+
+/// `pip.default` の保存値を解釈する（仕様決定 AJ）。
+/// `off` / `false` / `0` / `no`（大小文字・前後空白を許容）だけが
+/// 通常窓既定（false）で、それ以外と未設定は PiP 既定（true）を返す。
+/// フロント側の同一解釈は `src/lib/pip.ts` の `pipDefaultEnabled`。
+pub(crate) fn pip_default_enabled(value: Option<String>) -> bool {
+    match value {
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "false" | "0" | "no"
+        ),
+        None => true,
+    }
 }
 
 /// `hdr.tone_mapping` として受理する値（mpv 0.41 の列挙値のうち、
@@ -80,7 +97,7 @@ pub enum MpvError {
 mod tests {
     use super::{
         is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
-        player::split_extra_args,
+        pip_default_enabled, player::split_extra_args,
     };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
@@ -109,6 +126,25 @@ mod tests {
         ] {
             assert!(!is_valid_pip_geometry(ng), "{ng} は拒否されるべき");
         }
+    }
+
+    /// `pip.default` の解釈（仕様決定 AJ）。off 系のみ通常窓既定、
+    /// それ以外と未設定は PiP 既定。
+    #[test]
+    fn pip_default_enabled_values() {
+        for off in ["off", "OFF", " false ", "0", "no"] {
+            assert!(
+                !pip_default_enabled(Some(off.to_string())),
+                "{off} は通常窓既定になるべき"
+            );
+        }
+        for on in ["on", "true", "1", "yes", "", "  ", "invalid"] {
+            assert!(
+                pip_default_enabled(Some(on.to_string())),
+                "{on} は PiP 既定になるべき"
+            );
+        }
+        assert!(pip_default_enabled(None));
     }
 
     /// HDR 設定の受理集合（仕様決定 Y）。`auto`/空/未定義値は未指定扱いにするため拒否。

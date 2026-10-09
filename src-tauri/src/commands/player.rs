@@ -4,13 +4,15 @@ use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{PlayerAction, PlayerState};
-use crate::mpv::PlayerManager;
+use crate::mpv::{pip_default_enabled, PlayerManager, SETTING_PIP_DEFAULT};
 use crate::yt;
 use tauri::State;
 
 /// `play_video`（設計書 §3.1）。`video_id` は URL 各形式も受け取り正規化する。
 /// `resume` が true のとき、未完了の履歴位置から再開する。
-/// `pip` が true のとき、最前面・枠なしの小窓で起動する（設計書 §4.5）。
+/// `pip` は省略時に設定 `pip.default`（未設定は PiP 既定）で解決し、
+/// 明示の `true` / `false` は強制 PiP / 強制通常窓として既定に優先する
+/// （設計書 §4.5、仕様決定 AJ）。
 /// `format` はインスタンス別の画質式。起動時画質の解決順は
 /// 「インスタンス別指定 > PiP なら `pip.quality.format` > `quality.format`」
 /// （仕様決定 W・X、実装レベル細目「PiP 画質の解決順」）。
@@ -38,7 +40,12 @@ pub async fn play_video(
     } else {
         0.0
     };
-    let pip = pip.unwrap_or(false);
+    // pip 省略時は設定 `pip.default` で解決する（仕様決定 AJ）。
+    // 明示の true / false は強制 PiP / 強制通常窓として既定に優先する
+    let pip = match pip {
+        Some(v) => v,
+        None => pip_default_enabled(db.setting_get(SETTING_PIP_DEFAULT)?),
+    };
     let global = db.setting_get(yt::SETTING_QUALITY_FORMAT)?;
     let pip_format = if pip {
         db.setting_get(yt::SETTING_PIP_QUALITY_FORMAT)?

@@ -50,6 +50,11 @@ const ja = {
   "player.pip.hint":
     "最前面・枠なしの小窓で再生。mpv のショートカット（q で終了、m でミュート）は小窓上でも使えます",
 
+  // Phase 25: 再生の既定表示を PiP 化（FR-18、仕様決定 AJ）
+  "player.playWindow": "通常窓で再生",
+  "player.window.hint":
+    "既定が PiP のため、このボタンは通常のウィンドウで再生します（既定表示の設定は変わりません）",
+
   // Phase 17: ループ再生（FR-16、仕様決定 AA）
   "player.loop.none": "ループ: なし",
   "player.loop.all": "ループ: 全体",
@@ -317,6 +322,9 @@ const ja = {
   "settings.pip.title": "PiP",
   "settings.pip.desc":
     "PiP（最前面・枠なしの小窓）の位置とサイズ。mpv の --geometry 形式（例: 480x270-40-40 は幅480・高さ270・右下から 40px 内側）。次回の PiP 化から有効",
+  "settings.pip.default": "再生を既定で PiP 表示にする",
+  "settings.pip.default.desc":
+    "オンにするとすべての再生（連続再生の先頭・外部からの起動を含む）が PiP 小窓で始まります。起動後はプレイヤーカードで切り替えられます",
   "settings.pip.geometry": "小窓の位置とサイズ（WxH+±x±y）",
   "settings.pip.quality": "PiP の既定画質（ytdl-format 式）",
   "settings.pip.quality.desc":
