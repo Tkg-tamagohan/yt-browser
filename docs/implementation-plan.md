@@ -240,8 +240,7 @@ Windows の登録（HKCU レジストリ）とホストの起動は Windows 実�
 
 - **Actions の Node.js 20 非推奨警告**：`actions/checkout@v4`・`actions/setup-node@v4`・`pnpm/action-setup@v4` が Node.js 20 対象のため Node.js 24 で強制実行されている（GitHub の 2025-09-19 変更点告知由来）
   現状は警告のみで動作しており、各 action のメジャーバージョン更新で追従する
-- **`ubuntu-latest` の Ubuntu 26 への移行予告**：GitHub 側の告知では 2026-10-19 から移行が始まる（actions/runner-images#14748）
-  rust ジョブが apt で導入する `libwebkit2gtk-4.1-dev` 等のパッケージ名や提供版が変わる可能性があり、移行後に CI が落ちた場合は `ubuntu-24.04` へのラベル固定か依存の更新で対応する
+- **Ubuntu ランナーラベルは明示固定**（仕様決定 AI）：`ubuntu-latest` の Ubuntu 26.04 への移行告知（2026-10-19 から段階移行、actions/runner-images#14748）を受け、`ubuntu-latest` は使わず CI 系は `ubuntu-26.04`、release.yml は `ubuntu-24.04`（配布物の動作下限を維持するため）に固定した
 
 ## 引き継ぎ手順
 

@@ -10,18 +10,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Ubuntu ランナーは ubuntu-26.04 に明示固定する（仕様決定 AI）。
+  # ubuntu-latest 追従は Ubuntu 26.04 への移行期間中にジョブが新旧
+  # どちらのイメージに載るか不定になるため避ける。
   # docs↔コード整合の機械チェック（監査対応）。
   # Python 標準ライブラリのみで動く軽量ジョブとして独立させ、
   # 「文書ずれ」だけを即座に識別できるようにする。
   # Rust 側の DDL 照合テスト（CL-1a）は rust/windows ジョブの cargo test に乗る。
   consistency:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check_docs_consistency.py
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -35,7 +38,7 @@ jobs:
       - run: pnpm build
 
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - name: Install Tauri system dependencies
@@ -82,7 +85,7 @@ jobs:
   ci-status:
     name: CI
     needs: [consistency, frontend, rust, windows]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: always()
     steps:
       - name: 依存ジョブの結果を集約

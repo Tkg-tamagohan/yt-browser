@@ -5,7 +5,7 @@ mpv による軽量な再生と、ローカル完結の購読と履歴と NG 管
 
 ## 動作要件
 
-- OS: Linux（WebKitGTK 4.1 環境）または Windows 10 以降
+- OS: Linux（WebKitGTK 4.1 環境、配布物は Ubuntu 24.04 相当以降を対象）または Windows 10 以降
 - 必須の外部コマンド（いずれも PATH から解決される必要がある）
   - `mpv`: 再生エンジン
   - `yt-dlp`: ストリーム解決と検索

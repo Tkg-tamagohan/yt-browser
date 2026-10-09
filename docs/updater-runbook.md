@@ -22,7 +22,7 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 
 1. `scripts/bump_version.py X.Y.Z` でバージョンを一括更新し、コミットする（`tauri.conf.json`・`package.json`・`Cargo.toml`・`Cargo.lock` の 4 箇所を揃える。`--check` で現在の整合を確認できる）
 2. `git tag vX.Y.Z && git push origin vX.Y.Z` で release ワークフローが起動する
-3. `ubuntu-latest` と `windows-latest` の両ビルドジョブが成功すると、release ジョブが成果物を集めて `latest.json` を生成し、**ドラフト作成→全アセット添付→公開**まで自動で行う
+3. `ubuntu-24.04` と `windows-latest` の両ビルドジョブが成功すると、release ジョブが成果物を集めて `latest.json` を生成し、**ドラフト作成→全アセット添付→公開**まで自動で行う
    - `latest.json` には AppImage（linux-x86_64）と NSIS（windows-x86_64）のエントリだけが入る（deb/rpm/MSI は対象外。`scripts/make_latest_json.py` が生成する）
    - Chrome 拡張は `extension/` を zip 化した `yt-browser-extension-<タグ名>.zip` として添付される（ストア未公開のため未パッケージ読み込み用。仕様決定 AC）
    - 公開後に `releases/latest/download/latest.json` が有効になり、アプリ側の更新確認が検知できる
