@@ -50,13 +50,13 @@ function openInApp(targetUrl) {
   chrome.runtime.sendNativeMessage(HOST_NAME, { url: targetUrl }, (response) => {
     const err = chrome.runtime.lastError;
     if (!err && response && response.ok === true) {
-      void clearFailure();
+      void setIndicator(null);
       return;
     }
     const reason = err
       ? `アプリに接続できません（${err.message}）。yt-browser を一度起動すると登録されます`
       : `アプリが失敗を返しました（${response?.error ?? "unknown"}）`;
-    void showFailure(reason);
+    void setIndicator(reason);
     openViaScheme(targetUrl);
   });
 }
@@ -75,6 +75,18 @@ function openViaScheme(targetUrl) {
 }
 
 // --- 失敗表示（バッジとツールチップ）。成功時は何も表示しない ---
+
+// 応答が重なっても表示が最後の結果に収束するよう、更新を 1 本の
+// Promise 連鎖で直列化する（途中で別の更新が割り込まない）
+let indicatorChain = Promise.resolve();
+
+// reason が null なら失敗表示を消し、文字列なら失敗表示にする
+function setIndicator(reason) {
+  indicatorChain = indicatorChain
+    .then(() => (reason === null ? clearFailure() : showFailure(reason)))
+    .catch((e) => console.warn("yt-browser opener: 表示を更新できません", e));
+  return indicatorChain;
+}
 
 async function showFailure(reason) {
   await chrome.action.setBadgeText({ text: "!" });
