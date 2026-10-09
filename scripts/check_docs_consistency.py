@@ -445,12 +445,17 @@ def check_i18n(setting_keys: set[str]) -> Findings:
     # 設定キー（SETTING_* の値）は i18n キーではないので参照から除く。
     static_refs: set[str] = set()
     template_prefixes: set[str] = set()
+    # ドメイン名リテラル（"youtube.com" 等）を i18n 参照と誤認しないよう、
+    # 末尾セグメントが TLD の文字列は参照から除く。i18n キーは TLD で終わらない
+    KNOWN_TLDS = {"com", "net", "org", "be", "io", "dev", "jp", "app"}
     for path in iter_files(SRC_FRONTEND, (".ts", ".svelte")):
         if path == I18N_TS:
             continue
         text = strip_comments(read_text(path), path.suffix)
         for m2 in DOTTED_KEY_RE.finditer(text):
             lit = m2.group(1)
+            if lit.rsplit(".", 1)[-1] in KNOWN_TLDS:
+                continue
             if lit not in setting_keys:
                 static_refs.add(lit)
         for m3 in TEMPLATE_REF_RE.finditer(text):

@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "yt-browser opener",
+  "version": "0.1.0",
+  "description": "YouTube の動画・プレイリストを yt-browser で開く",
+  "permissions": ["contextMenus", "tabs"],
+  "host_permissions": [],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "yt-browser で開く"
+  }
+}

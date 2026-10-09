@@ -3,6 +3,7 @@
   import "../app.css";
   import { t } from "$lib/i18n";
   import { appNotices } from "$lib/notices.svelte";
+  import { initDeepLinks } from "$lib/deeplink.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
   import {
     appUpdate,
@@ -12,6 +13,11 @@
   } from "$lib/updater.svelte";
 
   let { children } = $props();
+
+  // deep link（yt-browser://open?url=...）の受信を開始する
+  // （FR-17、仕様決定 AC）。リスナー登録と保留分ドレインを行い、
+  // アンマウント時に解除する
+  $effect(() => initDeepLinks());
 
   // 起動時の自動更新確認（FR-15、仕様決定 AB）。更新検出時のみ
   // 下の確認ダイアログが出る

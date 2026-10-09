@@ -3,6 +3,7 @@
 //! コマンド本体はドメイン別の子モジュールに置き、ここで再エクスポートする。
 
 mod chat;
+mod deep_link;
 mod feed;
 mod filter;
 mod library;
@@ -11,6 +12,7 @@ mod search;
 mod system;
 
 pub use chat::*;
+pub use deep_link::*;
 pub use feed::*;
 pub use filter::*;
 pub use library::*;
