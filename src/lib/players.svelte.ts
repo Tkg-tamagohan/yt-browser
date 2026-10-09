@@ -32,6 +32,9 @@ export type PlayerEnded = {
   /// 継続先として読み込みを開始した項目（FR-16、仕様決定 AA）。
   /// videoId と同一なら現在項目の繰り返し（ループ）。非継続時は null
   continuedVideoId: string | null;
+  /// このイベント時点の武装取り出し世代（仕様決定 AD）。
+  /// `player_set_queue` の `baseSeq` に載せて古い置換を拒否させる
+  armedSeq: number;
 };
 
 /// `sponsor://skipped` イベント（設計書 §3.2）。action は "skip" | "notify"。

@@ -80,6 +80,9 @@ pub async fn player_close(
 /// 連続再生の武装キューを登録する。`items` は今後再生する動画 ID の順序列
 /// （URL 各形式も受け取り正規化する）。`loop_all` が true のとき取り出し分を
 /// 末尾へ戻して巡回する。空列は武装の解除。
+/// `base_seq` はフロントが計画した時点の取り出し世代。指定時は世代が
+/// 一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では
+/// 適用せず false を返す。戻り値は「置き換えを適用したか」。
 /// キューはフロント側の状態なので、登録した順序と実際に流れた項目がずれる
 /// （queue drift）のは仕様上の制約として許容する。
 #[tauri::command]
@@ -87,14 +90,15 @@ pub async fn player_set_queue(
     instance_id: u32,
     items: Vec<String>,
     loop_all: bool,
+    base_seq: Option<u64>,
     players: State<'_, PlayerManager>,
-) -> Result<(), UiError> {
+) -> Result<bool, UiError> {
     let ids = items
         .iter()
         .map(|v| parse_video_id(v))
         .collect::<Result<Vec<_>, _>>()?;
     players
-        .set_queue(instance_id, ids, loop_all)
+        .set_queue(instance_id, ids, loop_all, base_seq)
         .await
         .map_err(UiError::from)
 }

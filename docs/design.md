@@ -71,7 +71,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
-| `player_set_queue` | `instance_id`, `items`, `loop_all` | `Result<()>` |
+| `player_set_queue` | `instance_id`, `items`, `loop_all`, `base_seq` | `Result<bool>`（置き換えを適用したか） |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
 | `history_list` | `limit?`（既定 500、上限 1000） | `Result<Vec<WatchHistory>>` |
 | `history_remove` | `video_id` | `Result<()>` |
@@ -124,7 +124,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}` を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
-`player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する動画 ID の順序列（空列は武装の解除）、`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。
+`player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する動画 ID の順序列（空列は武装の解除）、`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
 登録済み項目は次の終端（自然終了・途中失敗）で同一 mpv が先頭から読み込む。
 `playlist_import` は YouTube プレイリストを `yt-dlp --flat-playlist` で取り込み、
 各項目を `video_upsert` で `videos` 台帳に集約したうえで新規プレイリストへ登録する（FR-10、仕様決定 R）。
@@ -145,7 +145,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId }` | 終了またはエラー |
+| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, armedSeq }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
 | `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
@@ -316,11 +316,12 @@ PiP は mpv を `--ontop --no-border --geometry=WxH+X+Y` で小窓起動した�
 同時に今後の項目列を `player_set_queue` でバックエンドへ武装する。
 mpv が終端（自然終了・途中失敗）を迎えると emitter が武装キューの先頭を取り出し、
 同一 mpv で `loadfile` により先頭から読み込む。`--keep-open=yes` 下では EOF 後の mpv が `pause=true` で残るため、読み替え時に `set_property pause false` も送って一時停止を解除する。`player://ended` の `continued` が
-true のときフロントはキュー位置を照合し、照合済みの位置で登録を張り直す。
+true のときフロントはキュー位置を照合するだけで、通常の遷移では再登録しない。
 即時の継続は武装キューが将来分をまとめて持つためフロントの再登録を待たない
 （再登録が終端に間に合わず継続が途切れる競合の対策、仕様決定 AD）。
-遷移イベント後の張り直しは、遷移中に変わったモードやキューを次周回以降の
-意図へ反映するためのもので、到着が遅れても即時の継続は保たれる。
+モード変更やキュー変化による登録は `baseSeq` に世代を載せて送り、
+遷移が挟まって世代ずれで拒否された意図だけを次の終端イベントで再適用する
+（`armedSeq` で観測した最新世代へ張り直す）。
 プレイリスト側の編集やキュー位置のずれ（queue drift）は仕様上の制約として許容し、
 武装した時点の項目が流れる。
 インスタンスの `video_id`・履歴・SponsorBlock 区間は項目ごとに更新される。
