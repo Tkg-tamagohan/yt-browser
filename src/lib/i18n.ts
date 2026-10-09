@@ -35,6 +35,8 @@ const ja = {
   "player.quality.hint":
     "このインスタンスだけの画質式を変更（セッション内のみ有効。次回再生は既定画質に戻る）",
   "player.ended": "再生が終了しました（{reason}）",
+  "player.failed":
+    "再生を開始できませんでした（{videoId}）。yt-dlp によるストリーム解決に失敗した可能性があります（YouTube 側のブロック・フォーマット不一致・yt-dlp の古さなど）",
   "player.error": "エラー: {message}",
   "player.frameStep": "1 コマ進み",
   "player.frameBackStep": "1 コマ戻り",
@@ -119,6 +121,7 @@ const ja = {
   "feed.filters.kindVideo": "動画",
   "feed.filters.kindShort": "Shorts",
   "feed.filters.kindLive": "ライブ",
+  "feed.filters.groupByChannel": "チャンネル別",
   "feed.refresh": "今すぐ更新",
   "feed.refreshQueued": "更新を開始しました",
   "feed.newItems": "{count} 件の新着を受信",

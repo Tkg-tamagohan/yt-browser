@@ -463,6 +463,73 @@ pub fn normalize_video_id(input: &str) -> Option<String> {
     None
 }
 
+/// YouTube URL の開始位置指定（`t=` / `start=` パラメータ）を秒へ変換する。
+/// 受理する形式: `2630`、`2630s`、`1h2m3s`、`2m5s`、`90m` のような h/m/s 接尾辞付き
+/// または素の秒数。非 YouTube URL やパラメータ無しの入力は None。
+pub fn parse_start_seconds(input: &str) -> Option<f64> {
+    let url = url::Url::parse(input.trim()).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    if host != "youtu.be" && host != "youtube.com" && !host.ends_with(".youtube.com") {
+        return None;
+    }
+    // 優先順は t= の全値 → start= の全値（フロント側の同一 parser と揃える）。
+    // t= が解釈不能でも start= に有効な値があれば拾う
+    for key in ["t", "start"] {
+        let found = url
+            .query_pairs()
+            .filter(|(k, _)| k == key)
+            .find_map(|(_, v)| parse_time_value(&v));
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// `1h2m3s` 形式または素の秒数を秒へ変換する。単位は h→m→s の順だけを受理する
+/// （フロント側の同一形式 parser と揃える）。
+fn parse_time_value(v: &str) -> Option<f64> {
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    // 素の秒数（小数可）
+    if let Ok(secs) = v.parse::<f64>() {
+        return (secs >= 0.0).then_some(secs);
+    }
+    // h/m/s 接尾辞形式（YouTube の表記どおり h→m→s の順だけを受理）
+    let mut total = 0.0;
+    let mut digits = String::new();
+    // 次に現れてよい単位を追跡する（0=h可, 1=m可, 2=sのみ）
+    let mut next_unit = 0;
+    let mut saw_unit = false;
+    for ch in v.chars() {
+        if ch.is_ascii_digit() || ch == '.' {
+            digits.push(ch);
+        } else {
+            let n: f64 = digits.parse().ok()?;
+            digits.clear();
+            match ch {
+                'h' if next_unit == 0 => {
+                    total += n * 3600.0;
+                    next_unit = 1;
+                }
+                'm' if next_unit <= 1 => {
+                    total += n * 60.0;
+                    next_unit = 2;
+                }
+                's' if next_unit <= 2 => total += n,
+                _ => return None,
+            }
+            saw_unit = true;
+        }
+    }
+    if !saw_unit || !digits.is_empty() {
+        return None;
+    }
+    (total >= 0.0).then_some(total)
+}
+
 /// YouTube 動画 ID の形式チェック（英数字・`-`・`_` の 11 文字）。
 fn is_video_id(s: &str) -> bool {
     s.len() == 11
@@ -535,6 +602,46 @@ mod tests {
         }
         let long = format!("@{}", "a".repeat(31));
         assert_eq!(parse_channel_ref(&long), None);
+    }
+
+    #[test]
+    fn start_seconds_parses_t_param() {
+        assert_eq!(
+            parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2630s"),
+            Some(2630.0)
+        );
+        assert_eq!(
+            parse_start_seconds("https://youtu.be/dQw4w9WgXcQ?t=1h2m3s"),
+            Some(3723.0)
+        );
+        assert_eq!(
+            parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&start=90"),
+            Some(90.0)
+        );
+        // t= が解釈不能でも start= が拾える
+        assert_eq!(
+            parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=abc&start=90"),
+            Some(90.0)
+        );
+        // start= が先に出ても t= が優先される（フロントの parseTimeParam と同じ順）
+        assert_eq!(
+            parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&start=90&t=30"),
+            Some(30.0)
+        );
+    }
+
+    #[test]
+    fn start_seconds_rejects_other_input() {
+        for bad in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "dQw4w9WgXcQ",
+            "https://example.com/watch?v=dQw4w9WgXcQ&t=30",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=abc",
+            // 単位の逆順（2m1h）は受理しない
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2m1h",
+        ] {
+            assert_eq!(parse_start_seconds(bad), None, "{bad}");
+        }
     }
 
     #[test]

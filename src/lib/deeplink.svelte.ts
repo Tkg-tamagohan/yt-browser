@@ -17,7 +17,7 @@ import { asErrorMessage } from "$lib/players.svelte";
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
 export type OpenTarget =
-  | { kind: "video"; videoId: string }
+  | { kind: "video"; videoId: string; startSec: number | null }
   | { kind: "playlist"; url: string };
 
 /// `yt-browser:` スキーム URL を受け取り対象へ分解する。対象外なら null。
@@ -54,9 +54,11 @@ export function classifyTarget(url: string): OpenTarget | null {
   const host = parsed.hostname.replace(/^www\./, "");
   const isYouTube =
     host === "youtube.com" || host === "music.youtube.com" || host === "m.youtube.com";
+  // t=/start= の開始位置指定を秒へ変換する（1h2m3s / 45s / 90 の形式を受理）
+  const startSec = parseTimeParam(parsed);
   if (host === "youtu.be") {
     const id = parsed.pathname.split("/")[1] ?? "";
-    return VIDEO_ID.test(id) ? { kind: "video", videoId: id } : null;
+    return VIDEO_ID.test(id) ? { kind: "video", videoId: id, startSec } : null;
   }
   if (!isYouTube) return null;
   const path = parsed.pathname;
@@ -65,10 +67,30 @@ export function classifyTarget(url: string): OpenTarget | null {
   if (path === "/watch") {
     const v = parsed.searchParams.get("v") ?? "";
     // watch+list 複合は動画として扱う（playlist 判定より後に置かないよう注意）
-    return VIDEO_ID.test(v) ? { kind: "video", videoId: v } : null;
+    return VIDEO_ID.test(v) ? { kind: "video", videoId: v, startSec } : null;
   }
   const short = path.match(/^\/(shorts|live)\/([A-Za-z0-9_-]{11})/);
-  if (short) return { kind: "video", videoId: short[2] };
+  if (short) return { kind: "video", videoId: short[2], startSec };
+  return null;
+}
+
+/// URL の t=/start= パラメータを秒へ変換する。無ければ null。
+/// Rust 側 `model::parse_start_seconds` と同一の受理ルール
+/// （t= の全値を先に試し、解釈不能なら start= へ進む。単位は h→m→s の順のみ）
+export function parseTimeParam(parsed: URL): number | null {
+  // t= が解釈不能でも start= に有効な値があれば拾う（順序は h→m→s のみ受理）
+  for (const key of ["t", "start"]) {
+    const raw = parsed.searchParams.get(key);
+    if (!raw) continue;
+    const bare = Number(raw);
+    if (Number.isFinite(bare)) return Math.max(0, bare);
+    const m = raw.match(
+      /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/,
+    );
+    if (m && (m[1] !== undefined || m[2] !== undefined || m[3] !== undefined)) {
+      return Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
+    }
+  }
   return null;
 }
 
@@ -76,7 +98,11 @@ export function classifyTarget(url: string): OpenTarget | null {
 async function dispatch(target: OpenTarget): Promise<void> {
   if (target.kind === "video") {
     try {
-      await invoke("play_video", { videoId: target.videoId, resume: false });
+      await invoke("play_video", {
+        videoId: target.videoId,
+        resume: false,
+        startSec: target.startSec,
+      });
       goto("/");
     } catch (e) {
       notify(t("deeplink.playFailed", { message: asErrorMessage(e) }));

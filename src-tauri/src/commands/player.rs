@@ -20,11 +20,17 @@ pub async fn play_video(
     resume: bool,
     pip: Option<bool>,
     format: Option<String>,
+    start_sec: Option<f64>,
     players: State<'_, PlayerManager>,
     db: State<'_, Db>,
 ) -> Result<u32, UiError> {
+    // 開始位置の解決順: 明示指定（deep link 等）> URL の t=/start= > レジューム > 0
     let id = parse_video_id(&video_id)?;
-    let start_sec = if resume {
+    let start_sec = if let Some(sec) = start_sec {
+        sec.max(0.0)
+    } else if let Some(sec) = crate::model::parse_start_seconds(&video_id) {
+        sec
+    } else if resume {
         db.history_get(&id)?
             .filter(|h| !h.completed)
             .map(|h| h.position_sec as f64)

@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
+  import { parseTimeParam } from "$lib/deeplink.svelte";
   import {
     asErrorMessage,
     playbackHooks,
@@ -51,7 +52,16 @@
         resume,
         pip,
       });
-      if (resume && resumeHint) {
+      // t=/start= が有効な値を持つ URL は履歴位置よりそちらが優先されるため、
+      // 実際の開始位置と違う再開通知を出さない。無効値（t=abc 等）は backend が
+      // 無視して履歴から再開するため、通知も出す（Devin Review #48 指摘）
+      let hasValidStart = false;
+      try {
+        hasValidStart = parseTimeParam(new URL(input.trim())) !== null;
+      } catch {
+        // URL でない入力は t= を持たないので通知判定には影響しない
+      }
+      if (resume && resumeHint && !hasValidStart) {
         notify(t("player.resumeApplied", { position: fmtDuration(resumeHint.positionSec) }));
       }
     } catch (e) {

@@ -266,4 +266,15 @@ pub const MIGRATIONS: &[Migration] = &[
               CREATE UNIQUE INDEX idx_chat_item
                 ON chat_logs(video_id, item_id);",
     },
+    // yt-dlp 解決失敗時に media-title が URL 片（`watch?v=...`）として
+    // 保存されていた行を修復する。行自体は履歴として残し、タイトルだけを
+    // 空に戻す（空タイトルは次回再生時に正しい値で更新される）。
+    Migration {
+        version: 10,
+        name: "history_title_cleanup",
+        sql: "UPDATE watch_history SET title = ''
+              WHERE title LIKE 'watch?%'
+                 OR title LIKE 'http://%'
+                 OR title LIKE 'https://%';",
+    },
 ];

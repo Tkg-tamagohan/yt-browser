@@ -349,13 +349,28 @@ impl PlayerManager {
 
 fn persist_now(db: &Db, player: &MpvPlayer, completed: bool) {
     let snap = player.snapshot();
+    // mpv はタイトル未取得時に URL 片（`watch?v=...` や `https://...`）を
+    // media-title に置く。その値を履歴へ書くとライブラリ表示が壊れるため、
+    // URL 形式のタイトルは空として保存しない（行は既存タイトルを維持する）。
+    let title = sanitize_media_title(&snap.media_title);
     if let Err(e) = db.history_update_progress(
         &snap.video_id,
-        &snap.media_title,
+        title,
         snap.position,
         (snap.duration > 0.0).then_some(snap.duration as i64),
         completed,
     ) {
         tracing::warn!(video_id = %snap.video_id, error = %e, "履歴の保存に失敗");
+    }
+}
+
+/// 履歴保存用に media-title を検証する。URL 形式の値はタイトル未取得の
+/// フォールバックなので空文字へ潰す。
+fn sanitize_media_title(title: &str) -> &str {
+    let t = title.trim();
+    if t.starts_with("watch?") || t.starts_with("http://") || t.starts_with("https://") {
+        ""
+    } else {
+        t
     }
 }

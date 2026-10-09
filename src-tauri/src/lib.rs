@@ -39,6 +39,12 @@ fn init_tracing(log_dir: Option<PathBuf>) -> Option<WorkerGuard> {
     // build() は当日のログファイルを append で実際に開くため、
     // ディレクトリ作成可否だけではなく実際の書き込み可否まで検証できる
     let file = log_dir.and_then(|dir| {
+        // app_log_dir は作成を保証しないため先に作る（未作成だと build() が失敗し
+        // ファイル出力全体が無効になって stderr フォールバックへ落ちる）
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("ログディレクトリを作成できません: {e}。stderr のみに出力します");
+            return None;
+        }
         match RollingFileAppender::builder()
             .rotation(Rotation::DAILY)
             .filename_prefix("yt-browser.log")

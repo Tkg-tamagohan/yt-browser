@@ -67,7 +67,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_status` | なし | `Result<DbStatus>`（`schema_version`） |
 | `settings_get` | `key` | `Result<Option<String>>` |
 | `settings_set` | `key`, `value` | `Result<()>` |
-| `play_video` | `video_id`, `resume`, `pip?`, `format?` | `Result<instance_id>` |
+| `play_video` | `video_id`, `resume`, `pip?`, `format?`, `start_sec?` | `Result<instance_id>` |
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
@@ -115,6 +115,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `take_open_urls` | なし | `Result<Vec<{seq, url}>>` |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
+開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
 `play_video` が返す `instance_id` が制御対象の識別子で、UI はアクティブな窓の ID を保持して全操作に付ける。
 単一再生でも必須引数に揃え、マルチビュー時の操作経路を初期から担保する（FR-1）。
 `player_control` に操作を集約するのは、mpv 側への転送層を一箇所に保つためである。

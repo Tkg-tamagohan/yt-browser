@@ -134,7 +134,10 @@ pub async fn version(path: &str) -> Result<String, YtError> {
 /// システム管理のパスでは権限不足で失敗し得る。決定記録どおり stdout/stderr の
 /// 両方の出力を返し、失敗時もその出力をエラーメッセージに含める。
 pub async fn update(path: &str) -> Result<String, YtError> {
-    let out = run_with_timeout(Command::new(path).arg("-U")).await?;
+    // --no-cookies: ユーザーの yt-dlp config で --cookies が指定されていると
+    // 起動時に読み込み・終了時に保存を試み、書き込み不可なら save_cookies の
+    // PermissionError で -U 自体が失敗扱いになるため、更新経路では無効化する
+    let out = run_with_timeout(Command::new(path).arg("-U").arg("--no-cookies")).await?;
     if !out.status.success() {
         return Err(YtError::Exit {
             code: out.status.code().unwrap_or(-1),
