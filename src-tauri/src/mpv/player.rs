@@ -2,7 +2,7 @@
 //! SponsorBlock 判定を `MpvPlayer` にまとめる。
 use super::spawn::{cleanup_failed_spawn, ipc_endpoint, loadfile_replace, wait_for_socket};
 use super::terminal::TerminalTracker;
-use super::{IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
+use super::{fit_pip_geometry, IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
 use crate::model::{PlayStatus, PlayerAction, PlayerState};
 use crate::util::lock;
 use serde_json::json;
@@ -54,6 +54,17 @@ pub(crate) struct MpvPlayer {
     sponsor: Mutex<SponsorState>,
     /// PiP 化で解除した最大化状態。PiP 解除時に復元する。
     pip_prev_maximized: Mutex<bool>,
+    /// PiP 中の基底 geometry（`pip.geometry` 設定値、`WxH±x±y`）。
+    /// 追従時の上限枠として使う。非 PiP では None。
+    pip_base: Mutex<Option<String>>,
+    /// PiP サイズの動画アスペクト比への追従フラグ（`pip.fit_aspect`、
+    /// 仕様決定 AL）。spawn 時と set_pip・設定変更で更新する。
+    pip_fit: Mutex<bool>,
+    /// 直近の `video-params` 由来の表示アスペクト比。未取得は None。
+    video_aspect: Mutex<Option<f64>>,
+    /// 最後に mpv へ送った geometry 値。同一値の再送信を抑止する。
+    /// PiP 起動時は起動引数の値で初期化する。
+    pip_sent: Mutex<Option<String>>,
     /// 連続再生の武装キュー（FR-10、仕様決定 S・AD）。
     /// 終端のたびに emitter が先頭を取り出して同一 mpv で再生する。
     /// 将来の項目をまとめて登録する方式で、継続のたびにフロントの
@@ -105,6 +116,9 @@ pub(crate) struct SpawnOptions {
     /// PiP（最前面・枠なしの小窓）で起動するときの `--geometry` 値。
     /// None なら通常ウィンドウで起動する（設計書 §4.5）。
     pub(crate) pip_geometry: Option<String>,
+    /// PiP 小窓を動画のアスペクト比へ追従させるか（`pip.fit_aspect`、
+    /// 仕様決定 AL）。解決済みの値を受け取る。
+    pub(crate) pip_fit_aspect: bool,
     /// `--tone-mapping` に渡す方式名（設定 `hdr.tone_mapping`、仕様決定 Y）。
     /// None なら mpv 既定（auto）。
     pub(crate) tone_mapping: Option<String>,
@@ -231,6 +245,11 @@ impl MpvPlayer {
             app,
             sponsor: Mutex::new(SponsorState::default()),
             pip_prev_maximized: Mutex::new(false),
+            pip_base: Mutex::new(opts.pip_geometry.clone()),
+            pip_fit: Mutex::new(opts.pip_fit_aspect),
+            video_aspect: Mutex::new(None),
+            // PiP 起動時は --geometry で適用済みの値を記録しておく
+            pip_sent: Mutex::new(opts.pip_geometry.clone()),
             pip_op: tokio::sync::Mutex::new(()),
             armed: Mutex::new(ArmedQueue::default()),
         });
@@ -409,22 +428,93 @@ impl MpvPlayer {
                 self.ipc.command(vec![json!("frame-back-step")]).await?;
             }
             PlayerAction::Pip { enabled } => {
-                // 設定値（pip.geometry）の解決は PlayerManager::control で行う。
-                // ここに直接届いた場合は既定値で切り替える。
-                self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY).await?;
+                // 設定値（pip.geometry / pip.fit_aspect）の解決は
+                // PlayerManager::control で行う。ここに直接届いた場合は
+                // 既定値と保持中の追従フラグで切り替える。
+                let fit = *lock(&self.pip_fit);
+                self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY, fit).await?;
             }
         }
         Ok(())
     }
 
+    /// PiP 中に適用する geometry を算出する（FR-19、仕様決定 AL）。
+    /// 追従フラグが on で映像の表示アスペクト比が取れていれば、基底
+    /// geometry の WxH を上限枠として比率を保った内接サイズへ丸める。
+    /// それ以外は基底値をそのまま返す。基底が未保持なら既定値を使う。
+    fn pip_target_geometry(&self) -> String {
+        let base = lock(&self.pip_base)
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string());
+        if *lock(&self.pip_fit) {
+            fit_pip_geometry(&base, *lock(&self.video_aspect))
+        } else {
+            base
+        }
+    }
+
+    /// geometry を mpv へ送る。最後に送った値と同じなら何もしない
+    /// （video-params の再通知で同サイズを送り直してユーザーの手動
+    /// リサイズを戻してしまうのを防ぐ）。送信成否に関わらず呼び出し側の
+    /// 遷移自体は継続させるため、失敗は警告に留める経路でも使う。
+    async fn apply_geometry(&self, target: &str) -> Result<(), MpvError> {
+        if lock(&self.pip_sent).as_deref() == Some(target) {
+            return Ok(());
+        }
+        self.ipc
+            .command(vec![
+                json!("set_property"),
+                json!("geometry"),
+                json!(target),
+            ])
+            .await?;
+        *lock(&self.pip_sent) = Some(target.to_string());
+        Ok(())
+    }
+
+    /// PiP 中なら現在の追従フラグとアスペクト比で窓サイズを再適用する。
+    /// video-params の変化と `pip.fit_aspect` の設定変更から呼ぶ。
+    /// `pip_op` で set_pip と直列化するため、PiP 解除との競合で
+    /// 解除後にサイズ指定が後着することはない。
+    async fn reapply_pip_geometry(&self) -> Result<(), MpvError> {
+        let _op = self.pip_op.lock().await;
+        if !lock(&self.state).pip {
+            return Ok(());
+        }
+        self.apply_geometry(&self.pip_target_geometry()).await
+    }
+
+    /// `pip.fit_aspect` の稼働中反映（settings_set 経路、仕様決定 AL）。
+    /// フラグを更新し、PiP 中なら即座に窓サイズを再適用する
+    /// （off への変更は基底 geometry の固定サイズへ戻る）。
+    pub(crate) async fn set_pip_fit(&self, enabled: bool) {
+        {
+            let mut fit = lock(&self.pip_fit);
+            if *fit == enabled {
+                return;
+            }
+            *fit = enabled;
+        }
+        if let Err(e) = self.reapply_pip_geometry().await {
+            tracing::warn!(instance_id = self.instance_id, error = %e, "PiP 追従の再適用に失敗");
+        }
+    }
+
     /// PiP 表示の切り替え（設計書 §4.5）。ontop・枠なし・小窓配置をまとめて適用し、
     /// 解除時は geometry を空に戻す（mpv は空文字で既定配置に戻す）。
     /// いずれのプロパティも実行時に変更可能（mpv 0.34 系で確認済み）。
+    /// `geometry` は基底値（`pip.geometry`）で、追従が有効なら映像の
+    /// アスペクト比に合わせて内接サイズへ丸めてから適用する（FR-19）。
     ///
     /// 最大化中のウィンドウでは geometry が効かず枠なし最前面の巨大ウィンドウが
     /// デスクトップを覆うため（実機検証で確認）、PiP 化前に最大化を解除し、
     /// 解除時に復元する。
-    pub(crate) async fn set_pip(&self, enabled: bool, geometry: &str) -> Result<(), MpvError> {
+    pub(crate) async fn set_pip(
+        &self,
+        enabled: bool,
+        geometry: &str,
+        fit: bool,
+    ) -> Result<(), MpvError> {
         // 遷移全体を直列化する。並行する set_pip が state.pip チェックを
         // 同時に通過して pip_prev_maximized を上書きしたり、mpv への
         // プロパティ送信を交互させたりするのを防ぐ
@@ -458,6 +548,10 @@ impl MpvPlayer {
                 tokio::time::sleep(PWM_TRANSITION_WAIT).await;
             }
         }
+        // 基底値と追従フラグを記録してから geometry を適用する
+        // （追従時は pip_target_geometry が映像比率へ内接させる）
+        *lock(&self.pip_base) = enabled.then(|| geometry.to_string());
+        *lock(&self.pip_fit) = fit;
         self.ipc
             .command(vec![json!("set_property"), json!("ontop"), json!(enabled)])
             .await?;
@@ -468,13 +562,12 @@ impl MpvPlayer {
                 json!(!enabled),
             ])
             .await?;
-        self.ipc
-            .command(vec![
-                json!("set_property"),
-                json!("geometry"),
-                json!(if enabled { geometry } else { "" }),
-            ])
-            .await?;
+        self.apply_geometry(&if enabled {
+            self.pip_target_geometry()
+        } else {
+            String::new()
+        })
+        .await?;
         if !enabled {
             // PiP 化で解除した最大化を復元する（復元失敗は解除自体を失敗にしない）
             let restore = std::mem::take(&mut *lock(&self.pip_prev_maximized));
@@ -601,6 +694,21 @@ pub(crate) fn split_extra_args(input: &str) -> Vec<String> {
     out
 }
 
+/// `video-params` プロパティから表示アスペクト比を取る（FR-19）。
+/// `aspect`（表示比率）を優先し、無ければ `dw`/`dh`、さらに無ければ
+/// `w`/`h` から算出する。取得不能・非正値・非有限は None。
+fn video_aspect_of(data: &serde_json::Value) -> Option<f64> {
+    let dim_ratio = |w: Option<f64>, h: Option<f64>| match (w, h) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
+        _ => None,
+    };
+    let f = |k: &str| data.get(k).and_then(|v| v.as_f64());
+    f("aspect")
+        .or_else(|| dim_ratio(f("dw"), f("dh")))
+        .or_else(|| dim_ratio(f("w"), f("h")))
+        .filter(|a| a.is_finite() && *a > 0.0)
+}
+
 /// IPC イベントを状態スナップショットと終了通知へ変換するループ。
 async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
     while let Some(ev) = rx.recv().await {
@@ -613,6 +721,26 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                     && player.terminal.on_eof()
                 {
                     let _ = player.ended_tx.send("eof".to_string());
+                }
+                // PiP のアスペクト追従（FR-19、仕様決定 AL）。
+                // 比率が変わったときだけ窓を再フィットする（同一値の再通知や
+                // アンロード時の null では動かさず、手動リサイズを維持する）
+                if name == "video-params" {
+                    let aspect = video_aspect_of(&data);
+                    let prev = std::mem::replace(&mut *lock(&player.video_aspect), aspect);
+                    if aspect.is_some()
+                        && prev != aspect
+                        && lock(&player.state).pip
+                        && *lock(&player.pip_fit)
+                    {
+                        if let Err(e) = player.reapply_pip_geometry().await {
+                            tracing::warn!(
+                                instance_id = player.instance_id(),
+                                error = %e,
+                                "PiP 窓のアスペクト追従に失敗"
+                            );
+                        }
+                    }
                 }
                 let pos = if name == "time-pos" {
                     data.as_f64()

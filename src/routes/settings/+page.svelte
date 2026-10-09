@@ -7,6 +7,7 @@
     PIP_GEOMETRY_DEFAULT,
     isValidPipGeometry,
     pipDefaultEnabled,
+    pipFitAspectEnabled,
   } from "$lib/pip";
   import { QUALITY_PRESETS } from "$lib/quality";
   import {
@@ -63,6 +64,9 @@
   // PiP 小窓の --geometry 値。mpv 形式（WxH + 任意の +-x+-y）だけ保存する。
   // 空欄での保存は「既定値へ戻す」操作として扱い、UI 表示も既定に戻す
   let pipGeometry = $state(PIP_GEOMETRY_DEFAULT);
+  // PiP 小窓のサイズを動画のアスペクト比へ追従させるか（pip.fit_aspect、
+  // 仕様決定 AL）。既定は on。稼働中の PiP 窓にも即時反映される
+  let pipFitAspect = $state(true);
   // PiP 既定画質式（pip.quality.format）。空欄は「全体の画質設定に従う」
   // （未設定として扱われる。仕様決定 W）
   let pipQuality = $state("");
@@ -257,6 +261,17 @@
         invalid = true;
         notify(t("settings.pip.unsaved"));
       }
+      // pip.fit_aspect: チェックボックスの 2 値を on/off で保存する（仕様決定 AL）。
+      // 稼働中インスタンスへの即時反映はバックエンド側で行われる
+      const fa = pipFitAspect;
+      await invoke("settings_set", {
+        key: "pip.fit_aspect",
+        value: fa ? "on" : "off",
+      });
+      if (pipFitAspect !== fa) {
+        invalid = true;
+        notify(t("settings.pip.unsaved"));
+      }
       // pip.geometry: mpv の geometry 形式だけ保存する（ここで弾く）。
       // 空欄は既定値へのリセットとして扱い、不正形式は失敗通知のみ
       const geo = pipGeometry.trim();
@@ -401,6 +416,10 @@
         key: "pip.default",
       });
       pipDefault = pipDefaultEnabled(pipDefaultRaw);
+      const pipFitAspectRaw = await invoke<string | null>("settings_get", {
+        key: "pip.fit_aspect",
+      });
+      pipFitAspect = pipFitAspectEnabled(pipFitAspectRaw);
       const pipGeoRaw = await invoke<string | null>("settings_get", {
         key: "pip.geometry",
       });
@@ -535,6 +554,11 @@
         {t("settings.pip.default")}
       </label>
       <p class="subtle desc">{t("settings.pip.default.desc")}</p>
+      <label class="wheel-row">
+        <input type="checkbox" bind:checked={pipFitAspect} />
+        {t("settings.pip.fitAspect")}
+      </label>
+      <p class="subtle desc">{t("settings.pip.fitAspect.desc")}</p>
       <label class="wheel-row">
         {t("settings.pip.geometry")}
         <input

@@ -1,9 +1,10 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
 use super::player::{MpvPlayer, SpawnOptions};
 use super::{
-    is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping, MpvError,
-    DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT, SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING,
-    SETTING_MPV_EXTRA_ARGS, SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
+    is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
+    pip_fit_aspect_enabled, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
+    SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING, SETTING_MPV_EXTRA_ARGS,
+    SETTING_PIP_FIT_ASPECT, SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
 };
 use crate::db::Db;
 use crate::model::{PlayerAction, PlayerEnded, PlayerState};
@@ -116,6 +117,9 @@ impl PlayerManager {
             wheel_script: self.wheel_script.clone(),
             wheel_volume_delta,
             pip_geometry: pip.then(|| self.pip_geometry()),
+            // 追従フラグは PiP 起動かどうかに関わらず解決して持たせる
+            // （稼働中に PiP 化したときにも参照される、仕様決定 AL）
+            pip_fit_aspect: self.pip_fit_aspect(),
             tone_mapping,
             hdr_compute_peak,
             extra_args,
@@ -205,7 +209,9 @@ impl PlayerManager {
         match action {
             PlayerAction::Pip { enabled } => {
                 let geometry = self.pip_geometry();
-                player.set_pip(*enabled, &geometry).await
+                player
+                    .set_pip(*enabled, &geometry, self.pip_fit_aspect())
+                    .await
             }
             _ => player.control(action).await,
         }
@@ -220,6 +226,30 @@ impl PlayerManager {
             .map(|s| s.trim().to_string())
             .filter(|s| is_valid_pip_geometry(s))
             .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string())
+    }
+
+    /// `pip.fit_aspect` 設定値の解釈（仕様決定 AL）。未設定・その他は on。
+    fn pip_fit_aspect(&self) -> bool {
+        pip_fit_aspect_enabled(
+            self.db
+                .setting_get(SETTING_PIP_FIT_ASPECT)
+                .ok()
+                .flatten(),
+        )
+    }
+
+    /// `pip.fit_aspect` の変更を稼働中の全インスタンスへ反映する
+    /// （`settings_set` 経路、仕様決定 AL）。PiP 中のインスタンスは
+    /// on なら映像比率へのフィット、off なら基底 geometry の固定サイズへ
+    /// 即座に戻る。
+    pub async fn set_pip_fit_all(&self, enabled: bool) {
+        let players: Vec<Arc<MpvPlayer>> = lock(&self.players)
+            .values()
+            .map(|e| e.player.clone())
+            .collect();
+        for p in players {
+            p.set_pip_fit(enabled).await;
+        }
     }
 
     /// `player_close` の実体。最終位置を保存してから mpv を止める。

@@ -37,9 +37,10 @@ pub fn settings_get(db: State<'_, Db>, key: String) -> Result<Option<String>, Ui
 }
 
 #[tauri::command]
-pub fn settings_set(
+pub async fn settings_set(
     app: AppHandle,
     db: State<'_, Db>,
+    players: State<'_, crate::mpv::PlayerManager>,
     key: String,
     value: String,
 ) -> Result<(), UiError> {
@@ -50,6 +51,13 @@ pub fn settings_set(
         )));
     }
     db.setting_set(&key, &value)?;
+    // PiP 追従の切替は稼働中のインスタンスへ即時反映する（仕様決定 AL）。
+    // emit より先に配っておくと、画面の再読み取り表示と窓の実態が揃う
+    if key == crate::mpv::SETTING_PIP_FIT_ASPECT {
+        players
+            .set_pip_fit_all(crate::mpv::pip_fit_aspect_enabled(Some(value.clone())))
+            .await;
+    }
     // コミット済みの値を載せて変更を通知する。設定値を保持する画面は
     // 再読み取りなしで同期できる。購読者がいなくても正常なので失敗は捨てる
     let _ = app.emit("settings://changed", SettingChanged { key, value });

@@ -325,7 +325,10 @@ const ja = {
   "settings.pip.default": "再生を既定で PiP 表示にする",
   "settings.pip.default.desc":
     "オンにするとすべての再生（連続再生の先頭・外部からの起動を含む）が PiP 小窓で始まります。起動後はプレイヤーカードで切り替えられます",
-  "settings.pip.geometry": "小窓の位置とサイズ（WxH+±x±y）",
+  "settings.pip.fitAspect": "小窓サイズを動画のアスペクト比に合わせる",
+  "settings.pip.fitAspect.desc":
+    "オンにすると小窓の幅・高さを上限枠として、動画の比率に内接するサイズへ自動調整します（例: 480x270 の枠で横長動画は約480x201、縦長動画は約152x270）。オフなら常に指定サイズ",
+  "settings.pip.geometry": "小窓の位置とサイズ（WxH+±x±y、追従時は上限枠）",
   "settings.pip.quality": "PiP の既定画質（ytdl-format 式）",
   "settings.pip.quality.desc":
     "空欄なら全体の画質設定に従う。小窓向けに低めの画質を指定しておくと起動が軽くなる",

@@ -214,6 +214,13 @@ Windows の登録（HKCU レジストリ）とホストの起動は Windows 実�
 - [x] `*.sig` を `latest.json` 生成後・アセット添付前に除外し、リリースアセットに載せない（updater は manifest 内の `signature` で検証するため `.sig` 不要）
 - [ ] 受け入れ：次回リリースのアセットに `.msi` と `*.sig` が含まれず、`latest.json` の自動更新が AppImage / NSIS で動作する（次のタグ発行時に確認）
 
+### Phase 27：PiP 窓のアスペクト比追従（FR-19、仕様決定 AL）
+
+- [x] `pip.fit_aspect` 設定キーの新設（`on`/`off`、既定・未設定は `on`、`pip.default` と同一受理集合）と設定画面のチェックボックス
+- [x] `video-params` 由来の表示アスペクト比で `pip.geometry` の WxH 枠へ内接するサイズを算出し、PiP 化・比率変化・設定変更の各タイミングで `set_property geometry` を再適用（同一値の再送信は抑止し手動リサイズを維持）
+- [x] 単体テスト DB-PF-01〜05（設定値の解釈・枠内フィット・フォールバック）
+- [ ] 受け入れ：超ワイド動画や縦長動画で PiP 小窓が比率へ追従し、`pip.fit_aspect=off` で従来の固定サイズに戻る（実機検証）
+
 ## 残課題（Phase 0 〜 9 完了時点の既知事項）
 
 ここに挙げるのは Phase 0 〜 9 完了時点での未解消の制限と観察メモであり、いずれも通常利用を妨げない。
