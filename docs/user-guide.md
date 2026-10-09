@@ -131,11 +131,53 @@ pnpm tauri build      # AppImage / deb / rpm を生成（src-tauri/target/releas
 - 「yt-dlp が見つかりません」: yt-dlp をインストールして PATH を通してください
   設定キー `ytdlp.path` でパスを直接指定する経路も内部実装にはありますが、設定画面に入力欄はなく、SQLite の settings テーブルへの直接書き込みが必要です
 - 再生が `Sign in to confirm you're not a bot` で止まる場合は YouTube の bot 判定です
-  時間を置くか、yt-dlp 側の手順（`--cookies-from-browser` 等）で対処してください
+  時間を置いても回復しないときは、後述の「bot 判定の回避（cookies.txt）」の手順に従ってください
+- mpv や yt-dlp を直接実行すると再生できるのにアプリ経由だと再生窓がすぐ閉じる場合、cookies.txt が読み取り専用になっている可能性があります
+  yt-dlp は終了時にセッション Cookie を同じファイルへ書き戻すため、書き込めないファイルではプロセス自体が異常終了します
+  ファイルの読み取り専用属性を外してください
 - yt-dlp 更新ボタンが失敗する場合、システム管理のパス（/usr/bin 等）では権限不足で `yt-dlp -U` が失敗します
   手動で更新してください
 - 描画位置とクリック位置がずれる場合（まれに GPU なし環境で発生）、ウィンドウの再読み込みで回復します
   一時停止中のカードも復元されます
+
+## bot 判定の回避（cookies.txt）
+
+YouTube がお使いの IP からの匿名アクセスを bot と判定すると、yt-dlp のストリーム解決がすべて失敗し、再生窓が開いてすぐ閉じる、といった症状が出ます。
+ブラウザのログイン Cookie を yt-dlp に渡すと回避できることが多いです。
+なおフィード一覧の取得は yt-dlp を通らない別経路のため、フィード側のエラー（status 500 など）はこの手順では解消しません。
+
+1. Chrome 拡張「Get cookies.txt LOCALLY」などで、YouTube にログインした状態の youtube.com のタブから Netscape 形式の cookies.txt をエクスポートしてください
+   `--cookies-from-browser chrome` 方式は、現行 Chrome の App-Bound Encryption で Cookie データベースを復号できず使えません
+2. エクスポートしたファイルに `LOGIN_INFO` と `__Secure-3PSID` という名前の行があるか確認してください
+   無い場合は未ログインや別プロファイルからのエクスポートなので、ログイン済みのタブでやり直してください
+3. 各行はタブ区切り7列で、HttpOnly の Cookie は「ドメイン列の先頭」が `#HttpOnly_` になっているのが正しい形です
+   `#HttpOnly_.youtube.com ... LOGIN_INFO` が正しく、`... #HttpOnly_LOGIN_INFO` のように名前列に付く形は壊れているので、名前列から `#HttpOnly_` を外してドメイン列へ付け直してください
+4. cookies.txt は書き込み可能な場所に置いてください
+   読み取り専用にすると yt-dlp が終了時の書き戻しに失敗して異常終了します
+   内容はログイン状態そのものなので、共有ディレクトリや同期フォルダには置かないでください
+5. yt-dlp の設定ファイルに以下を記述してください
+   Windows は `%APPDATA%\yt-dlp\config`、Linux は `~/.config/yt-dlp/config` です（無ければフォルダごと作成）
+
+   ```
+   --cookies "<cookies.txt のフルパス>"
+   --extractor-args "youtube:player_client=tv_simply"
+   ```
+
+   `--cookies` のパスが空白を含むと分割されるため、引用符で囲んでください
+
+   `player_client=tv_simply` は bot 判定を回避する別クライアントへの切り替えです
+   cookies だけで抜けられる環境ならこの行は不要ですが、cookies 込みでも `Sign in to confirm` が残る場合に有効です
+6. 動作は mpv より先に yt-dlp 単体で切り分けるのが速いです
+
+   ```powershell
+   yt-dlp -v -g "https://www.youtube.com/watch?v=<動画ID>" 2>&1 | Select-String "cookie|ERROR|https://"
+   ```
+
+   `Loaded N cookies` のあとにストリーム URL が返れば成功です
+   `mpv --ytdl=yes "https://www.youtube.com/watch?v=<動画ID>"` で再生できれば、アプリからも再生できます（mpv の ytdl_hook が同じ yt-dlp 設定を読むため）
+
+「tv_simply client https formats require a GVS PO Token」という警告が出る場合、tv_simply では合成済みフォーマット（itag=18、360p）だけが取れる状態です。
+アプリの既定画質式には合成済みフォーマットへのフォールバックがあるためそのまま再生できますが、高画質で見たい場合は yt-dlp ドキュメントの PO Token Guide に従って `po_token` の extractor-args を追加してください。
 
 ## 既知の制限
 
