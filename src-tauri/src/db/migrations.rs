@@ -274,6 +274,7 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "history_title_cleanup",
         sql: "UPDATE watch_history SET title = ''
               WHERE title LIKE 'watch?%'
-                 OR title LIKE 'http%';",
+                 OR title LIKE 'http://%'
+                 OR title LIKE 'https://%';",
     },
 ];

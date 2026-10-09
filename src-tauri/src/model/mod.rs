@@ -472,12 +472,14 @@ pub fn parse_start_seconds(input: &str) -> Option<f64> {
     if host != "youtu.be" && host != "youtube.com" && !host.ends_with(".youtube.com") {
         return None;
     }
+    // t= が解釈不能な値でも start= に有効な値があれば拾う
     url.query_pairs()
-        .find(|(k, _)| k == "t" || k == "start")
-        .and_then(|(_, v)| parse_time_value(&v))
+        .filter(|(k, _)| k == "t" || k == "start")
+        .find_map(|(_, v)| parse_time_value(&v))
 }
 
-/// `1h2m3s` 形式または素の秒数を秒へ変換する。単位順序は h→m→s でなくてもよい。
+/// `1h2m3s` 形式または素の秒数を秒へ変換する。単位は h→m→s の順だけを受理する
+/// （フロント側の同一形式 parser と揃える）。
 fn parse_time_value(v: &str) -> Option<f64> {
     let v = v.trim();
     if v.is_empty() {
@@ -487,9 +489,11 @@ fn parse_time_value(v: &str) -> Option<f64> {
     if let Ok(secs) = v.parse::<f64>() {
         return (secs >= 0.0).then_some(secs);
     }
-    // h/m/s 接尾辞形式
+    // h/m/s 接尾辞形式（YouTube の表記どおり h→m→s の順だけを受理）
     let mut total = 0.0;
     let mut digits = String::new();
+    // 次に現れてよい単位を追跡する（0=h可, 1=m可, 2=sのみ）
+    let mut next_unit = 0;
     let mut saw_unit = false;
     for ch in v.chars() {
         if ch.is_ascii_digit() || ch == '.' {
@@ -498,9 +502,15 @@ fn parse_time_value(v: &str) -> Option<f64> {
             let n: f64 = digits.parse().ok()?;
             digits.clear();
             match ch {
-                'h' => total += n * 3600.0,
-                'm' => total += n * 60.0,
-                's' => total += n,
+                'h' if next_unit == 0 => {
+                    total += n * 3600.0;
+                    next_unit = 1;
+                }
+                'm' if next_unit <= 1 => {
+                    total += n * 60.0;
+                    next_unit = 2;
+                }
+                's' if next_unit <= 2 => total += n,
                 _ => return None,
             }
             saw_unit = true;
@@ -600,6 +610,11 @@ mod tests {
             parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&start=90"),
             Some(90.0)
         );
+        // t= が解釈不能でも start= が拾える
+        assert_eq!(
+            parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=abc&start=90"),
+            Some(90.0)
+        );
     }
 
     #[test]
@@ -609,6 +624,8 @@ mod tests {
             "dQw4w9WgXcQ",
             "https://example.com/watch?v=dQw4w9WgXcQ&t=30",
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=abc",
+            // 単位の逆順（2m1h）は受理しない
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2m1h",
         ] {
             assert_eq!(parse_start_seconds(bad), None, "{bad}");
         }

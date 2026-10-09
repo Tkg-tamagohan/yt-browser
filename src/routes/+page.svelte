@@ -51,7 +51,10 @@
         resume,
         pip,
       });
-      if (resume && resumeHint) {
+      // t=/start= 付き URL は履歴位置よりそちらが優先されるため、
+      // 実際の開始位置と違う再開通知を出さない（Devin Review #48 指摘）
+      const hasStartParam = /[?&](?:t|start)=/i.test(input.trim());
+      if (resume && resumeHint && !hasStartParam) {
         notify(t("player.resumeApplied", { position: fmtDuration(resumeHint.positionSec) }));
       }
     } catch (e) {

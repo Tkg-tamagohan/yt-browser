@@ -76,15 +76,20 @@ export function classifyTarget(url: string): OpenTarget | null {
 
 /// URL の t=/start= パラメータを秒へ変換する。無ければ null。
 function parseTimeParam(parsed: URL): number | null {
-  const raw = parsed.searchParams.get("t") ?? parsed.searchParams.get("start");
-  if (!raw) return null;
-  const bare = Number(raw);
-  if (Number.isFinite(bare)) return Math.max(0, bare);
-  const m = raw.match(/^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/);
-  if (!m || (m[1] === undefined && m[2] === undefined && m[3] === undefined)) {
-    return null;
+  // t= が解釈不能でも start= に有効な値があれば拾う（順序は h→m→s のみ受理）
+  for (const key of ["t", "start"]) {
+    const raw = parsed.searchParams.get(key);
+    if (!raw) continue;
+    const bare = Number(raw);
+    if (Number.isFinite(bare)) return Math.max(0, bare);
+    const m = raw.match(
+      /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/,
+    );
+    if (m && (m[1] !== undefined || m[2] !== undefined || m[3] !== undefined)) {
+      return Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
+    }
   }
-  return (Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0));
+  return null;
 }
 
 /// 対象を実行する。動画はその場で再生、プレイリストは取り込み。
