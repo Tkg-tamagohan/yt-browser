@@ -68,7 +68,13 @@ function enqueueArm(
     }).then(() => undefined),
   );
   // 後続のチェーンは失敗に関わらず進める（失敗処理は呼び出し側の catch）
-  armRuns.set(instanceId, run.catch(() => {}));
+  const stored = run.catch(() => {});
+  armRuns.set(instanceId, stored);
+  // 収束したチェーンのエントリを掃除する。より新しいチェーンが登録
+  // 済みなら残す（閉じたインスタンスのエントリが溜まらないように）
+  void stored.then(() => {
+    if (armRuns.get(instanceId) === stored) armRuns.delete(instanceId);
+  });
   return run;
 }
 
@@ -137,7 +143,13 @@ export async function startQueue(
 export function stopQueue(): void {
   if (queue.instanceId !== null) {
     const id = queue.instanceId;
-    const vid = queue.items[queue.index] ?? null;
+    // 実際に再生中の項目は player state を優先し、無ければキュー位置。
+    // 進行済みの遷移が未着の場合は、到着する ended イベントの再武装が
+    // この武装をチェーン上で上書きする（直列化で後着が必ず勝つ）
+    const vid =
+      playerStates.list.get(id)?.videoId ??
+      queue.items[queue.index] ??
+      null;
     queue.instanceId = null;
     void enqueueArm(id, () =>
       loopMode(id) === "none" ? null : vid,
