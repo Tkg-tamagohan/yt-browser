@@ -147,10 +147,10 @@
 
 ### Phase 19：Chrome 拡張と外部起動（FR-17、仕様決定 AC）
 
-- [ ] `yt-browser://` スキームの登録（tauri-plugin-deep-link）と受信 URL の解析と振り分け（動画→再生、プレイリスト→取り込み）
-- [ ] 起動中インスタンスへの URL 転送（tauri-plugin-single-instance）
-- [ ] `extension/` の MV3 拡張（アクション実行とリンク右クリックメニューから `yt-browser://open?url=` を開く）
-- [ ] 受け入れ：YouTube の動画画面やプレイリスト画面とリンク右クリックから yt-browser が起動し、動画は再生、プレイリストは取り込みが行われる
+- [x] `yt-browser://` スキームの登録（tauri-plugin-deep-link）と受信 URL の解析と振り分け（動画→再生、プレイリスト→取り込み）
+- [x] 起動中インスタンスへの URL 転送（tauri-plugin-single-instance）
+- [x] `extension/` の MV3 拡張（アクション実行とリンク右クリックメニューから `yt-browser://open?url=` を開く）
+- [ ] 受け入れ：YouTube の動画画面やプレイリスト画面とリンク右クリックから yt-browser が起動し、動画は再生、プレイリストは取り込みが行われる（拡張の実機動作はデスクトップでのみ検証可能。未検証）
 
 ### Phase 20：PiP 中の自動再生途切れの調査と修正（BG-2、仕様決定 AD）
 

@@ -112,6 +112,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `filter_add` | `target`, `kind`, `pattern` | `Result<Filter>` |
 | `filter_remove` | `id` | `Result<()>` |
 | `filter_list` | なし | `Result<Vec<Filter>>` |
+| `take_open_urls` | なし | `Result<Vec<String>>` |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 `play_video` が返す `instance_id` が制御対象の識別子で、UI はアクティブな窓の ID を保持して全操作に付ける。
@@ -137,6 +138,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `playlist_reverse` は項目順の一括反転（one-shot、FR-11、仕様決定 Z）。読み出しと書き込みを同一トランザクションで行い、YouTube が新しい順で返すプレイリストを古い順へ変える用途に使う。
 フロント側では一括操作（`playlist_sort`・`playlist_reverse`）の実行中に行の並べ替え保存を開始せず、開始前に飛行中の `playlist_reorder` の確定を待つ。一括操作と個別並べ替えの適用順を「確定した並べ替え → 一括操作」に固定し、結果の反映は項目取得の世代管理で行う（操作後は必ず確定済みの DB 順を再取得して表示する）。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
+`take_open_urls` は deep link の保留分を取り出す初期ドレイン用で、呼び出し後は `app://open_url` イベント経路のみで届く（§3.4）。
 
 ### 3.2 イベント（Rust → フロント）
 
@@ -150,6 +152,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
+| `app://open_url` | URL 文字列 | deep link（`yt-browser://open?url=`）の受信（§3.4） |
 
 `player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、サンプリングで間引いて送る。
 
@@ -171,6 +174,28 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
+
+### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
+
+外部からの起動はカスタムスキーム `yt-browser://open?url=<encoded>` で受ける。
+受信経路は 2 つあり、どちらも `deep_link.rs` が `app://open_url` イベントへ転送する。
+
+- 未起動での起動: OS が新しいプロセスを立て argv にスキーム URL を渡す。
+  `tauri-plugin-deep-link` の `get_current()` で setup 時に拾う
+- 起動中での転送: `tauri-plugin-single-instance` が 2 つ目のプロセスを抑制し、
+  その argv をコールバックで既存プロセスへ渡す
+
+リスナー登録前に届いた分は `PendingOpenUrls` へ溜め、`take_open_urls`
+コマンドの初回ドレインで回収する。ドレインで `ready` が立ち、以後は
+イベント経路のみを使う（両方へ渡すと重複処理になる）。
+フロント側の振り分け（`deeplink.svelte.ts`）は、動画 URL → `play_video` で
+その場で再生、プレイリスト URL → `playlist_import` で取り込み、
+`watch`+`list` 複合は動画として扱う。非対応 URL は通知のみで落とさない。
+
+`extension/` の MV3 拡張（ストア未公開、パッケージ化なし読み込み）は
+YouTube ページ上のアクション実行とリンク右クリックメニューから
+`yt-browser://open?url=` へ遷移させ、OS 経由でアプリを起動する。
+対象外ページではアクションを無効化し、メニューは YouTube リンク上のみ出る。
 
 ## 4. 動画再生サブシステム
 
@@ -609,12 +634,14 @@ yt-browser/
       filter/         # NG エンジン
       db/             # rusqlite・マイグレーション
       model/
+      deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
     mpv/wheel.lua     # include_str! でバイナリに埋め込む同梱スクリプト
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings）
-    lib/              # PlayerCards.svelte・パネル描画（ChatPanel.svelte・RelatedPanel.svelte）・VideoActions・行骨格（VideoRow.svelte）・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・chat.svelte.ts・notices.svelte.ts・library.ts）・表示フォーマッタ（format.ts）・行アクション配線（videoActions.svelte.ts）・PiP 設定の UI 側定数（pip.ts）
+    lib/              # PlayerCards.svelte・パネル描画（ChatPanel.svelte・RelatedPanel.svelte）・VideoActions・行骨格（VideoRow.svelte）・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・chat.svelte.ts・notices.svelte.ts・library.ts）・表示フォーマッタ（format.ts）・行アクション配線（videoActions.svelte.ts）・PiP 設定の UI 側定数（pip.ts）・deep link の解析と振り分け（deeplink.svelte.ts）
+  extension/          # MV3 拡張（yt-browser:// を開く launcher。manifest.json + background.js）
   tauri.conf.json
   package.json
 ```

@@ -3,9 +3,15 @@
   import "../app.css";
   import { t } from "$lib/i18n";
   import { appNotices } from "$lib/notices.svelte";
+  import { initDeepLinks } from "$lib/deeplink.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
 
   let { children } = $props();
+
+  // deep link（yt-browser://open?url=...）の受信を開始する
+  // （FR-17、仕様決定 AC）。リスナー登録と保留分ドレインを行い、
+  // アンマウント時に解除する
+  $effect(() => initDeepLinks());
 </script>
 
 <nav class="app-nav">

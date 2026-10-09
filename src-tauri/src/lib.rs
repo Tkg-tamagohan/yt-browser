@@ -4,6 +4,7 @@
 mod chat;
 mod commands;
 mod db;
+mod deep_link;
 mod error;
 mod feed;
 mod filter;
@@ -22,6 +23,7 @@ use std::path::PathBuf;
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 use tauri::Manager;
+use tauri_plugin_deep_link::DeepLinkExt;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::layer::SubscriberExt;
@@ -77,6 +79,13 @@ fn init_tracing(log_dir: Option<PathBuf>) -> Option<WorkerGuard> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        // single-instance は他プラグインより先に登録する。
+        // deep link 経由の 2 つ目の起動はここで抑制し、argv の URL を
+        // 既存プロセスへ転送する（FR-17、仕様決定 AC）
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            deep_link::handle_argv(app, &argv);
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -143,6 +152,15 @@ pub fn run() {
             let poller = feed::FeedPoller::new(db, app.handle().clone());
             app.manage(poller.clone());
             tauri::async_runtime::spawn(poller.run());
+
+            // deep link の保留バッファと cold start 分の取り込み。
+            // 起動中への転送は single-instance のコールバック側が担う
+            app.manage(deep_link::PendingOpenUrls::new());
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    deep_link::handle_open_url(app.handle(), url.as_str());
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -171,6 +189,7 @@ pub fn run() {
             commands::playlist_reorder,
             commands::playlist_sort,
             commands::playlist_reverse,
+            commands::take_open_urls,
             commands::ytdlp_status,
             commands::ytdlp_update,
             commands::subscribe_channel,
