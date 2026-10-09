@@ -37,7 +37,7 @@ winget install DenoLand.Deno
 GitHub Releases から配布物を取得します。
 
 - Linux: `*.AppImage`（実行権限を付けて起動）、`*.deb`、`*.rpm`
-- Windows: `*_x64_en-US.msi`（インストーラ）または `*-setup.exe`（NSIS）
+- Windows: `*-setup.exe`（NSIS インストーラ）
 
 ソースから動かす場合は次のとおりです。
 
@@ -95,7 +95,7 @@ pnpm tauri build      # AppImage / deb / rpm を生成（src-tauri/target/releas
 - チャット履歴の全文検索
 - アプリの更新: AppImage / NSIS 版は起動時に新バージョンを自動で確認します
   更新があると確認ダイアログが出て、承認でダウンロード・適用・再起動まで進みます
-  「今すぐ確認」ボタンで手動確認もできます（deb / rpm / MSI 版は対象外のため、GitHub Releases から手動で更新してください）
+  「今すぐ確認」ボタンで手動確認もできます（deb / rpm 版は対象外のため、GitHub Releases から手動で更新してください）
 
 ## 再生操作
 
