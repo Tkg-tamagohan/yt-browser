@@ -78,15 +78,28 @@ function enqueueArm(
     // コマンド引数は items / loopAll / baseSeq（snake_case の camelCase）。
     // 計画側のキー名（loop）と混ざらないよう明示的に渡す。
     // baseSeq は計画を評価した時点の観測世代に束ねる
+    const sentSeq = armedSeqs.get(instanceId) ?? 0;
     return invoke<boolean>("player_set_queue", {
       instanceId,
       items: p.items,
       loopAll: p.loop,
-      baseSeq: armedSeqs.get(instanceId) ?? 0,
+      baseSeq: sentSeq,
     }).then((applied) => {
-      // 世代ずれで拒否された意図は次の ended イベントで再適用する
-      if (applied) rearmPending.delete(instanceId);
-      else rearmPending.add(instanceId);
+      if (applied) {
+        rearmPending.delete(instanceId);
+        return;
+      }
+      // 世代ずれで拒否された意図は保留して再適用する。
+      // 拒否応答が世代を進めた終端イベントより遅れることがあるため、
+      // 観測世代が送信時より新しければ次イベントを待たず即時に
+      // 最新意図で再送する（武装が尽きると意図が失われるため）。
+      // 未着なら次の ended イベント（最新世代）で再適用する
+      rearmPending.add(instanceId);
+      if ((armedSeqs.get(instanceId) ?? 0) > sentSeq) {
+        void enqueueArm(instanceId, () => latestPlan(instanceId)).catch(
+          () => {},
+        );
+      }
     });
   });
   // 後続のチェーンは失敗に関わらず進める（失敗処理は呼び出し側の catch）
@@ -98,6 +111,17 @@ function enqueueArm(
     if (armRuns.get(instanceId) === stored) armRuns.delete(instanceId);
   });
   return run;
+}
+
+/// 実行時点の最新意図から武装計画を作る（世代ずれ拒否後の即時再適用用）。
+/// キュー中は armPlanFor、キュー外はループモードに応じた単独項目または解除
+function latestPlan(instanceId: number): { items: string[]; loop: boolean } {
+  if (instanceId === queue.instanceId) {
+    return armPlanFor(loopMode(instanceId), queue.items, queue.index);
+  }
+  if (loopMode(instanceId) === "none") return { items: [], loop: false };
+  const vid = playerStates.list.get(instanceId)?.videoId;
+  return { items: vid ? [vid] : [], loop: true };
 }
 
 /// ループ状態を なし → 全体 → 1 項目 の順に切り替える（仕様決定 AA）。
