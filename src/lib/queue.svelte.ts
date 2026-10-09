@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { playerStates, type PlayerEnded } from "$lib/players.svelte";
+import { armTargetFor, reconcileIndex } from "./queue-logic";
 
 /// 稼働中キューの状態。`items` は動画 ID 列、`index` は現在の再生位置。
 /// `instanceId` はキューを背負うプレイヤーインスタンス。
@@ -47,6 +48,30 @@ export function clearLoop(instanceId: number): void {
   setLoopMode(instanceId, "none");
 }
 
+// `player_set_next` の直列化（インスタンスごと）。
+// invoke の到着順は保証されないため、武装・解除・再武装を一本の
+// Promise チェーンに載せ、各操作は実行時点で対象を評価する。
+// これにより最後に予約した意図だけが必ず backend へ届く。
+const armRuns = new Map<number, Promise<void>>();
+
+/// インスタンスへの `player_set_next` を直列化して送る。
+/// `target` は実行時点で評価し、送信順序をチェーンで固定する。
+function enqueueArm(
+  instanceId: number,
+  target: () => string | null,
+): Promise<void> {
+  const prev = armRuns.get(instanceId) ?? Promise.resolve();
+  const run = prev.then(() =>
+    invoke("player_set_next", {
+      instanceId,
+      videoId: target(),
+    }).then(() => undefined),
+  );
+  // 後続のチェーンは失敗に関わらず進める（失敗処理は呼び出し側の catch）
+  armRuns.set(instanceId, run.catch(() => {}));
+  return run;
+}
+
 /// ループ状態を なし → 全体 → 1 項目 の順に切り替える（仕様決定 AA）。
 /// 切り替え時点でそのインスタンスの武装を新しいモードの対象へ張り替える。
 export async function cycleLoop(instanceId: number): Promise<void> {
@@ -54,41 +79,35 @@ export async function cycleLoop(instanceId: number): Promise<void> {
   const next: LoopMode =
     cur === "none" ? "all" : cur === "all" ? "one" : "none";
   setLoopMode(instanceId, next);
-  if (instanceId === queue.instanceId) {
-    await armNext();
-    return;
-  }
-  // キュー外インスタンス: none 以外は現在項目を武装（繰り返し）。none は解除
-  const videoId =
-    next === "none"
-      ? null
-      : (playerStates.list.get(instanceId)?.videoId ?? null);
   try {
-    await invoke("player_set_next", { instanceId, videoId });
+    if (instanceId === queue.instanceId) {
+      await enqueueArm(instanceId, () =>
+        armTargetFor(loopMode(instanceId), queue.items, queue.index),
+      );
+      return;
+    }
+    // キュー外インスタンス: none 以外は現在項目を武装（繰り返し）。none は解除
+    await enqueueArm(instanceId, () =>
+      loopMode(instanceId) === "none"
+        ? null
+        : (playerStates.list.get(instanceId)?.videoId ?? null),
+    );
   } catch {
-    // インスタンスが既に無い場合はループ状態も畳む
+    // インスタンスが既に無い場合はキュー・ループ状態を畳む
+    if (instanceId === queue.instanceId) stopQueue();
     clearLoop(instanceId);
   }
 }
 
-/// 次項目をバックエンドへ武装する。ループモードに応じて対象を選ぶ:
-/// 1 項目は現在項目、全体は末尾到達で先頭、なしは末尾到達で解除する。
+/// 次項目をバックエンドへ武装する。ループモードに応じて対象を選ぶ
+/// （対象の決定は armTargetFor、LP-NN 系回帰テストで検証）。
 async function armNext(): Promise<void> {
   if (queue.instanceId === null) return;
-  const mode = loopMode(queue.instanceId);
-  let next: string | null;
-  if (mode === "one") {
-    next = queue.items[queue.index] ?? null;
-  } else if (mode === "all") {
-    next = queue.items[queue.index + 1] ?? queue.items[0] ?? null;
-  } else {
-    next = queue.items[queue.index + 1] ?? null;
-  }
+  const id = queue.instanceId;
   try {
-    await invoke("player_set_next", {
-      instanceId: queue.instanceId,
-      videoId: next,
-    });
+    await enqueueArm(id, () =>
+      armTargetFor(loopMode(id), queue.items, queue.index),
+    );
   } catch {
     // インスタンスが既に無い場合はキューを畳む
     stopQueue();
@@ -112,15 +131,17 @@ export async function startQueue(
   await armNext();
 }
 
-/// キューを畳む（インスタンスが残る場合は武装も解除する）。
+/// キューを畳む。ループモードが残るインスタンスは単独ループへ移行する
+/// （キュー無しの全体/1 項目は現在項目の繰り返し。仕様決定 AA）。
+/// なしなら武装を解除して終端で自然に終了する。
 export function stopQueue(): void {
   if (queue.instanceId !== null) {
     const id = queue.instanceId;
+    const vid = queue.items[queue.index] ?? null;
     queue.instanceId = null;
-    // 解除は応答を待たない（失敗時はインスタンス終了で自然に畳まれる）
-    void invoke("player_set_next", { instanceId: id, videoId: null }).catch(
-      () => {},
-    );
+    void enqueueArm(id, () =>
+      loopMode(id) === "none" ? null : vid,
+    ).catch(() => {});
   }
   queue.playlistId = null;
   queue.playlistName = "";
@@ -156,25 +177,24 @@ export function initQueueEvents(): Promise<void> {
           return;
         }
         if (p.instanceId === queue.instanceId) {
-          // 武装していた項目が再生開始済み。モードに応じて位置を進めて再武装
-          const mode = loopMode(p.instanceId);
-          if (mode === "all") {
-            queue.index =
-              queue.index + 1 >= queue.items.length ? 0 : queue.index + 1;
-          } else if (mode !== "one") {
-            queue.index += 1;
-          }
-          // "one" は現在項目の繰り返しなので位置は据え置き
+          // 実際に読み込みが始まった項目で位置を照合する。
+          // 遷移とモード変更が重なってもイベント到着時のモードは
+          // 直前の遷移を表さないため、位置はロード済み項目で決める
+          queue.index = reconcileIndex(
+            queue.items,
+            queue.index,
+            p.continuedVideoId,
+          );
           void armNext();
           return;
         }
         // キュー外インスタンスの繰り返し（ループで武装した項目）。
         // モードが継続していれば次周回のために再武装する
         if (loopMode(p.instanceId) !== "none") {
-          void invoke("player_set_next", {
-            instanceId: p.instanceId,
-            videoId: p.continuedVideoId ?? p.videoId,
-          }).catch(() => clearLoop(p.instanceId));
+          const vid = p.continuedVideoId ?? p.videoId;
+          void enqueueArm(p.instanceId, () => vid).catch(() =>
+            clearLoop(p.instanceId),
+          );
         }
       });
     })();
