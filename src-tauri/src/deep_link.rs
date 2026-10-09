@@ -65,7 +65,7 @@ impl PendingOpenUrls {
     pub fn drain(&self) -> Vec<OpenUrlItem> {
         let mut inner = self.inner.lock().unwrap();
         inner.ready = true;
-        inner.items.drain(..).collect()
+        std::mem::take(&mut inner.items)
     }
 }
 

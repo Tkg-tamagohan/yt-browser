@@ -112,7 +112,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `filter_add` | `target`, `kind`, `pattern` | `Result<Filter>` |
 | `filter_remove` | `id` | `Result<()>` |
 | `filter_list` | なし | `Result<Vec<Filter>>` |
-| `take_open_urls` | なし | `Result<Vec<String>>` |
+| `take_open_urls` | なし | `Result<Vec<{seq, url}>>` |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 `play_video` が返す `instance_id` が制御対象の識別子で、UI はアクティブな窓の ID を保持して全操作に付ける。
