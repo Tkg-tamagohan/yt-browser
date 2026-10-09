@@ -23,7 +23,15 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SEMVER = re.compile(r"^v?\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$")
+
+# semver.org の正規表現（先頭の v だけ追加で許容）
+SEMVER = re.compile(
+    r"^v?"
+    r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+)
 
 # (file, 書き換えパターン)。各ファイル先頭の 1 箇所だけを更新する
 TEXT_TARGETS = [
@@ -60,47 +68,60 @@ def current_versions() -> dict[str, str | None]:
     }
 
 
-def bump(version: str) -> None:
-    for path, pattern in TEXT_TARGETS:
-        lines = path.read_text().splitlines(keepends=True)
-        for i, line in enumerate(lines):
-            m = pattern.match(line)
-            if m:
-                if path.name == "Cargo.toml":
-                    lines[i] = f'{m.group(1)}{version}"\n'
-                else:
-                    lines[i] = f'{m.group(1)}"version": "{version}",\n'
-                break
-        else:
-            fail(f"version 行が見つかりません: {path.relative_to(ROOT)}")
-        path.write_text("".join(lines))
-
-    # Cargo.lock は cargo 自身に再生成させる（ハッシュや依存解決を正規に保つ）。
-    # yt-browser はワークスペースのローカルパッケージなのでネットワーク不要
-    r = subprocess.run(
-        ["cargo", "update", "--offline", "-p", "yt-browser"],
-        cwd=ROOT / "src-tauri",
-        capture_output=True,
-        text=True,
-    )
-    if r.returncode != 0:
-        fail(
-            "Cargo.lock の更新に失敗しました（cargo が無い環境では "
-            "Cargo.lock 内 yt-browser エントリの version を手で書き換えてください）\n"
-            + (r.stderr or r.stdout)
+def update_lock() -> None:
+    """Cargo.lock を cargo で再生成する。オフラインが失敗したら通常モードへフォールバック。"""
+    # yt-browser はワークスペースのローカルパッケージだが、依存解決には
+    # crates.io の索引・クレートが要るため、キャッシュの無い新規環境では
+    # --offline が失敗する。失敗したらネットワークありで再試行する
+    for extra in (["--offline"], []):
+        r = subprocess.run(
+            ["cargo", "update", *extra, "-p", "yt-browser"],
+            cwd=ROOT / "src-tauri",
+            capture_output=True,
+            text=True,
         )
+        if r.returncode == 0:
+            return
+    fail(
+        "Cargo.lock の更新に失敗しました（cargo が無い環境では "
+        "Cargo.lock 内 yt-browser エントリの version を手で書き換えてください）\n"
+        + (r.stderr or r.stdout)
+    )
+
+
+def bump(version: str) -> None:
+    # 途中失敗で不整合を残さないよう、先に全ファイルの原文を退避する
+    originals = {p: p.read_text() for p, _ in TEXT_TARGETS}
+    try:
+        for path, pattern in TEXT_TARGETS:
+            lines = originals[path].splitlines(keepends=True)
+            for i, line in enumerate(lines):
+                m = pattern.match(line)
+                if m:
+                    if path.name == "Cargo.toml":
+                        lines[i] = f'{m.group(1)}{version}"\n'
+                    else:
+                        lines[i] = f'{m.group(1)}"version": "{version}",\n'
+                    break
+            else:
+                fail(f"version 行が見つかりません: {path.relative_to(ROOT)}")
+            path.write_text("".join(lines))
+        update_lock()
+    except SystemExit:
+        for path, text in originals.items():
+            path.write_text(text)
+        raise
 
 
 def main() -> None:
     args = sys.argv[1:]
     if args == ["--check"]:
         versions = current_versions()
-        uniq = set(v for v in versions.values() if v)
         for name, v in versions.items():
             print(f"  {name}: {v}")
-        if len(uniq) != 1 or None in versions.values():
+        if not all(versions.values()) or len(set(versions.values())) != 1:
             fail("バージョンが揃っていません")
-        print(f"OK: 4 箇所すべて {uniq.pop()}")
+        print(f"OK: 4 箇所すべて {versions['Cargo.lock']}")
         return
 
     if len(args) != 1 or not SEMVER.match(args[0]):
