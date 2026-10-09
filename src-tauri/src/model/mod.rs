@@ -472,10 +472,18 @@ pub fn parse_start_seconds(input: &str) -> Option<f64> {
     if host != "youtu.be" && host != "youtube.com" && !host.ends_with(".youtube.com") {
         return None;
     }
-    // t= が解釈不能な値でも start= に有効な値があれば拾う
-    url.query_pairs()
-        .filter(|(k, _)| k == "t" || k == "start")
-        .find_map(|(_, v)| parse_time_value(&v))
+    // 優先順は t= の全値 → start= の全値（フロント側の同一 parser と揃える）。
+    // t= が解釈不能でも start= に有効な値があれば拾う
+    for key in ["t", "start"] {
+        let found = url
+            .query_pairs()
+            .filter(|(k, _)| k == key)
+            .find_map(|(_, v)| parse_time_value(&v));
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
 }
 
 /// `1h2m3s` 形式または素の秒数を秒へ変換する。単位は h→m→s の順だけを受理する
@@ -614,6 +622,11 @@ mod tests {
         assert_eq!(
             parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=abc&start=90"),
             Some(90.0)
+        );
+        // start= が先に出ても t= が優先される（フロントの parseTimeParam と同じ順）
+        assert_eq!(
+            parse_start_seconds("https://www.youtube.com/watch?v=dQw4w9WgXcQ&start=90&t=30"),
+            Some(30.0)
         );
     }
 

@@ -75,7 +75,9 @@ export function classifyTarget(url: string): OpenTarget | null {
 }
 
 /// URL の t=/start= パラメータを秒へ変換する。無ければ null。
-function parseTimeParam(parsed: URL): number | null {
+/// Rust 側 `model::parse_start_seconds` と同一の受理ルール
+/// （t= の全値を先に試し、解釈不能なら start= へ進む。単位は h→m→s の順のみ）
+export function parseTimeParam(parsed: URL): number | null {
   // t= が解釈不能でも start= に有効な値があれば拾う（順序は h→m→s のみ受理）
   for (const key of ["t", "start"]) {
     const raw = parsed.searchParams.get(key);
