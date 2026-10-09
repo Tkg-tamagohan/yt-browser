@@ -142,8 +142,9 @@ pnpm tauri build      # AppImage / deb / rpm を生成（src-tauri/target/releas
 
 ## bot 判定の回避（cookies.txt）
 
-YouTube がお使いの IP からの匿名アクセスを bot と判定すると、yt-dlp のストリーム解決がすべて失敗し、再生窓が開いてすぐ閉じる、フィードのタイトルが取れない、といった症状が一度に出ます。
+YouTube がお使いの IP からの匿名アクセスを bot と判定すると、yt-dlp のストリーム解決がすべて失敗し、再生窓が開いてすぐ閉じる、といった症状が出ます。
 ブラウザのログイン Cookie を yt-dlp に渡すと回避できることが多いです。
+なおフィード一覧の取得は yt-dlp を通らない別経路のため、フィード側のエラー（status 500 など）はこの手順では解消しません。
 
 1. Chrome 拡張「Get cookies.txt LOCALLY」などで、YouTube にログインした状態の youtube.com のタブから Netscape 形式の cookies.txt をエクスポートしてください
    `--cookies-from-browser chrome` 方式は、現行 Chrome の App-Bound Encryption で Cookie データベースを復号できず使えません
@@ -153,12 +154,16 @@ YouTube がお使いの IP からの匿名アクセスを bot と判定すると
    `#HttpOnly_.youtube.com ... LOGIN_INFO` が正しく、`... #HttpOnly_LOGIN_INFO` のように名前列に付く形は壊れているので、名前列から `#HttpOnly_` を外してドメイン列へ付け直してください
 4. cookies.txt は書き込み可能な場所に置いてください
    読み取り専用にすると yt-dlp が終了時の書き戻しに失敗して異常終了します
-5. `%APPDATA%\yt-dlp\config`（無ければフォルダごと作成）に以下を記述してください
+   内容はログイン状態そのものなので、共有ディレクトリや同期フォルダには置かないでください
+5. yt-dlp の設定ファイルに以下を記述してください
+   Windows は `%APPDATA%\yt-dlp\config`、Linux は `~/.config/yt-dlp/config` です（無ければフォルダごと作成）
 
    ```
-   --cookies <cookies.txt のフルパス>
+   --cookies "<cookies.txt のフルパス>"
    --extractor-args "youtube:player_client=tv_simply"
    ```
+
+   `--cookies` のパスが空白を含むと分割されるため、引用符で囲んでください
 
    `player_client=tv_simply` は bot 判定を回避する別クライアントへの切り替えです
    cookies だけで抜けられる環境ならこの行は不要ですが、cookies 込みでも `Sign in to confirm` が残る場合に有効です
@@ -169,7 +174,7 @@ YouTube がお使いの IP からの匿名アクセスを bot と判定すると
    ```
 
    `Loaded N cookies` のあとにストリーム URL が返れば成功です
-   `mpv --ytdl=yes <URL>` で再生できれば、アプリからも再生できます（mpv の ytdl_hook が同じ yt-dlp 設定を読むため）
+   `mpv --ytdl=yes "https://www.youtube.com/watch?v=<動画ID>"` で再生できれば、アプリからも再生できます（mpv の ytdl_hook が同じ yt-dlp 設定を読むため）
 
 「tv_simply client https formats require a GVS PO Token」という警告が出る場合、tv_simply では合成済みフォーマット（itag=18、360p）だけが取れる状態です。
 アプリの既定画質式には合成済みフォーマットへのフォールバックがあるためそのまま再生できますが、高画質で見たい場合は yt-dlp ドキュメントの PO Token Guide に従って `po_token` の extractor-args を追加してください。
