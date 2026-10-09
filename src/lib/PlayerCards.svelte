@@ -267,7 +267,13 @@
         const looping =
           ev.payload.continued && loopMode(ev.payload.instanceId) !== "none";
         if (!looping) {
-          notify(t("player.ended", { reason: ev.payload.reason }));
+          // reason=error はロード失敗（yt-dlp 解決エラーやフォーマット不一致）
+          // として終わった終端なので、終了トーストより強い文言で知らせる
+          if (ev.payload.reason === "error") {
+            notify(t("player.failed", { videoId: ev.payload.videoId }));
+          } else {
+            notify(t("player.ended", { reason: ev.payload.reason }));
+          }
         }
         // 再生終了したインスタンスのチャットパネルも片付け、ポーラーを解放する
         cleanupChatPanel(ev.payload.instanceId, ev.payload.videoId);

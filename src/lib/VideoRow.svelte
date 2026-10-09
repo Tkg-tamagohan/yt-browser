@@ -69,9 +69,25 @@
     ondragend,
   }: Props = $props();
 
-  let thumbSrc = $derived(
-    thumbnailUrl ?? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
-  );
+  // サムネイル取得に失敗した場合に試すフォールバック URL。
+  // RSS が保存する hqdefault.jpg は無い動画があると i.ytimg が 404 を返し
+  // 「割れたアイコン」になるため、mqdefault（必ず代替画像が返る）へ再試行する。
+  let FALLBACK = $derived(`https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`);
+  let thumbSrc = $state("");
+  let thumbFailed = $state(false);
+  $effect(() => {
+    thumbSrc = thumbnailUrl ?? FALLBACK;
+    thumbFailed = false;
+  });
+
+  function onThumbError() {
+    if (thumbSrc !== FALLBACK) {
+      thumbSrc = FALLBACK;
+    } else {
+      // mqdefault も取れない場合はアイコンを出さず下地色だけ表示する
+      thumbFailed = true;
+    }
+  }
 </script>
 
 <li
@@ -88,12 +104,17 @@
   {ondragend}
 >
   {@render leading?.()}
-  <img
-    class="thumb {thumbSize}"
-    src={thumbSrc}
-    alt=""
-    loading="lazy"
-  />
+  {#if thumbFailed}
+    <div class="thumb {thumbSize}" aria-hidden="true"></div>
+  {:else}
+    <img
+      class="thumb {thumbSize}"
+      src={thumbSrc}
+      alt=""
+      loading="lazy"
+      onerror={onThumbError}
+    />
+  {/if}
   <div class="meta">
     {#if onplay}
       <button class="title" onclick={onplay}>{title}</button>

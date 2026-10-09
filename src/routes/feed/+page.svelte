@@ -59,6 +59,8 @@
   let filterKind = $state("");
   // 登録チャンネル一覧の表示用カテゴリ絞込（画面ローカル、FR-13）
   let chanCatFilter = $state<number | null>(null);
+  // フィード一覧の束ね方。true のときチャンネル単位のセクションに分ける
+  let groupByChannel = $state(false);
   let busy = $state(false);
   let unlistens: UnlistenFn[] = [];
 
@@ -75,6 +77,27 @@
             : c.categoryId === chanCatFilter,
         ),
   );
+
+  // チャンネル別表示用のグルーピング。初出順を維持し、
+  // 各グループ内は一覧側の並び（新着順）そのままにする
+  let groupedItems = $derived.by(() => {
+    const map = new Map<string, { title: string; entries: FeedItem[] }>();
+    for (const it of items) {
+      const g = map.get(it.channelId);
+      if (g) {
+        g.entries.push(it);
+      } else {
+        map.set(it.channelId, {
+          title: it.channelTitle ?? it.channelId,
+          entries: [it],
+        });
+      }
+    }
+    return [...map.entries()].map(([channelId, g]) => ({
+      channelId,
+      ...g,
+    }));
+  });
 
   // フィルタ切替を重ねたとき古い応答が後着で上書きしないよう、
   // 最後に開始した呼び出しの結果だけを反映する
@@ -365,12 +388,66 @@
             <option value="short">{t("feed.filters.kindShort")}</option>
             <option value="live">{t("feed.filters.kindLive")}</option>
           </select>
+          <label class="filter">
+            <input type="checkbox" bind:checked={groupByChannel} />
+            {t("feed.filters.groupByChannel")}
+          </label>
           <button class="link" onclick={refreshNow}>{t("feed.refresh")}</button>
           <button class="link" onclick={markAllRead}>{t("feed.items.markAllRead")}</button>
         </div>
 
     {#if items.length === 0}
       <p class="subtle">{t("feed.items.empty")}</p>
+    {:else if groupByChannel}
+      {#each groupedItems as group (group.channelId)}
+        <section class="chan-group">
+          <h3 class="chan-name">
+            {group.title}
+            <span class="chan-count">{group.entries.length}</span>
+          </h3>
+          <ul class="item-list">
+            {#each group.entries as it (it.videoId)}
+              <VideoRow
+                videoId={it.videoId}
+                title={it.title}
+                thumbnailUrl={it.thumbnailUrl}
+                thumbSize="sm"
+                dimmed={it.isRead}
+                actionsPlacement="side"
+                onplay={() => playItem(it)}
+              >
+                {#snippet sub()}
+                  <span class="feed-meta">
+                    <span>{it.channelTitle ?? it.channelId}</span>
+                    <span>{fmtDateTime(it.publishedAt)}</span>
+                  </span>
+                {/snippet}
+                {#snippet actions()}
+                  {#if !it.isRead}
+                    <button class="link" onclick={() => markRead(it.videoId)}>
+                      {t("feed.items.markRead")}
+                    </button>
+                  {/if}
+                  <button
+                    class="link danger"
+                    title={t("feed.item.block")}
+                    onclick={() => blockItem(it)}
+                  >
+                    {t("search.block")}
+                  </button>
+                  <VideoActions
+                    video={videoRefOf(it)}
+                    faved={va.favIds.has(it.videoId)}
+                    playlists={va.playlists}
+                    onfavchange={va.onFavChange}
+                    onplaylistcreated={va.onPlaylistCreated}
+                  />
+                {/snippet}
+              </VideoRow>
+            {/each}
+          </ul>
+        </section>
+      {/each}
     {:else}
       <ul class="item-list">
         {#each items as it (it.videoId)}
@@ -420,14 +497,16 @@
 </main>
 
 <style>
+  /* 横幅は広いモニタの半分強まで使う（チャンネル名と動画タイトルが
+     折り返されにくくするため 1100px から引き上げ） */
   .feed {
-    max-width: 1100px;
+    max-width: 1600px;
   }
   /* FR-13: 左=購読管理、右=フィード一覧。狭い画面では縦積み。
      .container の既定 flex 縦並びは維持するため grid を .feed-grid に掛ける */
   .feed-grid {
     display: grid;
-    grid-template-columns: minmax(280px, 340px) 1fr;
+    grid-template-columns: minmax(280px, 360px) 1fr;
     gap: 0 16px;
     align-items: start;
   }
@@ -491,5 +570,19 @@
   .feed-meta {
     display: flex;
     gap: 12px;
+  }
+  .chan-group {
+    margin-top: 12px;
+  }
+  .chan-name {
+    margin: 0 0 4px;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+  .chan-count {
+    color: #9aa0a6;
+    font-weight: 400;
+    font-size: 0.85rem;
+    margin-left: 8px;
   }
 </style>
