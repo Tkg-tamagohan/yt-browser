@@ -18,6 +18,7 @@ consistency ジョブ）の双方から実行できる。
     4. i18n の ja リソースキー ↔ フロントエンドの t() 参照
     5. テスト ID（DB-XX-NN）の docs 引用・コード側重複・#[test] 直下
     6. design.md の設定キー表 ↔ SETTING_* 定数リテラル
+    7. ci.yml の集約ジョブ ci-status の needs ↔ jobs 一覧
 チェック 3（§8 DDL と適用後スキーマの照合）は実マイグレーション経路を
 通す必要があるため Rust 側テストとして src-tauri/src/db/tests.rs にある。
 
@@ -609,6 +610,74 @@ def check_settings(setting_keys: set[str]) -> Findings:
 
 
 # ---------------------------------------------------------------------------
+# チェック 7: ci.yml の集約ジョブ ci-status の needs ↔ jobs 一覧
+# ---------------------------------------------------------------------------
+
+CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
+GATE_JOB_ID = "ci-status"
+GATE_JOB_NAME = "CI"
+
+
+def check_ci_gate() -> Findings:
+    f = Findings([])
+    if not CI_YML.is_file():
+        f.error(f"{CI_YML.relative_to(ROOT)} が見つからない")
+        return f
+
+    # jobs: 直下の 2 スペースインデントのキーをジョブ ID として拾う。
+    # ジョブ属性（runs-on 等）は 4 スペース以上のため誤拾しない。
+    job_ids: list[str] = []
+    gate_needs: list[str] | None = None
+    gate_name: str | None = None
+    in_jobs = False
+    in_gate = False
+    for line in read_text(CI_YML).splitlines():
+        if re.match(r"^jobs:\s*$", line):
+            in_jobs = True
+            continue
+        if not in_jobs or re.match(r"^\s*#", line):
+            continue
+        if re.match(r"^\S", line):
+            break  # トップレベルキーの復帰 = jobs 節の終わり
+        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if m:
+            in_gate = m.group(1) == GATE_JOB_ID
+            job_ids.append(m.group(1))
+            continue
+        if in_gate:
+            m = re.match(r"^    needs:\s*\[(.*)\]\s*$", line)
+            if m:
+                gate_needs = [
+                    s.strip() for s in m.group(1).split(",") if s.strip()
+                ]
+                continue
+            m = re.match(r"^    name:\s*(\S+)\s*$", line)
+            if m:
+                gate_name = m.group(1)
+
+    if GATE_JOB_ID not in job_ids:
+        f.error(f"ci.yml に集約ジョブ `{GATE_JOB_ID}` が無い")
+        return f
+    if gate_name != GATE_JOB_NAME:
+        f.error(
+            f"`{GATE_JOB_ID}` の name が `{gate_name}` になっている"
+            f"（必須チェック名 `{GATE_JOB_NAME}` と一致させる契約）"
+        )
+    if gate_needs is None:
+        f.error(f"`{GATE_JOB_ID}` の needs がインライン `[a, b]` 形式で読めない")
+    else:
+        expected = {j for j in job_ids if j != GATE_JOB_ID}
+        for j in sorted(expected - set(gate_needs)):
+            f.error(f"ジョブ `{j}` が `{GATE_JOB_ID}` の needs に無い")
+        for j in sorted(set(gate_needs) - expected):
+            f.error(f"`{GATE_JOB_ID}` の needs の `{j}` は存在しないジョブ")
+
+    if f.worst() == OK:
+        f.ok(f"{len(job_ids) - 1} 件のジョブが `{GATE_JOB_ID}` の needs に網羅されている")
+    return f
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -620,6 +689,7 @@ def main() -> int:
     checks.append(("check 4: i18n キー", check_i18n(setting_keys)))
     checks.append(("check 5: テスト ID", check_test_ids()))
     checks.append(("check 6: 設定キー表", check_settings(setting_keys)))
+    checks.append(("check 7: CI 集約ジョブ", check_ci_gate()))
     # チェック 3（§8 DDL ↔ 適用後スキーマ）は src-tauri の
     # ddl_matches_design_section8 テストが担う
 

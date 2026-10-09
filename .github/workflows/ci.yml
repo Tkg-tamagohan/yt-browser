@@ -71,3 +71,33 @@ jobs:
         working-directory: src-tauri
       - run: cargo test
         working-directory: src-tauri
+
+  # ルールセットの必須チェックをこのジョブ 1 本に集約する。
+  # 必須チェックとして報告される名前はジョブの name（CI）になる。
+  # 依存ジョブ失敗時はこのジョブ自体が skip され Success 扱いで
+  # 素通りになるため、if: always() で必ず起動し、全ジョブの result が
+  # success のときだけ成功とする（skipped も失敗扱いの厳格仕様）。
+  # ジョブ追加・改名時は needs も更新すること（インラインの [a, b] 形式で
+  # 書く。網羅は consistency ジョブの check_docs_consistency.py が照合する）。
+  ci-status:
+    name: CI
+    needs: [consistency, frontend, rust, windows]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 依存ジョブの結果を集約
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: |
+          python3 <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          for name, info in needs.items():
+              print(f"{name}: {info['result']}")
+          bad = sorted(k for k, v in needs.items() if v["result"] != "success")
+          if bad:
+              print("non-success jobs:", ", ".join(bad))
+              sys.exit(1)
+          print("all jobs succeeded")
+          EOF
+
