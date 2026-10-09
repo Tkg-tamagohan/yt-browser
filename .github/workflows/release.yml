@@ -116,6 +116,17 @@ jobs:
           rm -f dist/*.sig
           ls -la dist
           if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            # 既存リリースへの再実行（タグ張り替え）では --clobber が同名
+            # アセットしか差し替えない。配布廃止した形式と添付対象外の
+            # 残存アセットを先に落として新規作成と同じ配布内容に揃える
+            # （仕様決定 AK、Devin Review #61 指摘）
+            # grep で絞ると対象なし時に終了コード 1 で pipefail 落ちするため、
+            # マッチは jq 側で行い空ならループを回さない
+            names=$(gh release view "$TAG_NAME" --json assets \
+              --jq '.assets[].name | select(endswith(".msi") or endswith(".sig"))')
+            for name in $names; do
+              gh release delete-asset "$TAG_NAME" "$name" --yes
+            done
             # 前回実行が途中で失敗した場合など、既存リリースには差し替え添付する
             gh release upload "$TAG_NAME" --clobber -- dist/*
           else
