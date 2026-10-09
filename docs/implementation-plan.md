@@ -219,7 +219,7 @@ Windows の登録（HKCU レジストリ）とホストの起動は Windows 実�
 - [x] `pip.fit_aspect` 設定キーの新設（`on`/`off`、既定・未設定は `on`、`pip.default` と同一受理集合）と設定画面のチェックボックス
 - [x] `video-params` 由来の表示アスペクト比で `pip.geometry` の WxH 枠へ内接するサイズを算出し、PiP 化・比率変化・設定変更の各タイミングで `set_property geometry` を再適用（同一値の再送信は抑止し手動リサイズを維持）
 - [x] 単体テスト DB-PF-01〜06（設定値の解釈・枠内フィット・アスペクト取得のフォールバック）
-- [ ] 受け入れ：超ワイド動画や縦長動画で PiP 小窓が比率へ追従し、`pip.fit_aspect=off` で従来の固定サイズに戻る（実機検証）
+- [x] 受け入れ：超ワイド動画や縦長動画で PiP 小窓が比率へ追従し、`pip.fit_aspect=off` で従来の固定サイズに戻る（Windows 実機検証済み。検証動画は localhost 配信の 854x358 / 270x480 mp4 を疑似 yt-dlp 経由で読ませたもの。実 YouTube 動画は検証時の IP でボット対策に遮断され未検証）
 
 ## 残課題（Phase 0 〜 9 完了時点の既知事項）
 
