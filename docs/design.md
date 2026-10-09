@@ -143,7 +143,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instanceId, videoId, reason, continued }` | 終了またはエラー |
+| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId }` | 終了またはエラー |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
 | `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
@@ -293,6 +293,18 @@ true のときフロントはキュー位置を進め、次の次項目を武装
 インスタンスの `video_id`・履歴・SponsorBlock 区間は項目ごとに更新される。
 履歴は読み込み直後に `history_upsert` で行を確保し、SponsorBlock 区間は
 項目ごとに再取得して差し替える。
+
+ループ再生（FR-16、仕様決定 AA）も同じ武装機構で実現する。ループ状態
+（なし / プレイリスト全体 / 1 項目）はインスタンスごとにフロントが持ち、
+武装対象の選択で表現する。1 項目ループは現在項目を、全体ループは末尾到達で
+先頭項目を武装し、キューの無いインスタンスでは全体ループも現在項目の
+繰り返しとなる（1 項目ループはキュー中も次へ進まない）。
+`player://ended` は継続先の項目を `continuedVideoId` に載せ、フロントは
+終了した `videoId` と同一なら現在項目の繰り返し、別項目なら次項目への進行と
+区別してキュー位置を同期する。ループが継続している間（`continued` かつ
+モードが「なし」以外）は終了トーストを抑制し、イベント自体はキュー進行の
+ため発行を続ける。各周回は終端のたびに履歴へ完了が保存され、履歴行は
+動画単位のままその都度完了として更新される（周回数の行は増やさない）。
 
 ### 4.7 HDR 設定と mpv 追加引数（INV-1、仕様決定 Y）
 

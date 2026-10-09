@@ -29,6 +29,9 @@ export type PlayerEnded = {
   reason: string;
   /// 連続再生で同一インスタンスが次項目へ進んだとき true（FR-10、仕様決定 S）
   continued: boolean;
+  /// 継続先として読み込みを開始した項目（FR-16、仕様決定 AA）。
+  /// videoId と同一なら現在項目の繰り返し（ループ）。非継続時は null
+  continuedVideoId: string | null;
 };
 
 /// `sponsor://skipped` イベント（設計書 §3.2）。action は "skip" | "notify"。
@@ -203,7 +206,21 @@ export function initPlayerEvents(): Promise<void> {
         inFlight.add(ev.payload.instanceId);
         // 連続再生で次項目へ進んだインスタンスは稼働中のまま残す
         // （FR-10、仕様決定 S。カードが消えずに新しい状態へ移行する）
-        if (ev.payload.continued) return;
+        // continuedVideoId は実際に読み込みが始まった項目なので、
+        // 定期の状態イベントを待たずに再生中項目だけはここで同期する
+        // （遷移直後の操作が古い項目を拾わないように）
+        if (ev.payload.continued) {
+          const cur = playerStates.list.get(ev.payload.instanceId);
+          if (cur && ev.payload.continuedVideoId) {
+            const next = new Map(playerStates.list);
+            next.set(ev.payload.instanceId, {
+              ...cur,
+              videoId: ev.payload.continuedVideoId,
+            });
+            playerStates.list = next;
+          }
+          return;
+        }
         const next = new Map(playerStates.list);
         next.delete(ev.payload.instanceId);
         playerStates.list = next;

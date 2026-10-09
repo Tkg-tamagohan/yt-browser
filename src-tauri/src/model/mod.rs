@@ -57,6 +57,10 @@ pub struct PlayerEnded {
     /// 連続再生で同一インスタンスが次項目へ進んだとき true（FR-10、仕様決定 S）。
     /// true の場合インスタンスは生きており、新しい動画の読み込みを開始済み。
     pub continued: bool,
+    /// 継続先として読み込みを開始した項目の動画 ID（FR-16、仕様決定 AA）。
+    /// 終了した `video_id` と同一なら現在項目の繰り返し（ループ）、
+    /// 別項目なら次項目への進行。`continued` が false のとき None。
+    pub continued_video_id: Option<String>,
 }
 
 /// `player_control` の操作指定（設計書 §3.1）。
