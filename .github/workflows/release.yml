@@ -4,6 +4,9 @@ name: release
 # Linux は AppImage/deb/rpm）と updater 用の署名付き成果物をビルドし、
 # GitHub Releases に置く。latest.json は両 OS の署名成果物が揃った
 # 状態で release ジョブが生成する（AppImage と NSIS のみ。仕様決定 AB）
+# Linux 側のランナーは配布物の動作下限を上げないよう ubuntu-24.04 に
+# 固定する（仕様決定 AI）。新しいイメージでビルドすると AppImage の
+# 要求 glibc と deb/rpm の依存版指定が新しいディストロ基準へ上がるため。
 on:
   push:
     tags: ["v*"]
@@ -17,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             # updater 成果物（バンドル本体 + .sig）と配布物を回収する
             # （createUpdaterArtifacts は本体に直接署名し tar.gz は作らない）
             bundle_glob: "src-tauri/target/release/bundle/appimage/*.AppImage src-tauri/target/release/bundle/appimage/*.sig src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm"
@@ -67,7 +70,7 @@ jobs:
   release:
     # 両プラットフォームのビルドが成功してからだけ公開する
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
