@@ -400,7 +400,7 @@ export function t(key: MessageKey, params?: Params): string {
 // ドット入り値（bt.2390 / bt.2446a）を持つエントリだけを置く。
 // check_docs_consistency の i18n 参照検査はこのファイルを対象外とするため、
 // ドット入りリテラルはここに置き、選択肢側はドット無し ID を使う
-// （src/routes/settings/+page.svelte の TONE_MAPPINGS を参照）
+// （src/lib/settings-consts.ts の TONE_MAPPINGS を参照）
 export const TONE_MAPPING_MPV: Record<string, string> = {
   bt2390: "bt.2390",
   bt2446a: "bt.2446a",

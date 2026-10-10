@@ -22,24 +22,17 @@
     type UiError,
   } from "$lib/players.svelte";
   import { appUpdate, checkForUpdate } from "$lib/updater.svelte";
+  import {
+    CUSTOM,
+    SPONSOR_CATEGORIES,
+    TONE_MAPPINGS,
+    FILTER_TARGETS,
+    FILTER_KINDS,
+    type SponsorCategory,
+  } from "$lib/settings-consts";
 
   // 設計書 §4.3 のプリセット表（プレイヤーカードの画質選択と共有）
   const PRESETS = QUALITY_PRESETS;
-  const CUSTOM = "custom";
-
-  // SponsorBlock のカテゴリ一覧（src-tauri/src/sponsor/mod.rs の設定キーに対応）
-  const SPONSOR_CATEGORIES = [
-    "sponsor",
-    "selfpromo",
-    "interaction",
-    "intro",
-    "outro",
-    "preview",
-    "poi_highlight",
-    "music_offtopic",
-    "filler",
-  ] as const;
-  type SponsorCategory = (typeof SPONSOR_CATEGORIES)[number];
 
   let selected = $state<string>(PRESETS[0].format);
   let customFormat = $state("");
@@ -76,24 +69,6 @@
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
-  // HDR 関連（仕様決定 Y）。auto は「mpv 既定に任せる」＝未設定。
-  // 次回の再生開始から有効（起動時引数なので稼働中インスタンスには即時適用しない）
-  // bt.2390 / bt.2446a のようなドット入り mpv 値は check_docs_consistency の
-  // i18n 参照検査（ドット区切りリテラルを i18n キーとして拾う）に引っかかる
-  // ため、選択肢 ID はドット無しにし、mpv 値への対応は i18n.ts 側の
-  // TONE_MAPPING_MPV（同検査の対象外ファイル）に置く
-  const TONE_MAPPINGS = [
-    "auto",
-    "clip",
-    "hable",
-    "mobius",
-    "reinhard",
-    "gamma",
-    "linear",
-    "spline",
-    "bt2390",
-    "bt2446a",
-  ];
   let toneMapping = $state("auto");
   let computePeak = $state("auto");
   let mpvExtraArgs = $state("");
@@ -101,16 +76,7 @@
   // ブロック中チャンネル（FR-5: 設定画面での解除）
   let blocked = $state<BlockedChannel[]>([]);
 
-  // NG フィルタ（FR-9）。対象・種別は DDL の CHECK と同じ値集合
-  const FILTER_TARGETS = [
-    "video_title",
-    "video_desc",
-    "channel_title",
-    "channel_id",
-    "chat_text",
-    "chat_author",
-  ] as const;
-  const FILTER_KINDS = ["literal", "regex"] as const;
+  // NG フィルタ（FR-9）
   let filters = $state<Filter[]>([]);
   let fTarget = $state<string>("chat_text");
   let fKind = $state<string>("literal");
