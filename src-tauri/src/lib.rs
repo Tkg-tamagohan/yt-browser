@@ -151,11 +151,8 @@ pub fn run() {
             app.manage(ng.clone());
 
             // ライブチャットのポーラー（設計書 §6.2）。
-            let chat = std::sync::Arc::new(chat::ChatPoller::new(
-                app.handle().clone(),
-                innertube,
-                ng,
-            ));
+            let chat =
+                std::sync::Arc::new(chat::ChatPoller::new(app.handle().clone(), innertube, ng));
             app.manage(chat);
 
             // 購読フィードのポーラー（設計書 §1.2）。TICK ごとに期限の来た
