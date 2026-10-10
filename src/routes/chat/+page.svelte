@@ -8,7 +8,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { t } from "$lib/i18n";
-  import { fmtChatTime } from "$lib/format";
+  import ChatList from "$lib/ChatList.svelte";
   import {
     chatPopups,
     initChatEvents,
@@ -31,7 +31,6 @@
     playerStates.list.get(instanceId)?.videoId === videoId,
   );
 
-  let listEl = $state<HTMLDivElement>();
   let ontop = $state(true);
   let error = $state<string | null>(null);
 
@@ -47,13 +46,6 @@
     } catch {
       // 設定が読めなくても既定（最前面 ON）のまま表示する
     }
-  });
-
-  // 新着が届くたび末尾へ追従する（埋め込みパネルと同じ振る舞い）
-  $effect(() => {
-    const items = panel?.items;
-    if (!items || !listEl) return;
-    listEl.scrollTop = listEl.scrollHeight;
   });
 
   async function toggleOntop(): Promise<void> {
@@ -104,23 +96,7 @@
   {#if error}
     <p class="chat-status">{error}</p>
   {/if}
-  <div class="chat-list" bind:this={listEl}>
-    {#each panel?.items ?? [] as item (item.itemId || item)}
-      {#if item.deleted}
-        <p class="chat-item deleted">
-          <span class="subtle">{t("chat.deleted")}</span>
-        </p>
-      {:else}
-        <p class="chat-item" class:superchat={item.kind === "superchat"}>
-          <span class="chat-time">{fmtChatTime(item.postedAtUsec)}</span>
-          <span class="chat-msg">{item.message}</span>
-        </p>
-      {/if}
-    {/each}
-    {#if (panel?.items.length ?? 0) === 0}
-      <p class="subtle">{t("chat.empty")}</p>
-    {/if}
-  </div>
+  <ChatList items={panel?.items ?? []} showAuthor={false} fillHeight={true} />
 </div>
 
 <style>
@@ -175,51 +151,5 @@
     font-size: 0.85rem;
     margin: 4px 0;
     flex-shrink: 0;
-  }
-
-  .chat-list {
-    flex: 1;
-    min-height: 0;
-    margin-top: 8px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .chat-item {
-    margin: 0;
-    padding: 2px 0;
-    font-size: 0.88rem;
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    flex-wrap: wrap;
-  }
-
-  .chat-item.deleted {
-    opacity: 0.6;
-  }
-
-  .chat-item.superchat {
-    background: #3d2b1f;
-    border-radius: 6px;
-    padding: 2px 8px;
-  }
-
-  .chat-time {
-    color: #9aa0a6;
-    font-family: monospace;
-    font-size: 0.78rem;
-    flex-shrink: 0;
-  }
-
-  .chat-msg {
-    overflow-wrap: anywhere;
-    min-width: 0;
-  }
-
-  .subtle {
-    font-size: 0.85rem;
   }
 </style>
