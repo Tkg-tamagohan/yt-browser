@@ -48,16 +48,16 @@ def fail(msg: str) -> None:
 
 def current_versions() -> dict[str, str | None]:
     """4 箇所の現行バージョンを読む。"""
-    conf = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text())
-    pkg = json.loads((ROOT / "package.json").read_text())
+    conf = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    pkg = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     cargo = None
-    for line in (ROOT / "src-tauri/Cargo.toml").read_text().splitlines():
+    for line in (ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8").splitlines():
         m = re.match(r'^version = "([^"]*)"', line)
         if m:
             cargo = m.group(1)
             break
     lock = None
-    lock_text = (ROOT / "src-tauri/Cargo.lock").read_text()
+    lock_text = (ROOT / "src-tauri/Cargo.lock").read_text(encoding="utf-8")
     m = re.search(r'\[\[package\]\]\nname = "yt-browser"\nversion = "([^"]*)"', lock_text)
     if m:
         lock = m.group(1)
@@ -93,7 +93,7 @@ def update_lock() -> None:
 
 def bump(version: str) -> None:
     # 途中失敗で不整合を残さないよう、先に全ファイルの原文を退避する
-    originals = {p: p.read_text() for p, _ in TEXT_TARGETS}
+    originals = {p: p.read_text(encoding="utf-8") for p, _ in TEXT_TARGETS}
     try:
         for path, pattern in TEXT_TARGETS:
             lines = originals[path].splitlines(keepends=True)
@@ -107,11 +107,11 @@ def bump(version: str) -> None:
                     break
             else:
                 fail(f"version 行が見つかりません: {path.relative_to(ROOT)}")
-            path.write_text("".join(lines))
+            path.write_text("".join(lines), encoding="utf-8")
         update_lock()
     except SystemExit:
         for path, text in originals.items():
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
         raise
 
 

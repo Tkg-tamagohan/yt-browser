@@ -19,6 +19,14 @@ consistency ジョブ）の双方から実行できる。
     5. テスト ID（DB-XX-NN）の docs 引用・コード側重複・#[test] 直下
     6. design.md の設定キー表 ↔ SETTING_* 定数リテラル
     7. ci.yml の集約ジョブ ci-status の needs ↔ jobs 一覧
+    8. 要件 ID（FR-N / BG-N / INV-N）の参照 ↔ requirements-definition.md の見出し
+    9. 決定記録 ID（仕様決定 / 技術方針）の参照 ↔ decision-records.md の表
+    10. 設計書 §N / design.md §N の参照 ↔ design.md の見出し番号
+    11. .test.ts のテスト ID（LP-NN 系）の宣言・索引・重複
+    12. capabilities の windows glob ↔ コード側の窓ラベル
+    13. 拡張・識別子定数（ホスト名・拡張 ID・スキーム・バージョン）の一致
+    14. docs 間リンク `[..](path)` の参照先の存在
+    15. design.md §11 リポジトリ構成ツリーの掲載パスの存在（WARN 限定）
 チェック 3（§8 DDL と適用後スキーマの照合）は実マイグレーション経路を
 通す必要があるため Rust 側テストとして src-tauri/src/db/tests/ddl.rs にある。
 
@@ -30,6 +38,7 @@ consistency ジョブ）の双方から実行できる。
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -37,10 +46,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DESIGN_MD = ROOT / "docs" / "design.md"
+REQUIREMENTS_MD = ROOT / "docs" / "requirements-definition.md"
+DECISIONS_MD = ROOT / "docs" / "decision-records.md"
+USER_GUIDE_MD = ROOT / "docs" / "user-guide.md"
 LIB_RS = ROOT / "src-tauri" / "src" / "lib.rs"
 I18N_TS = ROOT / "src" / "lib" / "i18n.ts"
 SRC_TAURI = ROOT / "src-tauri" / "src"
 SRC_FRONTEND = ROOT / "src"
+EXTENSION_DIR = ROOT / "extension"
+TAURI_CONF = ROOT / "src-tauri" / "tauri.conf.json"
+CAPABILITIES_DIR = ROOT / "src-tauri" / "capabilities"
+WHEEL_LUA = ROOT / "src-tauri" / "mpv" / "wheel.lua"
 DOCS_DIR = ROOT / "docs"
 
 OK = "OK"
@@ -509,12 +525,15 @@ def check_i18n(setting_keys: set[str]) -> Findings:
 # チェック 5: テスト ID（DB-XX-NN）
 # ---------------------------------------------------------------------------
 
-TEST_ID_RE = re.compile(r"\b(DB-[A-Z]+-\d+)\b")
 TEST_ID_DOC_COMMENT_RE = re.compile(r"^\s*///.*?\b(DB-[A-Z]+-\d+)\b")
 TEST_ATTR_RE = re.compile(r"^\s*#\[(?:tokio::)?test\]")
+# docs が引用するテスト ID トークン（`DB-LD-05`・`LP-01` 双方の形を拾う）。
+# FR-20 / BG-3 / INV-1 / UTF-8 などの非テスト ID は除外プレフィクスで弾く。
+DOC_TEST_ID_TOKEN_RE = re.compile(r"\b([A-Z]{2,3}-[A-Z]*-?\d+)\b")
+NON_TEST_ID_PREFIXES = {"FR", "BG", "INV", "UTF"}
 
 
-def check_test_ids() -> Findings:
+def check_test_ids(ts_test_ids: set[str]) -> Findings:
     f = Findings([])
 
     code_ids: dict[str, list[str]] = {}
@@ -539,11 +558,15 @@ def check_test_ids() -> Findings:
         if len(locs) > 1:
             f.error(f"テスト ID `{test_id}` が重複: {', '.join(locs)}")
 
+    # docs 引用は .rs 側（DB-XX-NN）と .test.ts 側（LP-NN 系）の
+    # 両方の ID 集合と照合する。除外プレフィクスに無い形だけ比較する。
     for doc in iter_files(DOCS_DIR, (".md",)):
-        for test_id in sorted(set(TEST_ID_RE.findall(read_text(doc)))):
-            if test_id not in code_ids:
+        for token in sorted(set(DOC_TEST_ID_TOKEN_RE.findall(read_text(doc)))):
+            if token.split("-", 1)[0] in NON_TEST_ID_PREFIXES:
+                continue
+            if token not in code_ids and token not in ts_test_ids:
                 f.error(
-                    f"テスト ID `{test_id}` が {doc.name} で引用されているが"
+                    f"テスト ID `{token}` が {doc.name} で引用されているが"
                     "コードに無い"
                 )
 
@@ -678,18 +701,577 @@ def check_ci_gate() -> Findings:
 
 
 # ---------------------------------------------------------------------------
+# チェック 8〜10 共通: 参照の走査対象
+# ---------------------------------------------------------------------------
+
+# 要件 ID・決定記録 ID・設計書節番号の参照を拾う対象。
+# コードはコメントも本文も走査する（これらの ID はコメントに書く規約）。
+def doc_and_code_files() -> list[Path]:
+    files = iter_files(DOCS_DIR, (".md",))
+    files += [ROOT / "README.md", ROOT / "AGENTS.md"]
+    files += iter_files(SRC_FRONTEND, (".ts", ".svelte"))
+    files += iter_files(SRC_TAURI, (".rs",))
+    files += iter_files(EXTENSION_DIR, (".js",))
+    files.append(WHEEL_LUA)
+    return [p for p in files if p.is_file()]
+
+
+# ---------------------------------------------------------------------------
+# チェック 8: 要件 ID（FR-N / BG-N / INV-N）の参照 ↔ requirements-definition.md
+# ---------------------------------------------------------------------------
+
+REQ_ID_RE = re.compile(r"\b(FR|BG|INV)-(\d+)\b")
+REQ_HEADING_RE = re.compile(r"^###\s+(FR|BG|INV)-(\d+)\b", re.M)
+
+
+def check_requirement_ids() -> Findings:
+    f = Findings([])
+    req_text = read_text(REQUIREMENTS_MD)
+    defined = {
+        f"{m.group(1)}-{m.group(2)}" for m in REQ_HEADING_RE.finditer(req_text)
+    }
+    if not defined:
+        f.error("requirements-definition.md から要件 ID 見出しを抽出できない")
+        return f
+
+    refs: dict[str, int] = {}
+    for path in doc_and_code_files():
+        for line in read_text(path).splitlines():
+            # 定義見出し行そのものは参照として数えない
+            # （他に参照が無い ID を未参照として検出するため）
+            if path == REQUIREMENTS_MD and REQ_HEADING_RE.match(line):
+                continue
+            for m in REQ_ID_RE.finditer(line):
+                rid = f"{m.group(1)}-{m.group(2)}"
+                refs[rid] = refs.get(rid, 0) + 1
+
+    for rid in sorted(refs, key=lambda r: (r.split("-")[0], int(r.split("-")[1]))):
+        if rid not in defined:
+            f.error(f"要件 ID `{rid}` が参照されているが requirements-definition.md に節が無い")
+    for rid in sorted(
+        defined - set(refs),
+        key=lambda r: (r.split("-")[0], int(r.split("-")[1])),
+    ):
+        f.warn(f"要件 ID `{rid}` は定義済みだがどこからも参照されていない")
+
+    if f.worst() == OK:
+        f.ok(f"{len(refs)} 件の要件 ID 参照が定義と一致")
+    return f
+
+
+# ---------------------------------------------------------------------------
+# チェック 9: 決定記録 ID（仕様決定 / 技術方針）の参照 ↔ decision-records.md
+# ---------------------------------------------------------------------------
+
+# 「仕様決定 A」「仕様決定 AM・AS」「仕様決定 AT と AU」「仕様決定 AC・AH」
+# のような単記・連記を 1 塊で拾い、区切りで分割して各 ID を照合する。
+# トークンは `-\d` 接尾辞（FR-19・INV-1 など決定 ID でない並記 ID）を
+# 許容して後で除外し、後続が英数字の場合はトークンとみなさない
+# （「仕様決定 AH、Phase 23」の Phase の P を ID と誤認しないため）。
+DECISION_ID_TOKEN = r"[A-Z]+(?:-\d+)?(?![a-zA-Z0-9])"
+DECISION_REF_RE = re.compile(
+    rf"(仕様決定|技術方針)\s*({DECISION_ID_TOKEN}"
+    rf"(?:(?:[・,、]|と)\s*{DECISION_ID_TOKEN})*)"
+)
+
+
+def decision_table_ids(heading: str) -> set[str]:
+    """decision-records.md の指定見出しの表から ID 集合を取る。
+
+    `|| AT |` のような先頭空セル行があるため、行内で `^[A-Z]+$` に
+    一致する最初のセルを ID とする（ヘッダ行の `ID` セルは除く）。
+    """
+    section_text = extract_section(read_text(DECISIONS_MD), heading)
+    ids: set[str] = set()
+    for row in table_rows(section_text):
+        for cell in row:
+            if cell == "ID":
+                continue
+            if re.fullmatch(r"[A-Z]+", cell):
+                ids.add(cell)
+                break
+    return ids
+
+
+def check_decision_ids() -> Findings:
+    f = Findings([])
+    spec_ids = decision_table_ids(r"^仕様決定")
+    tech_ids = decision_table_ids(r"^技術方針")
+    if not spec_ids or not tech_ids:
+        f.error("decision-records.md の「仕様決定」/「技術方針」表を読めない")
+        return f
+
+    refs_spec: set[str] = set()
+    refs_tech: set[str] = set()
+    for path in doc_and_code_files():
+        text = read_text(path)
+        for m in DECISION_REF_RE.finditer(text):
+            ids = re.split(r"[・,、]|と", m.group(2))
+            for rid in (i.strip() for i in ids if i.strip()):
+                if "-" in rid:
+                    # FR-19・INV-1 など、決定 ID ではない並記の要件/テスト ID
+                    continue
+                if m.group(1) == "仕様決定":
+                    refs_spec.add(rid)
+                    if rid in tech_ids:
+                        f.error(
+                            f"「仕様決定 {rid}」と参照されているが {rid} は"
+                            f"技術方針表の ID（技術方針 {rid} の誤記か。{path.relative_to(ROOT)}）"
+                        )
+                    elif rid not in spec_ids:
+                        f.error(
+                            f"「仕様決定 {rid}」が参照されているが仕様決定表に無い"
+                            f"（{path.relative_to(ROOT)}）"
+                        )
+                else:
+                    refs_tech.add(rid)
+                    if rid in spec_ids:
+                        f.error(
+                            f"「技術方針 {rid}」と参照されているが {rid} は"
+                            f"仕様決定表の ID（仕様決定 {rid} の誤記か。{path.relative_to(ROOT)}）"
+                        )
+                    elif rid not in tech_ids:
+                        f.error(
+                            f"「技術方針 {rid}」が参照されているが技術方針表に無い"
+                            f"（{path.relative_to(ROOT)}）"
+                        )
+
+    for rid in sorted(spec_ids - refs_spec):
+        f.warn(f"仕様決定 {rid} は定義済みだがどこからも参照されていない")
+    for rid in sorted(tech_ids - refs_tech):
+        f.warn(f"技術方針 {rid} は定義済みだがどこからも参照されていない")
+
+    if f.worst() == OK:
+        f.ok(f"仕様決定 {len(refs_spec)} 件・技術方針 {len(refs_tech)} 件の参照が定義と一致")
+    return f
+
+
+# ---------------------------------------------------------------------------
+# チェック 10: 設計書 §N / design.md §N の参照 ↔ design.md 見出し番号
+# ---------------------------------------------------------------------------
+
+# コード・docs 中の「設計書 §4.5」「design.md §3.4.1」参照。
+# 範囲参照 `§6.2〜§7` / `§6.2〜6.3` は終端も照合する。
+# 「要件定義 §5」等の非設計書参照は接頭辞必須で拾わない。
+SECTION_REF_RE = re.compile(
+    r"(?:設計書|design\.md)\s*§\s*(\d+(?:\.\d+)*)"
+    r"(?:\s*〜\s*§?\s*(\d+(?:\.\d+)*))?"
+)
+# design.md 自内の裸 `§N` 参照（接頭辞なし）
+DESIGN_SELF_SECTION_RE = re.compile(r"§\s*(\d+(?:\.\d+)*)")
+HEADING_NUM_RE = re.compile(r"^#{2,4}\s+(\d+(?:\.\d+)*)", re.M)
+
+
+def check_design_sections() -> Findings:
+    f = Findings([])
+    design_text = read_text(DESIGN_MD)
+    defined = set(HEADING_NUM_RE.findall(design_text))
+    if not defined:
+        f.error("design.md から見出し番号を抽出できない")
+        return f
+
+    refs: list[tuple[str, str]] = []  # (番号, 出所)
+    for path in doc_and_code_files():
+        for m in SECTION_REF_RE.finditer(read_text(path)):
+            refs.append((m.group(1), f"{path.relative_to(ROOT)}"))
+            if m.group(2):
+                refs.append((m.group(2), f"{path.relative_to(ROOT)}"))
+    # design.md 自内の裸 § 参照（上記で拾った接頭辞付きと重複してもよい）
+    for m in DESIGN_SELF_SECTION_RE.finditer(design_text):
+        refs.append((m.group(1), "docs/design.md（自内参照）"))
+
+    bad = sorted({num for num, _ in refs if num not in defined})
+    for num in bad:
+        locs = sorted({src for n, src in refs if n == num})
+        f.error(f"§{num} への参照があるが design.md に該当見出しが無い（{', '.join(locs)}）")
+
+    if f.worst() == OK:
+        f.ok(f"{len({n for n, _ in refs})} 件の節番号参照が見出しと一致")
+    return f
+
+
+# ---------------------------------------------------------------------------
+# チェック 11: .test.ts のテスト ID（LP-NN 系）
+# ---------------------------------------------------------------------------
+
+# describe/it/test("LP-01 ..." の先頭 ID を宣言、冒頭コメントの
+# `// LP-01: 概要` を索引として拾う。FR-20 等の非テスト ID は
+# テスト ID 規約の対象外として除外する。
+TS_TEST_DECL_RE = re.compile(
+    r"(?:describe|it|test)\s*\(\s*\"([A-Z]{2,3}-\d{2})(?=[\s\"])"
+)
+TS_TEST_TITLE_RE = re.compile(
+    r"(?:describe|it|test)\s*\(\s*\"([^\"]+)\""
+)
+TS_TEST_INDEX_RE = re.compile(r"^\s*//\s*([A-Z]{2,3}-\d{2})\s*:", re.M)
+TS_TEST_ID_TOKEN_RE = re.compile(r"[A-Z]{2,3}-\d{2}")
+TS_TEST_ID_EXCLUDE_PREFIXES = {"FR", "BG", "INV", "DB"}
+
+
+def iter_test_ts() -> list[Path]:
+    """`*.test.ts` を返す（Path.suffix は `.ts` しか返さないため名前で判定）。"""
+    return sorted(
+        p for p in SRC_FRONTEND.rglob("*")
+        if p.is_file() and p.name.endswith(".test.ts")
+    )
+
+
+def scan_ts_test_ids() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """`.test.ts` の宣言 ID（describe 先頭）と索引 ID（冒頭コメント）を返す。"""
+    decl: dict[str, list[str]] = {}
+    index: dict[str, list[str]] = {}
+    for path in iter_test_ts():
+        rel = str(path.relative_to(ROOT))
+        text = read_text(path)
+        for m in TS_TEST_DECL_RE.finditer(text):
+            decl.setdefault(m.group(1), []).append(rel)
+        for m in TS_TEST_INDEX_RE.finditer(text):
+            index.setdefault(m.group(1), []).append(rel)
+    return decl, index
+
+
+def check_ts_test_ids() -> Findings:
+    f = Findings([])
+    decl, index = scan_ts_test_ids()
+
+    for test_id, locs in sorted(decl.items()):
+        if len(locs) > 1:
+            f.error(f"テスト ID `{test_id}` が重複: {', '.join(locs)}")
+
+    for path in iter_test_ts():
+        rel = str(path.relative_to(ROOT))
+        text = read_text(path)
+        for m in TS_TEST_TITLE_RE.finditer(text):
+            title = m.group(1)
+            tokens = [
+                t for t in TS_TEST_ID_TOKEN_RE.findall(title)
+                if t.split("-", 1)[0] not in TS_TEST_ID_EXCLUDE_PREFIXES
+            ]
+            for tok in tokens:
+                if not title.startswith(tok):
+                    f.error(
+                        f"{rel}: タイトル `{title}` の ID `{tok}` が先頭に無い"
+                        "（テスト ID はタイトル先頭に置く規約）"
+                    )
+
+    for test_id, locs in sorted(index.items()):
+        if test_id not in decl:
+            f.warn(f"索引コメントの `{test_id}` に対応する describe/it が無い（{', '.join(locs)}）")
+    for test_id, locs in sorted(decl.items()):
+        if test_id not in index:
+            f.warn(f"`{test_id}` の describe 宣言に対応する索引コメントが無い（{', '.join(locs)}）")
+
+    # 連番の抜けは報告のみ（check 5 と同じ扱い）
+    by_prefix: dict[str, list[int]] = {}
+    for test_id in decl:
+        prefix, num = test_id.rsplit("-", 1)
+        by_prefix.setdefault(prefix, []).append(int(num))
+    gap_notes = []
+    for prefix, nums in sorted(by_prefix.items()):
+        expected = set(range(min(nums), max(nums) + 1))
+        missing = sorted(expected - set(nums))
+        if missing:
+            gap_notes.append(
+                f"{prefix}: " + ", ".join(f"{n:02d}" for n in missing)
+            )
+    if gap_notes:
+        f.ok("連番の抜け（報告のみ）: " + " / ".join(gap_notes))
+
+    if f.worst() == OK:
+        f.ok(f"{len(decl)} 件の .test.ts テスト ID が規約通り")
+    return f
+
+
+# ---------------------------------------------------------------------------
+# チェック 12: capabilities の windows glob ↔ 窓ラベル
+# ---------------------------------------------------------------------------
+
+# 関数経由で窓ラベルを生成する生産関数 → 期待するラベル glob の宣言表。
+# 関数本体の format!("...{...}...") から `{...}` を `*` に置換した
+# glob と照合する。窓生成を増やしたらここへ登録する（未登録の生成は
+# 静的に追えないため検出対象外になる）。
+WINDOW_LABEL_PRODUCERS: dict[str, str] = {
+    "popup_label": "chat-popup-*",
+}
+
+
+def extract_label_glob(fn_name: str) -> str | None:
+    """`fn <name>` 本体内の最初の format!("...") から glob を導出する。"""
+    for path in iter_files(SRC_TAURI, (".rs",)):
+        text = read_text(path)
+        m = re.search(rf"fn\s+{re.escape(fn_name)}\b.*?\{{(.*?)\n\}}", text, re.S)
+        if not m:
+            continue
+        f = re.search(r'format!\s*\(\s*"([^"]+)"', m.group(1))
+        if not f:
+            continue
+        return re.sub(r"\{[^}]*\}", "*", f.group(1))
+    return None
+
+
+def check_window_labels() -> Findings:
+    f = Findings([])
+
+    cap_globs: set[str] = set()
+    for path in sorted(CAPABILITIES_DIR.glob("*.json")):
+        data = json.loads(read_text(path))
+        cap_globs.update(data.get("windows", []))
+    if not cap_globs:
+        f.error("capabilities/*.json から windows 指定を抽出できない")
+        return f
+
+    code_literals: set[str] = set()
+    for path in iter_files(SRC_TAURI, (".rs",)):
+        text = strip_comments(read_text(path), ".rs")
+        code_literals.update(
+            re.findall(r'get_webview_window\s*\(\s*"([^"]+)"', text)
+        )
+        for m in re.finditer(r"\bemit_to\s*\(", text):
+            args = split_call_args(text, m.end() - 1, rust=True)
+            if args:
+                lit = single_string_literal(args[0])
+                if lit:
+                    code_literals.add(lit)
+        code_literals.update(
+            re.findall(
+                r"WebviewWindowBuilder::new\s*\(\s*[^,]+,\s*\"([^\"]+)\"",
+                text,
+            )
+        )
+
+    # tauri.conf.json の windows[].label（未指定は Tauri 既定の "main"）
+    conf = json.loads(read_text(TAURI_CONF))
+    conf_labels = {
+        w.get("label", "main") for w in conf.get("app", {}).get("windows", [])
+    }
+
+    producer_globs: dict[str, str] = {}
+    for fn_name, expected in WINDOW_LABEL_PRODUCERS.items():
+        actual = extract_label_glob(fn_name)
+        if actual is None:
+            f.error(f"窓ラベル生産関数 `{fn_name}` から format! リテラルを読めない")
+            continue
+        if actual != expected:
+            f.error(
+                f"`{fn_name}` の生成ラベル `{actual}` が宣言 glob `{expected}` と不一致"
+            )
+        producer_globs[fn_name] = actual
+
+    produced = code_literals | conf_labels
+    for lit in sorted(produced):
+        if not any(fnmatch.fnmatch(lit, g) for g in cap_globs):
+            f.error(f"窓ラベル `{lit}` に一致する capability の windows glob が無い")
+    for g in sorted(producer_globs.values()):
+        if g not in cap_globs:
+            f.error(f"生成ラベル glob `{g}` が capability の windows に無い")
+
+    for g in sorted(cap_globs):
+        hit = g in producer_globs.values() or any(
+            fnmatch.fnmatch(lit, g) for lit in produced
+        )
+        if not hit:
+            f.warn(f"capability の windows glob `{g}` に一致する窓生成が見つからない")
+
+    if f.worst() == OK:
+        f.ok(f"{len(cap_globs)} 件の capability と窓ラベルが一致")
+    return f
+
+
+# ---------------------------------------------------------------------------
+# チェック 13: 拡張・識別子定数の一致
+# ---------------------------------------------------------------------------
+
+
+def check_extension_constants() -> Findings:
+    f = Findings([])
+    conf = json.loads(read_text(TAURI_CONF))
+    identifier = conf.get("identifier")
+    if not identifier:
+        f.error("tauri.conf.json の identifier を読めない")
+        return f
+    host_name_expected = identifier.replace("-", "_")
+
+    native_host = read_text(ROOT / "src-tauri" / "src" / "native_host.rs")
+    background = read_text(EXTENSION_DIR / "background.js")
+    deep_link = read_text(ROOT / "src-tauri" / "src" / "deep_link.rs")
+
+    m = re.search(r'HOST_NAME\s*:\s*&str\s*=\s*"([^"]+)"', native_host)
+    if not m:
+        f.error("native_host.rs の HOST_NAME を読めない")
+    elif m.group(1) != host_name_expected:
+        f.error(
+            f"native_host.rs の HOST_NAME `{m.group(1)}` が identifier の"
+            f"`_` 置換形 `{host_name_expected}` と不一致"
+        )
+    m = re.search(r'HOST_NAME\s*=\s*"([^"]+)"', background)
+    if not m:
+        f.error("background.js の HOST_NAME を読めない")
+    elif m.group(1) != host_name_expected:
+        f.error(
+            f"background.js の HOST_NAME `{m.group(1)}` が"
+            f"`{host_name_expected}` と不一致"
+        )
+    section_341 = extract_section(read_text(DESIGN_MD), r"^3\.4\.1\b")
+    if section_341 and host_name_expected not in section_341:
+        f.error(f"design.md §3.4.1 にホスト名 `{host_name_expected}` の記載が無い")
+
+    m = re.search(r'EXTENSION_ID\s*:\s*&str\s*=\s*"([^"]+)"', native_host)
+    if not m:
+        f.error("native_host.rs の EXTENSION_ID を読めない")
+    elif m.group(1) not in read_text(DECISIONS_MD):
+        f.error(
+            f"EXTENSION_ID `{m.group(1)}` が decision-records.md に記載されていない"
+        )
+
+    schemes = (
+        conf.get("plugins", {})
+        .get("deep-link", {})
+        .get("desktop", {})
+        .get("schemes", [])
+    )
+    if not schemes:
+        f.error("tauri.conf.json の deep-link schemes を読めない")
+    for scheme in schemes:
+        if f"{scheme}://" not in background:
+            f.error(f"スキーム `{scheme}://` が background.js に無い")
+        if f"{scheme}:" not in deep_link:
+            f.error(f"スキーム `{scheme}` が deep_link.rs に無い")
+
+    # バージョン 4 箇所の一致は bump_version.py の current_versions() を借用
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from bump_version import current_versions
+
+        versions = current_versions()
+        distinct = {v for v in versions.values()}
+        if len(distinct) != 1 or None in distinct:
+            f.error(f"バージョンが 4 箇所で不一致: {versions}")
+    except Exception as e:  # import 失敗は WARN に留める
+        f.warn(f"bump_version.current_versions の読み込みに失敗: {e}")
+    finally:
+        sys.path.remove(str(ROOT / "scripts"))
+
+    # 補助: user-guide.md の identifier リテラル
+    for lit in set(
+        re.findall(r"io\.github\.[a-zA-Z0-9_.-]+", read_text(USER_GUIDE_MD))
+    ):
+        if lit != identifier:
+            f.warn(
+                f"user-guide.md の `{lit}` が identifier `{identifier}` と不一致"
+            )
+
+    if f.worst() == OK:
+        f.ok("拡張・識別子定数が全箇所で一致")
+    return f
+
+
+# ---------------------------------------------------------------------------
+# チェック 14: docs 間リンク [..](path) の存在
+# ---------------------------------------------------------------------------
+
+DOC_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)")
+
+
+def check_doc_links() -> Findings:
+    f = Findings([])
+    targets = iter_files(DOCS_DIR, (".md",)) + [
+        ROOT / "README.md",
+        ROOT / "AGENTS.md",
+    ]
+    checked = 0
+    for path in targets:
+        for m in DOC_LINK_RE.finditer(read_text(path)):
+            target = m.group(1)
+            if target.startswith(("http://", "https://", "#", "mailto:")):
+                continue
+            # `path "title"` のタイトル部と `#anchor` フラグメントは外す
+            target = target.split()[0].split("#", 1)[0]
+            if not target:
+                continue
+            checked += 1
+            resolved = (path.parent / target).resolve()
+            if not resolved.exists():
+                f.error(
+                    f"{path.relative_to(ROOT)} のリンク `{m.group(1)}` の"
+                    "参照先が存在しない"
+                )
+    if f.worst() == OK:
+        f.ok(f"{checked} 件の docs 間リンクが全て有効")
+    return f
+
+
+# ---------------------------------------------------------------------------
+# チェック 15: design.md §11 リポジトリ構成ツリーの掲載パス存在（WARN 限定）
+# ---------------------------------------------------------------------------
+
+
+def check_repo_tree() -> Findings:
+    """§11 のツリーは説明図で完全網羅を意図していないため、列挙されたパスの
+    存在だけを WARN で報告し、逆方向（実在するが未掲載）は検出しない。
+    """
+    f = Findings([])
+    section_text = extract_section(read_text(DESIGN_MD), r"リポジトリ構成")
+    if not section_text:
+        f.error("design.md にリポジトリ構成の節が無い")
+        return f
+    m = re.search(r"```(?:text)?\n(.*?)```", section_text, re.S)
+    if not m:
+        f.error("リポジトリ構成のツリー（``` ブロック）が見つからない")
+        return f
+
+    checked = 0
+    stack: list[tuple[int, str]] = []  # (インデント幅, ディレクトリ名)
+    for line in m.group(1).splitlines():
+        # `#` 以降はコメント、空行は飛ばす
+        body = re.sub(r"\s+#.*$", "", line).rstrip()
+        stripped = body.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        is_dir = stripped.endswith("/")
+        # `A / B / C` は同階層の並記。パス内の / はスペースを伴わない
+        tokens = [
+            t.strip().rstrip("/") for t in stripped.split(" / ") if t.strip()
+        ]
+        for token in tokens:
+            if token == "yt-browser":  # ルート行はリポジトリ根自体
+                continue
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            parts = [name for _, name in stack] + [token]
+            rel = "/".join(parts)
+            checked += 1
+            if not (ROOT / rel).exists():
+                f.warn(f"ツリー掲載パス `{rel}` がリポジトリに存在しない")
+        if is_dir and tokens and tokens[-1] != "yt-browser":
+            stack.append((indent, tokens[-1]))
+    if f.worst() == OK:
+        f.ok(f"§11 ツリーの {checked} 件の掲載パスが全て存在")
+    return f
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> int:
     checks: list[tuple[str, Findings]] = []
     setting_keys = set(extract_setting_keys())
+    ts_decl_ids, _ = scan_ts_test_ids()
 
     checks.append(("check 1: コマンド表", check_commands()))
     checks.append(("check 2: イベント表", check_events()))
     checks.append(("check 4: i18n キー", check_i18n(setting_keys)))
-    checks.append(("check 5: テスト ID", check_test_ids()))
+    checks.append(("check 5: テスト ID", check_test_ids(set(ts_decl_ids))))
     checks.append(("check 6: 設定キー表", check_settings(setting_keys)))
     checks.append(("check 7: CI 集約ジョブ", check_ci_gate()))
+    checks.append(("check 8: 要件 ID", check_requirement_ids()))
+    checks.append(("check 9: 決定記録 ID", check_decision_ids()))
+    checks.append(("check 10: 設計書節参照", check_design_sections()))
+    checks.append(("check 11: .test.ts テスト ID", check_ts_test_ids()))
+    checks.append(("check 12: 窓ラベルと capability", check_window_labels()))
+    checks.append(("check 13: 拡張・識別子定数", check_extension_constants()))
+    checks.append(("check 14: docs 間リンク", check_doc_links()))
+    checks.append(("check 15: リポジトリ構成ツリー", check_repo_tree()))
     # チェック 3（§8 DDL ↔ 適用後スキーマ）は src-tauri の
     # ddl_matches_design_section8 テストが担う
 

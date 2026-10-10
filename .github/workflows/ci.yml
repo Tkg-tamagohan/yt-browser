@@ -22,6 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check_docs_consistency.py
+      - run: python3 scripts/bump_version.py --check
 
   frontend:
     runs-on: ubuntu-26.04
