@@ -6,7 +6,7 @@
   import { initDeepLinks } from "$lib/deeplink.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
   import QueuePanel from "$lib/QueuePanel.svelte";
-  import { queue, queuePanel } from "$lib/queue.svelte";
+  import { queuePanel, tempQueue } from "$lib/queue.svelte";
   import {
     appUpdate,
     applyUpdate,
@@ -40,13 +40,14 @@
   <a href="/settings" class:active={page.url.pathname === "/settings"}
     >{t("nav.settings")}</a
   >
-  <!-- キュー入口（FR-20、仕様決定 AM）。件数つきでパネルを開閉する -->
+  <!-- キュー入口（FR-20・FR-26、仕様決定 AM・AS）。
+       件数は一時キューのもの。パネル側で全キューを切り替えて見られる -->
   <button
     class="nav-queue"
     class:active={queuePanel.open}
     onclick={() => (queuePanel.open = !queuePanel.open)}
   >
-    {t("nav.queue")}{#if queue.items.length > 0}（{queue.items.length}）{/if}
+    {t("nav.queue")}{#if tempQueue().items.length > 0}（{tempQueue().items.length}）{/if}
   </button>
 </nav>
 <!-- キューパネルは常時マウントし hidden で切り替える（PlayerCards と同じ方針） -->

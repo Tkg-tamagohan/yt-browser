@@ -2,12 +2,16 @@
 // LP-01: 武装キューの選定（1 項目は現在項目のみ、全体は回転順、なしは次項目以降）
 // LP-02: 終了イベントの継続項目によるキュー位置の照合
 // LP-03: キュースタック編集（削除・移動）に伴う再生位置の調整（FR-20）
+// MQ-01: 複数キューの終端処置（eof 消費完了で残す／それ以外で消滅）（FR-26）
+// MQ-02: 「連続再生を止める」後のキュー位置（一時は先頭・プレイリストは保存）（FR-26）
 import { describe, expect, test } from "vitest";
 import {
   armPlanFor,
   headPlayingAfterRemove,
   indexAfterMove,
   indexAfterRemove,
+  indexAfterStop,
+  queueEndOutcome,
   reconcileIndex,
 } from "./queue-logic";
 
@@ -136,5 +140,52 @@ describe("LP-03 キュースタック編集の位置調整（FR-20）", () => {
     expect(headPlayingAfterRemove(true, 1, 2, 3)).toBe(true);
     // 未再生の次項目（index 位置）以外を消しても未再生扱いのまま
     expect(headPlayingAfterRemove(false, 1, 0, 2)).toBe(false);
+  });
+});
+
+describe("MQ-01 queueEndOutcome（FR-26、仕様決定 AS）", () => {
+  const items = ["A", "B", "C"];
+
+  test("一時キューは終端理由に関わらず消滅する", () => {
+    // 消費完了（末尾の eof）でも消滅するのが一時キューの現行仕様
+    expect(queueEndOutcome(null, "eof", items, 2, "C")).toBe("destroy");
+    expect(queueEndOutcome(null, "stop", items, 1, "B")).toBe("destroy");
+    expect(queueEndOutcome(null, "error", items, 0, "A")).toBe("destroy");
+  });
+
+  test("プレイリストキューは末尾項目の eof 終了で残す（消費完了）", () => {
+    expect(queueEndOutcome(7, "eof", items, 2, "C")).toBe("reset");
+  });
+
+  test("プレイリストキューは eof 以外の終端で消滅する（インスタンス消失）", () => {
+    for (const reason of ["quit", "stop", "error", "process_exit"]) {
+      // index が末尾項目でも理由が eof でなければ消失として畳む
+      expect(queueEndOutcome(7, reason, items, 2, "C")).toBe("destroy");
+    }
+  });
+
+  test("eof でも途中項目の終了は消費完了でなく消失として畳む", () => {
+    // [A,B,C] の B(index=1)終了後に継続先 C の読み込みが失敗すると
+    // 同じ eof＋非継続で届く。末尾まで進んでいないためキューは消滅させる
+    expect(queueEndOutcome(7, "eof", items, 1, "B")).toBe("destroy");
+    expect(queueEndOutcome(7, "eof", items, 0, "A")).toBe("destroy");
+  });
+
+  test("位置が末尾でも終了項目が末尾でなければ消失として畳む", () => {
+    // 再生中の末尾項目をキューから消した直後に旧項目が終わり、
+    // 継続先の読み込みに失敗した経路。終了した項目自体は既に一覧に無い
+    expect(queueEndOutcome(7, "eof", ["A", "C"], 1, "B")).toBe("destroy");
+  });
+});
+
+describe("MQ-02 indexAfterStop（FR-26、仕様決定 AS）", () => {
+  test("一時キューは項目だけ残して位置を先頭に戻す", () => {
+    expect(indexAfterStop(null, 3)).toBe(0);
+    expect(indexAfterStop(null, 0)).toBe(0);
+  });
+
+  test("プレイリストキューは現在位置を保つ（パネルの再生で保存位置から再開）", () => {
+    expect(indexAfterStop(7, 3)).toBe(3);
+    expect(indexAfterStop(7, 0)).toBe(0);
   });
 });

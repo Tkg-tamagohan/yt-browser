@@ -82,6 +82,41 @@ export function headPlayingAfterRemove(
   return removed >= newLen;
 }
 
+/// 終端イベント（`player://ended` の `continued=false`、インスタンス消失）
+/// に対するキューの処置（FR-26、仕様決定 AS）。
+/// - 一時キュー: 理由に関わらず消滅（消費完了・消失・全消去で畳む現行のまま）
+/// - プレイリストキュー: 末尾項目の `eof` 終了なら消費完了とみなし、
+///   位置を先頭に戻して残す（"reset"）。それ以外の終端はインスタンス消失と
+///   してキューを消滅させる（"destroy"）
+/// 末尾判定は「現在位置が末尾項目」かつ「終了した項目が末尾項目」の双方で
+/// 行う。途中項目の `eof` 直後に継続先の読み込みが失敗した場合も同じ
+/// `eof`＋非継続で届くため、`reason` だけでは消費完了と消失を区別できない
+export function queueEndOutcome(
+  playlistId: number | null,
+  reason: string,
+  items: string[],
+  index: number,
+  endedVideoId: string,
+): "reset" | "destroy" {
+  if (playlistId === null) return "destroy";
+  const consumed =
+    reason === "eof" &&
+    index >= items.length - 1 &&
+    items[items.length - 1] === endedVideoId;
+  return consumed ? "reset" : "destroy";
+}
+
+/// 「連続再生を止める」後のキュー位置（FR-26、仕様決定 AS）。
+/// 一時キューは項目だけ残して位置を先頭に戻す（現行どおり）。
+/// プレイリストキューは位置を保って残し、キューパネルの「再生」で
+/// 保存位置から再開する
+export function indexAfterStop(
+  playlistId: number | null,
+  index: number,
+): number {
+  return playlistId === null ? 0 : index;
+}
+
 /// 項目移動（from の項目を to の位置へ挿入）に伴うキュー位置の調整。
 /// 再生中項目は配列上の位置ではなく項目そのものを追従させる
 export function indexAfterMove(

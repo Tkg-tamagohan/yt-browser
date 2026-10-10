@@ -24,12 +24,11 @@
     type WatchHistory,
   } from "$lib/players.svelte";
   import {
-    queue,
-    queueActive,
+    discardQueue,
+    queueAt,
     queuePlayingAt,
     startQueue,
     queueStop,
-    stopQueue,
   } from "$lib/queue.svelte";
 
   type Tab = "history" | "favorites" | "playlists";
@@ -205,6 +204,8 @@
   async function deletePlaylist(pl: Playlist): Promise<void> {
     try {
       await invoke("playlist_delete", { playlistId: pl.id });
+      // 対象プレイリストのキューは消滅させる（FR-26）
+      discardQueue(pl.id);
       ++listsReq;
       va.playlists = va.playlists.filter((p) => p.id !== pl.id);
       if (selectedId === pl.id) {
@@ -583,30 +584,42 @@
     );
   }
 
-  /// その項目からの連続再生（FR-10、仕様決定 S）。選択項目を通常再生で起動し、
-  /// 残りをキューに登録する。起動に使う resume は通常の再生と同じく true
-  /// （暫定: キュー先頭項目もレジュームする）
+  /// その項目からの連続再生（FR-10・FR-26、仕様決定 S・AS）。選択項目を
+  /// 通常再生で起動し、残りをそのプレイリストのキューへ登録する。
+  /// 同じプレイリストの既存キューは startQueue 側で新しいスナップショットへ
+  /// 上書きする（他のキューは動かさない）。起動に使う resume は通常の再生と
+  /// 同じく true（暫定: キュー先頭項目もレジュームする）
   async function playQueue(index: number): Promise<void> {
     if (selectedId === null) return;
+    const plId = selectedId;
     // 連続再生はプレイリスト全件をキューにするため、
     // ページングで未取得の末尾があれば先に取り切る
     try {
-      if (!(await ensureAllItemsLoaded(selectedId))) return;
+      if (!(await ensureAllItemsLoaded(plId))) return;
     } catch (e) {
       notify(t("library.failed", { message: asErrorMessage(e) }));
       return;
     }
     const it = playlistItems[index];
     if (!it) return;
+    // 再生の起動に失敗した段階では既存キューを維持する
+    // （キューの置き換えは新しいキューの作成が進んだ時点で行う）
+    let instanceId: number;
     try {
-      stopQueue();
-      const instanceId = await invoke<number>("play_video", {
+      instanceId = await invoke<number>("play_video", {
         videoId: it.videoId,
         resume: true,
       });
-      const pl = va.playlists.find((p) => p.id === selectedId);
+    } catch (e) {
+      notify(
+        t("library.playlist.queueFailed", { message: asErrorMessage(e) }),
+      );
+      return;
+    }
+    try {
+      const pl = va.playlists.find((p) => p.id === plId);
       await startQueue(
-        selectedId,
+        plId,
         pl?.name ?? "",
         playlistItems.map((i) => i.videoId),
         index,
@@ -614,7 +627,9 @@
       );
       goto("/");
     } catch (e) {
-      stopQueue();
+      // 武装に失敗した場合は作りかけのキューを畳む
+      // （既存キューは startQueue 内で既に上書き済み）
+      discardQueue(plId);
       notify(
         t("library.playlist.queueFailed", { message: asErrorMessage(e) }),
       );
@@ -814,17 +829,28 @@
           <p class="subtle">{t("library.playlist.empty")}</p>
         {:else}
           <div class="pl-tools">
-            {#if selectedId !== null && queueActive(selectedId)}
-              <span class="queue-badge">
-                {t("library.playlist.queueActive", {
-                  name: queue.playlistName,
-                  index: queue.index + 1,
-                  count: queue.items.length,
-                })}
-                <button class="link" onclick={() => queueStop()}
-                  >{t("library.playlist.queueStop")}</button
-                >
-              </span>
+            {#if selectedId !== null}
+              {@const selQueue = queueAt(selectedId)}
+              {#if selQueue !== undefined}
+                <span class="queue-badge">
+                  {#if selQueue.instanceId !== null}
+                    {t("library.playlist.queueActive", {
+                      name: selQueue.playlistName,
+                      index: selQueue.index + 1,
+                      count: selQueue.items.length,
+                    })}
+                    <button class="link" onclick={() => queueStop(selectedId)}
+                      >{t("library.playlist.queueStop")}</button
+                    >
+                  {:else}
+                    {t("library.playlist.queueSaved", {
+                      name: selQueue.playlistName,
+                      index: selQueue.index + 1,
+                      count: selQueue.items.length,
+                    })}
+                  {/if}
+                </span>
+              {/if}
             {/if}
             <button
               class="link"
@@ -862,7 +888,7 @@
                 {#snippet actions()}
                   <button
                     onclick={() => void playQueue(index)}
-                    disabled={queuePlayingAt(it.videoId)}
+                    disabled={queuePlayingAt(selectedId, it.videoId)}
                     >{t("library.playlist.queue")}</button
                   >
                   <button onclick={() => play(it.videoId, true)}
