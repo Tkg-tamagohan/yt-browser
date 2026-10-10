@@ -3,6 +3,10 @@
 use super::*;
 use crate::model::WatchHistory;
 
+/// `watch_history` の保持上限（仕様決定 AV）。
+/// 超過分は起動時剪定で最古から消す。一覧表示の limit とは別枠。
+const HISTORY_RETENTION_MAX: i64 = 10_000;
+
 impl Db {
     /// 再生開始時に履歴行を確保する。既存行は位置や完了状態を壊さない。
     /// 明示的な再生開始なので、手動削除による保存抑止をここで解除する。
@@ -118,6 +122,22 @@ impl Db {
         let conn = self.lock()?;
         conn.execute("DELETE FROM watch_history WHERE video_id = ?1", [video_id])?;
         crate::util::lock(&self.history_suppressed).insert(video_id.to_string());
+        Ok(())
+    }
+
+    /// 起動時の履歴剪定（仕様決定 AV）。直近 `HISTORY_RETENTION_MAX` 件を残し、
+    /// 超過分を最古から削除する。保持対象は `history_list` と同じ順序
+    /// （last_watched_at DESC、同時刻は rowid DESC）の上位とする。
+    /// 手動削除の保存抑止（history_suppressed）とは独立に動く。
+    pub fn history_prune(&self) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM watch_history
+             WHERE rowid NOT IN (
+               SELECT rowid FROM watch_history
+               ORDER BY last_watched_at DESC, rowid DESC LIMIT ?1)",
+            [HISTORY_RETENTION_MAX],
+        )?;
         Ok(())
     }
 }

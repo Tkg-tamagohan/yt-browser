@@ -286,4 +286,15 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: "ALTER TABLE channels ADD COLUMN backfill_videos_pos INTEGER NOT NULL DEFAULT 0;
               ALTER TABLE channels ADD COLUMN backfill_streams_pos INTEGER NOT NULL DEFAULT 0;",
     },
+    // Phase 36: chat_logs 廃止（仕様決定 AV）。
+    // チャット履歴の用途が設定画面の全文検索のみとなり保持コストに見合わないため、
+    // FTS トリガー・仮想テーブル・本体テーブルをまとめて DROP する。
+    Migration {
+        version: 12,
+        name: "drop_chat_logs",
+        sql: "DROP TRIGGER IF EXISTS chat_logs_ai;
+              DROP TRIGGER IF EXISTS chat_logs_ad;
+              DROP TABLE IF EXISTS chat_logs_fts;
+              DROP TABLE IF EXISTS chat_logs;",
+    },
 ];

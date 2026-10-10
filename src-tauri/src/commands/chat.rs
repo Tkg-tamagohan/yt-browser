@@ -134,25 +134,3 @@ pub async fn chat_popup_return(
     }
     Ok(())
 }
-
-/// `chat_history_search`（FR-6 の保存・検索要件）。本文・投稿者名の FTS5 AND 検索。
-#[tauri::command]
-pub fn chat_history_search(
-    video_id: Option<String>,
-    query: String,
-    limit: Option<u32>,
-    db: State<'_, Db>,
-) -> Result<Vec<crate::model::ChatEvent>, UiError> {
-    let q = query.trim().to_string();
-    if q.is_empty() {
-        return Err(UiError::invalid_input("検索語が空です"));
-    }
-    if q.len() > 256 {
-        return Err(UiError::invalid_input("検索語が長すぎます"));
-    }
-    let vid = match &video_id {
-        Some(v) if !v.trim().is_empty() => Some(parse_video_id(v)?),
-        _ => None,
-    };
-    Ok(db.chat_search(vid.as_deref(), &q, limit.unwrap_or(100).min(1000))?)
-}

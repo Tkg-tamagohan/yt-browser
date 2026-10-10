@@ -113,3 +113,34 @@ fn history_remove_suppresses_inflight_progress() {
         .unwrap();
     assert!(db.history_get("conc1234567").unwrap().is_none());
 }
+
+/// DB-LD-10: 保持上限 10000 件を超える履歴は起動時剪定で最古から消える
+/// （FR-7、仕様決定 AV）。
+#[test]
+fn history_prune_keeps_recent_cap() {
+    let db = Db::connect_in_memory().unwrap();
+    // last_watched_at を古い順にずらして 10001 件を直接仕込む
+    {
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        for i in 0..10001 {
+            tx.execute(
+                "INSERT INTO watch_history (video_id, title, last_watched_at)
+                 VALUES (?1, 't', datetime('2020-01-01', '+' || ?2 || ' seconds'))",
+                rusqlite::params![format!("v{i}"), i],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    db.history_prune().unwrap();
+    let list = db.history_list(10001).unwrap();
+    assert_eq!(list.len(), 10000);
+    // 最新（v10000）が先頭、境界の v1 が最後に残り、最古の v0 が消える
+    assert_eq!(list[0].video_id, "v10000");
+    assert_eq!(list[9999].video_id, "v1");
+    assert!(db.history_get("v0").unwrap().is_none());
+    // 上限以内に戻った後は何も消さない
+    db.history_prune().unwrap();
+    assert_eq!(db.history_list(10001).unwrap().len(), 10000);
+}

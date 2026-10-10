@@ -24,7 +24,6 @@
     type SponsorCategory,
   } from "$lib/settings-consts";
   import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
-  import SettingsChatSearchSection from "$lib/SettingsChatSearchSection.svelte";
   import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
@@ -409,8 +408,6 @@
   <SettingsBlockedSection {notify} />
 
   <SettingsFiltersSection {notify} />
-
-  <SettingsChatSearchSection {notify} />
 
   <SettingsUpdateSection />
 

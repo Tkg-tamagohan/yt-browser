@@ -130,7 +130,6 @@ export type BlockedChannel = {
 };
 
 /// `chat://message` バッチの 1 要素（設計書 §3.1 の ChatEvent）。
-/// `rawJson` は UI へ送られない（直列化省略）。
 export type ChatEvent = {
   /// InnerTube のアイテム ID。削除イベントはこの値ではなく
   /// `message` に対象の item ID が入る。
@@ -142,9 +141,9 @@ export type ChatEvent = {
   kind: "text" | "superchat" | "membership" | "deleted" | "other";
   message: string;
   amountDisplay: string | null;
-  /// NG フィルタで非表示判定されたもの。保存・送信されるが UI は出さない。
+  /// NG フィルタで非表示判定されたもの。送信されるが UI は出さない。
   ng: boolean;
-  /// リプレイの動画内時刻（ms）。ライブ・履歴検索行は未定義（FR-24）。
+  /// リプレイの動画内時刻（ms）。ライブでは未定義（FR-24）。
   videoOffsetMs?: number;
 };
 

@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::db::Db;
 use crate::filter::NgMatcher;
 use crate::innertube::InnerTube;
 use crate::model::{ChatEvent, ChatKind, ChatReset, ChatStatus};
@@ -32,7 +31,7 @@ const REPLAY_SEEK_BACK_MS: i64 = 2_000;
 /// 恒久的な失敗で無限にポーリングしないための上限。
 const REPLAY_MAX_FAILURES: u32 = 8;
 /// リプレイの送出済み保持数（後方シークの巻き戻し窓）。超過分は
-/// 古い順に捨て、長時間配信で items と raw_json が肥大しないようにする。
+/// 古い順に捨て、長時間配信で items が肥大しないようにする。
 /// 捨てた区間への後方シークではその区間のチャットは再送されない
 /// （設計書 §6.2 の制約として明記）
 const REPLAY_REWIND_KEEP: usize = 1_000;
@@ -42,7 +41,6 @@ const REPLAY_BUF_MAX: usize = 2_000;
 
 /// 動画ごとのチャットポーリングを管理する。`tauri::State` に `Arc` で載せる。
 pub struct ChatPoller {
-    db: Db,
     app: AppHandle,
     innertube: Arc<InnerTube>,
     /// 共有の NG 評価器。所有者は `filter::NgMatcher`（chat 以外の
@@ -58,9 +56,8 @@ pub struct ChatPoller {
 }
 
 impl ChatPoller {
-    pub fn new(db: Db, app: AppHandle, innertube: Arc<InnerTube>, ng: Arc<NgMatcher>) -> Self {
+    pub fn new(app: AppHandle, innertube: Arc<InnerTube>, ng: Arc<NgMatcher>) -> Self {
         Self {
-            db,
             app,
             innertube,
             ng,
@@ -237,7 +234,7 @@ impl ChatPoller {
     }
 
     /// ライブ配信のポーリングループ（FR-6）。
-    /// 応答のアクションを保存したうえで `chat://message` に流し、
+    /// 応答のアクションを `chat://message` に流し、
     /// timeoutMs 間隔で継続トークンを辿る。
     async fn run_live(self: &Arc<Self>, video_id: &str, mut cont: String) {
         let mut seen: HashSet<String> = HashSet::new();
@@ -253,11 +250,9 @@ impl ChatPoller {
                     let lcc = v
                         .get("continuationContents")
                         .and_then(|c| c.get("liveChatContinuation"));
-                    // dedup は「保存確定済み seen」と「この応答内の pending」の
-                    // 2 段で行う。保存に失敗したバッチは pending を捨てるだけで
-                    // seen には入れないため、YouTube が item を再送したときに
-                    // 履歴へ拾い直せる（UI 側にも再送されるので UI は item_id で dedup）。
-                    // matcher は応答ごとに取り直し、フィルタ変更を走行中にも反映する。
+                    // dedup は「確定済み seen」と「この応答内の pending」の
+                    // 2 段で行う。matcher は応答ごとに取り直し、
+                    // フィルタ変更を走行中にも反映する。
                     let matcher = self.ng.get();
                     let mut pending: HashSet<String> = HashSet::new();
                     let events = lcc
@@ -266,17 +261,7 @@ impl ChatPoller {
                         .map(|acts| normalize_all(&matcher, video_id, acts, &seen, &mut pending))
                         .unwrap_or_default();
                     if !events.is_empty() {
-                        match self.db.chat_insert_batch(&events) {
-                            Ok(_) => commit_pending(&mut seen, &mut order, &mut pending),
-                            Err(e) => {
-                                pending.clear();
-                                self.status(
-                                    Some(video_id),
-                                    "warn",
-                                    &format!("チャットの保存に失敗: {e}"),
-                                );
-                            }
-                        }
+                        commit_pending(&mut seen, &mut order, &mut pending);
                         let _ = self.app.emit("chat://message", &events);
                     }
                     match lcc.and_then(crate::innertube::next_continuation) {
@@ -314,7 +299,7 @@ impl ChatPoller {
 
     /// 終了済み配信のリプレイ（FR-24、仕様決定 AQ）。
     /// 継続トークンを先読みしてオフセット付きバッファを作り、mpv の再生位置を
-    /// 照合して `chat://message` へ流す。リプレイ分は `chat_logs` に保存しない。
+    /// 照合して `chat://message` へ流す。チャットは DB に保存しない（仕様決定 AV）。
     /// シーク（位置の後退・大きな前進）は近接時点へ再アンカーする。
     /// 末尾を通過してもポーラーは維持し、後方シークでの再送に備える
     /// （停止はパネル閉・プレイヤー終了時の `chat_stop` が担う）。
@@ -379,10 +364,7 @@ impl ChatPoller {
                             .unwrap_or_default();
                         commit_pending(&mut seen, &mut order, &mut pending);
                         let mut appended = false;
-                        for mut e in events {
-                            // リプレイ分は chat_logs に保存しないため生 JSON は
-                            // 保持しない（長時間配信でのメモリ肥大対策）
-                            e.raw_json = String::new();
+                        for e in events {
                             // 補正後の動画内時刻。オフセットを持たない項目は 0 扱い
                             let off = e.video_offset_ms.unwrap_or(0) - correction_ms;
                             items.push((off, e));

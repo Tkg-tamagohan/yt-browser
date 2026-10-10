@@ -152,7 +152,6 @@ pub fn run() {
 
             // ライブチャットのポーラー（設計書 §6.2）。
             let chat = std::sync::Arc::new(chat::ChatPoller::new(
-                db.clone(),
                 app.handle().clone(),
                 innertube,
                 ng,
@@ -225,7 +224,6 @@ pub fn run() {
             commands::chat_stop,
             commands::chat_popup_open,
             commands::chat_popup_return,
-            commands::chat_history_search,
             commands::filter_add,
             commands::filter_remove,
             commands::filter_list,
