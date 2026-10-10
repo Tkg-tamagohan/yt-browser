@@ -28,6 +28,7 @@
     queueActive,
     queuePlayingAt,
     startQueue,
+    queueStop,
     stopQueue,
   } from "$lib/queue.svelte";
 
@@ -810,7 +811,7 @@
                   index: queue.index + 1,
                   count: queue.items.length,
                 })}
-                <button class="link" onclick={() => stopQueue()}
+                <button class="link" onclick={() => queueStop()}
                   >{t("library.playlist.queueStop")}</button
                 >
               </span>

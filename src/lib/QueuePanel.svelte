@@ -15,7 +15,7 @@
     queueMove,
     queuePlayStart,
     queueRemoveAt,
-    stopQueue,
+    queueStop,
   } from "$lib/queue.svelte";
 
   // 上下ボタンと共通の移動。実行中は queueMove 側で武装を張り替える
@@ -55,7 +55,7 @@
         {t("queue.play")}
       </button>
     {:else}
-      <button class="link" onclick={() => stopQueue()}>
+      <button class="link" onclick={() => queueStop()}>
         {t("library.playlist.queueStop")}
       </button>
     {/if}
