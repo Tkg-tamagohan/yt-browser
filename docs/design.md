@@ -180,6 +180,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
+| `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 

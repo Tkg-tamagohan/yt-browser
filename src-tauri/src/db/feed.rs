@@ -123,9 +123,12 @@ impl Db {
     /// SQL の LIMIT は掛けず、述語 `keep` に適合した行だけを `limit` 件までスキャンする
     /// （NG フィルタで先頭が抜けても後続の適合行を拾える。FR-9）。
     /// `feed_list` 相当の無条件取得は `keep: |_| true` として呼ぶ。
+    /// `show_shorts=false` のとき `kind='short'` の行を除外する（FR-23、仕様決定 AP。
+    /// `short` 明示選択時に表示へ回す判定は呼び出し側が行う）。
     pub fn feed_list_filtered(
         &self,
         filter: &FeedFilter,
+        show_shorts: bool,
         limit: usize,
         keep: impl Fn(&FeedItem) -> bool,
     ) -> Result<Vec<FeedItem>, DbError> {
@@ -144,6 +147,7 @@ impl Db {
                AND (?3 IS NULL
                     OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
                AND (?4 IS NULL OR v.kind = ?4)
+               AND (?5 = 1 OR v.kind <> 'short')
              ORDER BY v.published_at DESC",
         )?;
         let mut rows = stmt.query(rusqlite::params![
@@ -151,6 +155,7 @@ impl Db {
             filter.category_id,
             filter.days.map(|d| d as i64),
             filter.kind,
+            show_shorts as i64,
         ])?;
         let mut out = Vec::new();
         while out.len() < limit {

@@ -194,10 +194,15 @@ pub fn list_feed(
     ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<Vec<FeedItem>, UiError> {
     let matcher = ng.get();
+    // feed.show_shorts が off のとき「すべて」「video」選択は short を除く
+    // （FR-23、仕様決定 AP）。kind で short を明示した選択は設定に関わらず表示する
+    let show_shorts = crate::feed::feed_show_shorts_enabled(
+        db.setting_get(crate::feed::SETTING_FEED_SHOW_SHORTS)?,
+    ) || filter.kind.as_deref() == Some("short");
     // 述語適合が FEED_LIST_LIMIT 件に達するまで走査するため、
     // 先頭が NG で抜けても後続の適合行を拾える
     Ok(
-        db.feed_list_filtered(&filter, crate::db::FEED_LIST_LIMIT, |i| {
+        db.feed_list_filtered(&filter, show_shorts, crate::db::FEED_LIST_LIMIT, |i| {
             !matcher.is_video_ng(&i.title, i.channel_title.as_deref(), Some(&i.channel_id))
         })?,
     )

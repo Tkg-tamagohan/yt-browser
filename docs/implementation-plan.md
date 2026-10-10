@@ -234,9 +234,9 @@ Phase 29 の shorts 除外は Phase 32 のチャンネル別表示にも波及�
 
 ### Phase 29：フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
 
-- [ ] 設定キー `feed.show_shorts`（`on`/`off`、既定・未設定は `off`）の新設と設定画面のチェックボックス
-- [ ] `list_feed` で「すべて」「video」選択時に `kind='short'` を除外する（明示の `short` 選択は表示）
-- [ ] 受け入れ：設定 off で「すべて」表示に short が出ず、`short` 明示選択で出る
+- [x] 設定キー `feed.show_shorts`（`on`/`off`、既定・未設定は `off`）の新設と設定画面のチェックボックス
+- [x] `list_feed` で「すべて」「video」選択時に `kind='short'` を除外する（明示の `short` 選択は表示）
+- [x] 受け入れ：設定 off で「すべて」表示に short が出ず、`short` 明示選択で出る（実機検証済み。dev DB シード＋`list_feed` 呼び出しで、未設定・off・不正値のいずれでも「すべて」から除外、on で表示、明示の `short`/`live` 選択は設定に依らず正しく絞られることを確認）
 
 ### Phase 30：一覧のページング（FR-25、仕様決定 AR）
 
