@@ -343,6 +343,7 @@ mp.register_script_message("yb_frame_back_step", function() silent_step("frame-b
 
 アプリ側 UI ボタンとキーバインドは `player_control` 経由で `script-message` を送り、Lua 側のラッパへ委譲する。
 割り当ての既定は仕様決定 D、音量の変化量は設定 `wheel.volume_delta` を script-opts の `wheel-volume_delta` として mpv 起動時に注入する[^wheelconf]。
+wheel.lua の書き出しに失敗してスクリプト未搭載で起動した場合は、アプリ側のコマ送りを素の `frame-step` / `frame-back-step` 直送信へ縮退させる（縮退経路でもコマ送り自体は動くことを優先し、無音化だけが欠ける状態に留める）。
 
 コマ送りの操作中は音声を出力しない（FR-22、仕様決定 AO）。
 mpv はステップ実行時に短い音声断片を出しうるため、実現方式は「ステップを `mute=yes` の窓で包み、タイマーで元のミュート状態へ復帰する」`silent_step` ラッパとした。

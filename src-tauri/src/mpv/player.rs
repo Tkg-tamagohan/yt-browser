@@ -74,6 +74,10 @@ pub(crate) struct MpvPlayer {
     /// set_pip の遷移を直列化する。並行呼び出しが state.pip のチェックを
     /// 同時に通過して保存値や mpv プロパティを競合させるのを防ぐ
     pip_op: tokio::sync::Mutex<()>,
+    /// wheel.lua（ホイール・コマ送り無音化スクリプト）を mpv に読み込ませたか。
+    /// 書き出し失敗で未搭載のとき、UI のコマ送りは無音化なしの
+    /// `frame-step` 直送信へ縮退する（無応答にならないためのフォールバック）。
+    has_wheel_script: bool,
 }
 
 /// 連続再生の武装キュー。終端ごとに先頭を消費し、`loop_all` なら
@@ -252,6 +256,7 @@ impl MpvPlayer {
             pip_sent: Mutex::new(opts.pip_geometry.clone()),
             pip_op: tokio::sync::Mutex::new(()),
             armed: Mutex::new(ArmedQueue::default()),
+            has_wheel_script: opts.wheel_script.is_some(),
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
@@ -422,15 +427,23 @@ impl MpvPlayer {
                 lock(&self.state).format = format.clone();
             }
             PlayerAction::FrameStep => {
-                // コマ送りは wheel.lua の無音化ラッパへ委譲する（FR-22、仕様決定 AO）
-                self.ipc
-                    .command(vec![json!("script-message"), json!("yb_frame_step")])
-                    .await?;
+                // コマ送りは wheel.lua の無音化ラッパへ委譲する（FR-22、仕様決定 AO）。
+                // スクリプト未搭載時は素の frame-step へ縮退する（縮退経路でも
+                // UI のコマ送り自体は動くべきで、無音化だけが欠ける状態に留める）
+                let cmd = if self.has_wheel_script {
+                    vec![json!("script-message"), json!("yb_frame_step")]
+                } else {
+                    vec![json!("frame-step")]
+                };
+                self.ipc.command(cmd).await?;
             }
             PlayerAction::FrameBackStep => {
-                self.ipc
-                    .command(vec![json!("script-message"), json!("yb_frame_back_step")])
-                    .await?;
+                let cmd = if self.has_wheel_script {
+                    vec![json!("script-message"), json!("yb_frame_back_step")]
+                } else {
+                    vec![json!("frame-back-step")]
+                };
+                self.ipc.command(cmd).await?;
             }
             PlayerAction::Pip { enabled } => {
                 // 設定値（pip.geometry）の解決は PlayerManager::control で行う。
