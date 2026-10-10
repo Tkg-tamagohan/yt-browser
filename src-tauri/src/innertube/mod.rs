@@ -123,44 +123,205 @@ impl InnerTube {
         )
         .await
     }
+
+    /// `live_chat/get_live_chat_replay`（FR-24、仕様決定 AQ）。
+    /// 終了済み配信のリプレイはこのエンドポイントで辿る。watch ページの
+    /// `reloadContinuationData` をそのまま最初の continuation として使え、
+    /// 応答には `replayChatItemAction`（`videoOffsetTimeMsec` 付き）と
+    /// 次の `liveChatReplayContinuationData` が入る（2026-10 実機確認）。
+    /// `get_live_chat` に同じトークンを投げると 400 になる点に注意。
+    pub async fn get_live_chat_replay(&self, continuation: &str) -> Result<Value, InnerTubeError> {
+        self.post_json(
+            "live_chat/get_live_chat_replay",
+            json!({ "continuation": continuation }),
+        )
+        .await
+    }
 }
 
-/// watch ページ HTML の `ytInitialData` からチャットの初期継続トークンを取る
-/// （設計書 §6.2）。`liveChatRenderer.continuations[]` の最初の
-/// `continuation` 値を返す。チャットの無い動画（非ライブ・チャット無効）は None。
-pub fn extract_initial_continuation(html: &str) -> Option<String> {
+/// 継続トークンの種別（仕様決定 AQ のライブ/リプレイ自動判定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationKind {
+    /// 進行中ライブ（timed / invalidation / reload 系の継続）。
+    Live,
+    /// 終了済み配信のアーカイブリプレイ
+    /// （`liveChatReplayContinuationData`）。
+    Replay,
+}
+
+/// watch ページ HTML の `ytInitialData` からチャットの初期継続トークンと
+/// 種別を取る（設計書 §6.2）。チャットの無い動画（非ライブ・チャット無効）は None。
+pub fn extract_initial_continuation(html: &str) -> Option<(String, ContinuationKind)> {
     let data = extract_yt_initial_data(html)?;
     let lcr = find_key(&data, "liveChatRenderer")?;
-    next_continuation(lcr).map(|(token, _)| token)
+    next_continuation(lcr).map(|(token, _, kind)| (token, kind))
 }
 
 /// `liveChatRenderer`（watch HTML）または `liveChatContinuation`（ポーリング応答）の
-/// `continuations[]` から次の継続トークンと待機時間を取る。
+/// `continuations[]` から次の継続トークン・待機時間・種別を取る。
 /// エントリは `{<type>ContinuationData: {continuation, timeoutMs?}}` の形で、
-/// reload / invalidation / timed のいずれかのキーを持つ。
+/// リプレイは `liveChatReplayContinuationData` のキーを持つ。
+/// リプレイ継続が混在していればそれを優先する（アーカイブの続きを辿る経路。
+/// ライブ継続と混在するのは終了直後の切替期のみのはず）。
 /// 継続候補が無い場合（配信終了など）は None。
-pub fn next_continuation(node: &Value) -> Option<(String, u64)> {
+pub fn next_continuation(node: &Value) -> Option<(String, u64, ContinuationKind)> {
     let conts = node.get("continuations")?.as_array()?;
-    conts.iter().find_map(|c| {
-        c.as_object()?.values().find_map(|data| {
-            data.get("continuation").and_then(|t| t.as_str()).map(|t| {
-                (
-                    t.to_string(),
-                    data.get("timeoutMs").and_then(|t| t.as_u64()).unwrap_or(0),
-                )
-            })
+    let parse = |c: &Value| -> Option<(String, u64, ContinuationKind)> {
+        c.as_object()?.iter().find_map(|(key, data)| {
+            let token = data.get("continuation").and_then(|t| t.as_str())?;
+            let kind = if key == "liveChatReplayContinuationData" {
+                ContinuationKind::Replay
+            } else {
+                ContinuationKind::Live
+            };
+            Some((
+                token.to_string(),
+                data.get("timeoutMs").and_then(|t| t.as_u64()).unwrap_or(0),
+                kind,
+            ))
         })
-    })
+    };
+    conts
+        .iter()
+        .find_map(|c| parse(c).filter(|(_, _, k)| *k == ContinuationKind::Replay))
+        .or_else(|| conts.iter().find_map(parse))
 }
 
-/// HTML 中の `ytInitialData` 代入に続く JSON オブジェクトを取り出す。
-fn extract_yt_initial_data(html: &str) -> Option<Value> {
-    let idx = html.find("ytInitialData")?;
+/// リプレイのオフセット補正に使う放送窓（FR-24、仕様決定 AQ）。
+/// `ytInitialPlayerResponse` の `liveBroadcastDetails` と `videoDetails` から取る。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BroadcastWindow {
+    /// 放送開始（epoch ms）。`liveBroadcastDetails.startTimestamp`。
+    pub start_ms: Option<i64>,
+    /// 放送終了（epoch ms）。`liveBroadcastDetails.endTimestamp`。
+    pub end_ms: Option<i64>,
+    /// 動画ファイルの長さ（秒）。`videoDetails.lengthSeconds`。
+    pub length_secs: Option<i64>,
+    /// 現在放送中か（`liveBroadcastDetails.isLiveNow`）。
+    /// 終了済み判定に使う（None = 不明）。
+    pub is_live_now: Option<bool>,
+}
+
+impl BroadcastWindow {
+    /// 終了済みの放送か（ライブ継続ではなくリプレイ経路を選ぶ判定）。
+    /// `endTimestamp` の存在を終了の証拠とする。予約配信のロビーは
+    /// `isLiveNow: false` でも `endTimestamp` が無いためライブ経路を維持し、
+    /// 放送中（`isLiveNow: true`）に end が出る矛盾形もライブ経路に留める。
+    pub fn is_ended(&self) -> bool {
+        self.is_live_now != Some(true) && self.end_ms.is_some()
+    }
+}
+
+/// watch ページ HTML の `ytInitialPlayerResponse` から放送窓を取る。
+/// プレミア公開では放送窓の長さが動画長より長く、その差が
+/// カウントダウン等の前置き分（オフセット補正量の推定に使う）。
+pub fn extract_broadcast_window(html: &str) -> BroadcastWindow {
+    let Some(v) = extract_embedded_json(html, "ytInitialPlayerResponse") else {
+        return BroadcastWindow::default();
+    };
+    let details = find_key(&v, "liveBroadcastDetails");
+    let video = find_key(&v, "videoDetails");
+    BroadcastWindow {
+        start_ms: details
+            .and_then(|d| d.get("startTimestamp"))
+            .and_then(|t| t.as_str())
+            .and_then(iso8601_ms),
+        end_ms: details
+            .and_then(|d| d.get("endTimestamp"))
+            .and_then(|t| t.as_str())
+            .and_then(iso8601_ms),
+        length_secs: video
+            .and_then(|d| d.get("lengthSeconds"))
+            .and_then(|s| s.as_str())
+            .and_then(|s| s.parse().ok()),
+        is_live_now: details
+            .and_then(|d| d.get("isLiveNow"))
+            .and_then(|b| b.as_bool()),
+    }
+}
+
+/// `"YYYY-MM-DDTHH:MM:SS(.sss)?(Z|±HH:MM)"` を epoch ミリ秒へ変換する最小パーサ。
+/// YouTube の liveBroadcastDetails タイムスタンプ形式に限定して扱う。
+fn iso8601_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let num = |i: usize, n: usize| -> Option<i64> {
+        let slice = b.get(i..i + n)?;
+        if !slice.iter().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let mut x = 0i64;
+        for c in slice {
+            x = x * 10 + (c - b'0') as i64;
+        }
+        Some(x)
+    };
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || (b[10] != b'T' && b[10] != b' ')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let (y, mo, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let (h, mi, sec) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || mi > 59 || sec > 60 {
+        return None;
+    }
+    // days-from-civil（Howard Hinnant の式）で 1970-01-01 からの日数を得る
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    let mut ms = (days * 86_400 + h * 3_600 + mi * 60 + sec) * 1_000;
+    let mut i = 19;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        while b.get(i).is_some_and(|c| c.is_ascii_digit()) {
+            i += 1;
+        }
+        let digits = i - start;
+        if digits == 0 {
+            return None;
+        }
+        // 小数秒はミリ秒（3 桁）へ丸める
+        let f = num(start, digits.min(3))?;
+        ms += f * 10i64.pow(3 - digits.min(3) as u32);
+    }
+    match b.get(i) {
+        None | Some(&b'Z') => {}
+        Some(sign @ (&b'+' | &b'-')) => {
+            let oh = num(i + 1, 2)?;
+            let om = if b.get(i + 3) == Some(&b':') {
+                num(i + 4, 2)?
+            } else {
+                num(i + 3, 2)?
+            };
+            let off = (oh * 3_600 + om * 60) * 1_000;
+            ms += if *sign == b'+' { -off } else { off };
+        }
+        _ => return None,
+    }
+    Some(ms)
+}
+
+/// HTML 中の `marker` 代入に続く JSON オブジェクトを取り出す。
+fn extract_embedded_json(html: &str, marker: &str) -> Option<Value> {
+    let idx = html.find(marker)?;
     let rest = &html[idx..];
     let eq = rest.find('=')?;
     let start = rest[eq..].find('{')? + eq;
     let end = json_object_end(&rest[start..])?;
     serde_json::from_str(&rest[start..start + end]).ok()
+}
+
+/// HTML 中の `ytInitialData` 代入に続く JSON オブジェクトを取り出す。
+fn extract_yt_initial_data(html: &str) -> Option<Value> {
+    extract_embedded_json(html, "ytInitialData")
 }
 
 /// 先頭 `{` から対応する閉じ括弧までのバイト長を返す。
@@ -585,5 +746,96 @@ mod tests {
         assert_eq!(parse_length_text("1:02:03"), Some(3723));
         assert_eq!(parse_length_text(""), None);
         assert_eq!(parse_length_text("LIVE"), None);
+    }
+
+    /// FR-24/AQ: 継続トークンの種別判定。`liveChatReplayContinuationData`
+    /// はリプレイ、その他（timed/invalidation/reload）はライブ。
+    /// 混在時はリプレイを優先する。
+    #[test]
+    fn next_continuation_detects_kind() {
+        let live = serde_json::json!({"continuations": [
+            {"timedContinuationData": {"continuation": "LIVETOKEN", "timeoutMs": 8000}}
+        ]});
+        let (t, ms, k) = next_continuation(&live).unwrap();
+        assert_eq!((t.as_str(), ms, k), ("LIVETOKEN", 8000, ContinuationKind::Live));
+
+        let replay = serde_json::json!({"continuations": [
+            {"liveChatReplayContinuationData": {"continuation": "REPLAYTOKEN"}}
+        ]});
+        let (t, _, k) = next_continuation(&replay).unwrap();
+        assert_eq!((t.as_str(), k), ("REPLAYTOKEN", ContinuationKind::Replay));
+
+        // 混在（終了直後の切替期）はリプレイ優先
+        let mixed = serde_json::json!({"continuations": [
+            {"timedContinuationData": {"continuation": "LIVE2", "timeoutMs": 500}},
+            {"liveChatReplayContinuationData": {"continuation": "REPLAY2"}}
+        ]});
+        let (t, _, k) = next_continuation(&mixed).unwrap();
+        assert_eq!((t.as_str(), k), ("REPLAY2", ContinuationKind::Replay));
+
+        assert!(next_continuation(&serde_json::json!({})).is_none());
+        assert!(next_continuation(&serde_json::json!({"continuations": []})).is_none());
+    }
+
+    /// FR-24/AQ: liveBroadcastDetails タイムスタンプの ISO8601 パース。
+    #[test]
+    fn iso8601_ms_parses_timestamps() {
+        // Z 終端
+        assert_eq!(iso8601_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            iso8601_ms("2026-05-01T12:00:00Z"),
+            Some(1_777_636_800_000)
+        );
+        // 小数秒とオフセット
+        assert_eq!(iso8601_ms("1970-01-01T00:00:00.500Z"), Some(500));
+        assert_eq!(iso8601_ms("1970-01-01T09:00:00+09:00"), Some(0));
+        // 負オフセットは UTC 側へ進める（00:30 - (-00:30) = 01:00Z）
+        assert_eq!(iso8601_ms("1970-01-01T00:30:00-00:30"), Some(3_600_000));
+        // 非ゼロオフセットの実例（+09:00 は 9 時間前）
+        assert_eq!(
+            iso8601_ms("2026-05-01T21:00:00+09:00"),
+            iso8601_ms("2026-05-01T12:00:00Z")
+        );
+        // 不正形は None
+        assert_eq!(iso8601_ms("2026/05/01"), None);
+        assert_eq!(iso8601_ms(""), None);
+        assert_eq!(iso8601_ms("not a date"), None);
+    }
+
+    /// FR-24/AQ: ytInitialPlayerResponse から放送窓を取る。
+    #[test]
+    fn extract_broadcast_window_from_player_response() {
+        let html = r#"window["ytInitialPlayerResponse"] = {"videoDetails":{"lengthSeconds":"600"},"microformat":{"playerMicroformatRenderer":{"liveBroadcastDetails":{"startTimestamp":"2026-05-01T12:00:00Z","endTimestamp":"2026-05-01T12:15:00Z","isLiveNow":false}}}};"#;
+        let w = extract_broadcast_window(html);
+        assert_eq!(w.start_ms, Some(1_777_636_800_000));
+        assert_eq!(w.end_ms, Some(1_777_637_700_000));
+        assert_eq!(w.length_secs, Some(600));
+        assert_eq!(w.is_live_now, Some(false));
+
+        // 情報の無い HTML は全て None
+        let w = extract_broadcast_window("<html>no data</html>");
+        assert!(w.start_ms.is_none() && w.end_ms.is_none() && w.length_secs.is_none());
+        assert!(w.is_live_now.is_none());
+    }
+
+    /// FR-24/AQ: 終了済み判定（リプレイ経路のルーティング）。
+    /// `isLiveNow` が優先、欠落時は `endTimestamp` の有無で判断する。
+    #[test]
+    fn broadcast_window_is_ended() {
+        let w = |is_live_now: Option<bool>, end_ms: Option<i64>| BroadcastWindow {
+            is_live_now,
+            end_ms,
+            ..Default::default()
+        };
+        // 実機確認値: 終了済みは isLiveNow:false + endTimestamp あり
+        assert!(w(Some(false), Some(1)).is_ended());
+        assert!(!w(Some(true), None).is_ended());
+        // 予約配信のロビーは isLiveNow:false でも endTimestamp が無い
+        assert!(!w(Some(false), None).is_ended());
+        // isLiveNow 欠落時は endTimestamp の有無で判断
+        assert!(w(None, Some(1)).is_ended());
+        assert!(!w(None, None).is_ended());
+        // isLiveNow:true だが end がある矛盾形は「放送中」を優先
+        assert!(!w(Some(true), Some(1)).is_ended());
     }
 }

@@ -317,6 +317,10 @@ pub struct ChatEvent {
     pub amount_display: Option<String>,
     /// NG フィルタで非表示と判定されたか。保存も送信もするが、UI は非表示にする。
     pub ng: bool,
+    /// リプレイの動画内時刻（`videoOffsetTimeMsec`、ms）。ライブ・履歴検索行は None。
+    /// UI への送出はリプレイペーサが再生位置と照合して行う（FR-24、仕様決定 AQ）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_offset_ms: Option<i64>,
     /// renderer 原文（ストリームで取れた範囲の生 JSON）。UI には送らない。
     #[serde(skip_serializing)]
     pub raw_json: String,

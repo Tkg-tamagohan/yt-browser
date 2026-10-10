@@ -83,6 +83,7 @@ impl Db {
                 message: row.get(5)?,
                 amount_display: row.get(6)?,
                 ng: false,
+                video_offset_ms: None,
                 raw_json: String::new(),
             });
         }

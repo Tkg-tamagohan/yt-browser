@@ -21,7 +21,7 @@ flowchart LR
     CORE -->|子プロセス起動| YTDLP[yt-dlp<br/>検索・メタデータ・更新]
     MPV -->|ytdl_hook が内部利用| YTDLP
     CORE -->|HTTPS| RSS[YouTube チャンネル RSS]
-    CORE -->|HTTPS| IT[InnerTube<br/>get_live_chat / next]
+    CORE -->|HTTPS| IT[InnerTube<br/>get_live_chat / get_live_chat_replay / next]
     CORE -->|HTTPS| SB[SponsorBlock API]
 ```
 
@@ -476,10 +476,21 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 アクションは `addChatItemAction.item` の renderer に加え、`replayChatItemAction.actions[]` の入れ子（アーカイブのリプレイチャット）も展開する。
 削除アクションのキー名は 2026-10 時点で `removeChatItemAction`（旧名 `markChatItemAsDeletedAction` も併せて受理し、`targetItemId` を対象 ID とする）。
 
-終了済み配信のアーカイブでは、watch 応答の継続トークン種別でリプレイを判定し、メッセージの動画内時刻（`videoOffsetTimeMsec`）を mpv の再生位置と照合して同期表示する方針とする（FR-24、仕様決定 AQ）。
-リプレイ分は `chat_logs` に保存しない。
-プレミア公開で配信開始と映像開始がずれる場合はオフセットを補正する。
-継続トークンの取得法と補正量の推定根拠は実装で実応答を検証して決める（未検証事項）。
+終了済み配信のアーカイブではリプレイ経路へ切り替える（FR-24、仕様決定 AQ）。
+実機確認（2026-10）では、終了済み配信の watch 応答にも `reloadContinuationData` しか載らず、リプレイ系の継続エントリは出ない。
+そのためルーティングは `ytInitialPlayerResponse` の放送窓で判定し、`endTimestamp` があり `isLiveNow` が真でないときを終了済みとみなして、初段トークンをそのまま `POST /youtubei/v1/live_chat/get_live_chat_replay` へ投げる（`get_live_chat` へ投げると 400 になる）。
+予約配信のロビー（`isLiveNow: false` でも `endTimestamp` が無い）はライブ経路を維持する。
+応答には `replayChatItemAction` と次の `liveChatReplayContinuationData` が入り、以降は同エンドポイントでこれを辿る。
+併存する `playerSeekContinuationData`（シーク位置指定の継続）は、バッファ方式では使わない。
+応答の `isReplay` フラグも確認できるが、現状はルーティングのみで識別する。
+継続エントリから `liveChatReplayContinuationData` をリプレイとみなす判定（混在時はリプレイ優先）はそのまま維持し、watch が直接リプレイ継続を返す経路にも対応する。
+
+- メッセージは `replayChatItemAction` の `videoOffsetTimeMsec`（アクションレベル）を内側アイテムへ伝播させ、`ChatEvent.video_offset_ms` として保持する
+- ポーラーは再生位置 + 120 秒分を先読みしてオフセット昇順のバッファに持ち、250 ms 周期で mpv の再生位置（`PlayerManager.position_of`）と照合して `chat://message` へ流す。送出は NG 判定込みの `normalize_all` を共用するが、`chat_logs` には保存しない
+- 後方シーク（位置が 2 秒超戻る）は未送出カーソルを近接時点へ戻して再アンカーする。再アンカー世代毎に item_id（削除イベントは対象 ID も）へ `#g<n>` 接尾辞を付け、表示側 dedup を避けて同じメッセージを再表示する
+- 前方シークで大量に追い越した場合は近接時点の末尾 50 件だけ流して中間を飛ばす
+
+プレミアずれ補正は暫定方式とする（仕様決定 AQ）。`ytInitialPlayerResponse` の `liveBroadcastDetails`（放送開始・終了）と `videoDetails.lengthSeconds`（動画長）を取り、放送時間 − 動画長を前置き分（カウントダウン等）とみなしてオフセットから引く。差が 30 秒超〜6 時間以内のときだけ適用し、情報欠落または差が 6 時間超なら未補正で警告を出す。
 
 主な renderer の写像は次の通り。
 

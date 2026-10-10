@@ -202,6 +202,17 @@ impl PlayerManager {
             .collect()
     }
 
+    /// 指定動画を再生中のインスタンスの再生位置（秒）。
+    /// 複数インスタンスが同一動画を再生中なら最初に見つかったもの。
+    /// 見つからなければ None（チャットリプレイの照合用、FR-24）。
+    pub fn position_of(&self, video_id: &str) -> Option<f64> {
+        lock(&self.players)
+            .values()
+            .map(|e| e.player.snapshot())
+            .find(|s| s.video_id == video_id)
+            .map(|s| s.position)
+    }
+
     /// `player_control` の実体。
     /// `Pip` は設定値 `pip.geometry` を参照してここで処理し、
     /// 残りはプレイヤー固有の `control` に委譲する。
