@@ -172,6 +172,23 @@ pub struct FeedFilter {
     pub kind: Option<String>,
     /// ページングカーソル。Some のとき末尾行の次から返す（FR-25、仕様決定 AR）。
     pub cursor: Option<FeedCursor>,
+    /// チャンネルで絞る（1 件指定、FR-21・仕様決定 AN）。
+    pub channel_id: Option<String>,
+}
+
+/// `feed_backfill` の戻り値（FR-21、仕様決定 AN）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillOutcome {
+    /// この呼び出しで一覧へ新たに現れた件数（タブ合算）。
+    /// プレースホルダの確定も含む。
+    pub inserted: usize,
+    /// `/videos` タブの次回取得開始位置（遡った件数）。
+    pub videos_pos: i64,
+    /// `/streams` タブの次回取得開始位置（遡った件数）。
+    pub streams_pos: i64,
+    /// タブごとの取得失敗メッセージ。成功したタブの結果は維持する。
+    pub errors: Vec<String>,
 }
 
 /// `videos` テーブルの 1 行（設計書 §8）。`list_feed` の返却型。

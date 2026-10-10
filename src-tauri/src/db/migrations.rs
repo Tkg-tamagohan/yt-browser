@@ -277,4 +277,13 @@ pub const MIGRATIONS: &[Migration] = &[
                  OR title LIKE 'http://%'
                  OR title LIKE 'https://%';",
     },
+    // チャンネル別過去動画バックフィル（FR-21、仕様決定 AN）の進捗。
+    // `/videos`・`/streams` タブごとに「次に取得するまでに遡った件数」を保持する
+    // （= yt-dlp --playlist-start の開始位置。次回は pos+1 から取る）。
+    Migration {
+        version: 11,
+        name: "channels_backfill_pos",
+        sql: "ALTER TABLE channels ADD COLUMN backfill_videos_pos INTEGER NOT NULL DEFAULT 0;
+              ALTER TABLE channels ADD COLUMN backfill_streams_pos INTEGER NOT NULL DEFAULT 0;",
+    },
 ];

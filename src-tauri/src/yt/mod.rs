@@ -258,6 +258,54 @@ fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
     out
 }
 
+/// チャンネルタブの投稿一覧（FR-21、仕様決定 AN のバックフィル）。
+/// `/videos`・`/streams` タブを flat-playlist で `start..=end`（1 始まり）の
+/// 範囲取得する。戻り値は `(video_id, title, thumbnail_url)` の列。
+/// 投稿日はチャンネルタブの flat エントリに載らないため取らない
+/// （videos.published_at は NULL で投入され、フィード一覧では末尾側に並ぶ）。
+pub async fn channel_tab_entries(
+    path: &str,
+    channel_id: &str,
+    tab: &str,
+    start: u32,
+    end: u32,
+) -> Result<Vec<(String, String, Option<String>)>, YtError> {
+    let url = format!("https://www.youtube.com/channel/{channel_id}/{tab}");
+    let out = run_with_timeout(
+        Command::new(path)
+            .arg(&url)
+            .arg("--flat-playlist")
+            .arg("--playlist-start")
+            .arg(start.to_string())
+            .arg("--playlist-end")
+            .arg(end.to_string())
+            .arg("--dump-single-json"),
+    )
+    .await?;
+    if !out.status.success() {
+        return Err(YtError::Exit {
+            code: out.status.code().unwrap_or(-1),
+            stderr: combined_output(&out),
+        });
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let mut items = Vec::new();
+    if let Some(entries) = v.get("entries").and_then(|e| e.as_array()) {
+        for e in entries {
+            let Some(id) = e.get("id").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let title = e
+                .get("title")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            items.push((id.to_string(), title, pick_thumbnail(e, id)));
+        }
+    }
+    Ok(items)
+}
+
 /// YouTube プレイリストのメタと項目一覧（FR-10、仕様決定 R）。
 /// `--flat-playlist --dump-single-json` で取り、項目を `VideoRef` へ変換する。
 /// 戻り値は `(プレイリスト名, 登録順の VideoRef 列)`。

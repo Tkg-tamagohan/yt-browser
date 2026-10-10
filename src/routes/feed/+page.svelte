@@ -50,6 +50,12 @@
     publishedAt: string | null;
     videoId: string;
   }
+  interface BackfillOutcome {
+    inserted: number;
+    videosPos: number;
+    streamsPos: number;
+    errors: string[];
+  }
 
   let items = $state<FeedItem[]>([]);
   let channels = $state<Channel[]>([]);
@@ -66,6 +72,10 @@
   let chanCatFilter = $state<number | null>(null);
   // フィード一覧の束ね方。true のときチャンネル単位のセクションに分ける
   let groupByChannel = $state(false);
+  // チャンネル別フィード（FR-21、仕様決定 AN）。1 件のチャンネルに絞る。
+  // チャンネル名クリックで入り、× で戻る
+  let filterChannel = $state<Channel | null>(null);
+  let backfilling = $state(false);
   let busy = $state(false);
   // 「さらに読み込む」の状態（1 ページ = バックエンドの FEED_LIST_LIMIT）
   let feedCursor = $state<FeedCursor | null>(null);
@@ -121,6 +131,7 @@
         days: null,
         kind: filterKind || null,
         cursor: null,
+        channelId: filterChannel?.channelId ?? null,
       },
     });
     if (seq === loadSeq) {
@@ -153,6 +164,7 @@
           days: null,
           kind: filterKind || null,
           cursor,
+          channelId: filterChannel?.channelId ?? null,
         },
       });
       if (seq === loadSeq) {
@@ -204,6 +216,8 @@
     try {
       await invoke("unsubscribe_channel", { channelId: ch.channelId });
       channels = channels.filter((c) => c.channelId !== ch.channelId);
+      // 絞り込み中のチャンネルを解除したら絞り込みも戻す
+      if (filterChannel?.channelId === ch.channelId) filterChannel = null;
       notify(t("feed.unsubscribed", { title: ch.title }));
       await loadItems();
     } catch (e) {
@@ -299,6 +313,50 @@
     }
   }
 
+  // チャンネル別フィードへ切り替え（FR-21、仕様決定 AN）。
+  // チャンネル名クリックで絞り込み＋カテゴリ解除＋「未読のみ」解除し、
+  // そのチャンネルの RSS 即時取得を予約する（新着は feed://new_items 経由で届く）
+  async function selectChannelFeed(ch: Channel): Promise<void> {
+    filterChannel = ch;
+    filterCat = null;
+    unreadOnly = false;
+    void loadItems();
+    try {
+      await invoke("feed_refresh", { channelId: ch.channelId });
+    } catch (e) {
+      notify(t("feed.failed", { message: asErrorMessage(e) }));
+    }
+  }
+
+  function clearChannelFeed(): void {
+    filterChannel = null;
+    void loadItems();
+  }
+
+  // 手動バックフィル。1 回で /videos・/streams の各 100 件（暫定、仕様決定 AN）。
+  // 取得済み位置は DB に残るため再実行で続きを遡る。バックフィル分は
+  // 既読で投入されるので「未読のみ」が外れているこの画面で見える
+  async function backfill(): Promise<void> {
+    const ch = filterChannel;
+    if (!ch || backfilling) return;
+    backfilling = true;
+    try {
+      const res = await invoke<BackfillOutcome>("feed_backfill", {
+        channelId: ch.channelId,
+      });
+      if (res.errors.length > 0) {
+        notify(t("feed.backfillPartial", { message: res.errors.join(" / ") }));
+      } else {
+        notify(t("feed.backfilled", { count: res.inserted }));
+      }
+      await loadItems();
+    } catch (e) {
+      notify(t("feed.backfillFailed", { message: asErrorMessage(e) }));
+    } finally {
+      backfilling = false;
+    }
+  }
+
   onMount(async () => {
     await refreshAll();
     void va.refresh();
@@ -381,7 +439,14 @@
             <ul class="channel-list">
               {#each visibleChannels as ch (ch.channelId)}
                 <li>
-                  <span class="ch-title" title={ch.channelId}>{ch.title}</span>
+                  <button
+                    class="link ch-title"
+                    class:active={filterChannel?.channelId === ch.channelId}
+                    title="{ch.channelId} — {t('feed.channels.showFeed')}"
+                    onclick={() => selectChannelFeed(ch)}
+                  >
+                    {ch.title}
+                  </button>
                   <select
                     value={ch.categoryId}
                     onchange={(e) =>
@@ -450,6 +515,29 @@
           <button class="link" onclick={refreshNow}>{t("feed.refresh")}</button>
           <button class="link" onclick={markAllRead}>{t("feed.items.markAllRead")}</button>
         </div>
+
+        {#if filterChannel}
+          <div class="row channel-filter">
+            <span class="chip">
+              {t("feed.channelFilter.label", { title: filterChannel.title })}
+            </span>
+            <button
+              class="link"
+              onclick={backfill}
+              disabled={backfilling}
+            >
+              {backfilling ? t("feed.backfilling") : t("feed.backfill")}
+            </button>
+            <button
+              class="link"
+              onclick={clearChannelFeed}
+              title={t("feed.channelFilter.clear")}
+              aria-label={t("feed.channelFilter.clear")}
+            >
+              ×
+            </button>
+          </div>
+        {/if}
 
     {#if items.length === 0}
       <p class="subtle">{t("feed.items.empty")}</p>
@@ -615,6 +703,23 @@
   }
   .ch-title {
     flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+  .ch-title.active {
+    font-weight: 600;
+  }
+  .channel-filter {
+    margin: 4px 0 0;
+  }
+  .chip {
+    padding: 2px 10px;
+    border: 1px solid #3c4043;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    max-width: 320px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
