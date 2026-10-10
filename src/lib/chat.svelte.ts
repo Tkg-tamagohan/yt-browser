@@ -52,7 +52,9 @@ export async function toggleChat(id: number, videoId: string): Promise<void> {
   chatPanels.list = next;
   enqueueChatOp(videoId, async () => {
     try {
-      await invoke("chat_start", { videoId });
+      // リプレイの同期先をこのインスタンスに固定するため起票を渡す
+      // （同一動画の複数窓がある場合でもずれない。FR-24）
+      await invoke("chat_start", { videoId, instanceId: id });
     } catch (e) {
       notify(t("player.error", { message: asErrorMessage(e) }));
     }
@@ -127,6 +129,23 @@ export function cleanupChatPanel(instanceId: number, videoId: string): void {
   maybeStopChat(videoId);
 }
 
+/// `chat://reset` の受信処理（FR-24）。リプレイの後方シーク再アンカー時に
+/// 届き、対象動画を再生中の全パネルの既表示行を消す。
+/// この直後に再送分が届くため、シーク先より未来の発言が残らない。
+/// 閉じたパネルも受信分を保持しているため、開き直しで古い発言が
+/// 出ないよう open に関わらず消す
+function onChatReset(p: { videoId: string }): void {
+  const next = new Map(chatPanels.list);
+  let changed = false;
+  for (const [inst, cp] of next) {
+    if (playerStates.list.get(inst)?.videoId === p.videoId) {
+      next.set(inst, { ...cp, items: [] });
+      changed = true;
+    }
+  }
+  if (changed) chatPanels.list = next;
+}
+
 /// `chat://status` の受信処理。対象動画を開いている全パネルに状態行を出し、
 /// warn 以上は通知にも出す。
 function onChatStatus(s: ChatStatus): void {
@@ -159,6 +178,9 @@ export function initChatEvents(): Promise<void> {
       );
       await listen<ChatStatus>("chat://status", (ev) =>
         onChatStatus(ev.payload),
+      );
+      await listen<{ videoId: string }>("chat://reset", (ev) =>
+        onChatReset(ev.payload),
       );
     })();
   }

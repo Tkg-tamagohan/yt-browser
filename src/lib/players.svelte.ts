@@ -144,6 +144,8 @@ export type ChatEvent = {
   amountDisplay: string | null;
   /// NG フィルタで非表示判定されたもの。保存・送信されるが UI は出さない。
   ng: boolean;
+  /// リプレイの動画内時刻（ms）。ライブ・履歴検索行は未定義（FR-24）。
+  videoOffsetMs?: number;
 };
 
 /// `chat://status` イベント（設計書 §3.2）。

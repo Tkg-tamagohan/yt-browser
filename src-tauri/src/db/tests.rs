@@ -288,6 +288,7 @@ fn chat_insert_and_search() {
         message: msg.to_string(),
         amount_display: None,
         ng: false,
+        video_offset_ms: None,
         raw_json: "{}".to_string(),
     };
     let n = db
@@ -351,6 +352,7 @@ fn chat_insert_dedup_by_item_id() {
         message: msg.to_string(),
         amount_display: None,
         ng: false,
+        video_offset_ms: None,
         raw_json: "{}".to_string(),
     };
     assert_eq!(
