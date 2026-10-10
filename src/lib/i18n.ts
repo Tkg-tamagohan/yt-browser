@@ -16,6 +16,7 @@ const ja = {
   "nav.search": "検索",
   "nav.library": "ライブラリ",
   "nav.settings": "設定",
+  "nav.queue": "キュー",
 
   // Phase 1: mpv 再生の最小 UI
   "player.input.placeholder": "YouTube の URL または動画 ID",
@@ -312,6 +313,16 @@ const ja = {
   "library.playlist.queueFailed": "連続再生の開始に失敗: {message}",
   "library.playlist.queueActive": "連続再生中: {name}（{index}/{count}）",
   "library.playlist.queueStop": "連続再生を止める",
+  "queue.add": "キューに追加",
+  "queue.playNext": "次に再生",
+  "queue.added": "キューに追加しました",
+  "queue.addedNext": "次に再生に追加しました",
+  "queue.show": "キュー",
+  "queue.panel.title": "キュー",
+  "queue.play": "再生",
+  "queue.clear": "全消去",
+  "queue.empty": "キューは空です",
+  "queue.startFailed": "キューの再生開始に失敗: {message}",
   "library.removed": "削除しました",
   "library.removeFailed": "削除に失敗: {message}",
 

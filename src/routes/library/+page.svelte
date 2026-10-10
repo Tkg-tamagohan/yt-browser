@@ -9,6 +9,7 @@
   import { fmtDateTime } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
   import { loadLibrary } from "$lib/library";
+  import QueueButtons from "$lib/QueueButtons.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
   import {
@@ -27,6 +28,7 @@
     queueActive,
     queuePlayingAt,
     startQueue,
+    queueStop,
     stopQueue,
   } from "$lib/queue.svelte";
 
@@ -819,7 +821,7 @@
                   index: queue.index + 1,
                   count: queue.items.length,
                 })}
-                <button class="link" onclick={() => stopQueue()}
+                <button class="link" onclick={() => queueStop()}
                   >{t("library.playlist.queueStop")}</button
                 >
               </span>
@@ -885,6 +887,7 @@
                     onclick={() => removeItem(it)}
                     >{t("library.remove")}</button
                   >
+                  <QueueButtons video={videoRefOf(it)} />
                 {/snippet}
               </VideoRow>
             {/each}

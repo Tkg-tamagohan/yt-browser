@@ -5,6 +5,8 @@
   import { appNotices } from "$lib/notices.svelte";
   import { initDeepLinks } from "$lib/deeplink.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
+  import QueuePanel from "$lib/QueuePanel.svelte";
+  import { queue, queuePanel } from "$lib/queue.svelte";
   import {
     appUpdate,
     applyUpdate,
@@ -38,7 +40,19 @@
   <a href="/settings" class:active={page.url.pathname === "/settings"}
     >{t("nav.settings")}</a
   >
+  <!-- キュー入口（FR-20、仕様決定 AM）。件数つきでパネルを開閉する -->
+  <button
+    class="nav-queue"
+    class:active={queuePanel.open}
+    onclick={() => (queuePanel.open = !queuePanel.open)}
+  >
+    {t("nav.queue")}{#if queue.items.length > 0}（{queue.items.length}）{/if}
+  </button>
 </nav>
+<!-- キューパネルは常時マウントし hidden で切り替える（PlayerCards と同じ方針） -->
+<div class:hidden={!queuePanel.open}>
+  <QueuePanel />
+</div>
 {@render children()}
 <!-- プレイヤーカードは常時マウント（webkit2gtk のヒットずれ対策。
      中身の表示は PlayerCards 側でパス判定して hidden にする） -->
@@ -75,6 +89,25 @@
 {/if}
 
 <style>
+  .nav-queue {
+    margin-left: auto;
+    padding: 0;
+    border: none;
+    background: none;
+    color: #9aa0a6;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .nav-queue:hover,
+  .nav-queue.active {
+    color: #e8e8e8;
+  }
+
+  .hidden {
+    display: none;
+  }
+
   .toasts {
     position: fixed;
     right: 16px;

@@ -37,6 +37,8 @@
     cycleLoop,
     initQueueEvents,
     loopMode,
+    queue,
+    queuePanel,
     type LoopMode,
   } from "$lib/queue.svelte";
 
@@ -430,6 +432,15 @@
         <button class="link" onclick={() => toggleChat(p.instanceId, p.videoId)}>
           {chatPanel(p.instanceId)?.open ? t("chat.hide") : t("chat.show")}
         </button>
+        <!-- キューを背負うカードから同じキューパネルを開く（FR-20、仕様決定 AM） -->
+        {#if p.instanceId === queue.instanceId}
+          <button
+            class="link"
+            onclick={() => (queuePanel.open = !queuePanel.open)}
+          >
+            {t("queue.show")}
+          </button>
+        {/if}
         {#if info?.subscribed}
           <button class="link" disabled>{t("player.subscribed")}</button>
         {:else}

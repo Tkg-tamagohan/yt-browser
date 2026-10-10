@@ -5,6 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
+  import QueueButtons from "$lib/QueueButtons.svelte";
   import {
     asErrorMessage,
     type Playlist,
@@ -90,6 +91,7 @@
   >
     ＋
   </button>
+  <QueueButtons {video} />
   {#if menuOpen}
     <div class="vact-menu">
       {#each playlists as pl (pl.id)}
