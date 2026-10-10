@@ -153,7 +153,7 @@ Get-ChildItem \\.\pipe\ | Where-Object Name -like 'yt-browser-mpv-*' | Select-Ob
 UI 経路を通さずにコマンドを検証したいときは `__TAURI_INTERNALS__.invoke` で直接叩ける。
 
 ```js
-__TAURI_INTERNALS__.invoke('play_video', { videoId: '...' })
+__TAURI_INTERNALS__.invoke('play_video', { videoId: '...', resume: false })
 __TAURI_INTERNALS__.invoke('chat_start', { videoId: '...', instanceId: 1 })
 ```
 
