@@ -20,6 +20,16 @@
   let results = $state<SearchResult[]>([]);
   let searching = $state(false);
   let searchedOnce = $state(false);
+  // 「さらに読み込む」の状態（FR-25、仕様決定 AR）。
+  // ytsearch に継続が無いため、要求件数を段階的に増やして再取得し、
+  // 既表示と重複しない分だけ追記する
+  let searchedQuery = $state("");
+  let shownLimit = $state(0);
+  let hasMore = $state(false);
+  const SEARCH_PAGE = 20;
+  // バックエンド search の件数上限（SEARCH_COUNT_MAX）に合わせる。
+  // 超過を要求しても丸められるため、到達時点でボタンを隠す
+  const SEARCH_MAX = 500;
 
   // お気に入り・プレイリスト行アクション用（FR-7）
   const va = createVideoActionState();
@@ -33,8 +43,34 @@
     if (!q) return;
     searching = true;
     try {
-      results = await invoke<SearchResult[]>("search", { query: q });
+      const res = await invoke<SearchResult[]>("search", {
+        query: q,
+        count: SEARCH_PAGE,
+      });
+      results = res;
+      searchedQuery = q;
+      shownLimit = SEARCH_PAGE;
+      hasMore = res.length >= SEARCH_PAGE;
       searchedOnce = true;
+    } catch (e) {
+      notify(t("search.failed", { message: asErrorMessage(e) }));
+    }
+    searching = false;
+  }
+
+  async function loadMore(): Promise<void> {
+    if (searching || !searchedQuery) return;
+    searching = true;
+    const nextLimit = Math.min(shownLimit + SEARCH_PAGE, SEARCH_MAX);
+    try {
+      const res = await invoke<SearchResult[]>("search", {
+        query: searchedQuery,
+        count: nextLimit,
+      });
+      const seen = new Set(results.map((r) => r.videoId));
+      results = [...results, ...res.filter((r) => !seen.has(r.videoId))];
+      shownLimit = nextLimit;
+      hasMore = res.length >= nextLimit && nextLimit < SEARCH_MAX;
     } catch (e) {
       notify(t("search.failed", { message: asErrorMessage(e) }));
     }
@@ -139,6 +175,12 @@
       </VideoRow>
     {/each}
   </ul>
+
+  {#if hasMore}
+    <button class="load-more" onclick={loadMore} disabled={searching}>
+      {searching ? t("search.searching") : t("search.loadMore")}
+    </button>
+  {/if}
 </main>
 
 <style>
@@ -160,5 +202,10 @@
     list-style: none;
     padding: 0;
     margin: 0;
+  }
+
+  .load-more {
+    display: block;
+    margin: 12px auto;
   }
 </style>

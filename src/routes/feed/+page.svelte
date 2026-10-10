@@ -5,6 +5,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
+  import { feedItemCompare, feedItemSortsAfter } from "$lib/feed-page-logic";
   import { notify } from "$lib/notices.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
@@ -45,6 +46,11 @@
     level: string;
     message: string;
   }
+  // ページングカーソル（FR-25、仕様決定 AR）。前ページの末尾行を指す
+  interface FeedCursor {
+    publishedAt: string | null;
+    videoId: string;
+  }
 
   let items = $state<FeedItem[]>([]);
   let channels = $state<Channel[]>([]);
@@ -62,6 +68,17 @@
   // フィード一覧の束ね方。true のときチャンネル単位のセクションに分ける
   let groupByChannel = $state(false);
   let busy = $state(false);
+  // 「さらに読み込む」の状態（1 ページ = バックエンドの FEED_LIST_LIMIT）
+  let feedCursor = $state<FeedCursor | null>(null);
+  let feedHasMore = $state(false);
+  // 再取得で保持した過去ページの手前に空白が残りうるときの
+  // 状態。gapBoundary は保持分の先頭（空白補完の到達目標）、
+  // deepCursor/deepHasMore は空白を埋め切った後に復帰する深い側の
+  // カーソル（保持前の feedCursor/feedHasMore）
+  let gapBoundary: FeedCursor | null = null;
+  let deepCursor: FeedCursor | null = null;
+  let deepHasMore = false;
+  let loadingMore = $state(false);
   let unlistens: UnlistenFn[] = [];
 
   // お気に入り・プレイリスト行アクション用（FR-7）
@@ -102,18 +119,134 @@
   // フィルタ切替を重ねたとき古い応答が後着で上書きしないよう、
   // 最後に開始した呼び出しの結果だけを反映する
   let loadSeq = 0;
+  // 表示中の一覧が属するフィルタ条件。更新イベントでの再取得で
+  // 過去ページを保持するのは同一条件での再取得に限る
+  // （フィルタ変更直後は旧条件で追記した分を残してはいけない）
+  let itemsFilterKey = "";
+
+  /// バックエンドのカーソル比較と同じ全順序で、項目がカーソル
+  /// （publishedAt DESC NULLS LAST、video_id ASC）より後にあるかは
+  /// feedItemSortsAfter で判定する（lib/feed-page-logic.ts、FR-25）
 
   async function loadItems(): Promise<void> {
     const seq = ++loadSeq;
+    const filterKey = `${unreadOnly ? 1 : 0}|${filterCat ?? ""}|${filterKind}`;
     const res = await invoke<FeedItem[]>("list_feed", {
       filter: {
         unreadOnly,
         categoryId: filterCat,
         days: null,
         kind: filterKind || null,
+        cursor: null,
       },
     });
-    if (seq === loadSeq) items = res;
+    if (seq === loadSeq) {
+      const last = res[res.length - 1];
+      // 同一フィルタでの再取得（更新通知など）かつ先頭ページが満杯の
+      // ときだけ、既に読み込んだ過去ページ（新しい先頭ページの末尾より
+      // 後に続く部分）を保持する。部分ページ（末尾まで取れた）では
+      // 保持分は membership の切れた古い行になるため捨てる。
+      // 保持分と先頭ページの間に入る新着の空白は loadMoreItems が
+      // 整列追記で埋めるため、カーソルは常に先頭ページの末尾に戻す
+      const tail =
+        last && res.length >= 500 && filterKey === itemsFilterKey
+          ? items.filter((i) =>
+              feedItemSortsAfter(i, last.publishedAt, last.videoId),
+            )
+          : [];
+      if (tail.length > 0) {
+        // 空白補完が未完の前回状態があれば深い側はそのまま引き継ぐ
+        // （gap 走査の途中で再度の再取得が来ても最深カーソルを失わない）
+        if (!gapBoundary) {
+          deepCursor = feedCursor;
+          deepHasMore = feedHasMore;
+        }
+        const head = tail[0];
+        gapBoundary = { publishedAt: head.publishedAt, videoId: head.videoId };
+      } else {
+        gapBoundary = null;
+        deepCursor = null;
+        deepHasMore = false;
+      }
+      const seen = new Set(res.map((i) => i.videoId));
+      items = [...res, ...tail.filter((i) => !seen.has(i.videoId))];
+      itemsFilterKey = filterKey;
+      feedCursor = last
+        ? { publishedAt: last.publishedAt, videoId: last.videoId }
+        : null;
+      feedHasMore = res.length >= 500;
+    }
+  }
+
+  // 末尾の次ページを追記する。カーソルは末尾行の
+  // （published_at, video_id）。フィルタ変更や既読化で並びが
+  // 変わっても、バックエンドのカーソル比較が同じ全順序なので
+  // 重複せず続きを取れる（新規追加分は念のため videoId で重複除去）
+  async function loadMoreItems(): Promise<void> {
+    const cursor = feedCursor;
+    if (!cursor || loadingMore) return;
+    loadingMore = true;
+    // 世代は進めず、進行中の初期取得と同じ世代に属させる。
+    // フィルタ切替（loadItems）が始まればこの追記は自動で失効し、
+    // 古い条件の続きが新しい一覧へ混入しない
+    const seq = loadSeq;
+    try {
+      const res = await invoke<FeedItem[]>("list_feed", {
+        filter: {
+          unreadOnly,
+          categoryId: filterCat,
+          days: null,
+          kind: filterKind || null,
+          cursor,
+        },
+      });
+      if (seq === loadSeq) {
+        const seen = new Set(items.map((i) => i.videoId));
+        // 再取得で保持した過去ページの手前に属する項目（先頭ページとの
+        // 間に入った新着の空白）を正しい位置へ挿すため全体を整列する。
+        // 通常は既に整列済みなので実質の移動は起きない
+        items = [...items, ...res.filter((i) => !seen.has(i.videoId))].sort(
+          feedItemCompare,
+        );
+        const last = res[res.length - 1];
+        if (
+          last &&
+          gapBoundary &&
+          feedItemCompare(last, gapBoundary) >= 0
+        ) {
+          // 空白を埋め切った（取得末尾が保持分の先頭に到達・追い越し）。
+          // 保持分の区間は全て表示済みなので、保持前の深い側の
+          // カーソルへ復帰し、既表示ページの再走査を省く
+          feedCursor = deepCursor ?? {
+            publishedAt: last.publishedAt,
+            videoId: last.videoId,
+          };
+          feedHasMore = deepHasMore;
+          gapBoundary = null;
+          deepCursor = null;
+          deepHasMore = false;
+        } else {
+          if (last) {
+            feedCursor = {
+              publishedAt: last.publishedAt,
+              videoId: last.videoId,
+            };
+          }
+          feedHasMore = res.length >= 500;
+          if (!feedHasMore) {
+            // 走査が末尾へ達した。保持分との間の空白はここまでで
+            // 打ち止め（取得順の集合が尽きた）ため状態を畳む
+            gapBoundary = null;
+            deepCursor = null;
+            deepHasMore = false;
+          }
+        }
+      }
+    } catch (e) {
+      notify(t("feed.failed", { message: asErrorMessage(e) }));
+    } finally {
+      loadingMore = false;
+    }
   }
 
   async function refreshAll(): Promise<void> {
@@ -490,6 +623,15 @@
           </VideoRow>
         {/each}
       </ul>
+    {/if}
+    {#if feedHasMore}
+      <button
+        class="link load-more"
+        onclick={loadMoreItems}
+        disabled={loadingMore}
+      >
+        {loadingMore ? t("related.loading") : t("feed.items.loadMore")}
+      </button>
     {/if}
       </section>
     </div>

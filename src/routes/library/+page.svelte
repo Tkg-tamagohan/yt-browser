@@ -45,6 +45,14 @@
   // 取得中の応答を無効化しない
   let itemsReq = 0;
   let listsReq = 0;
+  // 「さらに読み込む」の状態（FR-25、仕様決定 AR）。
+  // plTailPos は取得済み末尾の position。ローカル並べ替えで
+  // playlistItems の末尾要素が入れ替わってもカーソルは動かないため、
+  // 応答の末尾 position だけで別管理する
+  const PL_PAGE = 100;
+  let plTailPos = $state(0);
+  let plHasMore = $state(false);
+  let plLoadingMore = $state(false);
   let newPlaylistName = $state("");
   let renamingId = $state<number | null>(null);
   let renameText = $state("");
@@ -211,17 +219,77 @@
     selectedId = pl.id;
     renamingId = null;
     playlistItems = [];
+    plHasMore = false;
     const req = ++itemsReq;
     try {
       const items = await invoke<PlaylistEntry[]>("playlist_items", {
         playlistId: pl.id,
+        afterPosition: null,
+        limit: PL_PAGE,
       });
       // 応答が返るまでに別のプレイリストに切り替わっていたら捨てる
       if (req !== itemsReq || selectedId !== pl.id) return;
       playlistItems = items;
+      const last = items[items.length - 1];
+      if (last) plTailPos = last.position;
+      plHasMore = items.length >= PL_PAGE;
     } catch (e) {
       if (req === itemsReq) notify(t("library.failed", { message: asErrorMessage(e) }));
     }
+  }
+
+  /// 次ページを末尾へ追記する（FR-25、仕様決定 AR）。
+  /// 取得済み分を置き換えず、応答の末尾 position でカーソルを進める
+  async function loadMoreItems(): Promise<void> {
+    const plId = selectedId;
+    if (plId === null || plLoadingMore) return;
+    plLoadingMore = true;
+    // 世代は進めない。選択の切替や再読み込みが始まれば
+    // この追記は自動で失効し、古いプレイリストの続きが
+    // 新しい一覧へ混入しない
+    const req = itemsReq;
+    try {
+      const res = await invoke<PlaylistEntry[]>("playlist_items", {
+        playlistId: plId,
+        afterPosition: plTailPos,
+        limit: PL_PAGE,
+      });
+      if (req !== itemsReq || selectedId !== plId) return;
+      const seen = new Set(playlistItems.map((i) => i.videoId));
+      playlistItems = [
+        ...playlistItems,
+        ...res.filter((i) => !seen.has(i.videoId)),
+      ];
+      const last = res[res.length - 1];
+      if (last) plTailPos = last.position;
+      plHasMore = res.length >= PL_PAGE;
+    } catch (e) {
+      if (req === itemsReq) {
+        notify(t("library.failed", { message: asErrorMessage(e) }));
+      }
+    } finally {
+      plLoadingMore = false;
+    }
+  }
+
+  /// 全件必要な操作（並べ替え保存・連続再生）の前に、
+  /// 未取得の末尾を取り切る。戻り値は選択状態が有効なまま反映できたか
+  async function ensureAllItemsLoaded(plId: number): Promise<boolean> {
+    if (!plHasMore) return true;
+    const req = ++itemsReq;
+    const res = await invoke<PlaylistEntry[]>("playlist_items", {
+      playlistId: plId,
+      afterPosition: plTailPos,
+      limit: null,
+    });
+    if (req !== itemsReq || selectedId !== plId) return false;
+    const seen = new Set(playlistItems.map((i) => i.videoId));
+    playlistItems = [
+      ...playlistItems,
+      ...res.filter((i) => !seen.has(i.videoId)),
+    ];
+    plHasMore = false;
+    return true;
   }
 
   // 一覧の再取得は常に一つの実行だけが所有し、並行する呼び出しは
@@ -288,6 +356,9 @@
         });
         if (itemReq === itemsReq && selectedId === playlistId) {
           playlistItems = items;
+          const last = items[items.length - 1];
+          if (last) plTailPos = last.position;
+          plHasMore = false;
         }
       }
     } catch (e) {
@@ -355,6 +426,19 @@
           reorderAgain = false;
           const plId = selectedId;
           if (plId === null) return;
+          // playlist_reorder は全件集合を要求するため、
+          // ページングで未取得の末尾があれば先に取り切る。
+          // 未取得分の取得失敗は保存を行わず通知だけ出す
+          try {
+            if (!(await ensureAllItemsLoaded(plId))) return;
+          } catch (e) {
+            notify(
+              t("library.playlist.reorderFailed", {
+                message: asErrorMessage(e),
+              }),
+            );
+            return;
+          }
           try {
             await invoke("playlist_reorder", {
               playlistId: plId,
@@ -376,6 +460,9 @@
                 );
                 if (req === itemsReq && selectedId === plId) {
                   playlistItems = items;
+                  const last = items[items.length - 1];
+                  if (last) plTailPos = last.position;
+                  plHasMore = false;
                 }
               } catch {
                 // 取り直しの失敗は既存表示のまま
@@ -464,6 +551,9 @@
       });
       if (req !== itemsReq || selectedId !== plId) return;
       playlistItems = items;
+      const last = items[items.length - 1];
+      if (last) plTailPos = last.position;
+      plHasMore = false;
       notify(t(doneKey));
     } catch (e) {
       notify(
@@ -495,8 +585,17 @@
   /// 残りをキューに登録する。起動に使う resume は通常の再生と同じく true
   /// （暫定: キュー先頭項目もレジュームする）
   async function playQueue(index: number): Promise<void> {
+    if (selectedId === null) return;
+    // 連続再生はプレイリスト全件をキューにするため、
+    // ページングで未取得の末尾があれば先に取り切る
+    try {
+      if (!(await ensureAllItemsLoaded(selectedId))) return;
+    } catch (e) {
+      notify(t("library.failed", { message: asErrorMessage(e) }));
+      return;
+    }
     const it = playlistItems[index];
-    if (!it || selectedId === null) return;
+    if (!it) return;
     try {
       stopQueue();
       const instanceId = await invoke<number>("play_video", {
@@ -790,6 +889,17 @@
               </VideoRow>
             {/each}
           </ul>
+          {#if plHasMore}
+            <button
+              class="link load-more"
+              onclick={() => void loadMoreItems()}
+              disabled={plLoadingMore}
+            >
+              {plLoadingMore
+                ? t("related.loading")
+                : t("library.playlist.loadMore")}
+            </button>
+          {/if}
         {/if}
       </section>
     </div>

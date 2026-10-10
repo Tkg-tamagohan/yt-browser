@@ -148,14 +148,24 @@ impl Db {
                     OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
                AND (?4 IS NULL OR v.kind = ?4)
                AND (?5 = 1 OR v.kind <> 'short')
-             ORDER BY v.published_at DESC",
+               AND (
+                    ?7 IS NULL
+                    OR (?6 IS NULL AND v.published_at IS NULL AND v.video_id > ?7)
+                    OR (?6 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?6
+                         OR (v.published_at = ?6 AND v.video_id > ?7))))
+             ORDER BY v.published_at DESC, v.video_id",
         )?;
+        let cursor = filter.cursor.as_ref();
         let mut rows = stmt.query(rusqlite::params![
             filter.unread_only as i64,
             filter.category_id,
             filter.days.map(|d| d as i64),
             filter.kind,
             show_shorts as i64,
+            cursor.and_then(|c| c.published_at.as_deref()),
+            cursor.map(|c| c.video_id.as_str()),
         ])?;
         let mut out = Vec::new();
         while out.len() < limit {

@@ -117,6 +117,7 @@ const ja = {
   "feed.items.empty": "フィード項目がありません",
   "feed.items.markRead": "既読",
   "feed.items.markAllRead": "すべて既読",
+  "feed.items.loadMore": "さらに読み込む",
   "feed.readMarkFailed": "再生は開始しましたが既読の記録に失敗: {message}",
   "feed.markedAllRead": "すべて既読にしました",
   "feed.filters.unreadOnly": "未読のみ",
@@ -146,6 +147,7 @@ const ja = {
   "search.views.count": "{count} 回視聴",
   "search.views.man": "{count}万回",
   "search.views.oku": "{count}億回",
+  "search.loadMore": "さらに読み込む",
 
   "related.title": "関連動画",
   "related.show": "関連動画を表示",
@@ -288,6 +290,7 @@ const ja = {
   "library.playlist.deleted": "プレイリストを削除しました",
   "library.playlist.deleteFailed": "削除に失敗: {message}",
   "library.playlist.items": "{count} 件",
+  "library.playlist.loadMore": "さらに読み込む",
   "library.playlist.empty": "動画が登録されていません",
   "library.playlist.selectHint": "左の一覧からプレイリストを選んでください",
   "library.playlists.empty": "プレイリストはありません",
