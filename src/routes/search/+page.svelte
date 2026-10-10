@@ -27,6 +27,9 @@
   let shownLimit = $state(0);
   let hasMore = $state(false);
   const SEARCH_PAGE = 20;
+  // バックエンド search の件数上限（SEARCH_COUNT_MAX）に合わせる。
+  // 超過を要求しても丸められるため、到達時点でボタンを隠す
+  const SEARCH_MAX = 500;
 
   // お気に入り・プレイリスト行アクション用（FR-7）
   const va = createVideoActionState();
@@ -58,7 +61,7 @@
   async function loadMore(): Promise<void> {
     if (searching || !searchedQuery) return;
     searching = true;
-    const nextLimit = shownLimit + SEARCH_PAGE;
+    const nextLimit = Math.min(shownLimit + SEARCH_PAGE, SEARCH_MAX);
     try {
       const res = await invoke<SearchResult[]>("search", {
         query: searchedQuery,
@@ -67,7 +70,7 @@
       const seen = new Set(results.map((r) => r.videoId));
       results = [...results, ...res.filter((r) => !seen.has(r.videoId))];
       shownLimit = nextLimit;
-      hasMore = res.length >= nextLimit;
+      hasMore = res.length >= nextLimit && nextLimit < SEARCH_MAX;
     } catch (e) {
       notify(t("search.failed", { message: asErrorMessage(e) }));
     }

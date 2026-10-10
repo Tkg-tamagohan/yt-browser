@@ -60,6 +60,8 @@ pub enum YtError {
     Json(#[from] serde_json::Error),
     #[error("yt-dlp の出力に channel_id が含まれていない")]
     NoChannelId,
+    #[error("yt-dlp の出力が想定外の形式: {0}")]
+    Malformed(String),
 }
 
 /// yt-dlp のバイナリパス解決器。
@@ -289,19 +291,36 @@ pub async fn channel_tab_entries(
         });
     }
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    parse_channel_tab(&v)
+}
+
+/// チャンネルタブ応答のパース。`entries` が配列のプレイリスト応答だけを
+/// 正常として受理する（空配列はタブ末尾の正常な 0 件）。
+/// `entries` 欠落や配列でない応答はタブとして解析できていないため
+/// エラーにし、取得成功扱いで取得位置を据え置いたまま繰り返さない
+/// （FR-21「取得不能は状態として明示し、空データを正常と誤認させない」）
+fn parse_channel_tab(
+    v: &serde_json::Value,
+) -> Result<Vec<(String, String, Option<String>)>, YtError> {
+    let Some(entries) = v.get("entries") else {
+        return Err(YtError::Malformed("entries キーがありません".to_string()));
+    };
+    let Some(entries) = entries.as_array() else {
+        return Err(YtError::Malformed(
+            "entries が配列ではありません".to_string(),
+        ));
+    };
     let mut items = Vec::new();
-    if let Some(entries) = v.get("entries").and_then(|e| e.as_array()) {
-        for e in entries {
-            let Some(id) = e.get("id").and_then(|x| x.as_str()) else {
-                continue;
-            };
-            let title = e
-                .get("title")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            items.push((id.to_string(), title, pick_thumbnail(e, id)));
-        }
+    for e in entries {
+        let Some(id) = e.get("id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let title = e
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        items.push((id.to_string(), title, pick_thumbnail(e, id)));
     }
     Ok(items)
 }
@@ -651,5 +670,50 @@ mod tests {
         );
         // 全部無ければ None（呼び出し側で DEFAULT_YTDL_FORMAT になる）
         assert_eq!(resolve_launch_format(None, true, None, None), None);
+    }
+
+    /// バックフィルのチャンネルタブ応答パース（FR-21、仕様決定 AN）。
+    /// 配列 `entries` のある応答のみ正常受理（空配列はタブ末尾の 0 件）
+    #[test]
+    fn channel_tab_parses_entries() {
+        let v = serde_json::json!({
+            "id": "UCabc",
+            "entries": [
+                {"id": "vid1", "title": "T1"},
+                {"id": "vid2"},
+                {"no_id": true},
+            ],
+        });
+        let items = parse_channel_tab(&v).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0, "vid1");
+        assert_eq!(items[0].1, "T1");
+        // title 欠落は空文字
+        assert_eq!(items[1].1, "");
+
+        // 明示的な空配列はタブ末尾として正常な 0 件
+        let v = serde_json::json!({"entries": []});
+        assert_eq!(parse_channel_tab(&v).unwrap().len(), 0);
+    }
+
+    /// entries 欠落・配列でない応答はタブとして解析できていないためエラー
+    /// （取得成功扱いで位置を据え置く無限再取得を防ぐ）
+    #[test]
+    fn channel_tab_rejects_malformed_responses() {
+        let no_entries = serde_json::json!({"id": "UCabc", "title": "Channel"});
+        assert!(matches!(
+            parse_channel_tab(&no_entries),
+            Err(YtError::Malformed(_))
+        ));
+        let non_array = serde_json::json!({"entries": {"_type": "url"}});
+        assert!(matches!(
+            parse_channel_tab(&non_array),
+            Err(YtError::Malformed(_))
+        ));
+        let null_entries = serde_json::json!({"entries": null});
+        assert!(matches!(
+            parse_channel_tab(&null_entries),
+            Err(YtError::Malformed(_))
+        ));
     }
 }

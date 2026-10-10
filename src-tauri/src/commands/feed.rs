@@ -245,6 +245,7 @@ pub async fn feed_backfill(
     channel_id: String,
     db: State<'_, Db>,
     resolver: State<'_, YtDlpResolver>,
+    poller: State<'_, Arc<FeedPoller>>,
 ) -> Result<BackfillOutcome, UiError> {
     let channel_id = channel_id.trim().to_string();
     let ch = db
@@ -252,6 +253,13 @@ pub async fn feed_backfill(
         .ok_or_else(|| UiError::invalid_input("購読していないチャンネルです"))?;
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
     let (mut videos_pos, mut streams_pos) = db.channel_backfill_positions(&channel_id)?;
+    // 取得中と失敗は feed://status で通知する（仕様決定 AN。
+    // トーストはフロント側の feed://status 購読と BackfillOutcome 応答が担う）
+    poller.emit_status(
+        Some(&channel_id),
+        "info",
+        format!("{} の過去動画を取得しています", ch.title),
+    );
     let mut inserted = 0usize;
     let mut errors = Vec::new();
     for (tab, kind, pos) in [
@@ -284,7 +292,11 @@ pub async fn feed_backfill(
                     _ => streams_pos = pos + fetched,
                 }
             }
-            Err(e) => errors.push(format!("{tab} タブ: {e}")),
+            Err(e) => {
+                let msg = format!("{tab} タブ: {e}");
+                poller.emit_status(Some(&channel_id), "warn", msg.clone());
+                errors.push(msg);
+            }
         }
     }
     db.channel_set_backfill_positions(&channel_id, videos_pos, streams_pos)?;
