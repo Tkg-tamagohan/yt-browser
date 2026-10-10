@@ -98,7 +98,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
-| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、全項目省略可） | `Result<Vec<FeedItem>>` |
+| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、全項目省略可。仕様決定 AN・AP・AR で `channel_id`、shorts 既定除外、ページング用カーソルを追加予定） | `Result<Vec<FeedItem>>` |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
 | `search` | `query` | `Result<Vec<SearchResult>>` |
@@ -318,6 +318,11 @@ mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-ba
 
 アプリ側 UI ボタンとキーバインドは `player_control` 経由で同じコマンドを叩く。
 割り当ての既定は仕様決定 D、音量の変化量は設定 `wheel.volume_delta` を script-opts の `wheel-volume_delta` として mpv 起動時に注入する[^wheelconf]。
+
+コマ送りの操作中は音声を出力しない（FR-22、仕様決定 AO）。
+wheel.lua 経路と `player_control` 経路の双方に適用し、ユーザーのミュート状態はコマ送り前後で保持する。
+mpv 標準の `,` / `.` キーバインドは `wheel.lua` や `player_control` を通らないため、mpv 窓上の経路をすべて包む必要がある。実装ではキーバインドの上書き等で標準キーも対象に含める。
+実現方式は mpv の実挙動検証で決める。
 `--script-opts` への注入は起動時に限られるため、設定の変更は次回の再生から有効になり、稼働中のインスタンスには適用されない。
 
 [^drift]: yt-frame-scrub で発生した「`currentTime * fps` の丸めによる着地ずれ」はシークでフレームに寄せる方式固有の問題であり、mpv のコマ送りはデコーダが 1 フレーム進める方式のため推定自体を行わない。
@@ -391,6 +396,10 @@ true のときフロントはキュー位置を照合するだけで、通常の
 ため発行を続ける。各周回は終端のたびに履歴へ完了が保存され、履歴行は
 動画単位のままその都度完了として更新される（周回数の行は増やさない）。
 
+登録を伴わない一時キュー（キュースタック）も同じ武装機構で扱う（FR-20、仕様決定 AM）。
+一時キューは `playlist_id` を持たないキューとしてフロント側のセッション状態に積み、
+実行中キューへの追記や武装の張り替えも既存の経路を使う。
+
 ### 4.7 HDR 設定と mpv 追加引数（INV-1、仕様決定 Y）
 
 Windows 実機調査（INV-1）の結論として、mpv 0.41 は既定 `vo=gpu-next` + `gpu-api=auto`
@@ -420,6 +429,7 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 | 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む） |
 | チャンネル一覧の補完 | `yt-dlp <channel_url> --flat-playlist --dump-json` |
 | プレイリスト取り込み | `yt-dlp <playlist_url> --flat-playlist --dump-single-json` |
+| チャンネルの過去動画（バックフィル） | `yt-dlp <channel>/videos` と `<channel>/streams` を `--flat-playlist` で区間取得（仕様決定 AN。1 回各タブ 100 件・暫定） |
 
 運用面の決定を次に置く（Phase 1 確定事項）。
 
@@ -456,6 +466,11 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 アクションは `addChatItemAction.item` の renderer に加え、`replayChatItemAction.actions[]` の入れ子（アーカイブのリプレイチャット）も展開する。
 削除アクションのキー名は 2026-10 時点で `removeChatItemAction`（旧名 `markChatItemAsDeletedAction` も併せて受理し、`targetItemId` を対象 ID とする）。
 
+終了済み配信のアーカイブでは、watch 応答の継続トークン種別でリプレイを判定し、メッセージの動画内時刻（`videoOffsetTimeMsec`）を mpv の再生位置と照合して同期表示する方針とする（FR-24、仕様決定 AQ）。
+リプレイ分は `chat_logs` に保存しない。
+プレミア公開で配信開始と映像開始がずれる場合はオフセットを補正する。
+継続トークンの取得法と補正量の推定根拠は実装で実応答を検証して決める（未検証事項）。
+
 主な renderer の写像は次の通り。
 
 | renderer | ChatEvent.kind |
@@ -475,6 +490,8 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 保存は 1 メッセージごとの `INSERT` を逐次実行せず、ポーリング応答 1 回分を 1 トランザクションで書き込む。
 重複除去は二段構えとする。
 セッション内では既処理 `item_id` の集合（上限 1 万件、超過分は古い順に破棄）が応答内と処理済みの重複を除き、DB 側では `chat_logs` の `(video_id, item_id)` 一意制約（§8）がセッションを跨ぐ再取得の重複を防ぐ第 2 層になる。
+
+この保存パイプラインはライブ経路の `ChatEvent` が対象であり、リプレイ経路（終了済み配信・プレミアのアーカイブ、仕様決定 AQ）のメッセージは DB へ保存せず NG 判定と UI 送信のみを行う。
 
 ## 7. NG フィルタエンジン（技術方針 M）
 
