@@ -443,11 +443,16 @@ export function initQueueEvents(): Promise<void> {
             p.continuedVideoId,
           );
           // 読み込まれた項目が index 位置と一致すれば再生中扱いに戻す。
-          // drift（一致しない遷移）のときは未再生扱いのままにして、
-          // 再武装で index 位置の項目を落とさないようにする
-          queue.playingCurrent =
+          // drift（照合失敗）では現状を維持する: この時点で index の
+          // 項目は消費済みかもしれず、一律 false にすると再武装で
+          // 再生済みの項目を意図せず再登録してしまうため。未再生扱い
+          // への遷移は queueRemoveAt（削除経路）だけが行う
+          if (
             p.continuedVideoId !== null &&
-            queue.items[queue.index] === p.continuedVideoId;
+            queue.items[queue.index] === p.continuedVideoId
+          ) {
+            queue.playingCurrent = true;
+          }
           // 意図の変更が世代ずれで backend に拒否されていたときだけ
           // 最新世代で再適用する。通常の遷移では deque を置き換えない
           // （古い置換が消費済み項目を復活させるのを防ぐ、仕様決定 AD）

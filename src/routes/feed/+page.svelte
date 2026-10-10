@@ -5,7 +5,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
-  import { feedItemSortsAfter } from "$lib/feed-page-logic";
+  import { feedItemCompare, feedItemSortsAfter } from "$lib/feed-page-logic";
   import { notify } from "$lib/notices.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
@@ -146,12 +146,14 @@
     });
     if (seq === loadSeq) {
       const last = res[res.length - 1];
-      // 同一フィルタでの再取得（更新通知など）では、既に読み込んだ
-      // 過去ページ（新しい先頭ページの末尾より後に続く部分）を保持する。
-      // 読み込み時点より後の membership 変更は拾い切れないが、
-      // 一覧が巻き戻って過去分ごと消えるよりはましとする
+      // 同一フィルタでの再取得（更新通知など）かつ先頭ページが満杯の
+      // ときだけ、既に読み込んだ過去ページ（新しい先頭ページの末尾より
+      // 後に続く部分）を保持する。部分ページ（末尾まで取れた）では
+      // 保持分は membership の切れた古い行になるため捨てる。
+      // 保持分と先頭ページの間に入る新着の空白は loadMoreItems が
+      // 整列追記で埋めるため、カーソルは常に先頭ページの末尾に戻す
       const tail =
-        last && filterKey === itemsFilterKey
+        last && res.length >= 500 && filterKey === itemsFilterKey
           ? items.filter((i) =>
               feedItemSortsAfter(i, last.publishedAt, last.videoId),
             )
@@ -159,14 +161,10 @@
       const seen = new Set(res.map((i) => i.videoId));
       items = [...res, ...tail.filter((i) => !seen.has(i.videoId))];
       itemsFilterKey = filterKey;
-      // 過去ページを保持した場合は、追記済みの末尾側のカーソルと
-      // hasMore をそのまま維持する（浅い側に巻き戻さない）
-      if (tail.length === 0) {
-        feedCursor = last
-          ? { publishedAt: last.publishedAt, videoId: last.videoId }
-          : null;
-        feedHasMore = res.length >= 500;
-      }
+      feedCursor = last
+        ? { publishedAt: last.publishedAt, videoId: last.videoId }
+        : null;
+      feedHasMore = res.length >= 500;
     }
   }
 
@@ -195,7 +193,12 @@
       });
       if (seq === loadSeq) {
         const seen = new Set(items.map((i) => i.videoId));
-        items = [...items, ...res.filter((i) => !seen.has(i.videoId))];
+        // 再取得で保持した過去ページの手前に属する項目（先頭ページとの
+        // 間に入った新着の空白）を正しい位置へ挿すため全体を整列する。
+        // 通常は既に整列済みなので実質の移動は起きない
+        items = [...items, ...res.filter((i) => !seen.has(i.videoId))].sort(
+          feedItemCompare,
+        );
         const last = res[res.length - 1];
         if (last) {
           feedCursor = { publishedAt: last.publishedAt, videoId: last.videoId };
