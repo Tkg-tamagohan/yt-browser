@@ -35,3 +35,11 @@ export function pipDefaultEnabled(raw: string | null): boolean {
 export function pipFitAspectEnabled(raw: string | null): boolean {
   return pipDefaultEnabled(raw);
 }
+
+/// `chat.popup_ontop` の保存値を表示用の boolean に解釈する
+/// （FR-27、仕様決定 AT）。受理集合は `pip.default` と同じで、
+/// 未設定・その他は最前面 ON。Rust 側は chat_popup_open 内で
+/// `pip_default_enabled` を共用して同じ解釈をする
+export function chatPopupOntopEnabled(raw: string | null): boolean {
+  return pipDefaultEnabled(raw);
+}

@@ -231,6 +231,17 @@ export function initPlayerEvents(): Promise<void> {
         playerStates.list = next;
         formatOverrides.delete(ev.payload.instanceId);
       });
+      // 手動 close は emitter が先に止まるため player://ended が来ない。
+      // 代わりにバックエンドが出す player://closed で管理表から外す
+      // （チャットポップアップ窓は自分で閉じる導線を持たないため、
+      // このイベントだけがインスタンス消滅の検知手段になる。FR-27）
+      await listen<{ instanceId: number }>("player://closed", (ev) => {
+        inFlight.add(ev.payload.instanceId);
+        const next = new Map(playerStates.list);
+        next.delete(ev.payload.instanceId);
+        playerStates.list = next;
+        formatOverrides.delete(ev.payload.instanceId);
+      });
       // リロード後はイベントが来ない一時停止中インスタンスがあるため、
       // 登録直後に一覧を取得してカードを復元する。
       const snapshot = await invoke<PlayerState[]>("player_list");

@@ -16,18 +16,29 @@
 
   let { children } = $props();
 
+  // /chat はチャットポップアップ窓（FR-27）専用の画面で、ナビ・
+  // プレイヤーカード・deep link・更新確認を持たない
+  const isChatPopup = $derived(page.url.pathname === "/chat");
+
   // deep link（yt-browser://open?url=...）の受信を開始する
   // （FR-17、仕様決定 AC）。リスナー登録と保留分ドレインを行い、
   // アンマウント時に解除する
-  $effect(() => initDeepLinks());
+  $effect(() => {
+    if (isChatPopup) return;
+    return initDeepLinks();
+  });
 
   // 起動時の自動更新確認（FR-15、仕様決定 AB）。更新検出時のみ
   // 下の確認ダイアログが出る
   $effect(() => {
+    if (isChatPopup) return;
     checkForUpdateAtStartup();
   });
 </script>
 
+{#if isChatPopup}
+  {@render children()}
+{:else}
 <nav class="app-nav">
   <a href="/" class:active={page.url.pathname === "/"}>{t("nav.player")}</a>
   <a href="/feed" class:active={page.url.pathname === "/feed"}>{t("nav.feed")}</a>
@@ -87,6 +98,7 @@
       </div>
     </div>
   </div>
+{/if}
 {/if}
 
 <style>

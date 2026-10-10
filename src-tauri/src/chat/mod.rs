@@ -49,6 +49,25 @@ const REPLAY_REWIND_KEEP: usize = 1_000;
 /// 収まらないため、超過時は送出が進むまで追加取得を休止する上限
 const REPLAY_BUF_MAX: usize = 2_000;
 
+/// 設定キー: チャットポップアップ窓を最前面で開くか（FR-27、仕様決定 AT）。
+/// 値は "on" / "off"。未設定・その他の値は "on"（最前面）として扱う。
+pub(crate) const SETTING_CHAT_POPUP_ONTOP: &str = "chat.popup_ontop";
+/// ポップアップ窓の利用者キー（動画単位に 1 窓のため固定値）。
+pub(crate) const POPUP_CONSUMER: &str = "popup";
+
+/// チャットポップアップ窓のラベル。動画単位に 1 窓のため video_id から導く
+/// （capability の `chat-popup-*` パターンと対応）。
+pub fn popup_label(video_id: &str) -> String {
+    format!("chat-popup-{video_id}")
+}
+
+/// 埋め込みパネルの利用者キー（起票インスタンス単位）。
+pub fn panel_consumer(instance_id: Option<u32>) -> String {
+    instance_id
+        .map(|i| format!("panel:{i}"))
+        .unwrap_or_else(|| "panel:?".to_string())
+}
+
 /// 動画ごとのチャットポーリングを管理する。`tauri::State` に `Arc` で載せる。
 pub struct ChatPoller {
     db: Db,
@@ -59,6 +78,11 @@ pub struct ChatPoller {
     ng: Arc<NgMatcher>,
     /// video_id -> 実行中タスクの JoinHandle（停止は `abort()`）。
     sessions: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
+    /// video_id -> チャット表示の利用者キー集合。埋め込みパネルと
+    /// ポップアップ窓を同一動画の利用者として数え、空になった時点で
+    /// ポーラーを止める（FR-27、仕様決定 AT。別ウィンドウの利用者は
+    /// メイン窓のフロントが数えられないためバックエンドで参照保持する）。
+    consumers: Mutex<HashMap<String, HashSet<String>>>,
 }
 
 impl ChatPoller {
@@ -69,6 +93,45 @@ impl ChatPoller {
             innertube,
             ng,
             sessions: Mutex::new(HashMap::new()),
+            consumers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 利用者を 1 件登録して取得を開始する。既に動いていれば利用者の追加だけ行う。
+    /// `instance_id` はリプレイの同期先を固定するためのパネル起票インスタンス。
+    /// 既に同じ動画のセッションがある場合はそちらの同期先が維持される
+    /// （セッションは動画 ID ごとに 1 本。仕様決定 AQ の制約として明記）
+    pub fn acquire(self: &Arc<Self>, video_id: &str, consumer: &str, instance_id: Option<u32>) {
+        self.consumers
+            .lock()
+            .unwrap()
+            .entry(video_id.to_string())
+            .or_default()
+            .insert(consumer.to_string());
+        self.start(video_id, instance_id);
+    }
+
+    /// 利用者を 1 件解除し、最後の利用者なら取得を止める。
+    pub fn release(&self, video_id: &str, consumer: &str) {
+        // consumers ロックを保持したまま止める。こうすると、解除と並行した
+        // acquire が consumers ロック待ちになり、新しい利用者を登録した直後に
+        // その新セッションがここの abort に巻き込まれる競合を避けられる
+        let mut consumers = self.consumers.lock().unwrap();
+        let empty = if let Some(set) = consumers.get_mut(video_id) {
+            set.remove(consumer);
+            if set.is_empty() {
+                consumers.remove(video_id);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if empty {
+            if let Some(h) = self.sessions.lock().unwrap().remove(video_id) {
+                h.abort();
+            }
         }
     }
 
@@ -76,7 +139,12 @@ impl ChatPoller {
     /// `instance_id` はリプレイの同期先を固定するためのパネル起票インスタンス。
     /// 既に同じ動画のセッションがある場合はそちらの同期先が維持される
     /// （セッションは動画 ID ごとに 1 本。仕様決定 AQ の制約として明記）
-    pub fn start(self: &Arc<Self>, video_id: &str, instance_id: Option<u32>) {
+    fn start(self: &Arc<Self>, video_id: &str, instance_id: Option<u32>) {
+        // 利用者登録なしでは動かさない。acquire と stop の競合で
+        // 利用者なしのセッションが残らないようにするためのガード
+        if !self.consumers.lock().unwrap().contains_key(video_id) {
+            return;
+        }
         let mut sessions = self.sessions.lock().unwrap();
         if sessions.contains_key(video_id) {
             return;
@@ -90,14 +158,7 @@ impl ChatPoller {
         sessions.insert(video_id.to_string(), handle);
     }
 
-    /// 指定動画のチャット取得を止める。未起動なら何もしない。
-    pub fn stop(&self, video_id: &str) {
-        if let Some(h) = self.sessions.lock().unwrap().remove(video_id) {
-            h.abort();
-        }
-    }
-
-    /// 全セッションを止める（アプリ終了時）。
+    /// 全セッションを止めて利用者登録も消す（アプリ終了時）。
     pub fn stop_all(&self) {
         let handles: Vec<_> = self
             .sessions
@@ -106,6 +167,7 @@ impl ChatPoller {
             .drain()
             .map(|(_, h)| h)
             .collect();
+        self.consumers.lock().unwrap().clear();
         for h in handles {
             h.abort();
         }

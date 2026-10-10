@@ -225,6 +225,11 @@ const ja = {
   // Phase 6: ライブチャット・NG フィルタ・履歴検索
   "chat.show": "チャットを表示",
   "chat.hide": "チャットを閉じる",
+  "chat.popup": "ポップアップ",
+  "chat.popup.hint": "別ウィンドウでチャットを開きます（このパネルは閉じます）",
+  "chat.pin": "最前面",
+  "chat.pin.hint": "ポップアップを最前面に固定します",
+  "chat.toPanel": "パネルに戻す",
   "chat.title": "ライブチャット",
   "chat.empty": "メッセージがありません",
   "chat.deleted": "このメッセージは削除されました",
