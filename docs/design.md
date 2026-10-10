@@ -98,7 +98,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
-| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、全項目省略可。仕様決定 AN・AP・AR で `channel_id`、shorts 既定除外、ページング用カーソルを追加予定） | `Result<Vec<FeedItem>>` |
+| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、全項目省略可。仕様決定 AP で shorts 既定除外を実装済み、AN・AR で `channel_id`・ページング用カーソルを追加予定） | `Result<Vec<FeedItem>>` |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
 | `search` | `query` | `Result<Vec<SearchResult>>` |
