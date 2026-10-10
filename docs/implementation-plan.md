@@ -257,7 +257,7 @@ Phase 29 の shorts 除外は Phase 32 のチャンネル別表示にも波及�
 
 - [ ] `FeedFilter.channel_id`（1 件）を `list_feed` に追加し、チャンネル名クリックでチャンネル絞り込み＋`feed_refresh` の即時再取得＋「未読のみ」解除を行う
 - [ ] `channels` へのタブ別取得済み位置カラム（マイグレーション）と、yt-dlp flat-playlist で `/videos`・`/streams` タブを遡るバックフィルコマンド（1 回各タブ 100 件・暫定）
-- [ ] バックフィル項目の投入（`is_read=1`・`ingested=1`、既存行は不変。`/videos` は `kind='video'`、`/streams` は `kind='live'`）と「さらに読み込む」の差分遡り
+- [ ] バックフィル項目の投入（`is_read=1`・`ingested=1`。既存行は不変だが、`ingested=0` のプレースホルダ行は既読のまま `ingested=1` に確定する。`/videos` は `kind='video'`、`/streams` は `kind='live'`）と「さらに読み込む」の差分遡り
 - [ ] 受け入れ：クリックで即時取得とチャンネル絞り込み表示が行われ、バックフィルで過去動画が既読として積まれる
 
 ### Phase 33：終了済み配信のチャットリプレイ（FR-24、仕様決定 AQ）
