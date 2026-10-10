@@ -130,10 +130,23 @@ select {
   white-space: nowrap;
 }
 
-/* ---- 設定画面（settings/+page.svelte と Settings*Section 子コンポーネント） ---- */
+/* ---- パネル ---- */
 
-/* 各節が子コンポーネント化され scoped 兄弟マッチが効かないためここで定義する。
-   feed 側の .panel には同値の margin-top があるため実害なし */
+/* 節カードの骨格（feed・settings・プレイヤーカードで共有）。
+   背景が要る用途は .panel--filled を併記する */
+.panel {
+  padding: 16px;
+  border: 1px solid #3c4043;
+  border-radius: 12px;
+}
+
+.panel--filled {
+  background: #202124;
+}
+
+/* settings の各節が子コンポーネント化され scoped 兄弟マッチが
+   効かないためここで定義する。feed 側の .panel には同値の
+   margin-top があるため実害なし */
 .panel + .panel {
   margin-top: 16px;
 }

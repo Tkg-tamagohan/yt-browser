@@ -96,7 +96,7 @@
   {#if error}
     <p class="chat-status">{error}</p>
   {/if}
-  <ChatList items={panel?.items ?? []} showAuthor={false} fillHeight={true} />
+  <ChatList items={panel?.items ?? []} showAuthor={false} fillHeight />
 </div>
 
 <style>

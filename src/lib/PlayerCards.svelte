@@ -316,7 +316,7 @@
 >
   {#each [...players.values()] as p (p.instanceId)}
     {@const info = channelInfos.get(p.videoId)}
-    <section class="player">
+    <section class="player panel panel--filled">
       <div class="player-title">
         {p.mediaTitle || p.videoId}
         <span class="badge">#{p.instanceId}</span>
@@ -480,12 +480,9 @@
     display: none;
   }
 
+  /* カード骨格はグローバル .panel + .panel--filled。ここでは間隔だけ */
   .player {
     margin-top: 16px;
-    padding: 16px;
-    border: 1px solid #3c4043;
-    border-radius: 12px;
-    background: #202124;
   }
 
   .player-title {
