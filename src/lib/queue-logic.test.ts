@@ -1,8 +1,14 @@
 // 連続再生キュー・ループの純粋ロジックの回帰テスト（FR-16、仕様決定 AA・AD）。
 // LP-01: 武装キューの選定（1 項目は現在項目のみ、全体は回転順、なしは次項目以降）
 // LP-02: 終了イベントの継続項目によるキュー位置の照合
+// LP-03: キュースタック編集（削除・移動）に伴う再生位置の調整（FR-20）
 import { describe, expect, test } from "vitest";
-import { armPlanFor, reconcileIndex } from "./queue-logic";
+import {
+  armPlanFor,
+  indexAfterMove,
+  indexAfterRemove,
+  reconcileIndex,
+} from "./queue-logic";
 
 describe("LP-01 armPlanFor", () => {
   const items = ["A", "B", "C"];
@@ -56,5 +62,37 @@ describe("LP-02 reconcileIndex", () => {
   test("キュー外の項目（drift）では位置を変えない", () => {
     expect(reconcileIndex(items, 1, "X")).toBe(1);
     expect(reconcileIndex(items, 1, null)).toBe(1);
+  });
+});
+
+describe("LP-03 キュースタック編集の位置調整（FR-20）", () => {
+  test("indexAfterRemove: 再生中より前を消したら 1 つ前へ", () => {
+    expect(indexAfterRemove(2, 0, 3)).toBe(1);
+    expect(indexAfterRemove(2, 1, 3)).toBe(1);
+  });
+
+  test("indexAfterRemove: 再生中・より後ろを消しても据え置き", () => {
+    expect(indexAfterRemove(1, 1, 3)).toBe(1);
+    expect(indexAfterRemove(1, 2, 3)).toBe(1);
+  });
+
+  test("indexAfterRemove: 末尾の再生中を消したら新末尾へ収める", () => {
+    expect(indexAfterRemove(2, 2, 2)).toBe(1);
+    expect(indexAfterRemove(0, 0, 0)).toBe(0);
+  });
+
+  test("indexAfterMove: 再生中項目の移動は位置も追従する", () => {
+    expect(indexAfterMove(1, 1, 3)).toBe(3);
+    expect(indexAfterMove(3, 3, 0)).toBe(0);
+  });
+
+  test("indexAfterMove: 再生中をまたぐ移動は位置をずらす", () => {
+    // [A,B,C,D] index=2(C) で A→2: [B,C,A,D] → C は 1 へ
+    expect(indexAfterMove(2, 0, 2)).toBe(1);
+    // 同じく D→0: [D,A,B,C] → C は 3 へ
+    expect(indexAfterMove(2, 3, 0)).toBe(3);
+    // 再生中をまたがない移動は据え置き
+    expect(indexAfterMove(2, 0, 1)).toBe(2);
+    expect(indexAfterMove(2, 3, 3)).toBe(2);
   });
 });

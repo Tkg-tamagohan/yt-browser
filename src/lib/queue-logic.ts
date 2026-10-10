@@ -43,3 +43,29 @@ export function reconcileIndex(
   if (items[0] === continuedVideoId) return 0;
   return index;
 }
+
+/// 項目削除に伴うキュー位置の調整（FR-20、仕様決定 AM）。
+/// 再生中より前を消したら 1 つ前へ。再生中項目そのものを消しても
+/// index は据え置き（配列上は次項目を指す）。`newLen` は削除後の件数で、
+/// 末尾を超えないよう収める
+export function indexAfterRemove(
+  index: number,
+  removed: number,
+  newLen: number,
+): number {
+  const i = removed < index ? index - 1 : index;
+  return newLen === 0 ? 0 : Math.min(i, newLen - 1);
+}
+
+/// 項目移動（from の項目を to の位置へ挿入）に伴うキュー位置の調整。
+/// 再生中項目は配列上の位置ではなく項目そのものを追従させる
+export function indexAfterMove(
+  index: number,
+  from: number,
+  to: number,
+): number {
+  if (from === index) return to;
+  if (from < index && to >= index) return index - 1;
+  if (from > index && to <= index) return index + 1;
+  return index;
+}

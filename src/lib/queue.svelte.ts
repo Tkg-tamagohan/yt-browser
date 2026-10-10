@@ -11,11 +11,22 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { playerStates, type PlayerEnded } from "$lib/players.svelte";
-import { armPlanFor, reconcileIndex } from "./queue-logic";
+import {
+  playerStates,
+  type PlayerEnded,
+  type VideoRef,
+} from "$lib/players.svelte";
+import {
+  armPlanFor,
+  indexAfterMove,
+  indexAfterRemove,
+  reconcileIndex,
+} from "./queue-logic";
 
 /// 稼働中キューの状態。`items` は動画 ID 列、`index` は現在の再生位置。
 /// `instanceId` はキューを背負うプレイヤーインスタンス。
+/// `playlistId === null` は一時キュー（キュースタック、FR-20・仕様決定 AM）。
+/// 未実行で積んでいるだけのときは instanceId も null
 export const queue = $state<{
   playlistId: number | null;
   playlistName: string;
@@ -23,6 +34,43 @@ export const queue = $state<{
   index: number;
   instanceId: number | null;
 }>({ playlistId: null, playlistName: "", items: [], index: 0, instanceId: null });
+
+/// キュー項目の表示メタ（FR-20、仕様決定 AM）。セッション内メモリのみで
+/// DB には保存しない。同一動画の重複登録は同じメタを共有する
+export type QueueItemMeta = {
+  title: string;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+};
+export const queueMeta = $state<{ list: Map<string, QueueItemMeta> }>({
+  list: new Map(),
+});
+
+/// キューパネルの開閉。ナビ入口とキュー実行中カードの両方から共有する
+export const queuePanel = $state({ open: false });
+
+/// メタを記憶する。追加経路ごとに呼び、重複登録は先のメタを維持する
+function rememberMeta(v: VideoRef): void {
+  if (queueMeta.list.has(v.videoId)) return;
+  const next = new Map(queueMeta.list);
+  next.set(v.videoId, {
+    title: v.title,
+    channelTitle: v.channelTitle,
+    thumbnailUrl: v.thumbnailUrl,
+  });
+  queueMeta.list = next;
+}
+
+/// キュー項目の表示メタを引く。未登録は videoId をタイトル代わりに返す
+export function queueMetaOf(videoId: string): QueueItemMeta {
+  return (
+    queueMeta.list.get(videoId) ?? {
+      title: videoId,
+      channelTitle: null,
+      thumbnailUrl: null,
+    }
+  );
+}
 
 /// ループ状態（仕様決定 AA）。「なし」「プレイリスト全体」「1 項目」の 3 状態。
 export type LoopMode = "none" | "all" | "one";
@@ -176,8 +224,9 @@ async function armNext(): Promise<void> {
 
 /// キューを開始する。呼び出し側は `items[index]` の再生を別途起動済みで、
 /// その instanceId を渡す。終了後は自動で次項目へ進む。
+/// `playlistId` が null のときは一時キュー（キュースタック）として扱う
 export async function startQueue(
-  playlistId: number,
+  playlistId: number | null,
   playlistName: string,
   items: string[],
   index: number,
@@ -220,6 +269,76 @@ export function stopQueue(): void {
 /// キューがこのプレイリストを背負っているか。
 export function queueActive(playlistId: number): boolean {
   return queue.playlistId === playlistId;
+}
+
+/// 一時キュー（積み上げ中・実行中の双方）を背負っているか（FR-20）。
+export function tempQueueActive(): boolean {
+  return queue.playlistId === null && queue.items.length > 0;
+}
+
+/// 「キューに追加」（FR-20、仕様決定 AM）。末尾へ積む。
+/// 実行中（一時・プレイリストどちらのキューでも）はそのキューへの追記として
+/// 武装を張り替え、未実行なら積むだけで再生は開始しない。
+/// 同一動画の重複登録は許す
+export function queueAdd(v: VideoRef): void {
+  rememberMeta(v);
+  queue.items = [...queue.items, v.videoId];
+  if (queue.instanceId !== null) void armNext();
+}
+
+/// 「次に再生」（FR-20、仕様決定 AM）。実行中は現在項目の直後、
+/// 未実行は先頭へ挿入する。武装の張り替えは queueAdd と同じ
+export function queuePlayNext(v: VideoRef): void {
+  rememberMeta(v);
+  const at = queue.instanceId === null ? 0 : queue.index + 1;
+  const items = [...queue.items];
+  items.splice(at, 0, v.videoId);
+  queue.items = items;
+  if (queue.instanceId !== null) void armNext();
+}
+
+/// 項目の個別削除。再生中項目を消しても再生は止めない
+/// （index は配列上で次項目を指す）。実行中は武装を張り替える
+export function queueRemoveAt(i: number): void {
+  if (i < 0 || i >= queue.items.length) return;
+  const items = [...queue.items];
+  items.splice(i, 1);
+  queue.items = items;
+  queue.index = indexAfterRemove(queue.index, i, items.length);
+  if (queue.instanceId !== null) void armNext();
+}
+
+/// 項目の移動（from の項目を to の位置へ挿入）。再生中項目は
+/// 位置ではなく項目そのものを追従させる。実行中は武装を張り替える
+export function queueMove(from: number, to: number): void {
+  if (from === to || from < 0 || from >= queue.items.length) return;
+  const to2 = Math.max(0, Math.min(to, queue.items.length - 1));
+  const items = [...queue.items];
+  const [m] = items.splice(from, 1);
+  items.splice(to2, 0, m);
+  queue.index = indexAfterMove(queue.index, from, to2);
+  queue.items = items;
+  if (queue.instanceId !== null) void armNext();
+}
+
+/// 全消去（FR-20）。実行中はキューを畳んで継続再生を解除する
+/// （再生そのものは止めない）。積み上げ中なら項目を捨てるだけ
+export function queueClear(): void {
+  stopQueue();
+  queueMeta.list = new Map();
+}
+
+/// キューの先頭項目から連続再生を開始する（FR-20、仕様決定 AM）。
+/// 既にキュー実行中のときは何もしない（パネル側で無効化する）。
+/// 失敗時はエラーをそのまま投げ、呼び出し側が通知する
+export async function queuePlayStart(): Promise<void> {
+  const vid = queue.items[0];
+  if (vid === undefined || queue.instanceId !== null) return;
+  const instanceId = await invoke<number>("play_video", {
+    videoId: vid,
+    resume: true,
+  });
+  await startQueue(null, "", queue.items, 0, instanceId);
 }
 
 /// 現在の再生位置（その項目が再生中なら true）。

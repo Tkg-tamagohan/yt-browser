@@ -9,6 +9,7 @@
   import { fmtDateTime } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
   import { loadLibrary } from "$lib/library";
+  import QueueButtons from "$lib/QueueButtons.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
   import {
@@ -875,6 +876,7 @@
                     onclick={() => removeItem(it)}
                     >{t("library.remove")}</button
                   >
+                  <QueueButtons video={videoRefOf(it)} />
                 {/snippet}
               </VideoRow>
             {/each}
