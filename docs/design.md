@@ -819,8 +819,11 @@ yt-browser/
   docs/
   src-tauri/
     Cargo.toml
+    tauri.conf.json
+    capabilities/     # ウィンドウごとの権限定義（default・chat-popup）
     src/
       main.rs
+      lib.rs          # generate_handler! によるコマンドハンドラ登録の実体
       commands/
       mpv/            # プロセス管理・IPC・プロパティ監視
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
@@ -832,14 +835,16 @@ yt-browser/
       db/             # rusqlite・マイグレーション
       model/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
-      native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録（Phase 23 で追加予定）
+      native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
+      util.rs
     mpv/wheel.lua     # include_str! でバイナリに埋め込む同梱スクリプト
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
-    routes/           # 各画面（トップ・feed・search・library・settings）
-    lib/              # PlayerCards.svelte・パネル描画（ChatPanel.svelte・RelatedPanel.svelte）・VideoActions・行骨格（VideoRow.svelte）・i18n 基盤（i18n.ts）・共有状態と共有関数（players.svelte.ts・chat.svelte.ts・notices.svelte.ts・library.ts）・表示フォーマッタ（format.ts）・行アクション配線（videoActions.svelte.ts）・PiP 設定の UI 側定数（pip.ts）・自動更新の共有状態（updater.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）
-  extension/          # MV3 拡張（yt-browser:// を開く launcher。manifest.json + background.js）
-  tauri.conf.json
+    routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality の各 .ts。対応する *.test.ts を併置）
+  extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js）
   package.json
 ```
+
+列挙は主要なものに留め、設定ファイルや生成物は省略している。
