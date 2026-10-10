@@ -113,6 +113,23 @@ select {
   padding-top: 8px;
 }
 
+/* ---- 「さらに読み込む」ボタン ---- */
+
+/* search / feed / library で同じ構造のページ送りボタン。
+   定義が search の scoped style にしかなく他ページへ届いていなかったものを昇格 */
+.load-more {
+  display: block;
+  margin: 12px auto;
+}
+
+/* チャンネル名・投稿者名の省略表示。feed の scoped 定義だけにあり、
+   settings 側の同名クラスへ届いていなかったものを共有化 */
+.ch-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---- 設定画面（settings/+page.svelte と Settings*Section 子コンポーネント） ---- */
 
 /* 各節が子コンポーネント化され scoped 兄弟マッチが効かないためここで定義する。
