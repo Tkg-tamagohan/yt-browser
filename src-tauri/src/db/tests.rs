@@ -245,6 +245,7 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         days: None,
         kind: None,
         cursor: None,
+        channel_id: None,
     };
     assert_eq!(
         db.feed_list_filtered(&all, true, FEED_LIST_LIMIT, |_| true)
@@ -263,6 +264,7 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         days: None,
         kind: None,
         cursor: None,
+        channel_id: None,
     };
     assert!(db
         .feed_list_filtered(&unread, true, FEED_LIST_LIMIT, |_| true)
@@ -1275,6 +1277,176 @@ fn videos_set_kind_only_upgrades_video() {
     };
     assert_eq!(kind_of("video0000001"), "short");
     assert_eq!(kind_of("live00000001"), "live");
+}
+
+/// チャンネル絞り込み（FR-21、仕様決定 AN）。
+/// `channel_id` 指定時はそのチャンネルの項目だけが返る。
+#[test]
+fn feed_list_filtered_by_channel() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch_a = "UCchan0000000000000a1";
+    let ch_b = "UCchan0000000000000b2";
+    fn mk<'a>(id: &'a str, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at: Some("2026-10-08T00:00:00+00:00"),
+            kind: "video",
+        }
+    }
+    for (ch, id) in [(ch_a, "aaaa0000001"), (ch_b, "bbbb0000001")] {
+        db.feed_subscribe(&SubscribeArgs {
+            channel_id: ch,
+            title: "CH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &[mk(id, ch)],
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+    }
+    let ids = |f: FeedFilter| {
+        db.feed_list_filtered(&f, true, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .iter()
+            .map(|i| i.video_id.clone())
+            .collect::<Vec<_>>()
+    };
+    // 絞り込みなしは両チャンネル
+    assert_eq!(ids(FeedFilter::default()).len(), 2);
+    // チャンネル指定はそのチャンネルのみ
+    let f = FeedFilter {
+        channel_id: Some(ch_a.to_string()),
+        ..Default::default()
+    };
+    assert_eq!(ids(f), vec!["aaaa0000001"]);
+    // 未読のみと併用しても効く
+    db.videos_mark_read(&["aaaa0000001".to_string()]).unwrap();
+    let f = FeedFilter {
+        channel_id: Some(ch_a.to_string()),
+        unread_only: true,
+        ..Default::default()
+    };
+    assert!(ids(f).is_empty());
+}
+
+/// バックフィル投入（FR-21、仕様決定 AN）。
+/// 新規行は既読・投入済み、`ingested=0` のプレースホルダは
+/// 既読のまま確定し、投入済みの既存行は書き換えない。
+#[test]
+fn feed_backfill_ingest_inserts_read_and_confirms_placeholder() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "テストCH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    // ライブラリ登録のプレースホルダ（is_read=1・ingested=0）
+    let mut v = vref("place1234567", "ライブラリ由来");
+    v.channel_id = Some(ch.to_string());
+    db.favorite_add(&v).unwrap();
+    // RSS で投入済みの行。バックフィル対象外として温存されるべき行
+    let rss = NewVideo {
+        video_id: "rssvid00001",
+        channel_id: ch,
+        channel_title: "テストCH",
+        title: "RSS 元タイトル",
+        thumbnail_url: None,
+        published_at: Some("2026-10-07T00:00:00+00:00"),
+        kind: "video",
+    };
+    db.feed_ingest(ch, std::slice::from_ref(&rss), None, None)
+        .unwrap();
+
+    fn entry<'a>(id: &'a str, title: &'a str, kind: &'a str, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "テストCH",
+            title,
+            thumbnail_url: None,
+            published_at: None,
+            kind,
+        }
+    }
+    // 新規 2 件 + プレースホルダ 1 件 + 投入済み行への重複 1 件
+    let n = db
+        .feed_backfill_ingest(
+            ch,
+            &[
+                entry("pastvid0001", "過去動画", "video", ch),
+                entry("pastlive001", "アーカイブ", "live", ch),
+                entry("place1234567", "タブでの名前", "video", ch),
+                entry("rssvid00001", "違う名前", "video", ch),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    // 新規 2 + プレースホルダ確定 1。投入済み行の更新はカウント外
+    assert_eq!(n, 3);
+
+    let item_of = |id: &str| {
+        db.feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.video_id == id)
+    };
+    let past = item_of("pastvid0001").unwrap();
+    assert!(past.is_read);
+    assert_eq!(past.kind, "video");
+    assert_eq!(past.published_at, None);
+    let live = item_of("pastlive001").unwrap();
+    assert_eq!(live.kind, "live");
+    // プレースホルダは既読のままメタが埋まって一覧へ出る
+    let ph = item_of("place1234567").unwrap();
+    assert!(ph.is_read);
+    assert_eq!(ph.title, "タブでの名前");
+    // 投入済み行はタイトルも投稿日も書き換わらない
+    let r = item_of("rssvid00001").unwrap();
+    assert_eq!(r.title, "RSS 元タイトル");
+    assert_eq!(r.published_at.as_deref(), Some("2026-10-07T00:00:00+00:00"));
+
+    // 未購読チャンネルは None
+    assert!(db
+        .feed_backfill_ingest("UCabsent00000000000001", &[])
+        .unwrap()
+        .is_none());
+}
+
+/// バックフィル取得済み位置の読み書き（FR-21、仕様決定 AN）。
+#[test]
+fn channel_backfill_positions_roundtrip() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    assert_eq!(db.channel_backfill_positions(ch).unwrap(), (0, 0));
+    db.channel_set_backfill_positions(ch, 100, 50).unwrap();
+    assert_eq!(db.channel_backfill_positions(ch).unwrap(), (100, 50));
+    // 存在しないチャンネルは (0, 0)
+    assert_eq!(
+        db.channel_backfill_positions("UCabsent00000000000001")
+            .unwrap(),
+        (0, 0)
+    );
 }
 
 /// 再生中チャンネル解決の第 1 段（FR-12）。

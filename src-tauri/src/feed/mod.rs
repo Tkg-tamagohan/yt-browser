@@ -503,7 +503,9 @@ impl FeedPoller {
         }
     }
 
-    fn emit_status(&self, channel_id: Option<&str>, level: &str, message: String) {
+    /// `feed://status` の送出。ポーラー外の取得経路（バックフィル等）も
+    /// 同じペイロード契約で状態を通知できるよう公開する（仕様決定 AN）
+    pub fn emit_status(&self, channel_id: Option<&str>, level: &str, message: String) {
         let payload = FeedStatus {
             channel_id: channel_id.map(|s| s.to_string()),
             level: level.to_string(),

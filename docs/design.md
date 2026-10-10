@@ -98,9 +98,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
-| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、`cursor`（`published_at`+`video_id`）、全項目省略可。shorts 既定除外は `feed.show_shorts` で制御（仕様決定 AP）。`channel_id` は仕様決定 AN で追加予定） | `Result<Vec<FeedItem>>` |
+| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、`cursor`（`published_at`+`video_id`）、`channel_id`（チャンネル別フィード、仕様決定 AN）、全項目省略可。shorts 既定除外は `feed.show_shorts` で制御（仕様決定 AP）） | `Result<Vec<FeedItem>>` |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
+| `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置、`errors`） |
 | `search` | `query`, `count?`（返す表示件数の上限。省略時 20・上限 500。ytsearch に継続が無いため、「さらに読み込む」は count を増やした再取得＋画面側の差分追記とする（仕様決定 AR）） | `Result<Vec<SearchResult>>` |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
 | `block_channel` | `channel_id`, `title` | `Result<()>` |
@@ -567,7 +568,9 @@ CREATE TABLE channels (
   subscribed_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_polled_at TEXT,
   rss_etag TEXT,
-  rss_last_modified TEXT
+  rss_last_modified TEXT,
+  backfill_videos_pos INTEGER NOT NULL DEFAULT 0,   -- /videos タブの取得済み件数（FR-21）
+  backfill_streams_pos INTEGER NOT NULL DEFAULT 0   -- /streams タブの取得済み件数（FR-21）
 );
 
 CREATE TABLE blocked_channels (
@@ -681,7 +684,8 @@ END;
 
 - `videos` は購読フィード由来の「未読管理を持つ一覧」と、視聴やお気に入りで登場した動画の双方を載せる最小の台帳とする
   検索や関連の結果は揮発データとして DB に積まない。
-  `ingested` は 0 がライブラリ由来のプレースホルダ（フィードには表示せず、初回の RSS 到達で本文を補完する）、1 がフィード投入済みを表す。
+  `ingested` は 0 がライブラリ由来のプレースホルダ（フィードには表示せず、初回の RSS 到達またはバックフィル投入で本文を補完する）、1 がフィード投入済みを表す。
+  バックフィル投入（`feed_backfill`）は RSS とは別経路で、新規行を既読・投入済みで挿入し、プレースホルダは既読のまま `ingested=1` に確定する。投入済みの既存行は投稿日・既読を含めて書き換えない（FR-21、仕様決定 AN）。
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - チャット検索は FTS5 の外部コンテンツ方式で本文と投稿者名を対象にし、削除は `chat_logs` 側の行削除に連動させる
   トークナイザは `trigram` とする。

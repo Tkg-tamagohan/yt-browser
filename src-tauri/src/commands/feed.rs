@@ -8,8 +8,8 @@ use crate::db::Db;
 use crate::error::UiError;
 use crate::feed::{self, FeedPoller};
 use crate::model::{
-    parse_channel_ref, Category, Channel, ChannelRef, FeedFilter, FeedItem, FeedNewItems,
-    PlayingChannel,
+    parse_channel_ref, BackfillOutcome, Category, Channel, ChannelRef, FeedFilter, FeedItem,
+    FeedNewItems, PlayingChannel,
 };
 use crate::yt::{self, YtDlpResolver};
 
@@ -231,4 +231,79 @@ pub fn feed_refresh(
 ) -> Result<(), UiError> {
     poller.force_refresh(channel_id.as_deref());
     Ok(())
+}
+
+/// バックフィルの 1 回あたりのタブ別取得件数（仕様決定 AN の暫定値）。
+const BACKFILL_BATCH: u32 = 100;
+
+/// `feed_backfill`（FR-21、仕様決定 AN）。購読チャンネルの `/videos`・`/streams`
+/// タブを yt-dlp flat-playlist で遡り、各タブ 100 件ずつ既読・投入済みで積む。
+/// 取得済み位置は `channels` のタブ別カラムに保持し、再呼び出しで続きを遡る。
+/// 片方のタブの取得失敗は `errors` に乗せて他タブの結果を維持する。
+#[tauri::command]
+pub async fn feed_backfill(
+    channel_id: String,
+    db: State<'_, Db>,
+    resolver: State<'_, YtDlpResolver>,
+    poller: State<'_, Arc<FeedPoller>>,
+) -> Result<BackfillOutcome, UiError> {
+    let channel_id = channel_id.trim().to_string();
+    let ch = db
+        .channel_get(&channel_id)?
+        .ok_or_else(|| UiError::invalid_input("購読していないチャンネルです"))?;
+    let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
+    let (mut videos_pos, mut streams_pos) = db.channel_backfill_positions(&channel_id)?;
+    // 取得中と失敗は feed://status で通知する（仕様決定 AN。
+    // トーストはフロント側の feed://status 購読と BackfillOutcome 応答が担う）
+    poller.emit_status(
+        Some(&channel_id),
+        "info",
+        format!("{} の過去動画を取得しています", ch.title),
+    );
+    let mut inserted = 0usize;
+    let mut errors = Vec::new();
+    for (tab, kind, pos) in [
+        ("videos", "video", videos_pos),
+        ("streams", "live", streams_pos),
+    ] {
+        // 位置は DB の i64。実際に u32 を超える蓄積はないが丸めで安全側に倒す
+        let start = (pos + 1).min(u32::MAX as i64) as u32;
+        let end = (pos + BACKFILL_BATCH as i64).min(u32::MAX as i64) as u32;
+        match yt::channel_tab_entries(&path, &channel_id, tab, start, end).await {
+            Ok(entries) => {
+                let items: Vec<crate::db::NewVideo> = entries
+                    .iter()
+                    .map(|(id, title, thumb)| crate::db::NewVideo {
+                        video_id: id,
+                        channel_id: &channel_id,
+                        channel_title: &ch.title,
+                        title,
+                        thumbnail_url: thumb.as_deref(),
+                        published_at: None,
+                        kind,
+                    })
+                    .collect();
+                let fetched = items.len() as i64;
+                if let Some(n) = db.feed_backfill_ingest(&channel_id, &items)? {
+                    inserted += n;
+                }
+                match tab {
+                    "videos" => videos_pos = pos + fetched,
+                    _ => streams_pos = pos + fetched,
+                }
+            }
+            Err(e) => {
+                let msg = format!("{tab} タブ: {e}");
+                poller.emit_status(Some(&channel_id), "warn", msg.clone());
+                errors.push(msg);
+            }
+        }
+    }
+    db.channel_set_backfill_positions(&channel_id, videos_pos, streams_pos)?;
+    Ok(BackfillOutcome {
+        inserted,
+        videos_pos,
+        streams_pos,
+        errors,
+    })
 }

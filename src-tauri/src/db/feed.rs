@@ -148,6 +148,7 @@ impl Db {
                     OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
                AND (?4 IS NULL OR v.kind = ?4)
                AND (?5 = 1 OR v.kind <> 'short')
+               AND (?8 IS NULL OR v.channel_id = ?8)
                AND (
                     ?7 IS NULL
                     OR (?6 IS NULL AND v.published_at IS NULL AND v.video_id > ?7)
@@ -166,6 +167,7 @@ impl Db {
             show_shorts as i64,
             cursor.and_then(|c| c.published_at.as_deref()),
             cursor.map(|c| c.video_id.as_str()),
+            filter.channel_id,
         ])?;
         let mut out = Vec::new();
         while out.len() < limit {
@@ -185,6 +187,89 @@ impl Db {
             }
         }
         Ok(out)
+    }
+
+    /// バックフィル投入（FR-21、仕様決定 AN）。RSS の `feed_ingest` とは別経路:
+    /// 新規行は「既読・投入済み」で挿入し、`ingested=0` のプレースホルダ行は
+    /// 既読のままメタを埋めて `ingested=1` に確定する。投入済みの既存行は
+    /// 一切書き換えない（投稿日を含む。既読→未読の戻しも行わない）。
+    /// 戻り値は `Some(一覧に新たに現れた件数)`。チャンネル行が無ければ `None`。
+    pub fn feed_backfill_ingest(
+        &self,
+        channel_id: &str,
+        entries: &[NewVideo<'_>],
+    ) -> Result<Option<usize>, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM channels WHERE channel_id = ?1)",
+            [channel_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let mut inserted = 0usize;
+        for v in entries {
+            inserted += tx.execute(
+                "INSERT INTO videos
+                   (video_id, channel_id, channel_title, title, thumbnail_url,
+                    published_at, kind, is_read, ingested)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1)
+                 ON CONFLICT (video_id) DO UPDATE SET
+                   channel_id = excluded.channel_id,
+                   channel_title = COALESCE(excluded.channel_title, videos.channel_title),
+                   title = CASE WHEN excluded.title <> '' THEN excluded.title
+                                ELSE videos.title END,
+                   thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
+                   published_at = COALESCE(excluded.published_at, videos.published_at),
+                   kind = excluded.kind,
+                   ingested = 1
+                 WHERE videos.ingested = 0",
+                rusqlite::params![
+                    v.video_id,
+                    v.channel_id,
+                    v.channel_title,
+                    v.title,
+                    v.thumbnail_url,
+                    v.published_at,
+                    v.kind
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(Some(inserted))
+    }
+
+    /// バックフィルのタブ別取得済み位置 `(videos, streams)`。
+    /// チャンネル行が無ければ `(0, 0)`。
+    pub fn channel_backfill_positions(&self, channel_id: &str) -> Result<(i64, i64), DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT backfill_videos_pos, backfill_streams_pos
+               FROM channels WHERE channel_id = ?1",
+        )?;
+        let mut rows = stmt.query([channel_id])?;
+        match rows.next()? {
+            Some(row) => Ok((row.get(0)?, row.get(1)?)),
+            None => Ok((0, 0)),
+        }
+    }
+
+    /// バックフィルのタブ別取得済み位置の保存。
+    pub fn channel_set_backfill_positions(
+        &self,
+        channel_id: &str,
+        videos_pos: i64,
+        streams_pos: i64,
+    ) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE channels SET backfill_videos_pos = ?2,
+               backfill_streams_pos = ?3 WHERE channel_id = ?1",
+            rusqlite::params![channel_id, videos_pos, streams_pos],
+        )?;
+        Ok(())
     }
 
     /// `videos.kind` の事後更新（shorts 判定結果の書き戻し、仕様決定 V）。
