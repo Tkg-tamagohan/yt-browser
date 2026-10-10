@@ -35,9 +35,10 @@
   import {
     clearLoop,
     cycleLoop,
+    discardQueue,
     initQueueEvents,
     loopMode,
-    queue,
+    queueKeyOfInstance,
     queuePanel,
     type LoopMode,
   } from "$lib/queue.svelte";
@@ -230,6 +231,10 @@
       rel.delete(id);
       relatedOpen = rel;
       formatOverrides.delete(id);
+      // 手動 close は player://ended を伴わないため、キューを背負って
+      // いたインスタンスならここでキュー側も畳む（FR-26 のインスタンス消失）
+      const key = queueKeyOfInstance(id);
+      if (key !== undefined) discardQueue(key);
       clearLoop(id);
       // 閉じた時点の位置で履歴が更新されているのでページ側のヒントを取り直させる
       runPlaybackHooks();
@@ -432,11 +437,15 @@
         <button class="link" onclick={() => toggleChat(p.instanceId, p.videoId)}>
           {chatPanel(p.instanceId)?.open ? t("chat.hide") : t("chat.show")}
         </button>
-        <!-- キューを背負うカードから同じキューパネルを開く（FR-20、仕様決定 AM） -->
-        {#if p.instanceId === queue.instanceId}
+        <!-- キューを背負うカードから自分のキューを選択状態でパネルを開く
+             （FR-20・FR-26、仕様決定 AM・AS） -->
+        {#if queueKeyOfInstance(p.instanceId) !== undefined}
           <button
             class="link"
-            onclick={() => (queuePanel.open = !queuePanel.open)}
+            onclick={() => {
+              queuePanel.selected = queueKeyOfInstance(p.instanceId) ?? null;
+              queuePanel.open = true;
+            }}
           >
             {t("queue.show")}
           </button>
