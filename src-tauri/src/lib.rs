@@ -223,6 +223,8 @@ pub fn run() {
             commands::blocked_channels,
             commands::chat_start,
             commands::chat_stop,
+            commands::chat_popup_open,
+            commands::chat_popup_return,
             commands::chat_history_search,
             commands::filter_add,
             commands::filter_remove,

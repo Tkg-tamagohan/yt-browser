@@ -327,6 +327,13 @@ impl PlayerManager {
         // 終端理由が eof なら completed を維持して保存する（途中保存で上書きしない）
         self.persist_history(&player, player.terminal_completed());
         player.shutdown().await;
+        // 手動 close は emitter を先に止めるため player://ended が出ない。
+        // 別ウィンドウ（チャットポップアップ等）がインスタンス消滅を検知できる
+        // よう、クローズ専用のイベントをここで出す（FR-27、仕様決定 AT）
+        let _ = self.app.emit(
+            "player://closed",
+            serde_json::json!({ "instanceId": instance_id }),
+        );
         Ok(())
     }
 

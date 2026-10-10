@@ -465,7 +465,7 @@
       </div>
 
       {#if chatPanel(p.instanceId)?.open}
-        <ChatPanel instanceId={p.instanceId} />
+        <ChatPanel instanceId={p.instanceId} videoId={p.videoId} />
       {/if}
 
       {#if relatedOpen.has(p.instanceId)}
