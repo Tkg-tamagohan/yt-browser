@@ -1,6 +1,6 @@
 ---
 name: yt-browser-stacked-pr-workflow
-description: yt-browser のフェーズ実装でスタックした複数 PR を作り、親の修正を下流へ伝播し、順に main へマージする手順。ベース付け替え、コンフリクト中に Actions が起動しない罠、fmt 差分の伝播、Devin Review スレッドへの GraphQL 返信と解決を扱う。フェーズ単位の PR 作成・レビュー指摘対応・順次マージを頼まれたときに使用する。指摘のトリアージ方針は共有スキル devin-review-triage に委ねる。
+description: yt-browser のフェーズ実装でスタックした複数 PR を作り、親の修正を下流へ伝播し、順に main へマージする手順。ベース付け替え、ベースブランチ消失による下流 PR の連鎖クローズと復旧、コンフリクト中に Actions が起動しない罠、fmt 差分の伝播、Devin Review スレッドへの GraphQL 返信と解決を扱う。フェーズ単位の PR 作成・レビュー指摘対応・順次マージを頼まれたときに使用する。指摘のトリアージ方針は共有スキル devin-review-triage に委ねる。
 ---
 
 # yt-browser のスタック PR とレビュー対応
@@ -29,6 +29,27 @@ description: yt-browser のフェーズ実装でスタックした複数 PR を�
 2. 親がマージされたら、次の PR のベースを `gh pr edit <番号> --base main` で main へ付け替える。
    付け替えで CI が再走るので、pass を待ってからマージする。
 3. 付け替え直後の `mergeable` は UNKNOWN になりうる。数秒待ってから再取得する。
+4. PR のマージは `gh pr view <番号> --json state` で `MERGED` を確認するか、マージコミットを `git log` で確認してから報告する。
+   CI 全 pass や mergeable だけではマージ済みと断定しない。
+
+## ベースブランチ消失による下流クローズ連鎖
+
+このリポジトリでは head ブランチの自動削除が有効であり、マージと同時に head ブランチが消える。
+スタック中間の PR をマージすると、そのブランチをベースにしていた下流 PR はベースを失い、GitHub が自動で CLOSED にする（自動で main へ付け替えられるわけではない。本リポジトリで 2026-10 に観察）。
+再オープンはベースが消えたままではできないため、まずブランチを復元する。
+
+```bash
+# 消えたブランチの先端は、親 PR のマージコミットの第 2 親で取れる
+TIP=$(git rev-parse "origin/main^2")
+git push origin "$TIP:refs/heads/<削除されたブランチ>"
+gh pr reopen <下流PR番号>
+gh pr edit <下流PR番号> --base main
+# 付け替え後はブランチを消しても下流に影響しないため再削除する
+git push origin --delete <削除されたブランチ>
+```
+
+この連鎖を避けるには、親をマージする前に下流のベースを main へ付け替えておくか、下流の付け替えが済むまでブランチを消さない順序にする。
+リポジトリ設定の自動削除は `--delete-branch` を付けなくても動くため、フラグの有無では防げない点に注意する。
 
 ## CI が起動しないときの確認
 
