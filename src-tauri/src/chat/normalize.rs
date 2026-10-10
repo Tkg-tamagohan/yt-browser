@@ -312,7 +312,7 @@ fn is_ng(matcher: &Matcher, e: &ChatEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::{premiere_correction_ms, with_gen, PremiereCorrection};
+    use crate::chat::poller::{premiere_correction_ms, with_gen, PremiereCorrection};
     use serde_json::json;
 
     fn text_action(id: &str, author: &str, ch: &str, usec: &str, msg: &str) -> Value {
