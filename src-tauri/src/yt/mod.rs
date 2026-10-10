@@ -303,9 +303,7 @@ fn parse_channel_tab(
     v: &serde_json::Value,
 ) -> Result<Vec<(String, String, Option<String>)>, YtError> {
     let Some(entries) = v.get("entries") else {
-        return Err(YtError::Malformed(
-            "entries キーがありません".to_string(),
-        ));
+        return Err(YtError::Malformed("entries キーがありません".to_string()));
     };
     let Some(entries) = entries.as_array() else {
         return Err(YtError::Malformed(
