@@ -426,7 +426,11 @@ impl ChatPoller {
             let target = items.partition_point(|(o, _)| *o <= pos);
             let covered = cont.is_none() || items.last().is_some_and(|(o, _)| *o >= pos);
             if !covered {
-                emit_idx = target;
+                // 追い越し中は遠い過去を送出しないが、現在位置直前の
+                // 発言は未送出のまま残す。先読みが追いついた時点で
+                // （または継続が尽きた時点で）近接分として送出する。
+                // emit_idx は後退させない（送出済みを再送しない）
+                emit_idx = emit_idx.max(target.saturating_sub(REPLAY_FLUSH_TAIL));
             } else if target > emit_idx {
                 let start = if target - emit_idx > REPLAY_BATCH_MAX {
                     target.saturating_sub(REPLAY_FLUSH_TAIL)
