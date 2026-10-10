@@ -424,8 +424,7 @@ impl ChatPoller {
             // 遠い過去の発言を送出せずスキップだけする。追いついてから
             // 近接時点の発言を流す
             let target = items.partition_point(|(o, _)| *o <= pos);
-            let covered = cont.is_none()
-                || items.last().is_some_and(|(o, _)| *o >= pos);
+            let covered = cont.is_none() || items.last().is_some_and(|(o, _)| *o >= pos);
             if !covered {
                 emit_idx = target;
             } else if target > emit_idx {
