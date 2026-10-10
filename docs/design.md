@@ -109,7 +109,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `unblock_channel` | `channel_id` | `Result<()>` |
 | `blocked_channels` | なし | `Result<Vec<BlockedChannel>>` |
 | `chat_start` | `video_id`, `instance_id`（省略可） | `Result<()>` |
-| `chat_stop` | `video_id` | `Result<()>` |
+| `chat_stop` | `video_id`, `instance_id`（省略可） | `Result<()>` |
+| `chat_popup_open` | `video_id`, `instance_id`（省略可） | `Result<()>` |
+| `chat_popup_return` | `video_id`, `instance_id` | `Result<()>` |
 | `chat_history_search` | `video_id?`, `query`, `limit?` | `Result<Vec<ChatEvent>>` |
 | `filter_add` | `target`, `kind`, `pattern` | `Result<Filter>` |
 | `filter_remove` | `id` | `Result<()>` |
@@ -150,12 +152,14 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 |---|---|---|
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format }` | observe_property の変化を間引いて発火[^statesample] |
 | `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, armedSeq }` | 終了またはエラー |
+| `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
 | `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
 | `chat://reset` | `{ videoId }` | リプレイの後方シーク再アンカー。対象動画を開くパネルは既表示行を消してから後続の再送分を表示する（FR-24） |
+| `chat://open_panel` | `{ instanceId, videoId }` | `chat_popup_return` がメイン窓へだけ発行するパネル復帰要求（FR-27） |
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=`）の受信（§3.4） |
 | `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
@@ -184,6 +188,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
+| `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -588,7 +593,7 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 - ポップアップは `chat_popup_open` が動画単位に 1 窓で開く別 WebviewWindow（ラベル `chat-popup-<video_id>`、URL は `/chat?v=<videoId>&i=<instanceId>`）。同一動画への再要求は既存窓をフォーカスする
 - 最前面は設定 `chat.popup_ontop`（`pip.default` と同じ受理集合、既定 `on`）で開き、窓内のピン切替は `setAlwaysOnTop` と `settings_set` への保存で反映する
 - ポーラーの利用者はバックエンド側で video_id ごとの参照集合として保持する。埋め込みパネルは `panel:<instance_id>`、ポップアップは固定キー `popup` を登録し、集合が空になった時点でポーラーを止める。別ウィンドウの利用者をメイン窓のフロントが数えられないため、ポップアップの閉じは窓の破棄イベントで検知する
-- 「パネルに戻す」は `chat_popup_return` が先にパネル利用者を登録してから `chat://open-panel` をメイン窓へ発行し、ポップアップを閉じる（切替中にポーラーは止まらない）。起票元インスタンスが同じ動画を再生中でなければ無効とする
+- 「パネルに戻す」は `chat_popup_return` が先にパネル利用者を登録してから `chat://open_panel` をメイン窓へ発行し、ポップアップを閉じる（切替中にポーラーは止まらない）。起票元インスタンスが同じ動画を再生中でなければ無効とする
 - ポップアップの表示行は投稿時刻と本文のみで、投稿者名と superchat / membership のバッジは出さない。`chat://message` / `chat://status` / `chat://reset` は埋め込みパネルと同じ経路で購読し、窓ごとの JS コンテキストで動画 ID へ直接振り分ける。窓を開く前に流れた分は受信できず、埋め込みパネルの蓄積分は引き継がない
 - `chat_start` / `chat_stop` は埋め込みパネル利用者の登録・解除として扱い、パネル閉・ポップアップ閉・プレイヤー終了のいずれでも利用者解除を経由する
 

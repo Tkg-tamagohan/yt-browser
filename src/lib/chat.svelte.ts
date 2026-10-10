@@ -226,7 +226,7 @@ export function initChatEvents(): Promise<void> {
       // パネル復帰要求。対象インスタンスが同じ動画を再生中のときだけ
       // 埋め込みパネルを開き直す（FR-27、仕様決定 AT）
       await listen<{ instanceId: number; videoId: string }>(
-        "chat://open-panel",
+        "chat://open_panel",
         (ev) => {
           const { instanceId, videoId } = ev.payload;
           if (playerStates.list.get(instanceId)?.videoId !== videoId) return;

@@ -120,10 +120,10 @@ pub async fn chat_popup_return(
         &crate::chat::panel_consumer(Some(instance_id)),
         Some(instance_id),
     );
-    // メイン窓のパネル表示は `chat://open-panel` 購読側で開く
+    // メイン窓のパネル表示は `chat://open_panel` 購読側で開く
     let _ = app.emit_to(
         "main",
-        "chat://open-panel",
+        "chat://open_panel",
         serde_json::json!({ "instanceId": instance_id, "videoId": id }),
     );
     if let Some(w) = app.get_webview_window(&crate::chat::popup_label(&id)) {

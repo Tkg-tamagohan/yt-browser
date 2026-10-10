@@ -74,7 +74,7 @@
   async function returnToPanel(): Promise<void> {
     try {
       // 成功時はバックエンド側でパネルの利用者登録・メイン窓への
-      // `chat://open-panel` 発行・この窓のクローズまで行う
+      // `chat://open_panel` 発行・この窓のクローズまで行う
       await invoke("chat_popup_return", { videoId, instanceId });
     } catch (e) {
       error = asErrorMessage(e);
