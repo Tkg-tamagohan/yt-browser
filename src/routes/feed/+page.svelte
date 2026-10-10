@@ -45,6 +45,11 @@
     level: string;
     message: string;
   }
+  // ページングカーソル（FR-25、仕様決定 AR）。前ページの末尾行を指す
+  interface FeedCursor {
+    publishedAt: string | null;
+    videoId: string;
+  }
 
   let items = $state<FeedItem[]>([]);
   let channels = $state<Channel[]>([]);
@@ -62,6 +67,10 @@
   // フィード一覧の束ね方。true のときチャンネル単位のセクションに分ける
   let groupByChannel = $state(false);
   let busy = $state(false);
+  // 「さらに読み込む」の状態（1 ページ = バックエンドの FEED_LIST_LIMIT）
+  let feedCursor = $state<FeedCursor | null>(null);
+  let feedHasMore = $state(false);
+  let loadingMore = $state(false);
   let unlistens: UnlistenFn[] = [];
 
   // お気に入り・プレイリスト行アクション用（FR-7）
@@ -111,9 +120,55 @@
         categoryId: filterCat,
         days: null,
         kind: filterKind || null,
+        cursor: null,
       },
     });
-    if (seq === loadSeq) items = res;
+    if (seq === loadSeq) {
+      items = res;
+      const last = res[res.length - 1];
+      feedCursor = last
+        ? { publishedAt: last.publishedAt, videoId: last.videoId }
+        : null;
+      feedHasMore = res.length >= 500;
+    }
+  }
+
+  // 末尾の次ページを追記する。カーソルは末尾行の
+  // （published_at, video_id）。フィルタ変更や既読化で並びが
+  // 変わっても、バックエンドのカーソル比較が同じ全順序なので
+  // 重複せず続きを取れる（新規追加分は念のため videoId で重複除去）
+  async function loadMoreItems(): Promise<void> {
+    const cursor = feedCursor;
+    if (!cursor || loadingMore) return;
+    loadingMore = true;
+    // 世代は進めず、進行中の初期取得と同じ世代に属させる。
+    // フィルタ切替（loadItems）が始まればこの追記は自動で失効し、
+    // 古い条件の続きが新しい一覧へ混入しない
+    const seq = loadSeq;
+    try {
+      const res = await invoke<FeedItem[]>("list_feed", {
+        filter: {
+          unreadOnly,
+          categoryId: filterCat,
+          days: null,
+          kind: filterKind || null,
+          cursor,
+        },
+      });
+      if (seq === loadSeq) {
+        const seen = new Set(items.map((i) => i.videoId));
+        items = [...items, ...res.filter((i) => !seen.has(i.videoId))];
+        const last = res[res.length - 1];
+        if (last) {
+          feedCursor = { publishedAt: last.publishedAt, videoId: last.videoId };
+        }
+        feedHasMore = res.length >= 500;
+      }
+    } catch (e) {
+      notify(t("feed.failed", { message: asErrorMessage(e) }));
+    } finally {
+      loadingMore = false;
+    }
   }
 
   async function refreshAll(): Promise<void> {
@@ -490,6 +545,15 @@
           </VideoRow>
         {/each}
       </ul>
+    {/if}
+    {#if feedHasMore}
+      <button
+        class="link load-more"
+        onclick={loadMoreItems}
+        disabled={loadingMore}
+      >
+        {loadingMore ? t("related.loading") : t("feed.items.loadMore")}
+      </button>
     {/if}
       </section>
     </div>

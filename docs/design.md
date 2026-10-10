@@ -82,7 +82,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_create` | `name` | `Result<Playlist>` |
 | `playlist_rename` | `playlist_id`, `name` | `Result<()>` |
 | `playlist_delete` | `playlist_id` | `Result<()>` |
-| `playlist_items` | `playlist_id` | `Result<Vec<PlaylistEntry>>` |
+| `playlist_items` | `playlist_id`, `after_position?`, `limit?`（両省略で全件。ページングは末尾行の `position` を `after_position` に渡す） | `Result<Vec<PlaylistEntry>>` |
 | `playlist_add` | `playlist_id`, `video`（`VideoRef`） | `Result<()>` |
 | `playlist_remove` | `playlist_id`, `video_id` | `Result<()>` |
 | `playlist_import` | `url`, `name?` | `Result<Playlist>` |
@@ -98,10 +98,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
-| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、全項目省略可。仕様決定 AN・AP・AR で `channel_id`、shorts 既定除外、ページング用カーソルを追加予定） | `Result<Vec<FeedItem>>` |
+| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、`cursor`（`published_at`+`video_id`）、全項目省略可。shorts 既定除外は `feed.show_shorts` で制御（仕様決定 AP）。`channel_id` は仕様決定 AN で追加予定） | `Result<Vec<FeedItem>>` |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
-| `search` | `query` | `Result<Vec<SearchResult>>` |
+| `search` | `query`, `count?`（返す表示件数の上限。省略時 20・上限 500。ytsearch に継続が無いため、「さらに読み込む」は count を増やした再取得＋画面側の差分追記とする（仕様決定 AR）） | `Result<Vec<SearchResult>>` |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
 | `block_channel` | `channel_id`, `title` | `Result<()>` |
 | `unblock_channel` | `channel_id` | `Result<()>` |

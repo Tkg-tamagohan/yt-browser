@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::FeedFilter;
+use crate::model::{FeedFilter, PlaylistEntry};
 
 #[test]
 fn migrate_applies_all_and_is_idempotent() {
@@ -244,6 +244,7 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         category_id: None,
         days: None,
         kind: None,
+        cursor: None,
     };
     assert_eq!(
         db.feed_list_filtered(&all, true, FEED_LIST_LIMIT, |_| true)
@@ -261,6 +262,7 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         category_id: None,
         days: None,
         kind: None,
+        cursor: None,
     };
     assert!(db
         .feed_list_filtered(&unread, true, FEED_LIST_LIMIT, |_| true)
@@ -674,6 +676,46 @@ fn playlist_crud_and_order() {
         db.playlist_add(999, &vref("cccccccccc3", "C")),
         Err(DbError::NotFound)
     ));
+}
+
+/// `playlist_items_page` の分割取得（FR-25、仕様決定 AR）。
+/// `after_position` より後ろを `limit` 件返し、両省略で全件。
+#[test]
+fn playlist_items_page_ranges() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl = db.playlist_create("分割").unwrap();
+    db.playlist_add_many(
+        pl.id,
+        &[
+            vref("aaaaaaaaaa1", "A"),
+            vref("bbbbbbbbbb2", "B"),
+            vref("cccccccccc3", "C"),
+            vref("dddddddddd4", "D"),
+        ],
+    )
+    .unwrap();
+    let ids = |rows: &[PlaylistEntry]| {
+        rows.iter()
+            .map(|i| i.video_id.clone())
+            .collect::<Vec<_>>()
+    };
+    // 先頭 2 件
+    let p1 = db.playlist_items_page(pl.id, None, Some(2)).unwrap();
+    assert_eq!(ids(&p1), ["aaaaaaaaaa1", "bbbbbbbbbb2"]);
+    // 末尾行の position から続き
+    let p2 = db
+        .playlist_items_page(pl.id, Some(p1[1].position), Some(2))
+        .unwrap();
+    assert_eq!(ids(&p2), ["cccccccccc3", "dddddddddd4"]);
+    // 末尾以降は空、重複も無い
+    let p3 = db
+        .playlist_items_page(pl.id, Some(p2[1].position), Some(2))
+        .unwrap();
+    assert!(p3.is_empty());
+    // 引数省略は従来の全件取得と同じ
+    assert_eq!(db.playlist_items(pl.id).unwrap().len(), 4);
+    let tail = db.playlist_items_page(pl.id, Some(1), None).unwrap();
+    assert_eq!(ids(&tail), ["cccccccccc3", "dddddddddd4"]);
 }
 
 /// DB-LD-07: 項目順の一括書き換え（FR-11、仕様決定 T）。
@@ -1097,6 +1139,90 @@ fn feed_list_filtered_hides_shorts_when_off() {
     };
     assert_eq!(ids(true).len(), 2);
     assert_eq!(ids(false), vec!["video0000001"]);
+}
+
+/// カーソルページング（FR-25、仕様決定 AR）。
+/// 並び順は published_at 降順・同時刻は video_id 昇順・NULL は末尾。
+/// カーソルは前ページ末尾行を指し、次ページはその行の次から重複なく返る。
+#[test]
+fn feed_list_filtered_cursor_paging() {
+    use crate::model::FeedCursor;
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    fn mk<'a>(id: &'a str, published_at: Option<&'a str>, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at,
+            kind: "video",
+        }
+    }
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[
+            mk("aaaa0000001", Some("2026-10-08T00:00:00+00:00"), ch),
+            mk("bbbb0000001", Some("2026-10-08T00:00:00+00:00"), ch),
+            mk("cccc0000001", Some("2026-10-01T00:00:00+00:00"), ch),
+            mk("dddd0000001", None, ch),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+
+    let page = |cursor: Option<FeedCursor>, limit: usize| {
+        let f = FeedFilter {
+            cursor,
+            ..Default::default()
+        };
+        db.feed_list_filtered(&f, true, limit, |_| true)
+            .unwrap()
+            .iter()
+            .map(|i| (i.video_id.clone(), i.published_at.clone()))
+            .collect::<Vec<_>>()
+    };
+    let cur = |published_at: Option<&str>, video_id: &str| FeedCursor {
+        published_at: published_at.map(str::to_string),
+        video_id: video_id.to_string(),
+    };
+    let ids_of = |rows: &[(String, Option<String>)]| {
+        rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>()
+    };
+
+    // 1 ページ目：同時刻は video_id 昇順
+    let p1 = page(None, 2);
+    assert_eq!(ids_of(&p1), vec!["aaaa0000001", "bbbb0000001"]);
+
+    // 2 ページ目：カーソル行自体は含まれず、NULL 行は末尾
+    let p2 = page(Some(cur(Some("2026-10-08T00:00:00+00:00"), "bbbb0000001")), 2);
+    assert_eq!(ids_of(&p2), vec!["cccc0000001", "dddd0000001"]);
+    assert_eq!(p2[1].1, None);
+
+    // 3 ページ目：NULL 群の中では video_id 昇順で遡る（末尾なら空）
+    let p3 = page(Some(cur(None, "dddd0000001")), 2);
+    assert!(p3.is_empty());
+
+    // 同時刻の途中行カーソル：次の同時刻行から続く
+    let mid = page(Some(cur(Some("2026-10-08T00:00:00+00:00"), "aaaa0000001")), 10);
+    assert_eq!(
+        ids_of(&mid),
+        vec!["bbbb0000001", "cccc0000001", "dddd0000001"]
+    );
+
+    // ページをまたいだ全件走査に重複も欠落も無い
+    let mut all = ids_of(&p1);
+    all.extend(ids_of(&p2));
+    let mut sorted = all.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(all.len(), sorted.len());
+    assert_eq!(all.len(), 4);
 }
 
 /// videos_set_kind は 'video' の行だけ更新し、

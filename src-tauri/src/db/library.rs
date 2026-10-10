@@ -131,15 +131,33 @@ impl Db {
 
     /// プレイリストの中身。position 昇順。
     pub fn playlist_items(&self, playlist_id: i64) -> Result<Vec<PlaylistEntry>, DbError> {
+        self.playlist_items_page(playlist_id, None, None)
+    }
+
+    /// `playlist_items` の分割取得版（FR-25、仕様決定 AR）。
+    /// `after_position` より後ろの項目を `limit` 件まで返す。
+    /// どちらも None のとき全件（従来の `playlist_items` と同じ）。
+    pub fn playlist_items_page(
+        &self,
+        playlist_id: i64,
+        after_position: Option<i64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<PlaylistEntry>, DbError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT i.position, i.video_id, v.title, NULLIF(v.channel_id, ''),
                     v.channel_title, v.thumbnail_url, v.published_at
              FROM playlist_items i JOIN videos v ON v.video_id = i.video_id
-             WHERE i.playlist_id = ?1
-             ORDER BY i.position, i.rowid",
+             WHERE i.playlist_id = ?1 AND (?2 IS NULL OR i.position > ?2)
+             ORDER BY i.position, i.rowid
+             LIMIT ?3",
         )?;
-        let mut rows = stmt.query([playlist_id])?;
+        // SQLite は LIMIT -1 で制限なしになる
+        let mut rows = stmt.query(rusqlite::params![
+            playlist_id,
+            after_position,
+            limit.map(|l| l as i64).unwrap_or(-1)
+        ])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(PlaylistEntry {

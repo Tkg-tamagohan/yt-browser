@@ -145,6 +145,18 @@ pub struct Category {
     pub sort_order: i64,
 }
 
+/// `list_feed` のページングカーソル（FR-25、仕様決定 AR）。
+/// 前ページの末尾行を指し、この行の次（より古い側）から続きを返す。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedCursor {
+    /// 末尾行の投稿日時。NULL 群（投稿日時なし、末尾側に並ぶ）の
+    /// 中を遡る場合は None。
+    pub published_at: Option<String>,
+    /// 末尾行の動画 ID（同時刻の並びの決め手）。
+    pub video_id: String,
+}
+
 /// `list_feed` のフィルタ（設計書 §3.1）。全項目省略可。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -158,6 +170,8 @@ pub struct FeedFilter {
     /// 動画の種別（"video" | "short" | "live"）で絞る（FR-13）。
     /// kind が未検出（'video' のまま）の項目は video として扱う（仕様決定 V）。
     pub kind: Option<String>,
+    /// ページングカーソル。Some のとき末尾行の次から返す（FR-25、仕様決定 AR）。
+    pub cursor: Option<FeedCursor>,
 }
 
 /// `videos` テーブルの 1 行（設計書 §8）。`list_feed` の返却型。

@@ -113,12 +113,20 @@ pub fn playlist_delete(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiErro
 }
 
 /// `playlist_items`（FR-7）。position 昇順。
+/// `after_position`・`limit` の双方省略で全件（従来動作）。
+/// ページングは末尾行の position を `after_position` に渡して続きを取る
+/// （FR-25、仕様決定 AR）。
 #[tauri::command]
-pub fn playlist_items(playlist_id: i64, db: State<'_, Db>) -> Result<Vec<PlaylistEntry>, UiError> {
+pub fn playlist_items(
+    playlist_id: i64,
+    after_position: Option<i64>,
+    limit: Option<u32>,
+    db: State<'_, Db>,
+) -> Result<Vec<PlaylistEntry>, UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
-    Ok(db.playlist_items(playlist_id)?)
+    Ok(db.playlist_items_page(playlist_id, after_position, limit)?)
 }
 
 /// `playlist_add`（FR-7）。末尾への追加、重複は位置を維持して無視。
