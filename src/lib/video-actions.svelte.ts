@@ -5,21 +5,23 @@
 import { loadLibrary } from "$lib/library";
 import type { Playlist, VideoRef } from "$lib/players.svelte";
 
-/// 各行型（SearchResult / FeedItem / FavoriteEntry など、同じフィールド名を
-/// 持つ型）から VideoActions へ渡す VideoRef を作る。
+/// 各行型（SearchResult / FeedItem / FavoriteEntry / WatchHistory など、
+/// 同じフィールド名を持つ型）から VideoActions へ渡す VideoRef を作る。
+/// 履歴行のようにサムネイルを持たない行型は省略可で、null として渡す
+/// （videos 台帳の既存値は video_upsert の COALESCE で維持される）。
 export function videoRefOf(v: {
   videoId: string;
   title: string;
   channelId: string | null;
   channelTitle: string | null;
-  thumbnailUrl: string | null;
+  thumbnailUrl?: string | null;
 }): VideoRef {
   return {
     videoId: v.videoId,
     title: v.title,
     channelId: v.channelId,
     channelTitle: v.channelTitle,
-    thumbnailUrl: v.thumbnailUrl,
+    thumbnailUrl: v.thumbnailUrl ?? null,
   };
 }
 

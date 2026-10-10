@@ -74,6 +74,8 @@
       history={lib.history}
       play={lib.play}
       removeHistory={lib.removeHistory}
+      va={lib.va}
+      onPlaylistAdd={lib.onPlaylistAdd}
     />
   {:else if tab === "favorites"}
     <LibraryFavorites
