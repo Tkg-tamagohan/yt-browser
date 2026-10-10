@@ -184,6 +184,7 @@ pub fn run() {
             commands::player_control,
             commands::player_close,
             commands::player_set_queue,
+            commands::player_switch,
             commands::history_get,
             commands::history_list,
             commands::history_remove,

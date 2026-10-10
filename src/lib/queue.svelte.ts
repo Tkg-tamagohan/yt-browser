@@ -113,12 +113,15 @@ export const queuePanel = $state<{ open: boolean; selected: QueueKey }>({
   selected: null,
 });
 
-/// メタを記憶する。追加経路ごとに呼び、重複登録は先のメタを維持する
-function rememberMeta(v: VideoRef): void {
+/// メタを記憶する。キューへの投入経路（キューに追加・次に再生・
+/// プレイリストキューのスナップショット作成）ごとに呼び、
+/// 重複登録は先のメタを維持する。タイトルが空のときは動画 ID に
+/// 潰して、一覧表示が空白にならないようにする
+export function rememberMeta(v: VideoRef): void {
   if (queueMeta.list.has(v.videoId)) return;
   const next = new Map(queueMeta.list);
   next.set(v.videoId, {
-    title: v.title,
+    title: v.title || v.videoId,
     channelTitle: v.channelTitle,
     thumbnailUrl: v.thumbnailUrl,
   });
@@ -340,7 +343,9 @@ async function armQueue(q: QueueState): Promise<void> {
 /// キューを開始する。呼び出し側は `items[index]` の再生を別途起動済みで、
 /// その instanceId を渡す。終了後は自動で次項目へ進む。
 /// 同じキーの既存キューは捨てて新しいスナップショットで上書きする
-/// （「ここから連続再生」による置き換え、FR-26）
+/// （「ここから連続再生」による置き換え、FR-26）。実行中キューへの
+/// 再開始では呼び出し側が同じインスタンスへ読み替えたうえで同じ
+/// instanceId を渡す（セッション引き継ぎ）
 export async function startQueue(
   playlistId: number | null,
   playlistName: string,
@@ -350,9 +355,11 @@ export async function startQueue(
 ): Promise<void> {
   let q = queues.list.get(playlistId);
   if (q !== undefined) {
-    // 既存キューのインスタンスはキューから外してから上書きする。
-    // 外れたインスタンスはループ状態に応じて継続または終端へ向かう
-    detachInstance(q);
+    // 別インスタンスへ置き換える場合は、既存キューのインスタンスを
+    // キューから外してから上書きする（外れたインスタンスはループ状態に
+    // 応じて継続または終端へ向かう）。セッション引き継ぎ（同じ
+    // インスタンスへの再開始）では外さない
+    if (q.instanceId !== instanceId) detachInstance(q);
     q.playlistName = playlistName;
     q.items = items;
     q.index = index;
@@ -367,6 +374,9 @@ export async function startQueue(
     next.set(playlistId, q);
     queues.list = next;
   }
+  // 上書きで外れた旧スナップショット項目のメタを解放する
+  // （discard 系以外では prune が走らないため）
+  pruneMeta();
   await armQueue(q);
 }
 
