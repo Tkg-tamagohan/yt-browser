@@ -187,12 +187,16 @@ impl ChatPoller {
     }
 
     /// リプレイ同期用の再生位置（ms）。パネル起票のインスタンスが指定
-    /// されていればその位置、無ければ同じ動画を再生中のいずれかの位置。
-    /// 対象が見つからなければ None（バッファは進めるが送出しない）。
+    /// されていればその位置を優先し、その窓が無くなった場合は同じ動画を
+    /// 再生中のいずれかの位置へ移る（固定先の終了で残り窓のリプレイが
+    /// 止まらないようにする）。対象が見つからなければ None
+    /// （バッファは進めるが送出しない）。
     fn position_ms(&self, video_id: &str, instance_id: Option<u32>) -> Option<i64> {
         let pm = self.app.try_state::<crate::mpv::PlayerManager>()?;
         let pos = match instance_id {
-            Some(id) => pm.position_of_instance(id, video_id),
+            Some(id) => pm
+                .position_of_instance(id, video_id)
+                .or_else(|| pm.position_of(video_id)),
             None => pm.position_of(video_id),
         };
         pos.map(|p| (p * 1000.0) as i64)
@@ -302,6 +306,9 @@ impl ChatPoller {
         let mut failures: u32 = 0;
         // 末尾通過の終了通知は 1 回だけ出す
         let mut end_notified = false;
+        // drain で捨てた区間の末尾オフセット。この時点以前に捨てた
+        // 発言があり得るため、その範囲への後方シークでだけ限界警告を出す
+        let mut dropped_upto: Option<i64> = None;
         loop {
             let pos = self
                 .position_ms(video_id, instance_id)
@@ -390,9 +397,11 @@ impl ChatPoller {
             if last_pos.is_some_and(|lp| pos < lp - REPLAY_SEEK_BACK_MS) {
                 emit_idx = items.partition_point(|(o, _)| *o <= pos);
                 gen += 1;
-                // 保持窓から捨てた区間は再送できない。シーク先が保持分の
-                // 先頭より前なら巻き戻し限界であることを通知する
-                if items.first().is_some_and(|(o, _)| *o > pos) {
+                // drain で捨てた区間の発言は再送できない。シーク先が
+                // 実際に捨てた範囲（dropped_upto 以前）に入るときだけ
+                // 巻き戻し限界であることを通知する（保持先頭より前でも
+                // 最初の発言に達していないだけなら警告しない）
+                if dropped_upto.is_some_and(|b| pos <= b) {
                     self.status(
                         Some(video_id),
                         "warn",
@@ -409,9 +418,17 @@ impl ChatPoller {
                 );
             }
             // 再生位置までの未送出分を流す。前方への大きな追い越し
-            // （シーク・早送り）は近接時点の末尾だけ流して中間を飛ばす
+            // （シーク・早送り）は近接時点の末尾だけ流して中間を飛ばす。
+            // ただし先読みが再生位置に追いついていない（未読の継続が
+            // 残り、バッファ末尾が pos より手前の）間は、バッファ内の
+            // 遠い過去の発言を送出せずスキップだけする。追いついてから
+            // 近接時点の発言を流す
             let target = items.partition_point(|(o, _)| *o <= pos);
-            if target > emit_idx {
+            let covered = cont.is_none()
+                || items.last().is_some_and(|(o, _)| *o >= pos);
+            if !covered {
+                emit_idx = target;
+            } else if target > emit_idx {
                 let start = if target - emit_idx > REPLAY_BATCH_MAX {
                     target.saturating_sub(REPLAY_FLUSH_TAIL)
                 } else {
@@ -436,6 +453,7 @@ impl ChatPoller {
             // 後方シークではその区間のチャットは再送されない）
             if emit_idx > REPLAY_REWIND_KEEP {
                 let drop_n = emit_idx - REPLAY_REWIND_KEEP;
+                dropped_upto = items.get(drop_n - 1).map(|(o, _)| *o);
                 items.drain(..drop_n);
                 emit_idx -= drop_n;
             }

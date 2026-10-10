@@ -107,7 +107,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `block_channel` | `channel_id`, `title` | `Result<()>` |
 | `unblock_channel` | `channel_id` | `Result<()>` |
 | `blocked_channels` | なし | `Result<Vec<BlockedChannel>>` |
-| `chat_start` | `video_id` | `Result<()>` |
+| `chat_start` | `video_id`, `instance_id`（省略可） | `Result<()>` |
 | `chat_stop` | `video_id` | `Result<()>` |
 | `chat_history_search` | `video_id?`, `query`, `limit?` | `Result<Vec<ChatEvent>>` |
 | `filter_add` | `target`, `kind`, `pattern` | `Result<Filter>` |
@@ -495,7 +495,7 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 継続エントリから `liveChatReplayContinuationData` をリプレイとみなす判定（混在時はリプレイ優先）はそのまま維持し、watch が直接リプレイ継続を返す経路にも対応する。
 
 - メッセージは `replayChatItemAction` の `videoOffsetTimeMsec`（アクションレベル）を内側アイテムへ伝播させ、`ChatEvent.video_offset_ms` として保持する。リプレイ経路のイベントは保存しないため `raw_json` はバッファへ入れずに捨てる
-- ポーラーは再生位置 + 120 秒分を先読みしてオフセット昇順のバッファに持ち、250 ms 周期で mpv の再生位置と照合して `chat://message` へ流す。送出は NG 判定込みの `normalize_all` を共用するが、`chat_logs` には保存しない。同期位置は `chat_start` で起票されたインスタンスの `PlayerManager.position_of_instance` に固定する（`instance_id` 未指定時は `position_of` で同じ動画を再生中のいずれかの位置）。同一動画を複数窓で再生する場合、セッションは動画 ID ごとに 1 本で、同期先は最初にパネルを開いたインスタンスに固定される（制約として許容）
+- ポーラーは再生位置 + 120 秒分を先読みしてオフセット昇順のバッファに持ち、250 ms 周期で mpv の再生位置と照合して `chat://message` へ流す。送出は NG 判定込みの `normalize_all` を共用するが、`chat_logs` には保存しない。同期位置は `chat_start` で起票されたインスタンスの `PlayerManager.position_of_instance` に固定する（`instance_id` 未指定時は `position_of` で同じ動画を再生中のいずれかの位置）。同一動画を複数窓で再生する場合、セッションは動画 ID ごとに 1 本で、同期先は最初にパネルを開いたインスタンスを優先する。同期先の窓が終了した場合は同じ動画を再生中の残りのいずれかへ移る（どの窓も無ければ位置を取れず送出だけ止まる）
 - メモリは上限付きとする。送出済みは後方シークの巻き戻し窓として直近 1000 件だけ保持し、未送出の先読みも 2000 件を超えるときは送出が進むまで追加取得を休止する。捨てた区間への後方シークではその区間のチャットは再送されず、巻き戻し限界として `chat://status` に警告を出す（長時間配信での `items` 肥大対策）
 - 後方シーク（位置が 2 秒超戻る）は未送出カーソルを近接時点へ戻して再アンカーする。再アンカー時に `chat://reset` を送り、パネル側は対象動画の既表示行を消してから再送分を表示する（シーク先より未来の発言が残らない）。再アンカー世代毎に item_id（削除イベントは対象 ID も）へ `#g<n>` 接尾辞を付け、表示側 dedup を避けて同じメッセージを再表示する
 - 前方シークで大量に追い越した場合は近接時点の末尾 50 件だけ流して中間を飛ばす

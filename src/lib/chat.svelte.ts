@@ -130,13 +130,15 @@ export function cleanupChatPanel(instanceId: number, videoId: string): void {
 }
 
 /// `chat://reset` の受信処理（FR-24）。リプレイの後方シーク再アンカー時に
-/// 届き、対象動画を開いている全パネルの既表示行を消す。
-/// この直後に再送分が届くため、シーク先より未来の発言が残らない
+/// 届き、対象動画を再生中の全パネルの既表示行を消す。
+/// この直後に再送分が届くため、シーク先より未来の発言が残らない。
+/// 閉じたパネルも受信分を保持しているため、開き直しで古い発言が
+/// 出ないよう open に関わらず消す
 function onChatReset(p: { videoId: string }): void {
   const next = new Map(chatPanels.list);
   let changed = false;
   for (const [inst, cp] of next) {
-    if (cp.open && playerStates.list.get(inst)?.videoId === p.videoId) {
+    if (playerStates.list.get(inst)?.videoId === p.videoId) {
       next.set(inst, { ...cp, items: [] });
       changed = true;
     }
