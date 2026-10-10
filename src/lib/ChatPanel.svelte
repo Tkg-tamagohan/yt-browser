@@ -23,7 +23,7 @@
 
 </script>
 
-<div class="chat-panel">
+<div class="chat-panel sub-panel">
   <div class="chat-head">
     <h3>{t("chat.title")}</h3>
     <!-- ポップアップ窓へ切り替える（FR-27）。開くとこのパネルは閉じる -->
@@ -66,12 +66,6 @@
 </div>
 
 <style>
-  .chat-panel {
-    margin-top: 12px;
-    border-top: 1px solid #3c4043;
-    padding-top: 8px;
-  }
-
   .chat-head {
     display: flex;
     align-items: baseline;

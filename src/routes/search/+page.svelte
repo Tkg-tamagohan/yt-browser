@@ -137,7 +137,7 @@
   </form>
 
   {#if searchedOnce && results.length === 0 && !searching}
-    <p class="empty">{t("search.empty")}</p>
+    <p class="subtle">{t("search.empty")}</p>
   {/if}
 
   <ul class="results">
@@ -192,10 +192,6 @@
 
   .search-form input {
     flex: 1;
-  }
-
-  .empty {
-    color: #9aa0a6;
   }
 
   .results {

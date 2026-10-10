@@ -280,8 +280,4 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .subtle {
-    color: #9aa0a6;
-  }
 </style>

@@ -220,7 +220,6 @@
   }
 
   .subtle {
-    color: #9aa0a6;
     font-size: 0.85rem;
   }
 </style>
