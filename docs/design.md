@@ -302,11 +302,32 @@ mpv のリスト型オプションは同じ指定を重ねると後が前を上�
 local options = { volume_delta = 2 }
 require("mp.options").read_options(options, "wheel")
 
+local STEP_UNMUTE_DELAY = 0.15
+local saved_mute = nil
+local unmute_timer = nil
+
+local function silent_step(cmd)
+  if saved_mute == nil then
+    saved_mute = mp.get_property_bool("mute") or false
+  end
+  mp.set_property_bool("mute", true)
+  mp.command(cmd)
+  if unmute_timer ~= nil then
+    unmute_timer:kill()
+  end
+  unmute_timer = mp.add_timeout(STEP_UNMUTE_DELAY, function()
+    unmute_timer = nil
+    if saved_mute ~= nil then
+      mp.set_property_bool("mute", saved_mute)
+      saved_mute = nil
+    end
+  end)
+end
+
 local function wheel(ev, paused_cmd, playing_delta)
-  -- マウスホイールのノッチは複合バインドで press として届く（down が来るバックエンドも一応許容）
   if ev.event ~= "press" and ev.event ~= "down" then return end
   if mp.get_property_bool("pause") then
-    mp.command(paused_cmd)
+    silent_step(paused_cmd)
   else
     mp.commandv("add", "volume", playing_delta)
   end
@@ -314,15 +335,20 @@ end
 
 mp.add_key_binding("WHEEL_UP",   "yb_wheel_up",   function(e) wheel(e, "frame-step",       options.volume_delta) end, {complex=true})
 mp.add_key_binding("WHEEL_DOWN", "yb_wheel_down", function(e) wheel(e, "frame-back-step", -options.volume_delta) end, {complex=true})
+mp.add_key_binding(",", "yb_frame_back_step_key", function() silent_step("frame-back-step") end)
+mp.add_key_binding(".", "yb_frame_step_key",      function() silent_step("frame-step") end)
+mp.register_script_message("yb_frame_step",      function() silent_step("frame-step") end)
+mp.register_script_message("yb_frame_back_step", function() silent_step("frame-back-step") end)
 ```
 
-アプリ側 UI ボタンとキーバインドは `player_control` 経由で同じコマンドを叩く。
+アプリ側 UI ボタンとキーバインドは `player_control` 経由で `script-message` を送り、Lua 側のラッパへ委譲する。
 割り当ての既定は仕様決定 D、音量の変化量は設定 `wheel.volume_delta` を script-opts の `wheel-volume_delta` として mpv 起動時に注入する[^wheelconf]。
 
 コマ送りの操作中は音声を出力しない（FR-22、仕様決定 AO）。
-wheel.lua 経路と `player_control` 経路の双方に適用し、ユーザーのミュート状態はコマ送り前後で保持する。
-mpv 標準の `,` / `.` キーバインドは `wheel.lua` や `player_control` を通らないため、mpv 窓上の経路をすべて包む必要がある。実装ではキーバインドの上書き等で標準キーも対象に含める。
-実現方式は mpv の実挙動検証で決める。
+mpv はステップ実行時に短い音声断片を出しうるため、実現方式は「ステップを `mute=yes` の窓で包み、タイマーで元のミュート状態へ復帰する」`silent_step` ラッパとした。
+mpv 標準の `,` / `.` キーバインドは `wheel.lua` や `player_control` を通らないため、スクリプト側で上書きバインドして同じラッパへ向け、mpv 窓上の経路をすべて包む。
+連続ステップでは復帰タイマーを張り替えて最初に捕捉したミュート値で復帰する。窓の途中でユーザーがミュートを切り替えた場合は開始時の値で上書きされ、窓の途中で再生再開した場合は窓の残り時間だけ無音が残る（いずれも既知の制約）。
+ミュート窓の長さ（実装値 0.15s）は実機検証で決めた値であり、音の漏れが残る環境では調整対象とする。
 `--script-opts` への注入は起動時に限られるため、設定の変更は次回の再生から有効になり、稼働中のインスタンスには適用されない。
 
 [^drift]: yt-frame-scrub で発生した「`currentTime * fps` の丸めによる着地ずれ」はシークでフレームに寄せる方式固有の問題であり、mpv のコマ送りはデコーダが 1 フレーム進める方式のため推定自体を行わない。

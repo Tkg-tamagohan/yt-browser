@@ -422,10 +422,15 @@ impl MpvPlayer {
                 lock(&self.state).format = format.clone();
             }
             PlayerAction::FrameStep => {
-                self.ipc.command(vec![json!("frame-step")]).await?;
+                // コマ送りは wheel.lua の無音化ラッパへ委譲する（FR-22、仕様決定 AO）
+                self.ipc
+                    .command(vec![json!("script-message"), json!("yb_frame_step")])
+                    .await?;
             }
             PlayerAction::FrameBackStep => {
-                self.ipc.command(vec![json!("frame-back-step")]).await?;
+                self.ipc
+                    .command(vec![json!("script-message"), json!("yb_frame_back_step")])
+                    .await?;
             }
             PlayerAction::Pip { enabled } => {
                 // 設定値（pip.geometry）の解決は PlayerManager::control で行う。
