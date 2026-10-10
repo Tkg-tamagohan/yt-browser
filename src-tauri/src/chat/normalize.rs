@@ -14,8 +14,8 @@ use crate::model::{ChatEvent, ChatKind};
 const SEEN_CAP: usize = 10_000;
 
 /// 応答の actions[] 全件を正規化し、重複を除き、NG 判定を付けて返す。
-/// `seen` は保存確定済みの既処理 ID、`pending` はこの応答で処理した ID
-/// （呼び出し側が DB 保存の成功時にだけ `commit_pending` で seen へ移す）。
+/// `seen` は確定済みの既処理 ID、`pending` はこの応答で処理した ID
+/// （呼び出し側が `commit_pending` で seen へ移す）。
 pub(crate) fn normalize_all(
     matcher: &Matcher,
     video_id: &str,
@@ -31,11 +31,9 @@ pub(crate) fn normalize_all(
     for item in items {
         let Some(mut e) = (match item {
             ActionItem::Item { v, offset_ms } => renderer_to_event(video_id, &v, offset_ms),
-            ActionItem::Deleted {
-                target,
-                raw,
-                offset_ms,
-            } => Some(deleted_to_event(video_id, &target, &raw, offset_ms)),
+            ActionItem::Deleted { target, offset_ms } => {
+                Some(deleted_to_event(video_id, &target, offset_ms))
+            }
         }) else {
             continue;
         };
@@ -51,7 +49,7 @@ pub(crate) fn normalize_all(
     out
 }
 
-/// 保存が成功したバッチの item ID を既処理集合へ確定し、上限を超えたら古い順に捨てる。
+/// 処理したバッチの item ID を既処理集合へ確定し、上限を超えたら古い順に捨てる。
 pub(crate) fn commit_pending(
     seen: &mut HashSet<String>,
     order: &mut VecDeque<String>,
@@ -69,7 +67,7 @@ pub(crate) fn commit_pending(
 }
 
 /// アクションから取り出した処理対象。`Item` は renderer を含む
-/// `{<name>Renderer: {...}}` 形の値オブジェクト、`Deleted` は削除対象 ID と原文。
+/// `{<name>Renderer: {...}}` 形の値オブジェクト、`Deleted` は削除対象 ID。
 /// `offset_ms` はリプレイの動画内時刻（`videoOffsetTimeMsec`）、ライブでは None。
 enum ActionItem {
     Item {
@@ -78,7 +76,6 @@ enum ActionItem {
     },
     Deleted {
         target: String,
-        raw: Value,
         offset_ms: Option<i64>,
     },
 }
@@ -86,7 +83,7 @@ enum ActionItem {
 /// 1 アクションオブジェクトから処理対象を全て列挙する。
 /// `replayChatItemAction`（リプレイ由来）は内側の actions を再帰的に展開し、
 /// アクションレベルの `videoOffsetTimeMsec` を内側アイテムへ伝播する。
-/// 未知のアクションキーは `other` として保存するため Item に流す。
+/// 未知のアクションキーは `other` イベントにするため Item に流す。
 fn iter_action_items(action: &Value, offset_ms: Option<i64>, out: &mut Vec<ActionItem>) {
     let Some(m) = action.as_object() else {
         return;
@@ -119,7 +116,6 @@ fn iter_action_items(action: &Value, offset_ms: Option<i64>, out: &mut Vec<Actio
                 if let Some(id) = v.get("targetItemId").and_then(|t| t.as_str()) {
                     out.push(ActionItem::Deleted {
                         target: id.to_string(),
-                        raw: v.clone(),
                         offset_ms,
                     });
                 }
@@ -135,7 +131,7 @@ fn iter_action_items(action: &Value, offset_ms: Option<i64>, out: &mut Vec<Actio
 
 /// `{<rendererName>: {...}}` 形のアイテムを `ChatEvent` に正規化する。
 /// `offset_ms` はリプレイの動画内時刻（ライブでは None）。
-/// 未知 renderer は `other` として原文だけ残す。
+/// 未知 renderer は `other` イベントにする。
 fn renderer_to_event(video_id: &str, item: &Value, offset_ms: Option<i64>) -> Option<ChatEvent> {
     let m = item.as_object()?;
     for (name, r) in m {
@@ -201,7 +197,6 @@ fn renderer_to_event(video_id: &str, item: &Value, offset_ms: Option<i64>) -> Op
             amount_display: amount,
             ng: false,
             video_offset_ms: offset_ms,
-            raw_json: serde_json::to_string(item).unwrap_or_default(),
         });
     }
     None
@@ -209,12 +204,7 @@ fn renderer_to_event(video_id: &str, item: &Value, offset_ms: Option<i64>) -> Op
 
 /// 削除アクションを `deleted` イベントとして正規化する。
 /// `message` に削除対象の item ID を入れ、UI 側で該当行の打消しに使う。
-fn deleted_to_event(
-    video_id: &str,
-    target_id: &str,
-    raw: &Value,
-    offset_ms: Option<i64>,
-) -> ChatEvent {
+fn deleted_to_event(video_id: &str, target_id: &str, offset_ms: Option<i64>) -> ChatEvent {
     ChatEvent {
         item_id: format!("del:{target_id}"),
         video_id: video_id.to_string(),
@@ -226,7 +216,6 @@ fn deleted_to_event(
         amount_display: None,
         ng: false,
         video_offset_ms: offset_ms,
-        raw_json: serde_json::to_string(raw).unwrap_or_default(),
     }
 }
 
@@ -345,7 +334,6 @@ mod tests {
         assert_eq!(ev.author_channel_id.as_deref(), Some("UCxxxx"));
         assert_eq!(ev.posted_at_usec, 1700000000000000);
         assert_eq!(ev.message, "hello");
-        assert!(!ev.raw_json.is_empty());
     }
 
     /// CH-02: スパチャは金額と色分類を持つ。
@@ -378,11 +366,9 @@ mod tests {
             iter_action_items(&a, None, &mut items);
             assert_eq!(items.len(), 1, "{key}");
             let ev = match &items[0] {
-                ActionItem::Deleted {
-                    target,
-                    raw,
-                    offset_ms,
-                } => deleted_to_event("v", target, raw, *offset_ms),
+                ActionItem::Deleted { target, offset_ms } => {
+                    deleted_to_event("v", target, *offset_ms)
+                }
                 _ => panic!("{key} should be deleted"),
             };
             assert_eq!(ev.kind, ChatKind::Deleted);
@@ -390,7 +376,7 @@ mod tests {
         }
     }
 
-    /// CH-04: 未知の renderer / アクションは other として保存に回る。
+    /// CH-04: 未知の renderer / アクションは other イベントになる。
     #[test]
     fn unknown_renderers_become_other() {
         let a = json!({"addChatItemAction": {"item": {"liveChatPollRenderer": {
@@ -498,7 +484,7 @@ mod tests {
         let re = with_gen(&ev, 3);
         assert_eq!(re.item_id, "x1#g3");
 
-        let del = deleted_to_event("v", "x1", &serde_json::json!({}), Some(500));
+        let del = deleted_to_event("v", "x1", Some(500));
         let re = with_gen(&del, 3);
         assert_eq!(re.item_id, "del:x1#g3");
         assert_eq!(re.message, "x1#g3");
@@ -563,11 +549,9 @@ mod tests {
             .iter()
             .filter_map(|i| match i {
                 ActionItem::Item { v, offset_ms } => renderer_to_event("live1", v, *offset_ms),
-                ActionItem::Deleted {
-                    target,
-                    raw,
-                    offset_ms,
-                } => Some(deleted_to_event("live1", target, raw, *offset_ms)),
+                ActionItem::Deleted { target, offset_ms } => {
+                    Some(deleted_to_event("live1", target, *offset_ms))
+                }
             })
             .collect();
         assert_eq!(events.len(), 3);
@@ -580,10 +564,10 @@ mod tests {
         assert!(del.item_id.starts_with("del:"));
     }
 
-    /// CH-08: dedup は保存確定済み seen と応答内 pending の 2 段。
-    /// 保存失敗（pending が捨てられる）後の再送は取り直せる。
+    /// CH-08: dedup は確定済み seen と応答内 pending の 2 段。
+    /// 未確定（pending が捨てられた）バッチの再送は取り直せる。
     #[test]
-    fn dedup_pending_only_commits_on_save() {
+    fn dedup_pending_and_seen_two_tier() {
         let matcher = Matcher::empty();
         let act = text_action("m1", "@a", "UCa", "1700000000000004", "hi");
         let actions = vec![act.clone()];
@@ -597,13 +581,13 @@ mod tests {
         assert_eq!(evs.len(), 1);
         assert!(pending.contains("m1"));
 
-        // 保存失敗を想定して pending を捨てたまま同じ応答が再送されると、
-        // seen に無いので再度取れる（履歴に残る側を優先）
+        // pending を捨てたまま同じ応答が再送されると、
+        // seen に無いので再度取れる
         pending.clear();
         let evs = normalize_all(&matcher, "v", &actions, &seen, &mut pending);
         assert_eq!(evs.len(), 1);
 
-        // 保存成功（commit）後の再送は dedup される
+        // commit 後の再送は dedup される
         commit_pending(&mut seen, &mut order, &mut pending);
         let mut pending2 = HashSet::new();
         let evs = normalize_all(&matcher, "v", &actions, &seen, &mut pending2);

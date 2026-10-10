@@ -349,3 +349,61 @@ fn migrate_v8_promotes_intermediate_state2() {
         ]
     );
 }
+
+/// v12 マイグレーション: chat_logs と FTS 周辺オブジェクトをすべて DROP し、
+/// 既存の履歴データごと破棄する（仕様決定 AV）。他テーブルには触れない。
+#[test]
+fn migrate_v12_drops_chat_logs() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 11) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+    // v11 状態では chat_logs が存在し、データを書き込める
+    conn.execute(
+        "INSERT INTO chat_logs
+           (video_id, posted_at_usec, kind, message, raw_json, item_id)
+         VALUES ('v1', 1, 'text', 'hello', '{}', 'item-1')",
+        [],
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 12) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+    // 本体・FTS 仮想テーブルとその shadow テーブル・トリガー・索引を
+    // 含め、chat* 由来のスキーマオブジェクトが残らない
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'chat%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+    // 無関係のテーブルは残る
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'watch_history'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}

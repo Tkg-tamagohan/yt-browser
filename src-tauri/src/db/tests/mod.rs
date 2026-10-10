@@ -1,6 +1,6 @@
-mod chat;
 mod ddl;
 mod feed;
+mod filters;
 mod history;
 mod library;
 mod migrations;

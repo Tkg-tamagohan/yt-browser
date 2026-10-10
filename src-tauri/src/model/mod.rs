@@ -262,7 +262,7 @@ pub struct FeedStatus {
     pub message: String,
 }
 
-/// チャットイベントの種別（設計書 §3.1 の ChatEvent、§8 の kind CHECK と一致）。
+/// チャットイベントの種別（設計書 §3.1 の ChatEvent）。
 /// 削除アクションは元メッセージを消さず `deleted` イベントとして記録する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -272,35 +272,12 @@ pub enum ChatKind {
     Membership,
     /// 削除アクション（実測では `removeChatItemAction`）。`message` に削除対象の item ID を入れる。
     Deleted,
-    /// 上記以外の renderer（バナー・投票・エンゲージメント等）。表示はしないが保存はする。
+    /// 上記以外の renderer（バナー・投票・エンゲージメント等）。UI では表示しない。
     Other,
 }
 
-impl ChatKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Superchat => "superchat",
-            Self::Membership => "membership",
-            Self::Deleted => "deleted",
-            Self::Other => "other",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "superchat" => Self::Superchat,
-            "membership" => Self::Membership,
-            "deleted" => Self::Deleted,
-            "other" => Self::Other,
-            _ => Self::Text,
-        }
-    }
-}
-
 /// ライブチャット 1 イベント（設計書 §3.1 の ChatEvent）。
-/// `chat://message` バッチの要素かつ `chat_logs` への保存単位。
-/// `raw_json` は未正規化フィールドの保存用で、UI には送らない。
+/// `chat://message` バッチの要素。DB への保存はしない（仕様決定 AV）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatEvent {
@@ -315,15 +292,12 @@ pub struct ChatEvent {
     pub kind: ChatKind,
     pub message: String,
     pub amount_display: Option<String>,
-    /// NG フィルタで非表示と判定されたか。保存も送信もするが、UI は非表示にする。
+    /// NG フィルタで非表示と判定されたか。送信はするが、UI は非表示にする。
     pub ng: bool,
-    /// リプレイの動画内時刻（`videoOffsetTimeMsec`、ms）。ライブ・履歴検索行は None。
+    /// リプレイの動画内時刻（`videoOffsetTimeMsec`、ms）。ライブでは None。
     /// UI への送出はリプレイペーサが再生位置と照合して行う（FR-24、仕様決定 AQ）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_offset_ms: Option<i64>,
-    /// renderer 原文（ストリームで取れた範囲の生 JSON）。UI には送らない。
-    #[serde(skip_serializing)]
-    pub raw_json: String,
 }
 
 /// `chat://status` イベントのペイロード（設計書 §3.2）。

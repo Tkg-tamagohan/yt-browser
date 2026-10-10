@@ -4,7 +4,6 @@
 //! 書き込みは短いトランザクションに収め、接続プールは持たない。
 
 mod channels;
-mod chat;
 mod feed;
 mod filters;
 mod history;
@@ -69,6 +68,8 @@ impl Db {
         };
         db.init_pragmas()?;
         db.migrate()?;
+        // 起動時の履歴剪定（仕様決定 AV）。稼働中は行わない
+        db.history_prune()?;
         Ok(db)
     }
 
@@ -82,6 +83,7 @@ impl Db {
         };
         db.init_pragmas()?;
         db.migrate()?;
+        db.history_prune()?;
         Ok(db)
     }
 

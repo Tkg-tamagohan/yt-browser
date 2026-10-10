@@ -3,9 +3,9 @@
 //! `chat_start` で動画ごとのポーリングタスクを立て、watch ページの
 //! `ytInitialData` から初期継続トークンを取って `get_live_chat` を繰り返す。
 //! 応答 1 回分のアクションを `ChatEvent` に正規化し、NG 判定と重複除去を経て
-//! 1 トランザクションで `chat_logs` へ保存したうえで `chat://message` に流す。
-//! 原文は raw_json として残し、削除アクションや未知 renderer も `other` /
-//! `deleted` で記録する（設計書 §6.3 の「保存は別レイヤ、表示は制御する」方針）。
+//! `chat://message` に流す。チャットは DB へ保存しない（仕様決定 AV）。
+//! 削除アクションや未知 renderer も `deleted` / `other` のイベントとして記録する
+//! （設計書 §6.3）。
 
 mod normalize;
 mod poller;

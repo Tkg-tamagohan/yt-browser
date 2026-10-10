@@ -112,7 +112,6 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat_stop` | `video_id`, `instance_id`（省略可） | `Result<()>` |
 | `chat_popup_open` | `video_id`, `instance_id`（省略可） | `Result<()>` |
 | `chat_popup_return` | `video_id`, `instance_id` | `Result<()>` |
-| `chat_history_search` | `video_id?`, `query`, `limit?` | `Result<Vec<ChatEvent>>` |
 | `filter_add` | `target`, `kind`, `pattern` | `Result<Filter>` |
 | `filter_remove` | `id` | `Result<()>` |
 | `filter_list` | なし | `Result<Vec<Filter>>` |
@@ -568,8 +567,8 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 応答の `isReplay` フラグも確認できるが、現状はルーティングのみで識別する。
 継続エントリから `liveChatReplayContinuationData` をリプレイとみなす判定（混在時はリプレイ優先）はそのまま維持し、watch が直接リプレイ継続を返す経路にも対応する。
 
-- メッセージは `replayChatItemAction` の `videoOffsetTimeMsec`（アクションレベル）を内側アイテムへ伝播させ、`ChatEvent.video_offset_ms` として保持する。リプレイ経路のイベントは保存しないため `raw_json` はバッファへ入れずに捨てる
-- ポーラーは再生位置 + 120 秒分を先読みしてオフセット昇順のバッファに持ち、250 ms 周期で mpv の再生位置と照合して `chat://message` へ流す。送出は NG 判定込みの `normalize_all` を共用するが、`chat_logs` には保存しない。同期位置は `chat_start` で起票されたインスタンスの `PlayerManager.position_of_instance` に固定する（`instance_id` 未指定時は `position_of` で同じ動画を再生中のいずれかの位置）。同一動画を複数窓で再生する場合、セッションは動画 ID ごとに 1 本で、同期先は最初にパネルを開いたインスタンスを優先する。同期先の窓が終了した場合は同じ動画を再生中の残りのいずれかへ移る（どの窓も無ければ位置を取れず送出だけ止まる）
+- メッセージは `replayChatItemAction` の `videoOffsetTimeMsec`（アクションレベル）を内側アイテムへ伝播させ、`ChatEvent.video_offset_ms` として保持する
+- ポーラーは再生位置 + 120 秒分を先読みしてオフセット昇順のバッファに持ち、250 ms 周期で mpv の再生位置と照合して `chat://message` へ流す。送出は NG 判定込みの `normalize_all` を共用する。同期位置は `chat_start` で起票されたインスタンスの `PlayerManager.position_of_instance` に固定する（`instance_id` 未指定時は `position_of` で同じ動画を再生中のいずれかの位置）。同一動画を複数窓で再生する場合、セッションは動画 ID ごとに 1 本で、同期先は最初にパネルを開いたインスタンスを優先する。同期先の窓が終了した場合は同じ動画を再生中の残りのいずれかへ移る（どの窓も無ければ位置を取れず送出だけ止まる）
 - メモリは上限付きとする。送出済みは後方シークの巻き戻し窓として直近 1000 件だけ保持し、未送出の先読みも 2000 件を超えるときは送出が進むまで追加取得を休止する。捨てた区間への後方シークではその区間のチャットは再送されず、巻き戻し限界として `chat://status` に警告を出す（長時間配信での `items` 肥大対策）
 - 後方シーク（位置が 2 秒超戻る）は未送出カーソルを近接時点へ戻して再アンカーする。再アンカー時に `chat://reset` を送り、パネル側は対象動画の既表示行を消してから再送分を表示する（シーク先より未来の発言が残らない）。再アンカー世代毎に item_id（削除イベントは対象 ID も）へ `#g<n>` 接尾辞を付け、表示側 dedup を避けて同じメッセージを再表示する
 - 前方シークで大量に追い越した場合は近接時点の末尾 50 件だけ流して中間を飛ばす
@@ -586,7 +585,7 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 | `liveChatPaidMessageRenderer` / `liveChatPaidStickerRenderer` | `superchat` |
 | `liveChatMembershipItemRenderer` / `liveChatSponsorshipsGiftPurchaseAnnouncementRenderer` | `membership` |
 | `removeChatItemAction` / `markChatItemAsDeletedAction` | `deleted` |
-| その他 | `other`（raw_json を保持） |
+| その他 | `other`（UI では非表示） |
 
 ポップアップ窓（FR-27、仕様決定 AT・AU）:
 
@@ -597,17 +596,13 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 - ポップアップの表示行は投稿時刻と本文のみで、投稿者名と superchat / membership のバッジは出さない。`chat://message` / `chat://status` / `chat://reset` は埋め込みパネルと同じ経路で購読し、窓ごとの JS コンテキストで動画 ID へ直接振り分ける。窓を開く前に流れた分は受信できず、埋め込みパネルの蓄積分は引き継がない
 - `chat_start` / `chat_stop` は埋め込みパネル利用者の登録・解除として扱い、パネル閉・ポップアップ閉・プレイヤー終了のいずれでも利用者解除を経由する
 
-### 6.3 NG と保存のパイプライン
+### 6.3 NG と送信のパイプライン
 
-受信した `ChatEvent` は「NG 判定 → DB 保存 → UI 送信バッファ」の順に流す。
-保存は NG に関わらず原文を残し、UI 側の表示だけをフィルタで制御する。
-これにより「ログは完全・表示は絞る」専ブラの基本線を保つ。
+受信した `ChatEvent` は「NG 判定 → `chat://message` 送信」の順に流す。
+チャットメッセージはライブ・リプレイとも DB へ保存しない（仕様決定 AV）。
+NG メッセージも送信自体は行い、UI 側の表示だけをフィルタで制御する。
 
-保存は 1 メッセージごとの `INSERT` を逐次実行せず、ポーリング応答 1 回分を 1 トランザクションで書き込む。
-重複除去は二段構えとする。
-セッション内では既処理 `item_id` の集合（上限 1 万件、超過分は古い順に破棄）が応答内と処理済みの重複を除き、DB 側では `chat_logs` の `(video_id, item_id)` 一意制約（§8）がセッションを跨ぐ再取得の重複を防ぐ第 2 層になる。
-
-この保存パイプラインはライブ経路の `ChatEvent` が対象であり、リプレイ経路（終了済み配信・プレミアのアーカイブ、仕様決定 AQ）のメッセージは DB へ保存せず NG 判定と UI 送信のみを行う。
+重複除去はセッション内の既処理 `item_id` 集合（上限 1 万件、超過分は古い順に破棄）が担い、応答内と処理済みの重複を除く。
 
 ## 7. NG フィルタエンジン（技術方針 M）
 
@@ -694,25 +689,6 @@ CREATE TABLE playlist_items (
   PRIMARY KEY (playlist_id, video_id)
 );
 
-CREATE TABLE chat_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  video_id TEXT NOT NULL,
-  posted_at_usec INTEGER NOT NULL,
-  author_channel_id TEXT,
-  author_name TEXT,
-  kind TEXT NOT NULL DEFAULT 'text'
-    CHECK (kind IN ('text','superchat','membership','deleted','other')),
-  message TEXT NOT NULL,
-  amount_display TEXT,
-  raw_json TEXT NOT NULL,
-  item_id TEXT
-);
-
-CREATE VIRTUAL TABLE chat_logs_fts USING fts5(
-  message, author_name, content='chat_logs', content_rowid='id',
-  tokenize='trigram'
-);
-
 CREATE TABLE filters (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   target TEXT NOT NULL CHECK (target IN
@@ -738,32 +714,16 @@ CREATE TABLE schema_migrations (
 CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC);
 CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);
 CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
-CREATE INDEX idx_chat_video_ts ON chat_logs(video_id, posted_at_usec);
-CREATE UNIQUE INDEX idx_chat_item ON chat_logs(video_id, item_id);
-
-CREATE TRIGGER chat_logs_ai AFTER INSERT ON chat_logs BEGIN
-  INSERT INTO chat_logs_fts(rowid, message, author_name)
-  VALUES (new.id, new.message, new.author_name);
-END;
-CREATE TRIGGER chat_logs_ad AFTER DELETE ON chat_logs BEGIN
-  INSERT INTO chat_logs_fts(chat_logs_fts, rowid, message, author_name)
-  VALUES ('delete', old.id, old.message, old.author_name);
-END;
 ```
 
-設計上の注意を四点置く。
+設計上の注意を二点置く。
 
 - `videos` は購読フィード由来の「未読管理を持つ一覧」と、視聴やお気に入りで登場した動画の双方を載せる最小の台帳とする
   検索や関連の結果は揮発データとして DB に積まない。
   `ingested` は 0 がライブラリ由来のプレースホルダ（フィードには表示せず、初回の RSS 到達またはバックフィル投入で本文を補完する）、1 がフィード投入済みを表す。
   バックフィル投入（`feed_backfill`）は RSS とは別経路で、新規行を既読・投入済みで挿入し、プレースホルダは既読のまま `ingested=1` に確定する。投入済みの既存行は投稿日・既読を含めて書き換えない（FR-21、仕様決定 AN）。
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
-- チャット検索は FTS5 の外部コンテンツ方式で本文と投稿者名を対象にし、削除は `chat_logs` 側の行削除に連動させる
-  トークナイザは `trigram` とする。
-  `unicode61` では日本語の文が語分割されず部分文字列検索に掛からないためで、代わりに 3 文字未満の検索語が部分一致に掛からない制約を受け入れる。
-- `chat_logs.item_id` は InnerTube が振るイベント ID で、`(video_id, item_id)` の一意索引と `INSERT OR IGNORE` で保存を冪等化する
-  `item_id` を持たない行は NULL として入り、SQLite が NULL を個別の値として扱うため一意制約の対象外になる。
-- 履歴とログの保持は無期限を既定とし、手動削除のみとする（仕様決定 I）
+- 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
 
 ## 9. エラーハンドリングと変更耐性
 

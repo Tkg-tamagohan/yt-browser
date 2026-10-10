@@ -259,17 +259,6 @@ const ja = {
   "filter.kind.literal": "部分一致",
   "filter.kind.regex": "正規表現",
 
-  "settings.chatSearch.title": "チャット履歴検索",
-  "settings.chatSearch.desc":
-    "保存済みチャットを本文・投稿者名で全文検索する（検索語は 3 文字以上を推奨）。",
-  "settings.chatSearch.videoId": "動画 ID / URL（省略可）",
-  "settings.chatSearch.placeholder": "検索キーワード",
-  "settings.chatSearch.button": "検索",
-  "settings.chatSearch.searching": "検索中…",
-  "settings.chatSearch.empty": "結果がありません",
-  "settings.chatSearch.failed": "検索に失敗: {message}",
-  "settings.chatSearch.count": "{count} 件",
-
   // Phase 7: ローカルデータ（履歴・お気に入り・プレイリスト）
   "library.title": "ライブラリ",
   "library.tab.history": "履歴",
