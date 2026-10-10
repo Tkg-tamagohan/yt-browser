@@ -185,6 +185,9 @@
     gap: 4px;
     margin-bottom: 8px;
     overflow-x: auto;
+    /* overflow-x:auto で min-height が 0 に解決されるため、
+       項目数が多いと flex の縮小でタブ行が潰れるのを防ぐ */
+    flex-shrink: 0;
   }
 
   .qp-tab {
@@ -210,6 +213,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-shrink: 0;
   }
 
   .qp-head h3 {
