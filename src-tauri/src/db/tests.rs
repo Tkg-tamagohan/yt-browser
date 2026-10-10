@@ -1089,11 +1089,13 @@ fn feed_list_filtered_hides_shorts_when_off() {
     .unwrap();
 
     let ids = |show_shorts: bool| {
-        db.feed_list_filtered(&FeedFilter::default(), show_shorts, FEED_LIST_LIMIT, |_| true)
-            .unwrap()
-            .iter()
-            .map(|i| i.video_id.clone())
-            .collect::<Vec<_>>()
+        db.feed_list_filtered(&FeedFilter::default(), show_shorts, FEED_LIST_LIMIT, |_| {
+            true
+        })
+        .unwrap()
+        .iter()
+        .map(|i| i.video_id.clone())
+        .collect::<Vec<_>>()
     };
     assert_eq!(ids(true).len(), 2);
     assert_eq!(ids(false), vec!["video0000001"]);
