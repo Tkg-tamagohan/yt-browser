@@ -427,8 +427,18 @@
           const plId = selectedId;
           if (plId === null) return;
           // playlist_reorder は全件集合を要求するため、
-          // ページングで未取得の末尾があれば先に取り切る
-          if (!(await ensureAllItemsLoaded(plId))) return;
+          // ページングで未取得の末尾があれば先に取り切る。
+          // 未取得分の取得失敗は保存を行わず通知だけ出す
+          try {
+            if (!(await ensureAllItemsLoaded(plId))) return;
+          } catch (e) {
+            notify(
+              t("library.playlist.reorderFailed", {
+                message: asErrorMessage(e),
+              }),
+            );
+            return;
+          }
           try {
             await invoke("playlist_reorder", {
               playlistId: plId,
