@@ -18,6 +18,7 @@ import {
 } from "$lib/players.svelte";
 import {
   armPlanFor,
+  headPlayingAfterRemove,
   indexAfterMove,
   indexAfterRemove,
   reconcileIndex,
@@ -26,14 +27,25 @@ import {
 /// 稼働中キューの状態。`items` は動画 ID 列、`index` は現在の再生位置。
 /// `instanceId` はキューを背負うプレイヤーインスタンス。
 /// `playlistId === null` は一時キュー（キュースタック、FR-20・仕様決定 AM）。
-/// 未実行で積んでいるだけのときは instanceId も null
+/// 未実行で積んでいるだけのときは instanceId も null。
+/// `playingCurrent` は実行中に `items[index]` が実際に再生中かどうか。
+/// 再生中項目を削除した直後は index が未再生の次項目を指すため false に
+/// なり、次の継続項目の読み込みで true に戻る（武装対象の先頭を決める）
 export const queue = $state<{
   playlistId: number | null;
   playlistName: string;
   items: string[];
   index: number;
   instanceId: number | null;
-}>({ playlistId: null, playlistName: "", items: [], index: 0, instanceId: null });
+  playingCurrent: boolean;
+}>({
+  playlistId: null,
+  playlistName: "",
+  items: [],
+  index: 0,
+  instanceId: null,
+  playingCurrent: true,
+});
 
 /// キュー項目の表示メタ（FR-20、仕様決定 AM）。セッション内メモリのみで
 /// DB には保存しない。同一動画の重複登録は同じメタを共有する
@@ -70,6 +82,19 @@ export function queueMetaOf(videoId: string): QueueItemMeta {
       thumbnailUrl: null,
     }
   );
+}
+
+/// キューに残っていない動画の表示メタを解放する。個別削除やキュー消費
+/// 完了後も長時間のセッションでメタが溜まり続けないようにする
+function pruneMeta(): void {
+  let next: Map<string, QueueItemMeta> | null = null;
+  for (const id of queueMeta.list.keys()) {
+    if (!queue.items.includes(id)) {
+      if (!next) next = new Map(queueMeta.list);
+      next.delete(id);
+    }
+  }
+  if (next) queueMeta.list = next;
 }
 
 /// ループ状態（仕様決定 AA）。「なし」「プレイリスト全体」「1 項目」の 3 状態。
@@ -165,7 +190,12 @@ function enqueueArm(
 /// キュー中は armPlanFor、キュー外はループモードに応じた単独項目または解除
 function latestPlan(instanceId: number): { items: string[]; loop: boolean } {
   if (instanceId === queue.instanceId) {
-    return armPlanFor(loopMode(instanceId), queue.items, queue.index);
+    return armPlanFor(
+      loopMode(instanceId),
+      queue.items,
+      queue.index,
+      queue.playingCurrent,
+    );
   }
   if (loopMode(instanceId) === "none") return { items: [], loop: false };
   const vid = playerStates.list.get(instanceId)?.videoId;
@@ -182,7 +212,12 @@ export async function cycleLoop(instanceId: number): Promise<void> {
   try {
     if (instanceId === queue.instanceId) {
       await enqueueArm(instanceId, () =>
-        armPlanFor(loopMode(instanceId), queue.items, queue.index),
+        armPlanFor(
+          loopMode(instanceId),
+          queue.items,
+          queue.index,
+          queue.playingCurrent,
+        ),
       );
       return;
     }
@@ -214,7 +249,7 @@ async function armNext(): Promise<void> {
   const id = queue.instanceId;
   try {
     await enqueueArm(id, () =>
-      armPlanFor(loopMode(id), queue.items, queue.index),
+      armPlanFor(loopMode(id), queue.items, queue.index, queue.playingCurrent),
     );
   } catch {
     // インスタンスが既に無い場合はキューを畳む
@@ -237,33 +272,56 @@ export async function startQueue(
   queue.items = items;
   queue.index = index;
   queue.instanceId = instanceId;
+  queue.playingCurrent = true;
   await armNext();
 }
 
-/// キューを畳む。ループモードが残るインスタンスは単独ループへ移行する
-/// （キュー無しの全体/1 項目は現在項目の繰り返し。仕様決定 AA）。
-/// なしなら武装を解除して終端で自然に終了する。
+/// インスタンスをキューから外し、残っているループモードに応じた武装へ
+/// 張り替える（キュー停止系の共通処理）。ループモードが残るインスタンスは
+/// 単独ループへ移行し、なしなら武装を解除して終端で自然に終了する
+/// （キュー無しの全体/1 項目は現在項目の繰り返し。仕様決定 AA）
+function detachInstance(): void {
+  if (queue.instanceId === null) return;
+  const id = queue.instanceId;
+  // 実際に再生中の項目は player state を優先し、無ければキュー位置。
+  // 進行済みの遷移が未着の場合は、到着する ended イベントの再武装が
+  // この武装をチェーン上で上書きする（直列化で後着が必ず勝つ）
+  const vid =
+    playerStates.list.get(id)?.videoId ??
+    queue.items[queue.index] ??
+    null;
+  queue.instanceId = null;
+  void enqueueArm(id, () =>
+    loopMode(id) === "none"
+      ? { items: [], loop: false }
+      : { items: vid === null ? [] : [vid], loop: true },
+  ).catch(() => {});
+}
+
+/// キューを畳む（キュー消費完了・インスタンス消失・全消去の共通経路）。
+/// 一覧と表示メタを捨て、再生中のインスタンスは detachInstance の
+/// ループ状態に応じた武装で継続または終端へ向かわせる
 export function stopQueue(): void {
-  if (queue.instanceId !== null) {
-    const id = queue.instanceId;
-    // 実際に再生中の項目は player state を優先し、無ければキュー位置。
-    // 進行済みの遷移が未着の場合は、到着する ended イベントの再武装が
-    // この武装をチェーン上で上書きする（直列化で後着が必ず勝つ）
-    const vid =
-      playerStates.list.get(id)?.videoId ??
-      queue.items[queue.index] ??
-      null;
-    queue.instanceId = null;
-    void enqueueArm(id, () =>
-      loopMode(id) === "none"
-        ? { items: [], loop: false }
-        : { items: vid === null ? [] : [vid], loop: true },
-    ).catch(() => {});
-  }
+  detachInstance();
   queue.playlistId = null;
   queue.playlistName = "";
   queue.items = [];
   queue.index = 0;
+  queue.playingCurrent = true;
+  pruneMeta();
+}
+
+/// 「連続再生を止める」（FR-20、仕様決定 AM）。インスタンスをキューから
+/// 外して継続再生を止めるが、残った項目は積み上げ中の一時キューとして
+/// 一覧に残す（一覧まで捨てるのは全消去 queueClear の役割）。
+/// プレイリストキューに対して使った場合は一時キューへ降格する
+export function queueStop(): void {
+  if (queue.instanceId === null) return;
+  detachInstance();
+  queue.playlistId = null;
+  queue.playlistName = "";
+  queue.index = 0;
+  queue.playingCurrent = true;
 }
 
 /// キューがこのプレイリストを背負っているか。
@@ -298,13 +356,23 @@ export function queuePlayNext(v: VideoRef): void {
 }
 
 /// 項目の個別削除。再生中項目を消しても再生は止めない
-/// （index は配列上で次項目を指す）。実行中は武装を張り替える
+/// （index は配列上で次項目を指す）。実行中は武装を張り替える。
+/// 再生中項目を消したとき index が指すのは未再生の次項目なので、
+/// 武装対象にそれを含めるよう playingCurrent を false にする
+/// （消さないとその項目が再生されずに飛ばされる）
 export function queueRemoveAt(i: number): void {
   if (i < 0 || i >= queue.items.length) return;
   const items = [...queue.items];
   items.splice(i, 1);
+  queue.playingCurrent = headPlayingAfterRemove(
+    queue.playingCurrent,
+    queue.index,
+    i,
+    items.length,
+  );
   queue.items = items;
   queue.index = indexAfterRemove(queue.index, i, items.length);
+  pruneMeta();
   if (queue.instanceId !== null) void armNext();
 }
 
@@ -322,10 +390,10 @@ export function queueMove(from: number, to: number): void {
 }
 
 /// 全消去（FR-20）。実行中はキューを畳んで継続再生を解除する
-/// （再生そのものは止めない）。積み上げ中なら項目を捨てるだけ
+/// （再生そのものは止めない）。積み上げ中なら項目を捨てるだけ。
+/// 表示メタは stopQueue 側の pruneMeta で一覧と一緒に解放する
 export function queueClear(): void {
   stopQueue();
-  queueMeta.list = new Map();
 }
 
 /// キューの先頭項目から連続再生を開始する（FR-20、仕様決定 AM）。
@@ -374,6 +442,12 @@ export function initQueueEvents(): Promise<void> {
             queue.index,
             p.continuedVideoId,
           );
+          // 読み込まれた項目が index 位置と一致すれば再生中扱いに戻す。
+          // drift（一致しない遷移）のときは未再生扱いのままにして、
+          // 再武装で index 位置の項目を落とさないようにする
+          queue.playingCurrent =
+            p.continuedVideoId !== null &&
+            queue.items[queue.index] === p.continuedVideoId;
           // 意図の変更が世代ずれで backend に拒否されていたときだけ
           // 最新世代で再適用する。通常の遷移では deque を置き換えない
           // （古い置換が消費済み項目を復活させるのを防ぐ、仕様決定 AD）

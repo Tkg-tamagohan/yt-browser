@@ -5,6 +5,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
+  import { feedItemSortsAfter } from "$lib/feed-page-logic";
   import { notify } from "$lib/notices.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
@@ -121,9 +122,18 @@
   // フィルタ切替を重ねたとき古い応答が後着で上書きしないよう、
   // 最後に開始した呼び出しの結果だけを反映する
   let loadSeq = 0;
+  // 表示中の一覧が属するフィルタ条件。更新イベントでの再取得で
+  // 過去ページを保持するのは同一条件での再取得に限る
+  // （フィルタ変更直後は旧条件で追記した分を残してはいけない）
+  let itemsFilterKey = "";
+
+  /// バックエンドのカーソル比較と同じ全順序で、項目がカーソル
+  /// （publishedAt DESC NULLS LAST、video_id ASC）より後にあるかは
+  /// feedItemSortsAfter で判定する（lib/feed-page-logic.ts、FR-25）
 
   async function loadItems(): Promise<void> {
     const seq = ++loadSeq;
+    const filterKey = `${unreadOnly ? 1 : 0}|${filterCat ?? ""}|${filterKind}`;
     const res = await invoke<FeedItem[]>("list_feed", {
       filter: {
         unreadOnly,
@@ -135,12 +145,28 @@
       },
     });
     if (seq === loadSeq) {
-      items = res;
       const last = res[res.length - 1];
-      feedCursor = last
-        ? { publishedAt: last.publishedAt, videoId: last.videoId }
-        : null;
-      feedHasMore = res.length >= 500;
+      // 同一フィルタでの再取得（更新通知など）では、既に読み込んだ
+      // 過去ページ（新しい先頭ページの末尾より後に続く部分）を保持する。
+      // 読み込み時点より後の membership 変更は拾い切れないが、
+      // 一覧が巻き戻って過去分ごと消えるよりはましとする
+      const tail =
+        last && filterKey === itemsFilterKey
+          ? items.filter((i) =>
+              feedItemSortsAfter(i, last.publishedAt, last.videoId),
+            )
+          : [];
+      const seen = new Set(res.map((i) => i.videoId));
+      items = [...res, ...tail.filter((i) => !seen.has(i.videoId))];
+      itemsFilterKey = filterKey;
+      // 過去ページを保持した場合は、追記済みの末尾側のカーソルと
+      // hasMore をそのまま維持する（浅い側に巻き戻さない）
+      if (tail.length === 0) {
+        feedCursor = last
+          ? { publishedAt: last.publishedAt, videoId: last.videoId }
+          : null;
+        feedHasMore = res.length >= 500;
+      }
     }
   }
 
