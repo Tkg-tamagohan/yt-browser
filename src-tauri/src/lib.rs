@@ -214,6 +214,7 @@ pub fn run() {
             commands::list_feed,
             commands::mark_read,
             commands::feed_refresh,
+            commands::feed_backfill,
             commands::search,
             commands::get_related,
             commands::block_channel,
