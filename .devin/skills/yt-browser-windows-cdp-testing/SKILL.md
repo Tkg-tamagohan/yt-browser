@@ -5,19 +5,24 @@ description: yt-browser を Windows 上で dev ビルド＋ CDP（WebView2 の r
 
 # yt-browser の dev ビルドを Windows 上で CDP 検証する
 
-このリポジトリの開発機には MSI 版 yt-browser がインストール済みで、常駐実行されていることがある。
+このリポジトリの開発機にはインストール済み本番ビルドの yt-browser が常駐実行されていることがある。
+本機では NSIS per-user 版が `E:\software\yt-browser` にインストールされており、旧 MSI 版が残る環境もありうる。
 dev ビルドをそのまま起動すると同一 identifier の single-instance が既存インスタンスへ起動を転送し、deep link のスキーム起動も本番側へ届いてしまう。
 そのため実機検証は identifier を変えた隔離インスタンスで行い、UI 検証は CDP で行う。
 
 ## 本番インスタンスとの共存
 
-- スキーム登録は `HKCU\Software\Classes\yt-browser\shell\open\command` がインストール済み exe を指す。
+- スキーム登録は `HKCU\Software\Classes\yt-browser\shell\open\command` がインストール済み exe（本機では `E:\software\yt-browser\yt-browser.exe`）を指す。
+  per-user インストールなら HKCU、per-machine インストールなら `HKLM\SOFTWARE\Classes\yt-browser\shell\open\command` 側になるため、環境が変わったら両ハイブを `reg query` で確認する（本機では HKCU のみ存在）。
   `yt-browser:` 形式の URL を OS から起動すると本番インスタンスと本番 DB に届くため、検証には使わない。
 - `src-tauri/tauri.conf.json` の `identifier` を末尾に `-dev` を付けた値へ一時変更すると、アプリデータ（`%APPDATA%\<identifier>\`）も別系統になる。
   別 identifier は single-instance も別枠になるため、本番が動いていても dev インスタンスを起動できる。
-- `src-tauri/src/lib.rs` の `native_host::register` は Chrome の Native Messaging 登録キーが identifier に依らず共通のため、dev exe のパスで本番登録を上書きしうる。
+- `src-tauri/src/lib.rs` の `native_host::register` は Chrome の Native Messaging 登録キーが identifier に依らず共通（HOST_NAME `io.github.tkg_tamagohan.yt_browser` は固定値）のため、dev exe のパスで本番登録を上書きしうる。
+  具体的には dev 起動時に `%APPDATA%\<identifier>-dev\native-messaging\` 配下へ書いたマニフェストのパスで `HKCU\Software\Google\Chrome\NativeMessagingHosts\<HOST_NAME>` の値を更新する。
+  dev アプリデータを後で削除するとそのパスは実在しなくなり、拡張からの NM 呼び出しが本番側で失敗しうる。
   `if std::env::var_os("YB_DEV_NO_NM").is_none() { native_host::register(...) }` のような環境変数ガードを一時的に差し込み、その変数を立てて起動する。
-- スキームのレジストリ登録は MSI インストール時に行われ、dev 起動では上書きされない（実測で確認）。
+- スキームのレジストリ登録はインストーラが行い、dev 起動では上書きされない（現行コードは `deep_link().register` を呼ばず `get_current()` で読むだけ）。
+  将来コードに `register` 呼び出しが入るとこの前提が崩れるため、その場合は再確認する。
   検証後に `reg query "HKCU\Software\Classes\yt-browser\shell\open\command"` で本番 exe のままかを確認するとよい。
 - identifier と NM ガードの変更はコミット対象外の検証専用とし、検証後は `git checkout --` で戻す。
 
@@ -85,6 +90,7 @@ __TAURI_INTERNALS__.invoke('plugin:event|emit', {
 ```
 
 `seq` は冷起動との区別用の連番で値は何でもよい。
+ただしフロント側の `handledSeq` が処理済み seq を記憶するため、同一 seq の再注入は弾かれる。連続して注入するときは毎回 seq を増やす。
 注入後は dispatch → URL 分類 → `playlist_import` → トーストと Tauri イベントという本物と同一の経路を通る。
 
 ## 再マウントとイベント駆動更新の区別
@@ -113,13 +119,18 @@ inp[0].dispatchEvent(new Event('input', { bubbles: true }));
 
 dev インスタンスの DB は `%APPDATA%\<identifier>-dev\yt-browser.db`（`lib.rs` で `app_data_dir()/yt-browser.db` に接続）。
 ページングやバックフィルの検証に大量データが要るときは、dev インスタンスを一度起動してスキーマを作らせ、停止してから Python の `sqlite3` で行を挿入する。
-フィード行は `videos` テーブルに載る（`channels` の購読行を先に用意してから `videos` へ足す）。
+フィード行は `videos` テーブルに載るが、`feed_list_filtered` は `channels` との JOIN と `v.ingested = 1` を必須条件にするため、素の INSERT だけではフィード一覧に出ない。生 INSERT では次を押さえる。
+
+- `channels` 側の購読行を UC 形 `channel_id` で先に用意する（JOIN 条件）。
+- `videos` 行では `ingested = 1` を立てる（migration v7 で追加された `NOT NULL DEFAULT 0` のカラムで、既定値のままだと一覧から除外される）。
+- `is_read` を明示する（未読として表示したいなら `0`）。
+- `kind` には CHECK 制約があり、`'video'`、`'short'`、`'live'`、`'upcoming'` のいずれかしか入らない。
 
 ```python
 import sqlite3, os
 db = os.path.expandvars(r"%APPDATA%\<identifier>-dev\yt-browser.db")
 con = sqlite3.connect(db)
-# channels に購読行を足してから videos へ feed 行を挿入する
+# channels に購読行を足してから、ingested=1 / is_read / kind（CHECK 制約内）を指定して videos へ feed 行を挿入する
 ```
 
 `list_feed` は `published_at` 降順・NULL 末尾・`video_id` 昇順のカーソルページングなので、シードでは `published_at` をばらつかせるとページ境界の挙動を確認できる。
@@ -157,11 +168,14 @@ __TAURI_INTERNALS__.invoke('play_video', { videoId: '...', resume: false })
 __TAURI_INTERNALS__.invoke('chat_start', { videoId: '...', instanceId: 1 })
 ```
 
+`play_video` の `pip` を省略した場合は `pip.default`（既定 PiP）の設定が使われる。
+
 ## 後片付け
 
 - `tasklist //FI "IMAGENAME eq yt-browser.exe" //FO CSV` でプロセスを列挙し、dev インスタンスの PID だけ `taskkill //PID <pid> //F` で止める（本番 PID を巻き込まない）。
 - vite は `Get-NetTCPConnection -LocalPort 1420 -State Listen` の `OwningProcess` を taskkill する。
-- dev identifier のアプリデータ `%APPDATA%\<identifier>-dev\` を削除する。
+- dev identifier のアプリデータ `%APPDATA%\<identifier>-dev\` をディレクトリごと削除する（DB だけでなく `mpv\wheel.lua` や、NM ガードを入れ忘れた場合に書かれる `native-messaging\` も含む）。
+- `reg query "HKCU\Software\Google\Chrome\NativeMessagingHosts\io.github.tkg_tamagohan.yt_browser"` で値が本番 appdata のマニフェストを指しているか確認する。dev 側を指してしまった場合は本番アプリを一度起動すれば `native_host::register` が冪等に本番値へ戻す。
 - identifier と NM ガードの一時変更を `git checkout --` で戻し、`git status` で差分が検証前の状態に戻ったことを確認する。
 
 ## 補足: gh CLI がなくても GitHub 操作できる
