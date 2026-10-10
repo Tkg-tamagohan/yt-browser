@@ -83,18 +83,6 @@ export function createLibraryPageState(opts: Options) {
     },
   });
 
-  function progressOf(h: WatchHistory): string {
-    if (h.completed) return t("library.history.completed");
-    if (h.durationSec && h.durationSec > 0) {
-      const pct = Math.min(
-        100,
-        Math.round((h.positionSec / h.durationSec) * 100),
-      );
-      return t("library.history.progress", { percent: pct });
-    }
-    return "";
-  }
-
   async function loadHistory(): Promise<void> {
     history = await invoke<WatchHistory[]>("history_list", { limit: 500 });
   }
@@ -746,7 +734,6 @@ export function createLibraryPageState(opts: Options) {
     set sortBusy(v: boolean) {
       sortBusy = v;
     },
-    progressOf,
     loadHistory,
     loadFavorites,
     play,
