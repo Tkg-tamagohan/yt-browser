@@ -67,7 +67,7 @@
   });
 </script>
 
-  <section class="panel">
+  <section class="panel panel--filled">
     <h2>{t("settings.filters.title")}</h2>
     <p class="subtle desc">{t("settings.filters.desc")}</p>
     <div class="filter-form">
@@ -111,13 +111,6 @@
   </section>
 
 <style>
-  .panel {
-    padding: 16px;
-    border: 1px solid #3c4043;
-    border-radius: 12px;
-    background: #202124;
-  }
-
   h2 {
     font-size: 1.1rem;
     margin: 0 0 4px;

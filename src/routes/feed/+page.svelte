@@ -745,11 +745,10 @@
       grid-template-columns: 1fr;
     }
   }
+  /* 骨格はグローバル .panel。背景なし・各パネル先頭にも間隔を取る
+     （.panel + .panel では列の先頭に効かないため） */
   .panel {
     margin-top: 16px;
-    padding: 16px;
-    border: 1px solid #3c4043;
-    border-radius: 12px;
   }
   .panel h2 {
     margin: 0 0 8px;
