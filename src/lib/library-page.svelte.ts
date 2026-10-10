@@ -76,6 +76,16 @@ export function createLibraryPageState(opts: Options) {
     onFavChange: (videoId, faved) => {
       if (!faved) {
         favorites = favorites.filter((f) => f.videoId !== videoId);
+      } else {
+        // 履歴タブからの登録をお気に入りタブへ即時反映する（FR-28）。
+        // favorites は初回ロードのみのため、登録分を含めて取り直す
+        void invoke<FavoriteEntry[]>("favorite_list")
+          .then((list) => {
+            favorites = list;
+          })
+          .catch(() => {
+            // 取り直しに失敗しても登録自体は済んでいるため静かに握る
+          });
       }
     },
     onPlaylistCreated: () => {
