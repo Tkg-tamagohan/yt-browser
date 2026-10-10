@@ -109,6 +109,54 @@ inp[0].value = 'https://www.youtube.com/playlist?list=...';
 inp[0].dispatchEvent(new Event('input', { bubbles: true }));
 ```
 
+## dev DB へのシード
+
+dev インスタンスの DB は `%APPDATA%\<identifier>-dev\yt-browser.db`（`lib.rs` で `app_data_dir()/yt-browser.db` に接続）。
+ページングやバックフィルの検証に大量データが要るときは、dev インスタンスを一度起動してスキーマを作らせ、停止してから Python の `sqlite3` で行を挿入する。
+フィード行は `videos` テーブルに載る（`channels` の購読行を先に用意してから `videos` へ足す）。
+
+```python
+import sqlite3, os
+db = os.path.expandvars(r"%APPDATA%\<identifier>-dev\yt-browser.db")
+con = sqlite3.connect(db)
+# channels に購読行を足してから videos へ feed 行を挿入する
+```
+
+`list_feed` は `published_at` 降順・NULL 末尾・`video_id` 昇順のカーソルページングなので、シードでは `published_at` をばらつかせるとページ境界の挙動を確認できる。
+検証が終わったら dev identifier 側のアプリデータを削除して戻す。
+
+## 複数画面に跨る検証での注意
+
+`location.href` によるフルリロードは JS 側のセッション限定状態（実行中キュー、イベント購読の世代など）を破棄する。
+状態を跨いだ検証（例：キュー実行中に別画面でキューへ追加）ではフルリロードを使わず、SvelteKit のクライアント側ナビゲーションで遷移する。
+CDP からはアプリ内リンク要素の `click()`、または `__TAURI_INTERNALS__` 経由で同等の画面遷移を起こせる。
+
+## 孤児 mpv プロセス
+
+前回の dev インスタンス由来の mpv が残ることがある。
+named pipe は `\\.\pipe\yt-browser-mpv-*` で見えるが、exec の quoting でバックスラッシュが潰れるため列挙スクリプトはファイルに書いて実行する。
+
+```powershell
+# list_pipes.ps1
+Get-ChildItem \\.\pipe\ | Where-Object Name -like 'yt-browser-mpv-*' | Select-Object -ExpandProperty Name
+```
+
+`tasklist //FI "IMAGENAME eq mpv.exe" //FO CSV` と突き合わせ、dev 側のものだけを `taskkill //PID <pid> //F` で止める。
+
+## 再生検証時の音量
+
+ユーザー運用として、再生検証は音量を最小限にして行う。
+再生開始直後に mpv IPC で `volume` を `0` にするか、UI の音量スライダを最小にしてから検証する。
+
+## Tauri コマンドの直接呼び出し
+
+UI 経路を通さずにコマンドを検証したいときは `__TAURI_INTERNALS__.invoke` で直接叩ける。
+
+```js
+__TAURI_INTERNALS__.invoke('play_video', { videoId: '...' })
+__TAURI_INTERNALS__.invoke('chat_start', { videoId: '...', instanceId: 1 })
+```
+
 ## 後片付け
 
 - `tasklist //FI "IMAGENAME eq yt-browser.exe" //FO CSV` でプロセスを列挙し、dev インスタンスの PID だけ `taskkill //PID <pid> //F` で止める（本番 PID を巻き込まない）。
