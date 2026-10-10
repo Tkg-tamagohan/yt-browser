@@ -246,14 +246,14 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         kind: None,
     };
     assert_eq!(
-        db.feed_list_filtered(&all, FEED_LIST_LIMIT, |_| true)
+        db.feed_list_filtered(&all, true, FEED_LIST_LIMIT, |_| true)
             .unwrap()
             .len(),
         1
     );
     db.channel_delete("UCchan000000000000001").unwrap();
     assert!(db
-        .feed_list_filtered(&all, FEED_LIST_LIMIT, |_| true)
+        .feed_list_filtered(&all, true, FEED_LIST_LIMIT, |_| true)
         .unwrap()
         .is_empty());
     let unread = FeedFilter {
@@ -263,7 +263,7 @@ fn feed_list_hides_unsubscribed_channel_videos() {
         kind: None,
     };
     assert!(db
-        .feed_list_filtered(&unread, FEED_LIST_LIMIT, |_| true)
+        .feed_list_filtered(&unread, true, FEED_LIST_LIMIT, |_| true)
         .unwrap()
         .is_empty());
 }
@@ -921,7 +921,7 @@ fn feed_ingest_backfills_library_placeholder() {
         .unwrap();
     assert_eq!(out.inserted, 1);
     let feed = db
-        .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
         .unwrap();
     let item = feed.iter().find(|i| i.video_id == "dQw4w9WgXcQ").unwrap();
     assert_eq!(
@@ -935,7 +935,7 @@ fn feed_ingest_backfills_library_placeholder() {
     let out = db.feed_ingest(ch, &[entry], None, None).unwrap().unwrap();
     assert_eq!(out.inserted, 0);
     let feed = db
-        .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
         .unwrap();
     let item = feed.iter().find(|i| i.video_id == "dQw4w9WgXcQ").unwrap();
     assert!(item.is_read);
@@ -960,7 +960,7 @@ fn feed_ingest_backfills_library_placeholder() {
     let out = db.feed_ingest(ch, &[no_date], None, None).unwrap().unwrap();
     assert_eq!(out.inserted, 0);
     let feed = db
-        .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
         .unwrap();
     let item = feed.iter().find(|i| i.video_id == "nodate12345").unwrap();
     assert!(item.is_read);
@@ -971,7 +971,7 @@ fn feed_ingest_backfills_library_placeholder() {
     pending.channel_id = Some(ch.to_string());
     db.favorite_add(&pending).unwrap();
     let feed = db
-        .feed_list_filtered(&FeedFilter::default(), FEED_LIST_LIMIT, |_| true)
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
         .unwrap();
     assert!(!feed.iter().any(|i| i.video_id == "pend1234567"));
 }
@@ -1044,7 +1044,7 @@ fn feed_list_filtered_by_kind() {
             kind,
             ..Default::default()
         };
-        db.feed_list_filtered(&f, FEED_LIST_LIMIT, |_| true)
+        db.feed_list_filtered(&f, true, FEED_LIST_LIMIT, |_| true)
             .unwrap()
             .iter()
             .map(|i| i.video_id.clone())
@@ -1054,6 +1054,51 @@ fn feed_list_filtered_by_kind() {
     assert_eq!(by_kind(Some("short".to_string())), vec!["short0000001"]);
     assert_eq!(by_kind(Some("video".to_string())), vec!["video0000001"]);
     assert!(by_kind(Some("live".to_string())).is_empty());
+}
+
+/// feed.show_shorts=off 相当（show_shorts=false）の呼び出しでは kind='short' の
+/// 行が除かれ、true では含まれる（FR-23、仕様決定 AP。明示の short 選択で
+/// true へ回す判定はコマンド側）。
+#[test]
+fn feed_list_filtered_hides_shorts_when_off() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    fn mk<'a>(id: &'a str, kind: &'a str, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at: Some("2026-10-08T00:00:00+00:00"),
+            kind,
+        }
+    }
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[
+            mk("video0000001", "video", ch),
+            mk("short0000001", "short", ch),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+
+    let ids = |show_shorts: bool| {
+        db.feed_list_filtered(&FeedFilter::default(), show_shorts, FEED_LIST_LIMIT, |_| {
+            true
+        })
+        .unwrap()
+        .iter()
+        .map(|i| i.video_id.clone())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(true).len(), 2);
+    assert_eq!(ids(false), vec!["video0000001"]);
 }
 
 /// videos_set_kind は 'video' の行だけ更新し、
@@ -1094,7 +1139,7 @@ fn videos_set_kind_only_upgrades_video() {
     .unwrap();
     let kind_of = |id: &str| {
         let f = FeedFilter::default();
-        db.feed_list_filtered(&f, FEED_LIST_LIMIT, |_| true)
+        db.feed_list_filtered(&f, true, FEED_LIST_LIMIT, |_| true)
             .unwrap()
             .iter()
             .find(|i| i.video_id == id)

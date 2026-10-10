@@ -37,6 +37,23 @@ const FAIL_MAX: Duration = Duration::from_secs(60 * 60);
 /// この回数以上の連続失敗で `feed://status` へ劣化を通知する。
 const FAIL_NOTIFY_THRESHOLD: u32 = 2;
 
+/// 設定キー: フィード一覧に shorts 項目を含めるか（FR-23、仕様決定 AP）。
+pub(crate) const SETTING_FEED_SHOW_SHORTS: &str = "feed.show_shorts";
+
+/// `feed.show_shorts` の保存値を解釈する（FR-23、仕様決定 AP）。
+/// `on` / `true` / `1` / `yes`（大小文字・前後空白を許容）だけが表示（true）で、
+/// それ以外と未設定は既定の非表示（false）を返す。
+/// フロント側の同一解釈は `src/lib/feed-settings.ts` の `feedShowShortsEnabled`。
+pub(crate) fn feed_show_shorts_enabled(value: Option<String>) -> bool {
+    match value {
+        Some(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "on" | "true" | "1" | "yes"
+        ),
+        None => false,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum FeedError {
     #[error("フィード取得で HTTP エラー: {0}")]
@@ -674,6 +691,23 @@ mod tests {
     #[test]
     fn next_interval_resets_on_new() {
         assert_eq!(next_interval(IDLE_MAX, 0, true), BASE_INTERVAL);
+    }
+
+    #[test]
+    fn feed_show_shorts_enabled_values() {
+        for on in ["on", "true", "1", "yes", "ON", " on "] {
+            assert!(
+                feed_show_shorts_enabled(Some(on.to_string())),
+                "{on} は表示"
+            );
+        }
+        for off in ["off", "false", "0", "no", "", "invalid"] {
+            assert!(
+                !feed_show_shorts_enabled(Some(off.to_string())),
+                "{off} は非表示"
+            );
+        }
+        assert!(!feed_show_shorts_enabled(None));
     }
 
     #[test]

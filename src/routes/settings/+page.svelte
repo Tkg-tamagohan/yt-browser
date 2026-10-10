@@ -10,6 +10,7 @@
     pipFitAspectEnabled,
   } from "$lib/pip";
   import { QUALITY_PRESETS } from "$lib/quality";
+  import { feedShowShortsEnabled } from "$lib/feed-settings";
   import {
     asErrorMessage,
     formatOverrides,
@@ -70,6 +71,8 @@
   // PiP 既定画質式（pip.quality.format）。空欄は「全体の画質設定に従う」
   // （未設定として扱われる。仕様決定 W）
   let pipQuality = $state("");
+  // フィード一覧に Shorts を表示するか（feed.show_shorts、仕様決定 AP）。既定は off
+  let feedShowShorts = $state(false);
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -308,6 +311,17 @@
         invalid = true;
         notify(t("settings.pip.unsaved"));
       }
+      // feed.show_shorts: チェックボックスの 2 値を on/off で保存する（仕様決定 AP）。
+      // 次回のフィード一覧取得から反映される（list_feed の都度読み取り）
+      const fs = feedShowShorts;
+      await invoke("settings_set", {
+        key: "feed.show_shorts",
+        value: fs ? "on" : "off",
+      });
+      if (feedShowShorts !== fs) {
+        invalid = true;
+        notify(t("settings.feed.unsaved"));
+      }
       // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
       // そのまま保存（auto は未指定として扱う）。選択肢 ID はドット無しなので
       // TONE_MAPPING_MPV で mpv の値へ変換する。
@@ -432,6 +446,10 @@
       if (pipQualityRaw !== null) {
         pipQuality = pipQualityRaw.trim();
       }
+      const feedShortsRaw = await invoke<string | null>("settings_get", {
+        key: "feed.show_shorts",
+      });
+      feedShowShorts = feedShowShortsEnabled(feedShortsRaw);
       const toneRaw = await invoke<string | null>("settings_get", {
         key: "hdr.tone_mapping",
       });
@@ -638,6 +656,20 @@
           </label>
         {/each}
       </div>
+    {/if}
+  </section>
+
+  <section class="panel">
+    <h2>{t("settings.feed.title")}</h2>
+    <p class="subtle desc">{t("settings.feed.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <label class="wheel-row">
+        <input type="checkbox" bind:checked={feedShowShorts} />
+        {t("settings.feed.showShorts")}
+      </label>
+      <p class="subtle desc">{t("settings.feed.showShorts.desc")}</p>
     {/if}
   </section>
 

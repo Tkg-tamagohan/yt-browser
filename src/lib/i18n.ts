@@ -335,6 +335,15 @@ const ja = {
   "settings.pip.unsaved":
     "保存中に PiP の値が変更されました。DB には既定値が保存されたため、もう一度保存してください",
 
+  // Phase 29: フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
+  "settings.feed.title": "フィード",
+  "settings.feed.desc": "フィード一覧の表示設定。次回の一覧取得から反映される",
+  "settings.feed.showShorts": "フィードに Shorts を表示する",
+  "settings.feed.showShorts.desc":
+    "オフのとき、フィード一覧の「すべて」「動画」の選択は Shorts を除外します。種別フィルタで「Shorts」を選ぶと常に表示します",
+  "settings.feed.unsaved":
+    "保存中にフィードの値が変更されました。もう一度保存してください",
+
 } as const;
 
 export type MessageKey = keyof typeof ja;
