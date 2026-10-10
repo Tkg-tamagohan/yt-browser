@@ -133,7 +133,7 @@
 
   async function loadItems(): Promise<void> {
     const seq = ++loadSeq;
-    const filterKey = `${unreadOnly ? 1 : 0}|${filterCat ?? ""}|${filterKind}`;
+    const filterKey = `${unreadOnly ? 1 : 0}|${filterCat ?? ""}|${filterKind}|${filterChannel?.channelId ?? ""}`;
     const res = await invoke<FeedItem[]>("list_feed", {
       filter: {
         unreadOnly,
