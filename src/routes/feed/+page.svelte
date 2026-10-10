@@ -71,6 +71,13 @@
   // 「さらに読み込む」の状態（1 ページ = バックエンドの FEED_LIST_LIMIT）
   let feedCursor = $state<FeedCursor | null>(null);
   let feedHasMore = $state(false);
+  // 再取得で保持した過去ページの手前に空白が残りうるときの
+  // 状態。gapBoundary は保持分の先頭（空白補完の到達目標）、
+  // deepCursor/deepHasMore は空白を埋め切った後に復帰する深い側の
+  // カーソル（保持前の feedCursor/feedHasMore）
+  let gapBoundary: FeedCursor | null = null;
+  let deepCursor: FeedCursor | null = null;
+  let deepHasMore = false;
   let loadingMore = $state(false);
   let unlistens: UnlistenFn[] = [];
 
@@ -147,6 +154,20 @@
               feedItemSortsAfter(i, last.publishedAt, last.videoId),
             )
           : [];
+      if (tail.length > 0) {
+        // 空白補完が未完の前回状態があれば深い側はそのまま引き継ぐ
+        // （gap 走査の途中で再度の再取得が来ても最深カーソルを失わない）
+        if (!gapBoundary) {
+          deepCursor = feedCursor;
+          deepHasMore = feedHasMore;
+        }
+        const head = tail[0];
+        gapBoundary = { publishedAt: head.publishedAt, videoId: head.videoId };
+      } else {
+        gapBoundary = null;
+        deepCursor = null;
+        deepHasMore = false;
+      }
       const seen = new Set(res.map((i) => i.videoId));
       items = [...res, ...tail.filter((i) => !seen.has(i.videoId))];
       itemsFilterKey = filterKey;
@@ -188,10 +209,38 @@
           feedItemCompare,
         );
         const last = res[res.length - 1];
-        if (last) {
-          feedCursor = { publishedAt: last.publishedAt, videoId: last.videoId };
+        if (
+          last &&
+          gapBoundary &&
+          feedItemCompare(last, gapBoundary) >= 0
+        ) {
+          // 空白を埋め切った（取得末尾が保持分の先頭に到達・追い越し）。
+          // 保持分の区間は全て表示済みなので、保持前の深い側の
+          // カーソルへ復帰し、既表示ページの再走査を省く
+          feedCursor = deepCursor ?? {
+            publishedAt: last.publishedAt,
+            videoId: last.videoId,
+          };
+          feedHasMore = deepHasMore;
+          gapBoundary = null;
+          deepCursor = null;
+          deepHasMore = false;
+        } else {
+          if (last) {
+            feedCursor = {
+              publishedAt: last.publishedAt,
+              videoId: last.videoId,
+            };
+          }
+          feedHasMore = res.length >= 500;
+          if (!feedHasMore) {
+            // 走査が末尾へ達した。保持分との間の空白はここまでで
+            // 打ち止め（取得順の集合が尽きた）ため状態を畳む
+            gapBoundary = null;
+            deepCursor = null;
+            deepHasMore = false;
+          }
         }
-        feedHasMore = res.length >= 500;
       }
     } catch (e) {
       notify(t("feed.failed", { message: asErrorMessage(e) }));
