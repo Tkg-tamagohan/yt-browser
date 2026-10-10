@@ -68,4 +68,25 @@
     font-size: 0.9rem;
     margin-top: 0;
   }
+
+  /* 定義が無かったまま使われていたクラスへ最小定義を補う
+     （feed の .channel-list と同じ行構成。ch-title の
+     省略表示はグローバル .ch-title が担う） */
+  .blocked-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .blocked-list li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-top: 1px solid #2d2f33;
+  }
+
+  .blocked-list .ch-title {
+    flex: 1;
+  }
 </style>

@@ -127,6 +127,14 @@
     white-space: nowrap;
   }
 
+  /* 投稿者名は伸縮させず、長い場合はグローバル .ch-title の
+     ellipsis で省略する（feed 由来の定義が scoped の壁で
+     届いていなかったため、ここでは横幅の上限だけ足す） */
+  .ch-title {
+    flex-shrink: 0;
+    max-width: 14em;
+  }
+
   .chat-time {
     color: #9aa0a6;
     font-family: monospace;

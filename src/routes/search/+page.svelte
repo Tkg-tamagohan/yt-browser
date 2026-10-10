@@ -199,9 +199,4 @@
     padding: 0;
     margin: 0;
   }
-
-  .load-more {
-    display: block;
-    margin: 12px auto;
-  }
 </style>

@@ -6,7 +6,7 @@
   <section class="panel">
     <h2>{t("settings.update.title")}</h2>
     <p class="subtle desc">{t("settings.update.desc")}</p>
-    <div class="row">
+    <div>
       <button
         onclick={() => void checkForUpdate(true)}
         disabled={appUpdate.checking}
