@@ -1,6 +1,6 @@
 [package]
 name = "yt-browser"
-version = "0.7.0"
+version = "0.7.1"
 description = "YouTube 専用ブラウザ（専ブラ）"
 authors = ["Tkg-tamagohan"]
 edition = "2021"
