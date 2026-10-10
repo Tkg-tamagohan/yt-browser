@@ -694,11 +694,7 @@ fn playlist_items_page_ranges() {
         ],
     )
     .unwrap();
-    let ids = |rows: &[PlaylistEntry]| {
-        rows.iter()
-            .map(|i| i.video_id.clone())
-            .collect::<Vec<_>>()
-    };
+    let ids = |rows: &[PlaylistEntry]| rows.iter().map(|i| i.video_id.clone()).collect::<Vec<_>>();
     // 先頭 2 件
     let p1 = db.playlist_items_page(pl.id, None, Some(2)).unwrap();
     assert_eq!(ids(&p1), ["aaaaaaaaaa1", "bbbbbbbbbb2"]);
@@ -1131,11 +1127,13 @@ fn feed_list_filtered_hides_shorts_when_off() {
     .unwrap();
 
     let ids = |show_shorts: bool| {
-        db.feed_list_filtered(&FeedFilter::default(), show_shorts, FEED_LIST_LIMIT, |_| true)
-            .unwrap()
-            .iter()
-            .map(|i| i.video_id.clone())
-            .collect::<Vec<_>>()
+        db.feed_list_filtered(&FeedFilter::default(), show_shorts, FEED_LIST_LIMIT, |_| {
+            true
+        })
+        .unwrap()
+        .iter()
+        .map(|i| i.video_id.clone())
+        .collect::<Vec<_>>()
     };
     assert_eq!(ids(true).len(), 2);
     assert_eq!(ids(false), vec!["video0000001"]);
@@ -1191,16 +1189,18 @@ fn feed_list_filtered_cursor_paging() {
         published_at: published_at.map(str::to_string),
         video_id: video_id.to_string(),
     };
-    let ids_of = |rows: &[(String, Option<String>)]| {
-        rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>()
-    };
+    let ids_of =
+        |rows: &[(String, Option<String>)]| rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>();
 
     // 1 ページ目：同時刻は video_id 昇順
     let p1 = page(None, 2);
     assert_eq!(ids_of(&p1), vec!["aaaa0000001", "bbbb0000001"]);
 
     // 2 ページ目：カーソル行自体は含まれず、NULL 行は末尾
-    let p2 = page(Some(cur(Some("2026-10-08T00:00:00+00:00"), "bbbb0000001")), 2);
+    let p2 = page(
+        Some(cur(Some("2026-10-08T00:00:00+00:00"), "bbbb0000001")),
+        2,
+    );
     assert_eq!(ids_of(&p2), vec!["cccc0000001", "dddd0000001"]);
     assert_eq!(p2[1].1, None);
 
@@ -1209,7 +1209,10 @@ fn feed_list_filtered_cursor_paging() {
     assert!(p3.is_empty());
 
     // 同時刻の途中行カーソル：次の同時刻行から続く
-    let mid = page(Some(cur(Some("2026-10-08T00:00:00+00:00"), "aaaa0000001")), 10);
+    let mid = page(
+        Some(cur(Some("2026-10-08T00:00:00+00:00"), "aaaa0000001")),
+        10,
+    );
     assert_eq!(
         ids_of(&mid),
         vec!["bbbb0000001", "cccc0000001", "dddd0000001"]
