@@ -102,3 +102,11 @@ select {
   margin: 0;
   padding: 0;
 }
+
+/* ---- 設定画面（settings/+page.svelte と Settings*Section 子コンポーネント） ---- */
+
+/* 各節が子コンポーネント化され scoped 兄弟マッチが効かないためここで定義する。
+   feed 側の .panel には同値の margin-top があるため実害なし */
+.panel + .panel {
+  margin-top: 16px;
+}

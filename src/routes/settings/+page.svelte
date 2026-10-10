@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { t, type MessageKey, TONE_MAPPING_MPV } from "$lib/i18n";
-  import { fmtChatDateTime } from "$lib/format";
+  import { t, TONE_MAPPING_MPV } from "$lib/i18n";
   import {
     PIP_GEOMETRY_DEFAULT,
     isValidPipGeometry,
@@ -16,20 +15,18 @@
     formatOverrides,
     initPlayerEvents,
     playerStates,
-    type BlockedChannel,
-    type ChatEvent,
-    type Filter,
     type UiError,
   } from "$lib/players.svelte";
-  import { appUpdate, checkForUpdate } from "$lib/updater.svelte";
   import {
     CUSTOM,
     SPONSOR_CATEGORIES,
     TONE_MAPPINGS,
-    FILTER_TARGETS,
-    FILTER_KINDS,
     type SponsorCategory,
   } from "$lib/settings-consts";
+  import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
+  import SettingsChatSearchSection from "$lib/SettingsChatSearchSection.svelte";
+  import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
+  import SettingsUpdateSection from "$lib/SettingsUpdateSection.svelte";
 
   // 設計書 §4.3 のプリセット表（プレイヤーカードの画質選択と共有）
   const PRESETS = QUALITY_PRESETS;
@@ -72,105 +69,6 @@
   let toneMapping = $state("auto");
   let computePeak = $state("auto");
   let mpvExtraArgs = $state("");
-
-  // ブロック中チャンネル（FR-5: 設定画面での解除）
-  let blocked = $state<BlockedChannel[]>([]);
-
-  // NG フィルタ（FR-9）
-  let filters = $state<Filter[]>([]);
-  let fTarget = $state<string>("chat_text");
-  let fKind = $state<string>("literal");
-  let fPattern = $state("");
-
-  // チャット履歴検索（FR-6）
-  let chatQuery = $state("");
-  let chatVideoId = $state("");
-  let chatResults = $state<ChatEvent[] | null>(null);
-  let chatSearching = $state(false);
-
-  async function loadFilters(): Promise<void> {
-    try {
-      filters = await invoke<Filter[]>("filter_list");
-    } catch {
-      filters = [];
-    }
-  }
-
-  async function addFilter(): Promise<void> {
-    const pattern = fPattern.trim();
-    if (!pattern) return;
-    try {
-      await invoke("filter_add", {
-        target: fTarget,
-        kind: fKind,
-        pattern,
-      });
-      fPattern = "";
-      await loadFilters();
-      notify(t("settings.filters.added"));
-    } catch (e) {
-      notify(t("settings.filters.addFailed", { message: asErrorMessage(e) }));
-    }
-  }
-
-  async function removeFilter(f: Filter): Promise<void> {
-    try {
-      await invoke("filter_remove", { id: f.id });
-      filters = filters.filter((x) => x.id !== f.id);
-      notify(t("settings.filters.removed"));
-    } catch (e) {
-      notify(t("settings.filters.removeFailed", { message: asErrorMessage(e) }));
-    }
-  }
-
-  async function searchChat(): Promise<void> {
-    const query = chatQuery.trim();
-    if (!query) return;
-    chatSearching = true;
-    try {
-      chatResults = await invoke<ChatEvent[]>("chat_history_search", {
-        videoId: chatVideoId.trim() || null,
-        query,
-        limit: 200,
-      });
-    } catch (e) {
-      chatResults = null;
-      notify(t("settings.chatSearch.failed", { message: asErrorMessage(e) }));
-    }
-    chatSearching = false;
-  }
-
-  /// フィルタ対象・種別の日本語ラベル。未定義の値は生値をそのまま出す
-  /// （メッセージキー欠落時のフォールバック。sponsor カテゴリと同じ方式）。
-  function filterTargetLabel(target: string): string {
-    const key = `filter.target.${target}` as MessageKey;
-    const s = t(key);
-    return s === key ? target : s;
-  }
-
-  function filterKindLabel(kind: string): string {
-    const key = `filter.kind.${kind}` as MessageKey;
-    const s = t(key);
-    return s === key ? kind : s;
-  }
-
-  async function loadBlocked(): Promise<void> {
-    try {
-      blocked = await invoke<BlockedChannel[]>("blocked_channels");
-    } catch {
-      blocked = [];
-    }
-  }
-
-  async function unblock(b: BlockedChannel): Promise<void> {
-    try {
-      await invoke("unblock_channel", { channelId: b.channelId });
-      blocked = blocked.filter((x) => x.channelId !== b.channelId);
-      notify(t("blocked.unblocked", { title: b.title }));
-    } catch (e) {
-      notify(t("blocked.unblockFailed", { message: asErrorMessage(e) }));
-    }
-  }
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -469,8 +367,6 @@
     persistedFormat =
       selected === CUSTOM ? customFormat.trim() : selected;
     loading = false;
-    void loadBlocked();
-    void loadFilters();
   });
 </script>
 
@@ -639,124 +535,13 @@
     {/if}
   </section>
 
-  <section class="panel">
-    <h2>{t("blocked.title")}</h2>
-    <p class="subtle desc">{t("blocked.desc")}</p>
-    {#if blocked.length === 0}
-      <p class="subtle">{t("blocked.empty")}</p>
-    {:else}
-      <ul class="blocked-list">
-        {#each blocked as b (b.channelId)}
-          <li>
-            <span class="ch-title" title={b.channelId}>{b.title}</span>
-            <button class="link" onclick={() => unblock(b)}>
-              {t("blocked.unblock")}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
+  <SettingsBlockedSection {notify} />
 
-  <section class="panel">
-    <h2>{t("settings.filters.title")}</h2>
-    <p class="subtle desc">{t("settings.filters.desc")}</p>
-    <div class="filter-form">
-      <select bind:value={fTarget} aria-label={t("settings.filters.target")}>
-        {#each FILTER_TARGETS as target}
-          <option value={target}>{t(`filter.target.${target}`)}</option>
-        {/each}
-      </select>
-      <select bind:value={fKind} aria-label={t("settings.filters.kind")}>
-        {#each FILTER_KINDS as kind}
-          <option value={kind}>{t(`filter.kind.${kind}`)}</option>
-        {/each}
-      </select>
-      <input
-        type="text"
-        class="pattern-input"
-        bind:value={fPattern}
-        placeholder={t("settings.filters.pattern.placeholder")}
-        onkeydown={(e) => e.key === "Enter" && addFilter()}
-      />
-      <button onclick={addFilter} disabled={!fPattern.trim()}>
-        {t("settings.filters.add")}
-      </button>
-    </div>
-    {#if filters.length === 0}
-      <p class="subtle">{t("settings.filters.empty")}</p>
-    {:else}
-      <ul class="filter-list">
-        {#each filters as f (f.id)}
-          <li>
-            <span class="f-target">{filterTargetLabel(f.target)}</span>
-            <span class="f-kind">{filterKindLabel(f.kind)}</span>
-            <code class="f-pattern">{f.pattern}</code>
-            <button class="link" onclick={() => removeFilter(f)}>
-              {t("settings.filters.remove")}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
+  <SettingsFiltersSection {notify} />
 
-  <section class="panel">
-    <h2>{t("settings.chatSearch.title")}</h2>
-    <p class="subtle desc">{t("settings.chatSearch.desc")}</p>
-    <div class="filter-form">
-      <input
-        type="text"
-        class="vid-input"
-        bind:value={chatVideoId}
-        placeholder={t("settings.chatSearch.videoId")}
-      />
-      <input
-        type="text"
-        class="pattern-input"
-        bind:value={chatQuery}
-        placeholder={t("settings.chatSearch.placeholder")}
-        onkeydown={(e) => e.key === "Enter" && searchChat()}
-      />
-      <button onclick={searchChat} disabled={chatSearching || !chatQuery.trim()}>
-        {chatSearching ? t("settings.chatSearch.searching") : t("settings.chatSearch.button")}
-      </button>
-    </div>
-    {#if chatResults !== null}
-      {#if chatResults.length === 0}
-        <p class="subtle">{t("settings.chatSearch.empty")}</p>
-      {:else}
-        <p class="subtle">
-          {t("settings.chatSearch.count", { count: chatResults.length })}
-        </p>
-        <ul class="chat-hits">
-          {#each chatResults as e (e)}
-            <li>
-              <span class="chat-time">{fmtChatDateTime(e.postedAtUsec)}</span>
-              <span class="ch-title">{e.authorName ?? "-"}</span>
-              {#if e.kind !== "text"}<span class="f-kind">{e.kind}</span>{/if}
-              <span class="hit-msg">{e.message}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    {/if}
-  </section>
+  <SettingsChatSearchSection {notify} />
 
-  <section class="panel">
-    <h2>{t("settings.update.title")}</h2>
-    <p class="subtle desc">{t("settings.update.desc")}</p>
-    <div class="row">
-      <button
-        onclick={() => void checkForUpdate(true)}
-        disabled={appUpdate.checking}
-      >
-        {appUpdate.checking
-          ? t("settings.update.checking")
-          : t("settings.update.check")}
-      </button>
-    </div>
-  </section>
+  <SettingsUpdateSection />
 
   <button
     class="save-btn"
@@ -832,10 +617,6 @@
     width: 80px;
   }
 
-  .panel + .panel {
-    margin-top: 16px;
-  }
-
   .sponsor-table {
     display: flex;
     flex-direction: column;
@@ -858,77 +639,5 @@
   .save-btn {
     align-self: flex-start;
     margin-top: 16px;
-  }
-
-  .filter-form {
-    display: flex;
-    gap: 8px;
-    margin: 12px 0;
-    flex-wrap: wrap;
-  }
-
-  .filter-form select {
-    padding: 4px;
-    border-radius: 6px;
-  }
-
-  .pattern-input {
-    flex: 1;
-    min-width: 200px;
-  }
-
-  .vid-input {
-    width: 220px;
-    font-family: monospace;
-  }
-
-  .filter-list,
-  .chat-hits {
-    list-style: none;
-    padding: 0;
-    margin: 8px 0 0;
-  }
-
-  .filter-list li,
-  .chat-hits li {
-    display: flex;
-    gap: 10px;
-    align-items: baseline;
-    padding: 4px 0;
-    font-size: 0.9rem;
-  }
-
-  .f-target {
-    color: #8ab4f8;
-    white-space: nowrap;
-  }
-
-  .f-kind {
-    color: #9aa0a6;
-    font-size: 0.8rem;
-    white-space: nowrap;
-  }
-
-  .f-pattern {
-    color: #e8eaed;
-    overflow-wrap: anywhere;
-    flex: 1;
-  }
-
-  .chat-time {
-    color: #9aa0a6;
-    font-family: monospace;
-    font-size: 0.8rem;
-    white-space: nowrap;
-  }
-
-  .hit-msg {
-    overflow-wrap: anywhere;
-    min-width: 0;
-  }
-
-  .chat-hits {
-    max-height: 320px;
-    overflow-y: auto;
   }
 </style>
