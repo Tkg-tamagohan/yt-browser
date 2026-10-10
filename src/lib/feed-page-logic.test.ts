@@ -1,9 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { feedItemSortsAfter } from "./feed-page-logic";
+import { feedItemCompare, feedItemSortsAfter } from "./feed-page-logic";
 
 const item = (publishedAt: string | null, videoId: string) => ({
   publishedAt,
   videoId,
+});
+
+describe("feedItemCompare", () => {
+  it("published_at 降順・NULL 末尾・video_id 昇順の全順序を再現する", () => {
+    const sorted = [
+      item("2024-03-01T00:00:00Z", "b"),
+      item("2024-02-01T00:00:00Z", "z"),
+      item("2024-02-01T00:00:00Z", "a"),
+      item(null, "b"),
+      item(null, "a"),
+      item("2024-01-01T00:00:00Z", "x"),
+    ].sort(feedItemCompare);
+    expect(sorted.map((i) => i.videoId)).toEqual([
+      "b", "a", "z", "x", "a", "b",
+    ]);
+  });
 });
 
 describe("feedItemSortsAfter", () => {
