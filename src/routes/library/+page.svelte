@@ -27,6 +27,7 @@
     discardQueue,
     queueAt,
     queuePlayingAt,
+    rememberMeta,
     startQueue,
     queueStop,
   } from "$lib/queue.svelte";
@@ -585,10 +586,12 @@
   }
 
   /// その項目からの連続再生（FR-10・FR-26、仕様決定 S・AS）。選択項目を
-  /// 通常再生で起動し、残りをそのプレイリストのキューへ登録する。
-  /// 同じプレイリストの既存キューは startQueue 側で新しいスナップショットへ
-  /// 上書きする（他のキューは動かさない）。起動に使う resume は通常の再生と
-  /// 同じく true（暫定: キュー先頭項目もレジュームする）
+  /// 起動し、残りをそのプレイリストのキューへ登録する。同じプレイリストの
+  /// 既存キューは startQueue 側で新しいスナップショットへ上書きする
+  /// （他のキューは動かさない）。起動に使う resume は通常の再生と
+  /// 同じく true（暫定: キュー先頭項目もレジュームする）。
+  /// 既存キューが実行中なら新しい窓を開かず、そのインスタンスへ
+  /// 開始項目を読み替えてセッションを引き継ぐ（窓位置を保つ）
   async function playQueue(index: number): Promise<void> {
     if (selectedId === null) return;
     const plId = selectedId;
@@ -604,12 +607,23 @@
     if (!it) return;
     // 再生の起動に失敗した段階では既存キューを維持する
     // （キューの置き換えは新しいキューの作成が進んだ時点で行う）
+    const runningId = queueAt(plId)?.instanceId ?? null;
     let instanceId: number;
     try {
-      instanceId = await invoke<number>("play_video", {
-        videoId: it.videoId,
-        resume: true,
-      });
+      if (runningId !== null) {
+        // 実行中キューへの再開始: 同じ mpv へ読み替えて引き継ぐ
+        instanceId = runningId;
+        await invoke("player_switch", {
+          instanceId,
+          videoId: it.videoId,
+          resume: true,
+        });
+      } else {
+        instanceId = await invoke<number>("play_video", {
+          videoId: it.videoId,
+          resume: true,
+        });
+      }
     } catch (e) {
       notify(
         t("library.playlist.queueFailed", { message: asErrorMessage(e) }),
@@ -617,6 +631,9 @@
       return;
     }
     try {
+      // スナップショット項目の表示メタを登録する
+      // （キュー内の一覧が動画 ID のまま出ないように）
+      for (const i of playlistItems) rememberMeta(i);
       const pl = va.playlists.find((p) => p.id === plId);
       await startQueue(
         plId,

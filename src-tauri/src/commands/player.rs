@@ -59,6 +59,40 @@ pub async fn play_video(
         .map_err(UiError::from)
 }
 
+/// `player_switch`（FR-26）。稼働中インスタンスの再生内容を別動画へ
+/// 読み替える。実行中のプレイリストキューへ「ここから連続再生」で
+/// 再開始したとき、新しいインスタンスを起こさず同じ mpv へ引き継ぐ
+/// （セッション引き継ぎ。窓位置を保つ）。開始位置の解決順は
+/// `play_video` と同じ（明示 `start_sec` > URL の `t=`/`start=` >
+/// `resume` が true なら履歴位置 > 0）。
+#[tauri::command]
+pub async fn player_switch(
+    instance_id: u32,
+    video_id: String,
+    resume: bool,
+    start_sec: Option<f64>,
+    players: State<'_, PlayerManager>,
+    db: State<'_, Db>,
+) -> Result<(), UiError> {
+    let id = parse_video_id(&video_id)?;
+    let start_sec = if let Some(sec) = start_sec {
+        sec.max(0.0)
+    } else if let Some(sec) = crate::model::parse_start_seconds(&video_id) {
+        sec
+    } else if resume {
+        db.history_get(&id)?
+            .filter(|h| !h.completed)
+            .map(|h| h.position_sec as f64)
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    players
+        .switch(instance_id, &id, start_sec)
+        .await
+        .map_err(UiError::from)
+}
+
 /// `player_list`。稼働中インスタンスのスナップショット一覧を返す。
 /// ページ再読み込み後にカードを復元するため、イベントだけでは
 /// 再通知されない一時停止中インスタンスの状態もここで拾う。

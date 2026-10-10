@@ -72,6 +72,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
 | `player_set_queue` | `instance_id`, `items`, `loop_all`, `base_seq` | `Result<bool>`（置き換えを適用したか） |
+| `player_switch` | `instance_id`, `video_id`, `resume`, `start_sec?` | `Result<()>` |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
 | `history_list` | `limit?`（既定 500、上限 1000） | `Result<Vec<WatchHistory>>` |
 | `history_remove` | `video_id` | `Result<()>` |
@@ -399,6 +400,13 @@ PiP 小窓のサイズは動画の表示アスペクト比へ追従する（FR-1
 キューはフロント側のセッション状態（`queue.svelte.ts`）に持つ。
 ライブラリの項目から「ここから連続再生」を選ぶと、その項目を通常の `play_video` で起動し、
 同時に今後の項目列を `player_set_queue` でバックエンドへ武装する。
+対象プレイリストのキューが実行中の場合は新しいインスタンスを起こさず、
+`player_switch` で既存インスタンスへ開始項目を読み替えてセッションを
+引き継ぐ（窓位置を保つ、FR-26）。`player_switch` は切り替え前の項目の
+再生位置を履歴へ保存し、読み替えで発生する旧ファイルの `end-file` は
+replace 予約で終端扱いせず、読み替え後の武装キューは一度空へ戻してから
+フロントが `player_set_queue` で張り替える。開始位置の解決順は
+`play_video` と同じ（§3.1）。
 mpv が終端（自然終了・途中失敗）を迎えると emitter が武装キューの先頭を取り出し、
 同一 mpv で `loadfile` により先頭から読み込む。`--keep-open=yes` 下では EOF 後の mpv が `pause=true` で残るため、読み替え時に `set_property pause false` も送って一時停止を解除する。`player://ended` の `continued` が
 true のときフロントはキュー位置を照合するだけで、通常の遷移では再登録しない。
@@ -437,7 +445,9 @@ true のときフロントはキュー位置を照合するだけで、通常の
 未再生の次項目になるため、`playingCurrent` フラグで武装対象の先頭を
 切り替える（次項目を武装から落とすと再生されずに飛ばされる）。
 項目の表示メタ（タイトル・チャンネル名・サムネイル）は `queueMeta` の
-セッション内メモリにのみ持ち、DB には保存しない。
+セッション内メモリにのみ持ち、DB には保存しない。プレイリストキューの
+スナップショット作成時はプレイリスト項目のメタをそのまま登録するため、
+キュー内の一覧は動画 ID ではなく動画名で表示される。
 
 キューは一時キュー 1 個（`playlistId` なし）とプレイリストごとの
 キュー（最大 1 個）を同時に保持する（FR-26、仕様決定 AS）。
@@ -463,8 +473,10 @@ true のときフロントはキュー位置を照合するだけで、通常の
 全消去と対象プレイリストの削除ではキューを畳む（`discardQueue`）。
 一時キューはエントリを残して中身を空に、プレイリストキューは
 エントリごと消す。「ここから連続再生」による上書きはエントリを畳まず、
-同じエントリのインスタンスを外したうえで項目列と位置を新しい
-スナップショットへ差し替える（`startQueue`）。一覧と表示メタを
+項目列と位置を新しいスナップショットへ差し替える（`startQueue`）。
+実行中のキューへの再実行は同じインスタンスへ引き継ぐためインスタンスを
+外さず、停止中または別インスタンスへの置き換えでは旧インスタンスを
+外したうえで差し替える。一覧と表示メタを
 破棄する際は、いずれのキューにも残らない動画の `queueMeta` 項目をあわせて
 解放する。
 

@@ -353,12 +353,24 @@ impl MpvPlayer {
         lock(&self.armed).seq
     }
 
-    /// 連続再生: 同じ mpv プロセスで別動画を先頭から再生する。
-    /// 旧ファイルの end-file は emitter が既に消費済みなので replace 抑止は張らない。
+    /// 意図的な読み替え（`loadfile ... replace`）の予約を張る／取り消す。
+    /// 継続や画質変更以外の読み替え（セッション引き継ぎ）で発生する
+    /// 旧ファイルの end-file を終端扱いしないための公開口
+    pub(crate) fn begin_replace(&self) {
+        self.terminal.begin_replace();
+    }
+
+    pub(crate) fn cancel_replace(&self) {
+        self.terminal.cancel_replace();
+    }
+
+    /// 連続再生: 同じ mpv プロセスで別動画を再生する。`start_sec` は開始位置
+    /// （秒、0 で先頭）。旧ファイルの end-file は emitter が既に消費済みか
+    /// 呼び出し側が begin_replace で抑止する前提で、ここでは張らない。
     /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
-    pub(crate) async fn load_video(&self, video_id: &str) -> Result<(), MpvError> {
+    pub(crate) async fn load_video(&self, video_id: &str, start_sec: f64) -> Result<(), MpvError> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        loadfile_replace(&self.ipc, &url, json!({ "start": "0" })).await?;
+        loadfile_replace(&self.ipc, &url, json!({ "start": format!("{start_sec}") })).await?;
         // --keep-open=yes 下では EOF 後の mpv が pause=true で残るため、
         // loadfile だけでは次項目が一時停止のまま黒画面で止まる（実機検証で確認）。
         // 読み替えのたびに pause を明示的に解除する

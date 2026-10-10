@@ -225,6 +225,41 @@ impl PlayerManager {
             .map(|s| s.position)
     }
 
+    /// `player_switch` の実体。稼働中インスタンスの再生内容を別動画へ
+    /// 読み替える（実行中キューの「ここから連続再生」再開始で窓を増やさず
+    /// 同じ mpv へ引き継ぐセッション引き継ぎ用、FR-26）。
+    /// 切り替え前に現在項目の再生位置を履歴へ保存し、読み替えで発生する
+    /// 旧ファイルの end-file は replace 予約で終端扱いしない
+    /// （終端→継続の流れを起こさない）。読み替え後は武装キューを空に戻す
+    /// （旧スナップショットの項目が新しい再生の終端へ継続しないよう。
+    /// 呼び出し側が直後に `player_set_queue` で張り替える）。
+    /// 存在しないインスタンスでは MpvError::NoSuchInstance。
+    pub async fn switch(
+        &self,
+        instance_id: u32,
+        video_id: &str,
+        start_sec: f64,
+    ) -> Result<(), MpvError> {
+        let player = {
+            let g = lock(&self.players);
+            g.get(&instance_id).map(|e| e.player.clone())
+        }
+        .ok_or(MpvError::NoSuchInstance(instance_id))?;
+        persist_now(&self.db, &player, player.terminal_completed());
+        player.begin_replace();
+        if let Err(e) = player.load_video(video_id, start_sec).await {
+            player.cancel_replace();
+            return Err(e);
+        }
+        player.set_queue(Vec::new(), false, None);
+        // 再生開始時点で履歴行を確保（タイトルは media-title 変化で追従）
+        if let Err(e) = self.db.history_upsert(video_id) {
+            tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
+        }
+        Self::spawn_sponsor_fetch(&self.db, &self.http, player.clone(), video_id.to_string());
+        Ok(())
+    }
+
     /// `player_control` の実体。
     /// `Pip` は設定値 `pip.geometry` を参照してここで処理し、
     /// 残りはプレイヤー固有の `control` に委譲する。
@@ -350,7 +385,7 @@ impl PlayerManager {
                         let mut continued = false;
                         let mut continued_video_id: Option<String> = None;
                         if let Some(next_id) = player.take_next() {
-                            match player.load_video(&next_id).await {
+                            match player.load_video(&next_id, 0.0).await {
                                 Ok(()) => {
                                     continued = true;
                                     continued_video_id = Some(next_id.clone());
