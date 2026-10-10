@@ -86,7 +86,7 @@
   });
 </script>
 
-<div class="related">
+<div class="related sub-panel">
   <h3>{t("related.title")}</h3>
   {#if loading}
     <p class="subtle">{t("related.loading")}</p>
@@ -128,12 +128,6 @@
 </div>
 
 <style>
-  .related {
-    margin-top: 12px;
-    border-top: 1px solid #3c4043;
-    padding-top: 8px;
-  }
-
   .related h3 {
     font-size: 1rem;
     margin: 0 0 8px;

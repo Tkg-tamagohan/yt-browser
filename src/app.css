@@ -103,6 +103,16 @@ select {
   padding: 0;
 }
 
+/* ---- サブパネル（プレイヤーカード内の補助パネル） ---- */
+
+/* ChatPanel の .chat-panel と RelatedPanel の .related で共通だった
+   上部罫線 + 間隔。各コンポーネントのルート要素に併記する */
+.sub-panel {
+  margin-top: 12px;
+  border-top: 1px solid #3c4043;
+  padding-top: 8px;
+}
+
 /* ---- 設定画面（settings/+page.svelte と Settings*Section 子コンポーネント） ---- */
 
 /* 各節が子コンポーネント化され scoped 兄弟マッチが効かないためここで定義する。
