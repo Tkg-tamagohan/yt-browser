@@ -409,9 +409,9 @@ def check_events() -> Findings:
 # t(`prefix.${var}`) のテンプレート参照に対応するドメイン定数。
 # 接頭辞ごとの定数配列の全要素にキーがあることを確認する。
 DOMAIN_CONSTANTS: dict[str, tuple[str, str]] = {
-    "sponsor.cat.": ("src/routes/settings/+page.svelte", "SPONSOR_CATEGORIES"),
-    "filter.target.": ("src/routes/settings/+page.svelte", "FILTER_TARGETS"),
-    "filter.kind.": ("src/routes/settings/+page.svelte", "FILTER_KINDS"),
+    "sponsor.cat.": ("src/lib/settings-consts.ts", "SPONSOR_CATEGORIES"),
+    "filter.target.": ("src/lib/settings-consts.ts", "FILTER_TARGETS"),
+    "filter.kind.": ("src/lib/settings-consts.ts", "FILTER_KINDS"),
 }
 
 DOTTED_KEY_RE = re.compile(
