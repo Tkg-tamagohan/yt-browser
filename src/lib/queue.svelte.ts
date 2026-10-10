@@ -374,6 +374,9 @@ export async function startQueue(
     next.set(playlistId, q);
     queues.list = next;
   }
+  // 上書きで外れた旧スナップショット項目のメタを解放する
+  // （discard 系以外では prune が走らないため）
+  pruneMeta();
   await armQueue(q);
 }
 
