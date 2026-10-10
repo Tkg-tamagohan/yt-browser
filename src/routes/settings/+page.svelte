@@ -25,8 +25,14 @@
   } from "$lib/settings-consts";
   import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
   import SettingsChatSearchSection from "$lib/SettingsChatSearchSection.svelte";
+  import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
+  import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
+  import SettingsPipSection from "$lib/SettingsPipSection.svelte";
+  import SettingsQualitySection from "$lib/SettingsQualitySection.svelte";
+  import SettingsSponsorSection from "$lib/SettingsSponsorSection.svelte";
   import SettingsUpdateSection from "$lib/SettingsUpdateSection.svelte";
+  import SettingsWheelSection from "$lib/SettingsWheelSection.svelte";
 
   // 設計書 §4.3 のプリセット表（プレイヤーカードの画質選択と共有）
   const PRESETS = QUALITY_PRESETS;
@@ -373,167 +379,32 @@
 <main class="container">
   <h1>{t("settings.title")}</h1>
 
-  <section class="panel">
-    <h2>{t("settings.quality.title")}</h2>
-    <p class="subtle desc">{t("settings.quality.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
-      <div class="presets">
-        {#each PRESETS as p}
-          <label>
-            <input type="radio" bind:group={selected} value={p.format} />
-            {t(p.key)}
-            <code>{p.format}</code>
-          </label>
-        {/each}
-        <label>
-          <input type="radio" bind:group={selected} value={CUSTOM} />
-          {t("settings.quality.custom")}
-        </label>
-        {#if selected === CUSTOM}
-          <input
-            type="text"
-            class="format-input"
-            bind:value={customFormat}
-            placeholder={t("settings.quality.format.label")}
-          />
-        {/if}
-      </div>
-    {/if}
-  </section>
+  <SettingsQualitySection
+    {loading}
+    bind:selected={selected}
+    bind:customFormat={customFormat}
+  />
 
-  <section class="panel">
-    <h2>{t("settings.wheel.title")}</h2>
-    <p class="subtle desc">{t("settings.wheel.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
-      <label class="wheel-row">
-        {t("settings.wheel.volumeDelta")}
-        <input
-          type="number"
-          class="wheel-input"
-          bind:value={wheelDelta}
-          min="-100"
-          max="100"
-          step="1"
-        />
-      </label>
-    {/if}
-  </section>
+  <SettingsWheelSection {loading} bind:wheelDelta={wheelDelta} />
 
-  <section class="panel">
-    <h2>{t("settings.pip.title")}</h2>
-    <p class="subtle desc">{t("settings.pip.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
-      <label class="wheel-row">
-        <input type="checkbox" bind:checked={pipDefault} />
-        {t("settings.pip.default")}
-      </label>
-      <p class="subtle desc">{t("settings.pip.default.desc")}</p>
-      <label class="wheel-row">
-        <input type="checkbox" bind:checked={pipFitAspect} />
-        {t("settings.pip.fitAspect")}
-      </label>
-      <p class="subtle desc">{t("settings.pip.fitAspect.desc")}</p>
-      <label class="wheel-row">
-        {t("settings.pip.geometry")}
-        <input
-          type="text"
-          class="format-input"
-          bind:value={pipGeometry}
-          placeholder={PIP_GEOMETRY_DEFAULT}
-        />
-      </label>
-      <label class="wheel-row">
-        {t("settings.pip.quality")}
-        <input
-          type="text"
-          class="format-input"
-          bind:value={pipQuality}
-          placeholder="bv*[height<=480]+ba/b[height<=480]"
-        />
-      </label>
-      <p class="subtle desc">{t("settings.pip.quality.desc")}</p>
-    {/if}
-  </section>
+  <SettingsPipSection
+    {loading}
+    bind:pipDefault={pipDefault}
+    bind:pipFitAspect={pipFitAspect}
+    bind:pipGeometry={pipGeometry}
+    bind:pipQuality={pipQuality}
+  />
 
-  <section class="panel">
-    <h2>{t("settings.hdr.title")}</h2>
-    <p class="subtle desc">{t("settings.hdr.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
-      <label class="wheel-row">
-        {t("settings.hdr.toneMapping")}
-        <select bind:value={toneMapping}>
-          {#each TONE_MAPPINGS as m}
-            <option value={m}>
-              {m === "auto" ? t("settings.hdr.auto") : (TONE_MAPPING_MPV[m] ?? m)}
-            </option>
-          {/each}
-        </select>
-      </label>
-      <label class="wheel-row">
-        {t("settings.hdr.computePeak")}
-        <select bind:value={computePeak}>
-          <option value="auto">{t("settings.hdr.auto")}</option>
-          <option value="yes">{t("settings.hdr.yes")}</option>
-          <option value="no">{t("settings.hdr.no")}</option>
-        </select>
-      </label>
-      <label class="wheel-row">
-        {t("settings.hdr.extraArgs")}
-        <input
-          type="text"
-          class="format-input"
-          bind:value={mpvExtraArgs}
-          placeholder="--target-colorspace-hint=yes"
-        />
-      </label>
-      <p class="subtle desc">{t("settings.hdr.extraArgs.desc")}</p>
-    {/if}
-  </section>
+  <SettingsHdrSection
+    {loading}
+    bind:toneMapping={toneMapping}
+    bind:computePeak={computePeak}
+    bind:mpvExtraArgs={mpvExtraArgs}
+  />
 
-  <section class="panel">
-    <h2>{t("settings.sponsor.title")}</h2>
-    <p class="subtle desc">{t("settings.sponsor.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
-      <div class="sponsor-table">
-        {#each SPONSOR_CATEGORIES as cat}
-          <label>
-            <span class="cat-label">{t(`sponsor.cat.${cat}`)}</span>
-            <select bind:value={sponsorActions[cat]}>
-              <option value="skip">{t("settings.sponsor.action.skip")}</option>
-              <option value="notify">
-                {t("settings.sponsor.action.notify")}
-              </option>
-              <option value="off">{t("settings.sponsor.action.off")}</option>
-            </select>
-          </label>
-        {/each}
-      </div>
-    {/if}
-  </section>
+  <SettingsSponsorSection {loading} bind:sponsorActions={sponsorActions} />
 
-  <section class="panel">
-    <h2>{t("settings.feed.title")}</h2>
-    <p class="subtle desc">{t("settings.feed.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
-      <label class="wheel-row">
-        <input type="checkbox" bind:checked={feedShowShorts} />
-        {t("settings.feed.showShorts")}
-      </label>
-      <p class="subtle desc">{t("settings.feed.showShorts.desc")}</p>
-    {/if}
-  </section>
+  <SettingsFeedSection {loading} bind:feedShowShorts={feedShowShorts} />
 
   <SettingsBlockedSection {notify} />
 
@@ -560,80 +431,6 @@
   h1 {
     font-size: 2rem;
     margin-bottom: 1.5rem;
-  }
-
-  .panel {
-    padding: 16px;
-    border: 1px solid #3c4043;
-    border-radius: 12px;
-    background: #202124;
-  }
-
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .presets {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    margin: 12px 0 16px;
-  }
-
-  .presets label {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    font-size: 0.95rem;
-  }
-
-  .presets code {
-    color: #9aa0a6;
-    font-size: 0.8rem;
-    overflow-wrap: anywhere;
-  }
-
-  .format-input {
-    width: 100%;
-    margin-top: 4px;
-    font-family: monospace;
-  }
-
-  .wheel-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
-  }
-
-  .wheel-input {
-    width: 80px;
-  }
-
-  .sponsor-table {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 12px 0;
-  }
-
-  .sponsor-table label {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    font-size: 0.95rem;
-  }
-
-  .cat-label {
-    flex: 1;
   }
 
   .save-btn {
