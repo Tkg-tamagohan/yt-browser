@@ -627,8 +627,9 @@
       );
       goto("/");
     } catch (e) {
-      // 武装に失敗した場合は作りかけのキューを畳む
-      // （既存キューは startQueue 内で既に上書き済み）
+      // 武装失敗は armQueue 側で畳むためここには来ない。
+      // startQueue が途中で例外を投げた場合の保険として、
+      // 作りかけのキューを畳んでおく
       discardQueue(plId);
       notify(
         t("library.playlist.queueFailed", { message: asErrorMessage(e) }),

@@ -298,8 +298,17 @@ export async function cycleLoop(instanceId: number): Promise<void> {
           },
     );
   } catch {
-    // インスタンスが既に無い場合はキュー・ループ状態を畳む
-    if (key !== undefined) discardQueue(key);
+    // インスタンスが既に無い場合はキュー・ループ状態を畳む。
+    // reject 時点でキューが別インスタンスへ張り替わっている世代は
+    // 巻き込まないよう、今もこのインスタンスを背負っているか確かめる
+    const cur = key !== undefined ? queues.list.get(key) : undefined;
+    if (
+      key !== undefined &&
+      cur !== undefined &&
+      cur.instanceId === instanceId
+    ) {
+      discardQueue(key);
+    }
     clearLoop(instanceId);
   }
 }
@@ -320,8 +329,11 @@ async function armQueue(q: QueueState): Promise<void> {
         : latestPlan(id),
     );
   } catch {
-    // インスタンスが既に無い場合はキューを畳む
-    discardQueue(q.playlistId);
+    // インスタンスが既に無い場合はキューを畳む。
+    // reject 時点で別インスタンスへ張り替わっている、あるいは
+    // detach 済みの世代は巻き込まない（q.instanceId は張り替えで
+    // 新しい id、detach・畳み込みで null に変わる）
+    if (q.instanceId === id) discardQueue(q.playlistId);
   }
 }
 

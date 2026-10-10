@@ -444,7 +444,7 @@
             class="link"
             onclick={() => {
               queuePanel.selected = queueKeyOfInstance(p.instanceId) ?? null;
-              queuePanel.open = !queuePanel.open;
+              queuePanel.open = true;
             }}
           >
             {t("queue.show")}
