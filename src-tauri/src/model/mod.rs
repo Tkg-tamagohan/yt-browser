@@ -336,6 +336,15 @@ pub struct ChatStatus {
     pub message: String,
 }
 
+/// `chat://reset` イベントのペイロード（設計書 §3.2）。
+/// リプレイの後方シーク再アンカー時に送り、受け取ったパネルは対象動画の
+/// 既表示行を消してから後続の再送分を表示する（FR-24、仕様決定 AQ）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatReset {
+    pub video_id: String,
+}
+
 /// `filters` テーブルの 1 行（設計書 §8 の NG フィルタ）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

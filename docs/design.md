@@ -154,6 +154,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
+| `chat://reset` | `{ videoId }` | リプレイの後方シーク再アンカー。対象動画を開くパネルは既表示行を消してから後続の再送分を表示する（FR-24） |
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=`）の受信（§3.4） |
 | `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
@@ -493,12 +494,15 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 応答の `isReplay` フラグも確認できるが、現状はルーティングのみで識別する。
 継続エントリから `liveChatReplayContinuationData` をリプレイとみなす判定（混在時はリプレイ優先）はそのまま維持し、watch が直接リプレイ継続を返す経路にも対応する。
 
-- メッセージは `replayChatItemAction` の `videoOffsetTimeMsec`（アクションレベル）を内側アイテムへ伝播させ、`ChatEvent.video_offset_ms` として保持する
-- ポーラーは再生位置 + 120 秒分を先読みしてオフセット昇順のバッファに持ち、250 ms 周期で mpv の再生位置（`PlayerManager.position_of`）と照合して `chat://message` へ流す。送出は NG 判定込みの `normalize_all` を共用するが、`chat_logs` には保存しない
-- 後方シーク（位置が 2 秒超戻る）は未送出カーソルを近接時点へ戻して再アンカーする。再アンカー世代毎に item_id（削除イベントは対象 ID も）へ `#g<n>` 接尾辞を付け、表示側 dedup を避けて同じメッセージを再表示する
+- メッセージは `replayChatItemAction` の `videoOffsetTimeMsec`（アクションレベル）を内側アイテムへ伝播させ、`ChatEvent.video_offset_ms` として保持する。リプレイ経路のイベントは保存しないため `raw_json` はバッファへ入れずに捨てる
+- ポーラーは再生位置 + 120 秒分を先読みしてオフセット昇順のバッファに持ち、250 ms 周期で mpv の再生位置と照合して `chat://message` へ流す。送出は NG 判定込みの `normalize_all` を共用するが、`chat_logs` には保存しない。同期位置は `chat_start` で起票されたインスタンスの `PlayerManager.position_of_instance` に固定する（`instance_id` 未指定時は `position_of` で同じ動画を再生中のいずれかの位置）。同一動画を複数窓で再生する場合、セッションは動画 ID ごとに 1 本で、同期先は最初にパネルを開いたインスタンスに固定される（制約として許容）
+- メモリは上限付きとする。送出済みは後方シークの巻き戻し窓として直近 1000 件だけ保持し、未送出の先読みも 2000 件を超えるときは送出が進むまで追加取得を休止する。捨てた区間への後方シークではその区間のチャットは再送されず、巻き戻し限界として `chat://status` に警告を出す（長時間配信での `items` 肥大対策）
+- 後方シーク（位置が 2 秒超戻る）は未送出カーソルを近接時点へ戻して再アンカーする。再アンカー時に `chat://reset` を送り、パネル側は対象動画の既表示行を消してから再送分を表示する（シーク先より未来の発言が残らない）。再アンカー世代毎に item_id（削除イベントは対象 ID も）へ `#g<n>` 接尾辞を付け、表示側 dedup を避けて同じメッセージを再表示する
 - 前方シークで大量に追い越した場合は近接時点の末尾 50 件だけ流して中間を飛ばす
+- 継続トークンが尽き末尾を通過してもポーラーは終了せず、再生位置の監視を続ける（その後の後方シークで保持分を再送できるようにするため）。停止はパネル閉・プレイヤー終了時の `chat_stop`（タスク中断）が担う
 
 プレミアずれ補正は暫定方式とする（仕様決定 AQ）。`ytInitialPlayerResponse` の `liveBroadcastDetails`（放送開始・終了）と `videoDetails.lengthSeconds`（動画長）を取り、放送時間 − 動画長を前置き分（カウントダウン等）とみなしてオフセットから引く。差が 30 秒超〜6 時間以内のときだけ適用し、情報欠落または差が 6 時間超なら未補正で警告を出す。
+この推定は「放送時間と動画長の差が前置き起因」と仮定するヒューリスティックで、通常配信の末尾トリミング等で生じる同形の差とは区別できない。その場合も差分を全チャットから引くため、チャットが実際より手前にずれうる点を既知の限界として許容する（ずれは補正量ぶんの一律オフセットで、発生条件も限定的）。
 
 主な renderer の写像は次の通り。
 

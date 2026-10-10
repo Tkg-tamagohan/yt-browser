@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::db::Db;
 use crate::filter::{Matcher, NgMatcher};
 use crate::innertube::InnerTube;
-use crate::model::{ChatEvent, ChatKind, ChatStatus};
+use crate::model::{ChatEvent, ChatKind, ChatReset, ChatStatus};
 
 /// 1 セッションで保持する既処理 item ID の上限（重複除去用）。
 /// 超限の古い ID は捨てる（ごく古いアイテムの再送は稀で、
@@ -40,6 +40,14 @@ const REPLAY_SEEK_BACK_MS: i64 = 2_000;
 /// リプレイ取得の連続失敗上限。リプレイ未処理・無効な継続など
 /// 恒久的な失敗で無限にポーリングしないための上限。
 const REPLAY_MAX_FAILURES: u32 = 8;
+/// リプレイの送出済み保持数（後方シークの巻き戻し窓）。超過分は
+/// 古い順に捨て、長時間配信で items と raw_json が肥大しないようにする。
+/// 捨てた区間への後方シークではその区間のチャットは再送されない
+/// （設計書 §6.2 の制約として明記）
+const REPLAY_REWIND_KEEP: usize = 1_000;
+/// リプレイの未送出先読み保持数。高頻度チャットでは LOOKAHEAD 窓だけでは
+/// 収まらないため、超過時は送出が進むまで追加取得を休止する上限
+const REPLAY_BUF_MAX: usize = 2_000;
 
 /// 動画ごとのチャットポーリングを管理する。`tauri::State` に `Arc` で載せる。
 pub struct ChatPoller {
@@ -65,7 +73,10 @@ impl ChatPoller {
     }
 
     /// 指定動画のチャット取得を開始する。既に動いていれば何もしない。
-    pub fn start(self: &Arc<Self>, video_id: &str) {
+    /// `instance_id` はリプレイの同期先を固定するためのパネル起票インスタンス。
+    /// 既に同じ動画のセッションがある場合はそちらの同期先が維持される
+    /// （セッションは動画 ID ごとに 1 本。仕様決定 AQ の制約として明記）
+    pub fn start(self: &Arc<Self>, video_id: &str, instance_id: Option<u32>) {
         let mut sessions = self.sessions.lock().unwrap();
         if sessions.contains_key(video_id) {
             return;
@@ -74,7 +85,8 @@ impl ChatPoller {
         let vid = video_id.to_string();
         // chat_start は同期コマンド（ランタイムコンテキスト外）から呼ばれるため
         // tokio::spawn ではなく Tauri のランタイムに乗せる
-        let handle = tauri::async_runtime::spawn(async move { poller.run(&vid).await });
+        let handle =
+            tauri::async_runtime::spawn(async move { poller.run(&vid, instance_id).await });
         sessions.insert(video_id.to_string(), handle);
     }
 
@@ -114,7 +126,7 @@ impl ChatPoller {
     /// 1 動画のポーリングループ。終了・エラー・中断のいずれでも
     /// `sessions` から自分を外して終わる。
     /// 初期継続トークンの種別でライブ/リプレイを自動判定する（仕様決定 AQ）。
-    async fn run(self: &Arc<Self>, video_id: &str) {
+    async fn run(self: &Arc<Self>, video_id: &str, instance_id: Option<u32>) {
         let html = match self.innertube.watch_html(video_id).await {
             Ok(html) => html,
             Err(e) => {
@@ -160,7 +172,8 @@ impl ChatPoller {
                     }
                     PremiereCorrection::None => 0,
                 };
-                self.run_replay(video_id, cont, correction).await;
+                self.run_replay(video_id, cont, correction, instance_id)
+                    .await;
             }
             None => {
                 self.status(
@@ -173,13 +186,16 @@ impl ChatPoller {
         self.sessions.lock().unwrap().remove(video_id);
     }
 
-    /// 指定動画を再生中のインスタンスの再生位置（ms）。
-    /// 再生中のインスタンスが無ければ None（バッファは進めるが送出しない）。
-    fn position_ms(&self, video_id: &str) -> Option<i64> {
-        self.app
-            .try_state::<crate::mpv::PlayerManager>()
-            .and_then(|pm| pm.position_of(video_id))
-            .map(|p| (p * 1000.0) as i64)
+    /// リプレイ同期用の再生位置（ms）。パネル起票のインスタンスが指定
+    /// されていればその位置、無ければ同じ動画を再生中のいずれかの位置。
+    /// 対象が見つからなければ None（バッファは進めるが送出しない）。
+    fn position_ms(&self, video_id: &str, instance_id: Option<u32>) -> Option<i64> {
+        let pm = self.app.try_state::<crate::mpv::PlayerManager>()?;
+        let pos = match instance_id {
+            Some(id) => pm.position_of_instance(id, video_id),
+            None => pm.position_of(video_id),
+        };
+        pos.map(|p| (p * 1000.0) as i64)
     }
 
     /// ライブ配信のポーリングループ（FR-6）。
@@ -262,7 +278,17 @@ impl ChatPoller {
     /// 継続トークンを先読みしてオフセット付きバッファを作り、mpv の再生位置を
     /// 照合して `chat://message` へ流す。リプレイ分は `chat_logs` に保存しない。
     /// シーク（位置の後退・大きな前進）は近接時点へ再アンカーする。
-    async fn run_replay(self: &Arc<Self>, video_id: &str, cont: String, correction_ms: i64) {
+    /// 末尾を通過してもポーラーは維持し、後方シークでの再送に備える
+    /// （停止はパネル閉・プレイヤー終了時の `chat_stop` が担う）。
+    /// `instance_id` 指定時はそのインスタンスの位置のみで同期する
+    /// （同一動画の複数窓で位置がずれないよう固定。仕様決定 AQ）
+    async fn run_replay(
+        self: &Arc<Self>,
+        video_id: &str,
+        cont: String,
+        correction_ms: i64,
+        instance_id: Option<u32>,
+    ) {
         let mut cont = Some(cont);
         // オフセット昇順のバッファ。`emit_idx` は未送出の先頭。
         let mut items: Vec<(i64, ChatEvent)> = Vec::new();
@@ -274,10 +300,20 @@ impl ChatPoller {
         let mut gen = 0u32;
         let mut last_pos: Option<i64> = None;
         let mut failures: u32 = 0;
+        // 末尾通過の終了通知は 1 回だけ出す
+        let mut end_notified = false;
         loop {
-            let pos = self.position_ms(video_id).or(last_pos).unwrap_or(0);
+            let pos = self
+                .position_ms(video_id, instance_id)
+                .or(last_pos)
+                .unwrap_or(0);
             // 位置 + LOOKAHEAD までバッファが無ければ継続を先読みする
             while let Some(c) = cont.clone() {
+                // 未送出の先読みが上限なら、送出が進むまで追加取得を休む。
+                // 高頻度チャットの LOOKAHEAD 窓でも items が肥大しないようにする
+                if items.len() - emit_idx >= REPLAY_BUF_MAX {
+                    break;
+                }
                 let tail = items.last().map(|(o, _)| *o).unwrap_or(i64::MIN);
                 if tail >= pos + REPLAY_LOOKAHEAD_MS {
                     break;
@@ -302,7 +338,10 @@ impl ChatPoller {
                             .unwrap_or_default();
                         commit_pending(&mut seen, &mut order, &mut pending);
                         let mut appended = false;
-                        for e in events {
+                        for mut e in events {
+                            // リプレイ分は chat_logs に保存しないため生 JSON は
+                            // 保持しない（長時間配信でのメモリ肥大対策）
+                            e.raw_json = String::new();
                             // 補正後の動画内時刻。オフセットを持たない項目は 0 扱い
                             let off = e.video_offset_ms.unwrap_or(0) - correction_ms;
                             items.push((off, e));
@@ -351,6 +390,23 @@ impl ChatPoller {
             if last_pos.is_some_and(|lp| pos < lp - REPLAY_SEEK_BACK_MS) {
                 emit_idx = items.partition_point(|(o, _)| *o <= pos);
                 gen += 1;
+                // 保持窓から捨てた区間は再送できない。シーク先が保持分の
+                // 先頭より前なら巻き戻し限界であることを通知する
+                if items.first().is_some_and(|(o, _)| *o > pos) {
+                    self.status(
+                        Some(video_id),
+                        "warn",
+                        "巻き戻し可能な範囲を超えたため、それより前のチャットは再表示されません",
+                    );
+                }
+                // パネルの既表示行を消してから再送する
+                // （シーク先より未来の発言が残り続けないよう）
+                let _ = self.app.emit(
+                    "chat://reset",
+                    ChatReset {
+                        video_id: video_id.to_string(),
+                    },
+                );
             }
             // 再生位置までの未送出分を流す。前方への大きな追い越し
             // （シーク・早送り）は近接時点の末尾だけ流して中間を飛ばす
@@ -371,9 +427,17 @@ impl ChatPoller {
                 emit_idx = target;
             }
             last_pos = Some(pos);
-            if cont.is_none() && emit_idx >= items.len() {
+            if cont.is_none() && emit_idx >= items.len() && !end_notified {
                 self.status(Some(video_id), "info", "チャットリプレイが終了しました");
-                break;
+                end_notified = true;
+            }
+            // 送出済みの保持は巻き戻し窓に限る。それより古い分は捨てて
+            // 長時間配信でメモリが増え続けないようにする（捨てた区間への
+            // 後方シークではその区間のチャットは再送されない）
+            if emit_idx > REPLAY_REWIND_KEEP {
+                let drop_n = emit_idx - REPLAY_REWIND_KEEP;
+                items.drain(..drop_n);
+                emit_idx -= drop_n;
             }
             tokio::time::sleep(Duration::from_millis(REPLAY_TICK_MS)).await;
         }

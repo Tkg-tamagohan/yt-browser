@@ -11,13 +11,16 @@ use crate::error::UiError;
 /// `chat_start`（設計書 §3.1、FR-6）。指定動画のライブチャット取得を
 /// バックグラウンドで開始する。見つからない・失敗した場合の通知は
 /// `chat://status` イベントに流れる。
+/// `instance_id` はリプレイの同期先を固定するためのパネル起票インスタンス
+/// （FR-24。未指定なら同じ動画を再生中のいずれかの位置で同期する）
 #[tauri::command]
 pub fn chat_start(
     video_id: String,
+    instance_id: Option<u32>,
     poller: State<'_, Arc<crate::chat::ChatPoller>>,
 ) -> Result<(), UiError> {
     let id = parse_video_id(&video_id)?;
-    poller.start(&id);
+    poller.start(&id, instance_id);
     Ok(())
 }
 
