@@ -2,7 +2,7 @@
 
 mpv による軽量な再生と、ローカル完結の購読、履歴、NG 管理を一体化した YouTube 専用ブラウザ（専ブラ）。
 
-[実装計画](docs/implementation-plan.md)の全フェーズ（Phase 0〜8）が実装済み。
+[実装計画](docs/implementation-plan.md)の全フェーズ（Phase 0〜35）が実装済み（実機検証系の受け入れは一部未検証として残る）。
 残る制限と観察メモは実装計画の「残課題」節にまとめている。
 
 ## 開発環境
@@ -31,7 +31,7 @@ pnpm check        # svelte-check
 
 ## yt-dlp まわりの運用メモ
 
-- yt-dlp の解決順は「設定 `ytdlp.path` → 同梱リソース → PATH の `yt-dlp`」。現在の運用はシステムインストール前提（Phase 8 の配布物もアプリ本体のみで同梱しない。同梱は今後の選択肢として残す）
+- yt-dlp の解決順は「設定 `ytdlp.path` → 同梱リソース → PATH の `yt-dlp`」。現在の運用はシステムインストール前提（配布物はアプリ本体のみで同梱しない。同梱は今後の選択肢として残す）
 - YouTube 解読のため yt-dlp が外部 JS ランタイムを要求する環境がある。`deno` を PATH に入れておく
 - PO Token を要求される環境では、yt-dlp 側の手順（`--cookies` や外部プロバイダ）に従う（アプリ側の伝達経路は後フェーズの課題）。bot 判定（`Sign in to confirm you're not a bot`）への具体的な回避手順は [docs/user-guide.md](docs/user-guide.md) の「bot 判定の回避（cookies.txt）」を参照
 - アプリ内の「yt-dlp 更新」ボタンは `yt-dlp -U` を呼ぶ。システム管理のパスでは権限不足で失敗し得る

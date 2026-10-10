@@ -20,7 +20,7 @@ consistency ジョブ）の双方から実行できる。
     6. design.md の設定キー表 ↔ SETTING_* 定数リテラル
     7. ci.yml の集約ジョブ ci-status の needs ↔ jobs 一覧
 チェック 3（§8 DDL と適用後スキーマの照合）は実マイグレーション経路を
-通す必要があるため Rust 側テストとして src-tauri/src/db/tests.rs にある。
+通す必要があるため Rust 側テストとして src-tauri/src/db/tests/ddl.rs にある。
 
 見出しへの anchor は節番号ではなく見出し語で行い、節の採番が変わっても
 追従できるようにする。表の第 1 セルからバッククォート内の名前を取る規約は

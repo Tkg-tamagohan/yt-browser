@@ -94,6 +94,15 @@ select {
   font-size: 0.9rem;
 }
 
+/* ---- 行リスト ---- */
+
+/* 一覧系の ul リセット（library の履歴・お気に入り・プレイリスト各タブで共有） */
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 /* ---- 設定画面（settings/+page.svelte と Settings*Section 子コンポーネント） ---- */
 
 /* 各節が子コンポーネント化され scoped 兄弟マッチが効かないためここで定義する。
