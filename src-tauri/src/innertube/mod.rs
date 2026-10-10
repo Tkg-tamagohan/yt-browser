@@ -757,7 +757,10 @@ mod tests {
             {"timedContinuationData": {"continuation": "LIVETOKEN", "timeoutMs": 8000}}
         ]});
         let (t, ms, k) = next_continuation(&live).unwrap();
-        assert_eq!((t.as_str(), ms, k), ("LIVETOKEN", 8000, ContinuationKind::Live));
+        assert_eq!(
+            (t.as_str(), ms, k),
+            ("LIVETOKEN", 8000, ContinuationKind::Live)
+        );
 
         let replay = serde_json::json!({"continuations": [
             {"liveChatReplayContinuationData": {"continuation": "REPLAYTOKEN"}}
@@ -782,10 +785,7 @@ mod tests {
     fn iso8601_ms_parses_timestamps() {
         // Z 終端
         assert_eq!(iso8601_ms("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(
-            iso8601_ms("2026-05-01T12:00:00Z"),
-            Some(1_777_636_800_000)
-        );
+        assert_eq!(iso8601_ms("2026-05-01T12:00:00Z"), Some(1_777_636_800_000));
         // 小数秒とオフセット
         assert_eq!(iso8601_ms("1970-01-01T00:00:00.500Z"), Some(500));
         assert_eq!(iso8601_ms("1970-01-01T09:00:00+09:00"), Some(0));

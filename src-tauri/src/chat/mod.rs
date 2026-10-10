@@ -482,7 +482,10 @@ fn commit_pending(
 /// `{<name>Renderer: {...}}` 形の値オブジェクト、`Deleted` は削除対象 ID と原文。
 /// `offset_ms` はリプレイの動画内時刻（`videoOffsetTimeMsec`）、ライブでは None。
 enum ActionItem {
-    Item { v: Value, offset_ms: Option<i64> },
+    Item {
+        v: Value,
+        offset_ms: Option<i64>,
+    },
     Deleted {
         target: String,
         raw: Value,
@@ -766,9 +769,7 @@ mod tests {
         let mut items = Vec::new();
         iter_action_items(&a, None, &mut items);
         let ev = match &items[0] {
-            ActionItem::Item { v, offset_ms } => {
-                renderer_to_event("v", v, *offset_ms).unwrap()
-            }
+            ActionItem::Item { v, offset_ms } => renderer_to_event("v", v, *offset_ms).unwrap(),
             _ => panic!(),
         };
         assert_eq!(ev.kind, ChatKind::Superchat);
@@ -787,10 +788,10 @@ mod tests {
             assert_eq!(items.len(), 1, "{key}");
             let ev = match &items[0] {
                 ActionItem::Deleted {
-                target,
-                raw,
-                offset_ms,
-            } => deleted_to_event("v", target, raw, *offset_ms),
+                    target,
+                    raw,
+                    offset_ms,
+                } => deleted_to_event("v", target, raw, *offset_ms),
                 _ => panic!("{key} should be deleted"),
             };
             assert_eq!(ev.kind, ChatKind::Deleted);
@@ -807,9 +808,7 @@ mod tests {
         let mut items = Vec::new();
         iter_action_items(&a, None, &mut items);
         let ev = match &items[0] {
-            ActionItem::Item { v, offset_ms } => {
-                renderer_to_event("v", v, *offset_ms).unwrap()
-            }
+            ActionItem::Item { v, offset_ms } => renderer_to_event("v", v, *offset_ms).unwrap(),
             _ => panic!(),
         };
         assert_eq!(ev.kind, ChatKind::Other);
@@ -900,9 +899,7 @@ mod tests {
         let mut items = Vec::new();
         iter_action_items(&a, Some(500), &mut items);
         let ev = match &items[0] {
-            ActionItem::Item { v, offset_ms } => {
-                renderer_to_event("v", v, *offset_ms).unwrap()
-            }
+            ActionItem::Item { v, offset_ms } => renderer_to_event("v", v, *offset_ms).unwrap(),
             _ => panic!(),
         };
         let same = with_gen(&ev, 0);
