@@ -199,7 +199,11 @@
     device: string,
     el: HTMLSelectElement | HTMLInputElement,
   ): Promise<void> {
-    if (audioBusy.has(id)) return;
+    // 空文字（入力欄を空にした場合）は mpv へ送らず現在値へ戻す
+    if (audioBusy.has(id) || device === "") {
+      el.value = playerStates.list.get(id)?.audioDevice ?? "auto";
+      return;
+    }
     audioBusy = new Set(audioBusy).add(id);
     try {
       await control(id, { type: "audio_device", device });
