@@ -72,6 +72,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
+| `audio_device_list` | なし | `Result<Vec<AudioDevice>>`（mpv が列挙する音声出力デバイス。FR-32、仕様決定 BA） |
 | `player_set_queue` | `instance_id`, `items`, `loop_all`, `base_seq` | `Result<bool>`（置き換えを適用したか） |
 | `player_switch` | `instance_id`, `video_id`, `resume`, `start_sec?` | `Result<()>` |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
@@ -130,7 +131,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
 表の引数名は Rust 側の受け取り名（snake_case）で記し、JS 側は camelCase のキーで渡す（`video_id` → `videoId`）。
 戻り値とイベントのペイロードは camelCase に直列化される。
-`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}` を取る。
+`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する動画 ID の順序列（空列は武装の解除）、`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
@@ -155,7 +156,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
-| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format }` | observe_property の変化を間引いて発火[^statesample] |
+| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice }` | observe_property の変化を間引いて発火[^statesample] |
 | `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, armedSeq }` | 終了またはエラー |
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
@@ -543,6 +544,20 @@ Windows Auto HDR へ依存させる設定は不要と判断した。
 いずれも起動時引数のため、変更は次回の再生開始から有効で稼働中インスタンスには即時適用しない。
 INV-1 調査は HDR ディスプレイの無い環境で行ったため、HDR パススルー・Auto HDR の介入・
 mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不具合）の再現は未検証として残る。
+
+### 4.8 ウインドウごとの音声出力先（FR-32、仕様決定 BA）
+
+稼働中インスタンスごとに音声出力デバイスを切り替える。
+選択肢は `audio_device_list` コマンドが `mpv --audio-device=help` の出力
+（`'name' (description)` 形式行）をパースした `AudioDevice { name, description }` 列で、
+適用は `player_control` の `audio_device` アクション → `set_property audio-device`
+で行う（実行時変更は mpv 0.41 で実機確認済み）。
+現在値は監視プロパティ `audio-device` 経由で `PlayerState.audioDevice` に載る。
+
+選択はセッション内のみ有効で DB には保存しない（次回再生は mpv 既定の `auto` に戻る）。
+同一インスタンスの連続再生遷移では mpv プロセスが維持されるため選択値も維持される。
+未知のデバイス名もプロパティ自体は受理されるため、無効値へのフォールバックは mpv 側に委ねる。
+列挙に失敗した環境（mpv 不在等）ではカード側をデバイス名の直接入力欄へ縮退させる。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

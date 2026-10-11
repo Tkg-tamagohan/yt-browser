@@ -27,6 +27,7 @@
     initPlayerEvents,
     playbackHooks,
     playerStates,
+    type AudioDevice,
     type PlayerAction,
     type PlayerEnded,
     type PlayerState,
@@ -186,6 +187,36 @@
   // 失敗時は select の表示を現在の適用値へ戻す
   let qualityBusy = $state<Set<number>>(new Set());
 
+  // 音声出力先の列挙結果（FR-32、仕様決定 BA）。mpv が起動時に列挙した
+  // 一覧をこのコンポーネントの寿命で 1 回だけ取る。
+  // null は未取得（読み込み中）または失敗。失敗・空列は直接入力欄へ縮退する
+  let audioDevices = $state<AudioDevice[] | null>(null);
+  let audioListFailed = $state(false);
+  let audioBusy = $state<Set<number>>(new Set());
+
+  async function setAudioDevice(
+    id: number,
+    device: string,
+    el: HTMLSelectElement | HTMLInputElement,
+  ): Promise<void> {
+    if (audioBusy.has(id)) return;
+    audioBusy = new Set(audioBusy).add(id);
+    try {
+      await control(id, { type: "audio_device", device });
+    } catch {
+      // control がエラー通知を出す。欄の表示だけ実態へ戻す
+      el.value = playerStates.list.get(id)?.audioDevice ?? "auto";
+    } finally {
+      const s = new Set(audioBusy);
+      s.delete(id);
+      audioBusy = s;
+    }
+  }
+
+  function audioLabel(d: AudioDevice): string {
+    return d.description !== "" ? d.description : d.name;
+  }
+
   async function setQuality(id: number, format: string, el: HTMLSelectElement): Promise<void> {
     if (qualityBusy.has(id)) return;
     qualityBusy = new Set(qualityBusy).add(id);
@@ -264,6 +295,12 @@
     await initPlayerEvents();
     await initQueue();
     await initChatEvents();
+    // 音声出力デバイス一覧（FR-32）。失敗・空列は直接入力欄へ縮退する
+    try {
+      audioDevices = await invoke<AudioDevice[]>("audio_device_list");
+    } catch {
+      audioListFailed = true;
+    }
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
     unlistenFns.push(
@@ -415,6 +452,49 @@
             {/if}
           </select>
         </label>
+        <label>
+          {t("player.audio")}
+          {#if audioDevices !== null && audioDevices.length > 0}
+            <select
+              value={p.audioDevice}
+              title={t("player.audio.hint")}
+              disabled={audioBusy.has(p.instanceId)}
+              onchange={(e) =>
+                setAudioDevice(
+                  p.instanceId,
+                  e.currentTarget.value,
+                  e.currentTarget,
+                )}
+            >
+              {#each audioDevices as d}
+                <option value={d.name} selected={d.name === p.audioDevice}>
+                  {audioLabel(d)}
+                </option>
+              {/each}
+              <!-- 一覧に無い現在値（接続後に外れたデバイス等）も残す -->
+              {#if !audioDevices.some((d) => d.name === p.audioDevice)}
+                <option value={p.audioDevice} selected>{p.audioDevice}</option>
+              {/if}
+            </select>
+          {:else if audioListFailed || audioDevices !== null}
+            <input
+              type="text"
+              class="audio-input"
+              title={t("player.audio.hint")}
+              placeholder={t("player.audio.placeholder")}
+              value={p.audioDevice}
+              disabled={audioBusy.has(p.instanceId)}
+              onchange={(e) =>
+                setAudioDevice(
+                  p.instanceId,
+                  e.currentTarget.value.trim(),
+                  e.currentTarget,
+                )}
+            />
+          {:else}
+            <span class="subtle">…</span>
+          {/if}
+        </label>
         <button
           title={t("player.loop.hint")}
           onclick={() => void cycleLoop(p.instanceId)}
@@ -533,6 +613,15 @@
   .controls select {
     padding: 4px;
     border-radius: 6px;
+  }
+
+  .controls select option {
+    max-width: 40ch;
+  }
+
+  .audio-input {
+    width: 14em;
+    font-family: monospace;
   }
 
   .subtle {

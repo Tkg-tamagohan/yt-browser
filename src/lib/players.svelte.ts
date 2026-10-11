@@ -21,6 +21,16 @@ export type PlayerState = {
   pip: boolean;
   /// 現在適用中の画質式（`ytdl-format`）。
   format: string;
+  /// 現在の音声出力デバイス（mpv `audio-device`、FR-32、仕様決定 BA）。
+  /// 既定・自動選択は "auto"。
+  audioDevice: string;
+};
+
+/// `audio_device_list` コマンドの 1 要素（FR-32、仕様決定 BA）。
+/// mpv が列挙した音声出力デバイス。name が識別子、description が表示名。
+export type AudioDevice = {
+  name: string;
+  description: string;
 };
 
 export type PlayerEnded = {
@@ -172,7 +182,9 @@ export type PlayerAction =
   | { type: "quality"; format: string }
   | { type: "frame_step" }
   | { type: "frame_back_step" }
-  | { type: "pip"; enabled: boolean };
+  | { type: "pip"; enabled: boolean }
+  // 音声出力先の切替（FR-32、仕様決定 BA）。値は audio_device_list の name
+  | { type: "audio_device"; device: string };
 
 export const playerStates = $state<{
   list: Map<number, PlayerState>;

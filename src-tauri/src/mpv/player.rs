@@ -33,6 +33,8 @@ const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
     (7, "video-params"),
     (8, "volume"),
     (9, "speed"),
+    // 音声出力先（FR-32、仕様決定 BA）。カードの選択表示に現在値が要る
+    (10, "audio-device"),
 ];
 
 /// mpv プロセス 1 台分の制御ハンドル。
@@ -252,6 +254,8 @@ impl MpvPlayer {
                 media_title: String::new(),
                 pip: opts.pip_geometry.is_some(),
                 format: opts.ytdl_format.clone(),
+                // 起動直後は mpv 既定。監視経由で実値へ追従する
+                audio_device: "auto".to_string(),
             }),
             ended_tx,
             terminal: TerminalTracker::default(),
@@ -472,6 +476,18 @@ impl MpvPlayer {
                 // 保持中の値（spawn 時の解決値＋set_pip_fit の反映分）を使う
                 self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY).await?;
             }
+            PlayerAction::AudioDevice { device } => {
+                // 実行時変更可（mpv 0.41 で実機確認）。未知のデバイス名も
+                // プロパティ自体は受理され、AO の初期化時に mpv 側が
+                // フォールバックする。状態への反映は監視プロパティ経由
+                self.ipc
+                    .command(vec![
+                        json!("set_property"),
+                        json!("audio-device"),
+                        json!(device),
+                    ])
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -643,6 +659,8 @@ impl MpvPlayer {
             "media-title" => st.media_title = data.as_str().unwrap_or_default().to_string(),
             "volume" => st.volume = data.as_f64().unwrap_or(st.volume),
             "speed" => st.speed = data.as_f64().unwrap_or(st.speed),
+            // 出力先の現在値（FR-32）。文字列プロパティ
+            "audio-device" => st.audio_device = data.as_str().unwrap_or_default().to_string(),
             "paused-for-cache" => {
                 if data.as_bool().unwrap_or(false) {
                     st.state = PlayStatus::Buffering;

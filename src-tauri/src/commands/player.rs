@@ -3,8 +3,8 @@
 use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
-use crate::model::{PlayerAction, PlayerState};
-use crate::mpv::{pip_default_enabled, PlayerManager, SETTING_PIP_DEFAULT};
+use crate::model::{AudioDevice, PlayerAction, PlayerState};
+use crate::mpv::{list_audio_devices, pip_default_enabled, PlayerManager, SETTING_PIP_DEFAULT};
 use crate::yt;
 use tauri::State;
 
@@ -112,6 +112,15 @@ pub async fn player_control(
         .control(instance_id, &action)
         .await
         .map_err(UiError::from)
+}
+
+/// `audio_device_list`（FR-32、仕様決定 BA）。mpv が列挙する
+/// 音声出力デバイスを `{name, description}` 列で返す。
+/// mpv が見つからない場合はエラー、列挙失敗・パース不能は空列として返し
+/// フロント側の直接入力フォールバックに委ねる。
+#[tauri::command]
+pub async fn audio_device_list() -> Result<Vec<AudioDevice>, UiError> {
+    Ok(list_audio_devices().await?)
 }
 
 /// `player_close`（設計書 §3.1）。
