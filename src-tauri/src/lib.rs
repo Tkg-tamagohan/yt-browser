@@ -156,7 +156,7 @@ pub fn run() {
             app.manage(chat);
 
             // 購読フィードのポーラー（設計書 §1.2）。TICK ごとに期限の来た
-            // チャンネルの RSS を条件付き取得���る。
+            // チャンネルの RSS を条件付き取得する。
             let poller = feed::FeedPoller::new(db, app.handle().clone());
             app.manage(poller.clone());
             tauri::async_runtime::spawn(poller.run());
@@ -219,6 +219,7 @@ pub fn run() {
             commands::feed_backfill,
             commands::search,
             commands::get_related,
+            commands::get_description,
             commands::block_channel,
             commands::unblock_channel,
             commands::blocked_channels,

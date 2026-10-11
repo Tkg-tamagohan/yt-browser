@@ -108,6 +108,15 @@ impl InnerTube {
         Ok(parse_related(&v))
     }
 
+    /// `player` エンドポイントで `videoDetails.shortDescription` を取る
+    /// （設計書 §6.1、FR-33、仕様決定 BB）。概要欄の無い動画では空文字列を返す。
+    pub async fn description(&self, video_id: &str) -> Result<String, InnerTubeError> {
+        let v = self
+            .post_json("player", json!({ "videoId": video_id }))
+            .await?;
+        Ok(parse_description(&v))
+    }
+
     /// 指定動画の watch ページ HTML を取得する（チャットの初期継続トークン用）。
     pub async fn watch_html(&self, video_id: &str) -> Result<String, InnerTubeError> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
@@ -382,6 +391,18 @@ fn find_json_str(html: &str, key: &str) -> Option<String> {
     // 値にエスケープが出ない前提で、単純に次の " までを取る
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+/// `player` 応答から `videoDetails.shortDescription` を取る（FR-33、仕様決定 BB）。
+/// `playabilityStatus` が UNPLAYABLE でも `videoDetails` は返るため、
+/// 再生可否とは独立に概要欄を取得できる（2026-10 の実応答で確認）。
+/// 欠落・非文字列は空文字列に潰し、空概要欄の表示は UI 側の責務とする。
+fn parse_description(v: &Value) -> String {
+    v.get("videoDetails")
+        .and_then(|d| d.get("shortDescription"))
+        .and_then(|s| s.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// `next` 応答から `compactVideoRenderer` / `videoWithContextRenderer` /
@@ -728,6 +749,38 @@ mod tests {
         );
         assert_eq!(second.duration_sec, Some(848)); // "14:08"
         assert_eq!(second.view_count, Some(156000)); // "156K"
+    }
+
+    /// golden fixture: 実際に取得した `/youtubei/v1/player` 応答（技術方針 O、FR-33）。
+    /// 2026-10 時点の WEB クライアント応答。fixture の動画（Lofi Girl の mix）の
+    /// 概要欄はトラックリストの `[mm:ss]` 表記と URL を含む。
+    #[test]
+    fn parse_description_golden_fixture() {
+        let v: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/youtube_player.json")).unwrap();
+        let d = parse_description(&v);
+        assert!(d.contains("Tracklist"));
+        assert!(d.contains("https://fanlink.tv/lofigirl-music"));
+        assert!(d.contains("[03:25] Fatb - Cotton Cloud"));
+        assert!(d.lines().count() > 10); // 改行はそのまま保持される
+    }
+
+    /// 概要欄が欠落・非文字列の応答は空文字列へ潰す（FR-33）。
+    #[test]
+    fn parse_description_missing_is_empty() {
+        assert_eq!(parse_description(&serde_json::json!({})), "");
+        assert_eq!(
+            parse_description(&serde_json::json!({"videoDetails": {}})),
+            ""
+        );
+        assert_eq!(
+            parse_description(&serde_json::json!({"videoDetails": {"shortDescription": null}})),
+            ""
+        );
+        assert_eq!(
+            parse_description(&serde_json::json!({"videoDetails": {"shortDescription": "本文"}})),
+            "本文"
+        );
     }
 
     #[test]
