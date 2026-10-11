@@ -328,13 +328,13 @@ Phase 29 の shorts 除外は Phase 32 のチャンネル別表示にも波及�
 
 ### Phase 38：Chrome 拡張からの一時キュー追加と一時キューの永続化（FR-29・FR-30、仕様決定 AX・AY）
 
-- [ ] Native Messaging 要求へ `action` を追加して `yt-browser://queue?url=` を新設する（`invalid_action` エラーコード、DB-NM-11 以降の回帰テスト）
-- [ ] migration v13 で `queue_items`・`queue_state` を新設し、`queue_save` / `queue_load` / `video_meta_lookup` コマンドを実装する（DB-Q-01 以降の回帰テスト）
-- [ ] 一時キューの全ミューテーションで write-through 永続化し、起動時に停止状態（中断位置保持）として復元する（復元は deep link の保留分ドレインより先に完了させる）
-- [ ] `deeplink.svelte.ts` に `queue` アクションの解析と振り分けを追加する（動画 URL のみ受理。DL-03）
-- [ ] 拡張に「キューに追加」導線を実装する（動画リンク上の右クリックメニュー＋アクションのポップアップ 2 択化、manifest 0.3.0）
-- [ ] 要件定義書（FR-29・FR-30 新設、FR-20・FR-26・FR-28 の改訂）・決定記録（AX・AY）・設計書・ユーザーガイドを更新する
-- [ ] 受け入れ：拡張の右クリックとポップアップから一時キューへ追加でき（再生は開始しない）、アプリ再起動でキューと中断位置が復元してキューパネルの「再生」から継続できる（Windows 実機検証）
+- [x] Native Messaging 要求へ `action` を追加して `yt-browser://queue?url=` を新設する（`invalid_action` エラーコード、DB-NM-11 以降の回帰テスト）
+- [x] migration v13 で `queue_items`・`queue_state` を新設し、`queue_save` / `queue_load` / `video_meta_lookup` コマンドを実装する（DB-Q-01 以降の回帰テスト）
+- [x] 一時キューの全ミューテーションで write-through 永続化し、起動時に停止状態（中断位置保持）として復元する（復元は deep link の保留分ドレインより先に完了させる）
+- [x] `deeplink.svelte.ts` に `queue` アクションの解析と振り分けを追加する（動画 URL のみ受理。DL-03）
+- [x] 拡張に「キューに追加」導線を実装する（動画リンク上の右クリックメニュー＋アクションのポップアップ 2 択化、manifest 0.3.0）
+- [x] 要件定義書（FR-29・FR-30 新設、FR-20・FR-26・FR-28 の改訂）・決定記録（AX・AY）・設計書・ユーザーガイドを更新する
+- [x] 受け入れ：拡張の右クリックとポップアップから一時キューへ追加でき（再生は開始しない）、アプリ再起動でキューと中断位置が復元してキューパネルの「再生」から継続できる（Windows 実機検証）
 
 ## 残課題（既知の制限と観察メモ）
 
