@@ -44,10 +44,7 @@ pub fn queue_load(db: State<'_, Db>) -> Result<QueueSnapshot, UiError> {
 /// 動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history`
 /// の順に補完する。どちらにも無ければ None。
 #[tauri::command]
-pub fn video_meta_lookup(
-    video_id: String,
-    db: State<'_, Db>,
-) -> Result<Option<VideoRef>, UiError> {
+pub fn video_meta_lookup(video_id: String, db: State<'_, Db>) -> Result<Option<VideoRef>, UiError> {
     let id = parse_video_id(&video_id)?;
     Ok(db.video_meta_lookup(&id)?)
 }

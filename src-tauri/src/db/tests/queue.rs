@@ -71,11 +71,8 @@ fn queue_persists_across_reconnect() {
     let path = dir.path().join("test.db");
     {
         let db = Db::connect(&path).unwrap();
-        db.queue_save(
-            &[item("a1234567890", "A"), item("b1234567890", "B")],
-            1,
-        )
-        .unwrap();
+        db.queue_save(&[item("a1234567890", "A"), item("b1234567890", "B")], 1)
+            .unwrap();
     }
     let db = Db::connect(&path).unwrap();
     let snap = db.queue_load().unwrap();

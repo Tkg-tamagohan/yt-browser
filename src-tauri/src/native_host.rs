@@ -499,10 +499,9 @@ mod tests {
         assert_eq!(call(&body), Response::Ok);
         assert!(opened.borrow()[0].starts_with("yt-browser://open?url="));
         // action: "open" の明示も同じ
-        let body = serde_json::to_vec(
-            &json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": "open" }),
-        )
-        .unwrap();
+        let body =
+            serde_json::to_vec(&json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": "open" }))
+                .unwrap();
         assert_eq!(call(&body), Response::Ok);
         assert!(opened.borrow()[1].starts_with("yt-browser://open?url="));
         // action: "queue" は queue スキーム
@@ -525,19 +524,15 @@ mod tests {
                 "action={action:?}"
             );
         }
-        let body = serde_json::to_vec(
-            &json!({ "url": "not a url", "action": "play" }),
-        )
-        .unwrap();
+        let body = serde_json::to_vec(&json!({ "url": "not a url", "action": "play" })).unwrap();
         assert_eq!(
             handle_request(&body, never),
             Response::Error(ErrorCode::InvalidAction)
         );
         // action が文字列でない要求は invalid_message
-        let body = serde_json::to_vec(
-            &json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": 5 }),
-        )
-        .unwrap();
+        let body =
+            serde_json::to_vec(&json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": 5 }))
+                .unwrap();
         assert_eq!(
             handle_request(&body, never),
             Response::Error(ErrorCode::InvalidMessage)
