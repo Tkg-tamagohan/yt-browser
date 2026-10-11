@@ -110,12 +110,19 @@ export function parseTimeParam(parsed: URL): number | null {
 /// キューは一時キューの末尾へ追加する（再生は開始しない）
 async function dispatch(target: OpenTarget): Promise<void> {
   if (target.kind === "queue") {
+    // 動画 ID しか判明しないため、台帳・履歴から表示メタを補完する
+    // （仕様決定 AX。無ければ videoId をタイトル表示へ倒す）。
+    // 補完の失敗で追加自体を落とさない。DB 障害なら queueAdd 内の
+    // 保存が失敗し persistFailed が別途出る
+    let meta: VideoRef | null = null;
     try {
-      // 動画 ID しか判明しないため、台帳・履歴から表示メタを補完する
-      // （仕様決定 AX。無ければ videoId をタイトル表示へ倒す）
-      const meta = await invoke<VideoRef | null>("video_meta_lookup", {
+      meta = await invoke<VideoRef | null>("video_meta_lookup", {
         videoId: target.videoId,
       });
+    } catch {
+      // 補完失敗は videoId 表示へ倒して追加を続ける
+    }
+    try {
       queueAdd(
         meta ?? {
           videoId: target.videoId,

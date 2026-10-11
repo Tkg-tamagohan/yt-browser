@@ -10,10 +10,15 @@ const queueBtn = document.getElementById("queue");
 function invoke(action) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const url = tabs[0]?.url;
-    if (typeof url === "string") {
-      chrome.runtime.sendMessage({ type: "invoke", url, action });
+    if (typeof url !== "string") {
+      window.close();
+      return;
     }
-    window.close();
+    // sendMessage の送出を待たずに popup が閉じるとメッセージが
+    // 落ちうるため、コールバックで閉じる
+    chrome.runtime.sendMessage({ type: "invoke", url, action }, () =>
+      window.close(),
+    );
   });
 }
 

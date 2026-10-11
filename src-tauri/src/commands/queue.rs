@@ -9,8 +9,8 @@ use tauri::State;
 /// `queue_save` に受け付ける項目数の上限。UI 上の積み上げ運用を
 /// 大きく超える入力は誤りとして弾く
 const MAX_QUEUE_ITEMS: usize = 1000;
-/// キュー項目タイトルの上限（`videos.title` の入力値と同じ扱い）。
-const MAX_QUEUE_TITLE_LEN: usize = 1024;
+/// キュー項目の各文字列の上限（`videos.title` の入力値と同じ扱い）。
+const MAX_QUEUE_TEXT_LEN: usize = 1024;
 
 /// `queue_save`（FR-30、仕様決定 AY）。一時キューの項目列と現在位置を
 /// 全置換で保存する。呼び出しはフロントの全ミューテーションごと
@@ -27,8 +27,13 @@ pub fn queue_save(
     let mut items = items;
     for item in items.iter_mut() {
         item.video_id = parse_video_id(&item.video_id)?;
-        if item.title.chars().count() > MAX_QUEUE_TITLE_LEN {
-            return Err(UiError::invalid_input("キュー項目のタイトルが長すぎます"));
+        let too_long =
+            |s: &Option<String>| s.as_deref().unwrap_or("").chars().count() > MAX_QUEUE_TEXT_LEN;
+        if item.title.chars().count() > MAX_QUEUE_TEXT_LEN
+            || too_long(&item.channel_title)
+            || too_long(&item.thumbnail_url)
+        {
+            return Err(UiError::invalid_input("キュー項目の文字列が長すぎます"));
         }
     }
     Ok(db.queue_save(&items, current_index)?)

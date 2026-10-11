@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::model::{QueueItem, QueueSnapshot, VideoRef};
+use rusqlite::OptionalExtension;
 
 impl Db {
     /// 一時キューの全置換（write-through）。項目列と現在位置を
@@ -51,12 +52,14 @@ impl Db {
     /// 保存済みの一時キュー。未保存（初回起動など）は空のスナップショット。
     pub fn queue_load(&self) -> Result<QueueSnapshot, DbError> {
         let conn = self.lock()?;
+        // 未保存（行無し）は 0。行以外のエラーは丸めずに返す
         let current_index: i64 = conn
             .query_row(
                 "SELECT current_index FROM queue_state WHERE id = 1",
                 [],
                 |r| r.get(0),
             )
+            .optional()?
             .unwrap_or(0);
         let mut stmt = conn.prepare(
             "SELECT video_id, title, channel_title, thumbnail_url
@@ -89,6 +92,7 @@ impl Db {
     /// 呼び出し側が動画 ID 表示へ倒す。
     pub fn video_meta_lookup(&self, video_id: &str) -> Result<Option<VideoRef>, DbError> {
         let conn = self.lock()?;
+        // 行無しは None。行以外のエラーは丸めずに返す
         let from_videos = conn
             .query_row(
                 "SELECT title, NULLIF(channel_id, ''), channel_title, thumbnail_url
@@ -104,13 +108,13 @@ impl Db {
                     })
                 },
             )
-            .ok();
+            .optional()?;
         if let Some(v) = from_videos {
             return Ok(Some(v));
         }
         let from_history = conn
             .query_row(
-                "SELECT title, channel_id, channel_title
+                "SELECT title, NULLIF(channel_id, ''), channel_title
                  FROM watch_history WHERE video_id = ?1",
                 [video_id],
                 |r| {
@@ -123,7 +127,7 @@ impl Db {
                     })
                 },
             )
-            .ok();
+            .optional()?;
         Ok(from_history)
     }
 }
