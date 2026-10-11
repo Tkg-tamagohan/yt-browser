@@ -297,4 +297,23 @@ pub const MIGRATIONS: &[Migration] = &[
               DROP TABLE IF EXISTS chat_logs_fts;
               DROP TABLE IF EXISTS chat_logs;",
     },
+    // Phase 38: 一時キューの永続化（FR-30、仕様決定 AY）。
+    // queue_items.position の連番を主キーとして同一動画の重複を許容し、
+    // 表示メタは項目行へ持たせて videos 台帳を汚染しない自己完結型とする。
+    // queue_state は単一行（id=1 固定）で現在位置だけを持つ。
+    Migration {
+        version: 13,
+        name: "queue_persistence",
+        sql: "CREATE TABLE queue_items (
+                position INTEGER PRIMARY KEY,
+                video_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                channel_title TEXT,
+                thumbnail_url TEXT
+              );
+              CREATE TABLE queue_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                current_index INTEGER NOT NULL DEFAULT 0
+              );",
+    },
 ];

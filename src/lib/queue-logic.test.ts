@@ -4,6 +4,7 @@
 // LP-03: キュースタック編集（削除・移動）に伴う再生位置の調整（FR-20）
 // MQ-01: 複数キューの終端処置（eof 消費完了で残す／それ以外で消滅）（FR-26）
 // MQ-02: 「連続再生を止める」後のキュー位置（一時は先頭・プレイリストは保存）（FR-26）
+// LP-04: 一時キュー永続化の項目変換と復元位置（FR-30、仕様決定 AY）
 import { describe, expect, test } from "vitest";
 import {
   armPlanFor,
@@ -11,8 +12,10 @@ import {
   indexAfterMove,
   indexAfterRemove,
   indexAfterStop,
+  persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
+  restoredIndex,
 } from "./queue-logic";
 
 describe("LP-01 armPlanFor", () => {
@@ -187,5 +190,30 @@ describe("MQ-02 indexAfterStop（FR-26、仕様決定 AS）", () => {
   test("プレイリストキューは現在位置を保つ（パネルの再生で保存位置から再開）", () => {
     expect(indexAfterStop(7, 3)).toBe(3);
     expect(indexAfterStop(7, 0)).toBe(0);
+  });
+});
+
+describe("LP-04 一時キュー永続化の項目変換と復元位置（FR-30、仕様決定 AY）", () => {
+  const META = new Map([
+    ["A", { title: "タイトルA", channelTitle: "ch", thumbnailUrl: "t" }],
+    ["B", { title: "", channelTitle: null, thumbnailUrl: null }],
+  ]);
+  const metaOf = (id: string) =>
+    META.get(id) ?? { title: id, channelTitle: null, thumbnailUrl: null };
+
+  test("items からメタ付き項目列を作る。メタ無し・空タイトルは videoId に潰す", () => {
+    expect(persistItemsOf(["A", "B", "C"], metaOf)).toEqual([
+      { videoId: "A", title: "タイトルA", channelTitle: "ch", thumbnailUrl: "t" },
+      { videoId: "B", title: "B", channelTitle: null, thumbnailUrl: null },
+      { videoId: "C", title: "C", channelTitle: null, thumbnailUrl: null },
+    ]);
+    expect(persistItemsOf([], metaOf)).toEqual([]);
+  });
+
+  test("保存位置は項目数に収める。空は 0、末尾超過は末尾、負数は 0", () => {
+    expect(restoredIndex(0, 3)).toBe(0);
+    expect(restoredIndex(3, 5)).toBe(2);
+    expect(restoredIndex(3, -1)).toBe(0);
+    expect(restoredIndex(3, 1)).toBe(1);
   });
 });

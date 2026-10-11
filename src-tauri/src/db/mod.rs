@@ -9,6 +9,7 @@ mod filters;
 mod history;
 mod library;
 mod migrations;
+mod queue;
 mod settings;
 
 #[cfg(test)]

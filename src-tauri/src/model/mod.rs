@@ -349,7 +349,8 @@ pub const FILTER_KINDS: &[&str] = &["literal", "regex"];
 
 /// `favorite_add` / `playlist_add` の動画参照。
 /// 検索・関連・フィード行のメタ情報をそのまま受け取り、`videos` 台帳へ登録する。
-#[derive(Debug, Clone, Deserialize)]
+/// `video_meta_lookup`（FR-29）の戻り値としても使うため直列化も可能にする。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoRef {
     pub video_id: String,
@@ -393,6 +394,25 @@ pub struct PlaylistEntry {
     pub thumbnail_url: Option<String>,
     /// 投稿日時（フィード投入済み項目のみ。未取得は NULL、ソート時は末尾）
     pub published_at: Option<String>,
+}
+
+/// `queue_save` / `queue_load` のキュー項目（FR-30、仕様決定 AY）。
+/// 表示メタを項目ごとに持ち、`videos` 台帳には載せない自己完結型。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueItem {
+    pub video_id: String,
+    pub title: String,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
+/// `queue_load` の復元スナップショット（一時キュー）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueSnapshot {
+    pub items: Vec<QueueItem>,
+    pub current_index: i64,
 }
 
 /// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。

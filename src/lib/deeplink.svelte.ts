@@ -1,24 +1,28 @@
 /// カスタムスキーム `yt-browser://open?url=<encoded>` で受け取った URL の
-/// 解析と振り分け（FR-17、仕様決定 AC）。
+/// 解析と振り分け（FR-17・FR-29、仕様決定 AC・AX）。
 ///
 /// 受信は Rust 側（src-tauri/src/deep_link.rs）が `app://open_url`
 /// イベントと `take_open_urls` の保留バッファで担う。ここではアプリ起動中の
 /// 受信（listen）と起動直前に溜まった分のドレインを両方処理する。
-/// 振り分けは: 動画 URL → その場で再生、プレイリスト URL → ローカル取り込み、
-/// `watch`+`list` 複合は動画として扱う。対象外の URL は通知だけ出す。
+/// 振り分けは: `open` では動画 URL → その場で再生、プレイリスト URL →
+/// ローカル取り込み、`watch`+`list` 複合は動画として扱う。
+/// `queue` では動画 URL のみ一時キューの末尾へ追加する（再生しない）。
+/// 対象外の URL は通知だけ出す。
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { goto } from "$app/navigation";
 import { t } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
-import { asErrorMessage } from "$lib/players.svelte";
+import { asErrorMessage, type VideoRef } from "$lib/players.svelte";
+import { initQueue, queueAdd } from "$lib/queue.svelte";
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
 export type OpenTarget =
   | { kind: "video"; videoId: string; startSec: number | null }
-  | { kind: "playlist"; url: string };
+  | { kind: "playlist"; url: string }
+  | { kind: "queue"; videoId: string };
 
 /// `yt-browser:` スキーム URL を受け取り対象へ分解する。対象外なら null。
 /// 受理する形は `yt-browser://open?url=...`（拡張が発行する形）と、
@@ -35,10 +39,18 @@ export function parseOpenUrl(raw: string): OpenTarget | null {
   const host = parsed.hostname;
   const path = parsed.pathname.replace(/^\/+/, "");
   const action = host === "" ? path.split("/")[0] : host;
-  if (action !== "open") return null;
+  if (action !== "open" && action !== "queue") return null;
   const target = parsed.searchParams.get("url");
   if (!target) return null;
-  return classifyTarget(target);
+  const classified = classifyTarget(target);
+  if (classified === null) return null;
+  // キュー追加は動画 URL のみ。プレイリスト単体は対象外（仕様決定 AX）
+  if (action === "queue") {
+    return classified.kind === "video"
+      ? { kind: "queue", videoId: classified.videoId }
+      : null;
+  }
+  return classified;
 }
 
 /// YouTube URL の振り分け。`watch`+`list` 複合は動画として扱う
@@ -94,8 +106,38 @@ export function parseTimeParam(parsed: URL): number | null {
   return null;
 }
 
-/// 対象を実行する。動画はその場で再生、プレイリストは取り込み。
+/// 対象を実行する。動画はその場で再生、プレイリストは取り込み、
+/// キューは一時キューの末尾へ追加する（再生は開始しない）
 async function dispatch(target: OpenTarget): Promise<void> {
+  if (target.kind === "queue") {
+    // 動画 ID しか判明しないため、台帳・履歴から表示メタを補完する
+    // （仕様決定 AX。無ければ videoId をタイトル表示へ倒す）。
+    // 補完の失敗で追加自体を落とさない。DB 障害なら queueAdd 内の
+    // 保存が失敗し persistFailed が別途出る
+    let meta: VideoRef | null = null;
+    try {
+      meta = await invoke<VideoRef | null>("video_meta_lookup", {
+        videoId: target.videoId,
+      });
+    } catch {
+      // 補完失敗は videoId 表示へ倒して追加を続ける
+    }
+    try {
+      queueAdd(
+        meta ?? {
+          videoId: target.videoId,
+          title: "",
+          channelId: null,
+          channelTitle: null,
+          thumbnailUrl: null,
+        },
+      );
+      notify(t("queue.added"));
+    } catch (e) {
+      notify(t("deeplink.queueFailed", { message: asErrorMessage(e) }));
+    }
+    return;
+  }
   if (target.kind === "video") {
     try {
       await invoke("play_video", {
@@ -143,6 +185,10 @@ async function handleItem(item: OpenUrlItem): Promise<void> {
     notify(t("deeplink.unsupported"));
     return;
   }
+  // 一時キューの復元完了を待ってから振り分ける。cold start で届いた
+  // queue アクションが復元済みキューの末尾へ追記される順序を保つ
+  // （FR-30、仕様決定 AY）。復元済み以後は解決済み promise で即座に抜ける
+  await initQueue();
   await dispatch(target);
 }
 

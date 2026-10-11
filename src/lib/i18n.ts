@@ -106,6 +106,7 @@ const ja = {
   "deeplink.playFailed": "動画を開けませんでした: {message}",
   "deeplink.importFailed": "プレイリストを取り込めませんでした: {message}",
   "deeplink.unsupported": "対応していないリンクです",
+  "deeplink.queueFailed": "キューへの追加に失敗しました: {message}",
   "feed.category.label": "カテゴリ",
   "feed.category.none": "未分類",
   "feed.category.placeholder": "新しいカテゴリ名",
@@ -327,6 +328,8 @@ const ja = {
   "queue.clear": "全消去",
   "queue.empty": "キューは空です",
   "queue.startFailed": "キューの再生開始に失敗: {message}",
+  "queue.persistFailed": "キューの保存に失敗しました: {message}",
+  "queue.restoreFailed": "キューの復元に失敗しました: {message}",
   "library.removed": "削除しました",
   "library.removeFailed": "削除に失敗: {message}",
 

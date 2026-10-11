@@ -117,6 +117,44 @@ export function indexAfterStop(
   return playlistId === null ? 0 : index;
 }
 
+/// 一時キューの DB 保存形式の 1 項目（FR-30、仕様決定 AY）。
+/// backend の `QueueItem` と同じフィールド
+export type QueuePersistItem = {
+  videoId: string;
+  title: string;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+};
+
+/// `queue_save` へ渡す項目列への変換（FR-30、仕様決定 AY）。
+/// `items`（動画 ID 列）から表示メタを解決してメタ付き項目列を作る。
+/// メタ未登録は videoId をタイトルに潰す（queueMetaOf と同じ扱い）
+export function persistItemsOf(
+  items: string[],
+  metaOf: (videoId: string) => {
+    title: string;
+    channelTitle: string | null;
+    thumbnailUrl: string | null;
+  },
+): QueuePersistItem[] {
+  return items.map((videoId) => {
+    const m = metaOf(videoId);
+    return {
+      videoId,
+      title: m.title || videoId,
+      channelTitle: m.channelTitle,
+      thumbnailUrl: m.thumbnailUrl,
+    };
+  });
+}
+
+/// `queue_load` の保存位置を項目数へ収める（FR-30）。
+/// 空キューは 0、末尾超過は末尾へ
+export function restoredIndex(itemCount: number, index: number): number {
+  if (itemCount === 0) return 0;
+  return Math.max(0, Math.min(index, itemCount - 1));
+}
+
 /// 項目移動（from の項目を to の位置へ挿入）に伴うキュー位置の調整。
 /// 再生中項目は配列上の位置ではなく項目そのものを追従させる
 export function indexAfterMove(

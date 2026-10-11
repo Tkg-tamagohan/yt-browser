@@ -116,6 +116,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `filter_remove` | `id` | `Result<()>` |
 | `filter_list` | なし | `Result<Vec<Filter>>` |
 | `take_open_urls` | なし | `Result<Vec<{seq, url}>>` |
+| `queue_save` | `items`（`QueueItem` 列）、`current_index` | `Result<()>` |
+| `queue_load` | なし | `Result<QueueSnapshot>`（`items`＋`current_index`） |
+| `video_meta_lookup` | `video_id` | `Result<Option<VideoRef>>`（台帳・履歴のどちらにも無ければ None） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -144,6 +147,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 フロント側では一括操作（`playlist_sort`・`playlist_reverse`）の実行中に行の並べ替え保存を開始せず、開始前に飛行中の `playlist_reorder` の確定を待つ。一括操作と個別並べ替えの適用順を「確定した並べ替え → 一括操作」に固定し、結果の反映は項目取得の世代管理で行う（操作後は必ず確定済みの DB 順を再取得して表示する）。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
 `take_open_urls` は deep link の保留分を取り出す初期ドレイン用で、呼び出し後は `app://open_url` イベント経路のみで届く。戻り値とイベントは `{seq, url}` で、seq は重複除去用の配送識別子（§3.4）。
+`queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタ付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
+`video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
 
 ### 3.2 イベント（Rust → フロント）
 
@@ -160,7 +165,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat://reset` | `{ videoId }` | リプレイの後方シーク再アンカー。対象動画を開くパネルは既表示行を消してから後続の再送分を表示する（FR-24） |
 | `chat://open_panel` | `{ instanceId, videoId }` | `chat_popup_return` がメイン窓へだけ発行するパネル復帰要求（FR-27） |
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
-| `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=`）の受信（§3.4） |
+| `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=` / `yt-browser://queue?url=`）の受信（§3.4） |
 | `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
 | `settings://changed` | `{ key, value }` | `settings_set` のコミット毎に発火。コミット済みの値を載せるため購読側の再読み取りは不要。設定値を保持する画面（ホームの逆モードボタンが使う `pip.default` など）が画面外の変更に追従するために使う |
 
@@ -207,13 +212,18 @@ URL がイベントだけでは届かず失われる）。ドレインで `ready
 切替中の URL 損失を防ぐ。各配送には `seq` を振り、保留分とイベントで
 同一配送が二度届く場合にフロントが seq で重複除去する（URL ではなく
 配送単位で識別するため、同じリンクの再オープンは常に処理される）。
-フロント側の振り分け（`deeplink.svelte.ts`）は、動画 URL → `play_video` で
+スキームアクションは `open` と `queue`（FR-29、仕様決定 AX）の 2 種を受理する。
+フロント側の振り分け（`deeplink.svelte.ts`）は、`open` では動画 URL → `play_video` で
 その場で再生、プレイリスト URL → `playlist_import` で取り込み、
-`watch`+`list` 複合は動画として扱う。非対応 URL は通知のみで落とさない。
+`watch`+`list` 複合は動画として扱う。`queue` は動画 URL のみ受理し、
+`video_meta_lookup` で表示メタを補完してから一時キューの末尾へ追加する
+（再生は開始しない）。非対応 URL は通知のみで落とさない。
 
 `extension/` の MV3 拡張（ストア未公開、パッケージ化なし読み込み）は
 YouTube ページ上のアクション実行とリンク右クリックメニューから起動する。
-対象外ページではアクションを無効化し、メニューは YouTube リンク上のみ出る。
+アクションは「yt-browser で開く」「キューに追加」の 2 択ポップアップ、
+メニューは「yt-browser で開く」と動画リンク上のみ出る「yt-browser のキューに追加」の 2 項目
+（FR-29、仕様決定 AX）。対象外ページではアクションを無効化し、メニューは YouTube リンク上のみ出る。
 
 #### 3.4.1 Native Messaging ホスト（仕様決定 AH、Phase 23）
 
@@ -227,8 +237,8 @@ sequenceDiagram
     participant Host as yt-browser（ホストモード）
     participant OS as OS の既定ハンドラ
     participant App as yt-browser（本体）
-    Ext->>Host: sendNativeMessage {url}
-    Host->>OS: yt-browser://open?url=<encoded> を開く
+    Ext->>Host: sendNativeMessage {url, action?}
+    Host->>OS: yt-browser://<action>?url=<encoded> を開く
     Host-->>Ext: {ok: true}
     OS->>App: 新規起動、または single-instance で起動中へ転送
 ```
@@ -238,10 +248,10 @@ sequenceDiagram
   Windows では `--parent-window=<hwnd>` も渡されるが使わない。
   Tauri の Builder を組む前に分岐するため、single-instance や deep link の初期化は走らない
 - 通信：標準入出力で、4 バイトのネイティブエンディアン長と UTF-8 JSON の組を 1 往復だけ行う。
-  要求は `{"url": "<対象 URL>"}`、応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` とする。
-  エラーコードは `invalid_message`（長さ付き JSON として読めない、または `url` が文字列でない）、`invalid_url`（http(s) の URL でない）、`open_failed`（OS の既定ハンドラで開けない）の 3 種で、受け取る要求の長さは 64KiB までとする。
+  要求は `{"url": "<対象 URL>", "action": "open" | "queue"}`（`action` 省略は `open`、仕様決定 AX）、応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` とする。
+  エラーコードは `invalid_message`（長さ付き JSON として読めない、または `url` が文字列でない）、`invalid_url`（http(s) の URL でない）、`invalid_action`（`action` が受理集合外）、`open_failed`（OS の既定ハンドラで開けない）の 4 種で、受け取る要求の長さは 64KiB までとする。
   ホストは `url` が http(s) の URL として解析できることだけを確かめ、動画とプレイリストの振り分けは従来どおり本体の `deeplink.svelte.ts` が行う
-- 起動：ホストは `yt-browser://open?url=<encoded>` を OS の既定ハンドラで開く（Windows は ShellExecute 相当、Linux は xdg-open 相当）。
+- 起動：ホストは `yt-browser://<action>?url=<encoded>` を OS の既定ハンドラで開く（Windows は ShellExecute 相当、Linux は xdg-open 相当）。`action` が `queue` のときは `yt-browser://queue?url=` を使う（仕様決定 AX）。
   既存の deep link 受信経路（未起動なら `get_current()`、起動中なら single-instance）をそのまま通るので、本体側の受信処理は変えない
 - 登録：本体の setup で毎回、ホスト定義 JSON を書き、内容が同じなら書き換えない。
   JSON の `path` は実行中のバイナリの絶対パスとし、AppImage では `$APPIMAGE` を使う（マウント先の一時パスを登録しないため）。
@@ -252,7 +262,9 @@ sequenceDiagram
   - 開発ビルド（`pnpm tauri dev`）も同じ処理で登録するため、最後に起動したバイナリのパスが有効になる
 - 拡張側：`nativeMessaging` 権限を足し、`sendNativeMessage` の応答で分岐する。
   `chrome.runtime.lastError`（ホスト未登録など）か `ok: false` のときは、従来のスキーム方式でタブを**アクティブ**で開いてフォールバックし、バッジ `!` とツールチップに理由を出す。
-  成功時はバッジを消す
+  フォールバックのスキーム URL も要求と同じ action で組み立てる（`queue` 操作は `yt-browser://queue?url=`）。
+  成功時はバッジを消す。アクション実行はポップアップ（「yt-browser で開く」「キューに追加」の 2 択）になり、
+  プレイリスト単体のページではキュー追加ボタンを無効化する（FR-29、仕様決定 AX）
 
 ## 4. 動画再生サブシステム
 
@@ -401,7 +413,8 @@ PiP 小窓のサイズは動画の表示アスペクト比へ追従する（FR-1
 
 ### 4.6 連続再生キュー（FR-10、仕様決定 S）
 
-キューはフロント側のセッション状態（`queue.svelte.ts`）に持つ。
+キューはフロント側の状態（`queue.svelte.ts`）に持つ。一時キューは DB へ永続化する
+（FR-30、仕様決定 AY。後述）。
 ライブラリの項目から「ここから連続再生」を選ぶと、その項目を通常の `play_video` で起動し、
 同時に今後の項目列を `player_set_queue` でバックエンドへ武装する。
 対象プレイリストのキューが実行中の場合は新しいインスタンスを起こさず、
@@ -448,8 +461,9 @@ true のときフロントはキュー位置を照合するだけで、通常の
 再生中の項目を削除しても再生は止めないが、その場合 `index` が指すのは
 未再生の次項目になるため、`playingCurrent` フラグで武装対象の先頭を
 切り替える（次項目を武装から落とすと再生されずに飛ばされる）。
-項目の表示メタ（タイトル・チャンネル名・サムネイル）は `queueMeta` の
-セッション内メモリにのみ持ち、DB には保存しない。プレイリストキューの
+項目の表示メタ（タイトル・チャンネル名・サムネイル）は `queueMeta` に持つ。
+一時キューの分は項目列と現在位置とともに DB へ保存し（FR-30、仕様決定 AY）、
+プレイリストキューの分はセッション内メモリにのみ持ち DB には保存しない。プレイリストキューの
 スナップショット作成時はプレイリスト項目のメタをそのまま登録するため、
 キュー内の一覧は動画 ID ではなく動画名で表示される。
 
@@ -489,8 +503,23 @@ true のときフロントはキュー位置を照合するだけで、通常の
 選択中のキューが消滅した場合は一時キューを表示対象に戻す。
 キューを背負うプレイヤーカードの「キュー」ボタンは自分のキューを
 選択状態でパネルを開く。ループ状態はインスタンス単位のままで、
-キューの帰属に関わらず既存の振る舞いを変えない。キューと表示メタは
-セッション内メモリのみで、アプリ再起動で消える。
+キューの帰属に関わらず既存の振る舞いを変えない。プレイリストキューと
+その表示メタはセッション内メモリのみで、アプリ再起動で消える。
+
+一時キューは DB へ永続化する（FR-30、仕様決定 AY）。保存は write-through で、
+一時キューの全ミューテーション（追加・挿入・削除・移動・位置の進行・停止・
+開始・消滅）の後に `queue_save` で項目列（表示メタ付き）と現在位置を全置換する。
+起動時は `queue_load` で停止状態（実行インスタンスなし）として復元し、
+保存した現在位置を保持する。復元は deep link の保留分ドレインより先に
+完了させ、アプリ未起動からのキュー追加（`yt-browser://queue?url=`、
+FR-29）が復元済みキューの末尾へ追記される順序を保つ。
+キューの消滅（消費完了・インスタンス消失・全消去）時は DB 上の項目も消す。
+アプリ終了は消滅理由に含めないため、実行中に終了したキューは
+「停止中・中断位置保持」として復元され、キューパネルの「再生」で
+保存位置から継続できる。保存実体は §8 の `queue_items`（`position` の
+連番を主キーとして同一動画の重複を許容し、`video_id`・`title`・
+`channel_title`・`thumbnail_url` を項目行へ持って `videos` 台帳を
+汚染しない）と `queue_state`（単一行の `current_index`）とする。
 
 ### 4.7 HDR 設定と mpv 追加引数（INV-1、仕様決定 Y）
 
@@ -704,6 +733,19 @@ CREATE TABLE settings (
   value TEXT NOT NULL
 );
 
+CREATE TABLE queue_items (
+  position INTEGER PRIMARY KEY,      -- 連番の順序キー。同一動画の重複を許容
+  video_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  channel_title TEXT,
+  thumbnail_url TEXT
+);
+
+CREATE TABLE queue_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),   -- 単一行
+  current_index INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -724,6 +766,7 @@ CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
   バックフィル投入（`feed_backfill`）は RSS とは別経路で、新規行を既読・投入済みで挿入し、プレースホルダは既読のまま `ingested=1` に確定する。投入済みの既存行は投稿日・既読を含めて書き換えない（FR-21、仕様決定 AN）。
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
+- `queue_items` / `queue_state` は一時キューの永続化（FR-30、仕様決定 AY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。プレイリストキューは保存しない
 
 ## 9. エラーハンドリングと変更耐性
 
@@ -803,7 +846,7 @@ yt-browser/
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
     lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality の各 .ts。対応する *.test.ts を併置）
-  extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js）
+  extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```
 
