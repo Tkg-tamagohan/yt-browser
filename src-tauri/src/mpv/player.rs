@@ -132,6 +132,10 @@ pub(crate) struct SpawnOptions {
     /// 空白区切りの追加 mpv 引数（設定 `mpv.extra_args`、仕様決定 Y）。
     /// spawn 引数の末尾に置いて固定引数を上書きできるようにする。
     pub(crate) extra_args: Option<String>,
+    /// `--screen` に渡すディスプレイ番号（設定 `window.screen` 由来、
+    /// FR-31・仕様決定 AZ）。呼び出し側でモニター名→列挙順へ解決済み。
+    /// None なら mpv 既定の配置に任せる。
+    pub(crate) screen: Option<u32>,
 }
 
 impl MpvPlayer {
@@ -175,6 +179,11 @@ impl MpvPlayer {
         }
         if let Some(script) = &opts.wheel_script {
             args.push(format!("--script={}", script.display()));
+        }
+        // 起動ディスプレイ（FR-31、仕様決定 AZ）。geometry の位置は
+        // 指定ディスプレイ上での相対座標として解釈される
+        if let Some(screen) = opts.screen {
+            args.push(format!("--screen={screen}"));
         }
         // PiP は起動時フラグで指定する（設計書 §4.5: ontop・枠なし・小窓配置）
         if let Some(geo) = &opts.pip_geometry {

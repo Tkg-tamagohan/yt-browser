@@ -67,6 +67,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_status` | なし | `Result<DbStatus>`（`schema_version`） |
 | `settings_get` | `key` | `Result<Option<String>>` |
 | `settings_set` | `key`, `value` | `Result<()>` |
+| `monitor_list` | なし | `Vec<MonitorInfo>`（接続中モニターの列挙。FR-31、仕様決定 AZ） |
 | `play_video` | `video_id`, `resume`, `pip?`, `format?`, `start_sec?` | `Result<instance_id>` |
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
@@ -193,6 +194,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
+| `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定） |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -410,6 +412,8 @@ PiP 小窓のサイズは動画の表示アスペクト比へ追従する（FR-1
 起動時の画質式は「`play_video` の `format` 引数（インスタンス別指定）> PiP なら `pip.quality.format` > `quality.format`」の順で解決する（仕様決定 W、実装レベル細目「PiP 画質の解決順」）。稼働中インスタンスの画質はプレイヤーカードの画質選択から `player_control` の `quality` アクションで変えられる。この変更は DB に保存せずセッション内に限り有効で、次回再生は既定画質に戻る（仕様決定 X）。現在の適用値は `PlayerState.format` としてカードへ伝える。
 
 再生の既定表示は PiP とする（FR-18、仕様決定 AJ）。`play_video` の `pip` 引数は省略時に設定 `pip.default`（`on`/`off`、未設定・その他の値は `on`）で解決し、明示の `true`/`false` は強制 PiP・強制通常窓として既定に優先する。PiP が既定のため `pip.quality.format` はほぼ全再生の起動画質式として機能する（解決順自体は変更しない）。連続再生・ループの遷移は同一 mpv プロセスで行われ、`ontop`・`border`・`geometry` は遷移を跨いで維持される。
+
+再生窓を開くディスプレイは設定 `window.screen` で選ぶ（FR-31、仕様決定 AZ）。設定画面の「再生窓」節は `monitor_list` コマンドが返す接続中モニターの列挙からモニター名を選ばせ、空・未設定は自動（mpv 既定）とする。保存値のモニター名は `PlayerManager::play` が spawn のたびに `available_monitors()` の列挙順インデックスへ解決し、`--screen=<番号>` として mpv 起動引数に渡す。保存名が現在の列挙に無いときは `--screen` を渡さず mpv 既定にフォールバックする。`--screen` は起動時引数のため稼働中インスタンスには影響せず、実行時のディスプレイ移動は対象外。`--geometry` の位置座標は指定ディスプレイ上の相対座標として mpv が解釈する。
 
 ### 4.6 連続再生キュー（FR-10、仕様決定 S）
 

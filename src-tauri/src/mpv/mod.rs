@@ -35,6 +35,11 @@ pub(crate) const SETTING_HDR_TONE_MAPPING: &str = "hdr.tone_mapping";
 pub(crate) const SETTING_HDR_COMPUTE_PEAK: &str = "hdr.compute_peak";
 /// 設定キー: mpv への追加引数（空白区切りで spawn 引数の末尾へ、仕様決定 Y）。
 pub(crate) const SETTING_MPV_EXTRA_ARGS: &str = "mpv.extra_args";
+/// 設定キー: 再生窓を開くディスプレイ（仕様決定 AZ、FR-31）。
+/// 値は `monitor_list` が列挙したモニター名。空・未設定は自動（mpv 既定）。
+/// 保存名は mpv へ渡さず、起動時にモニター列のインデックスへ解決してから
+/// `--screen` へ渡すため、任意の文字列をそのまま保存してよい。
+pub(crate) const SETTING_WINDOW_SCREEN: &str = "window.screen";
 /// 設定が無い・不正なときの既定値。画面右下寄せの 480x270。
 pub(crate) const DEFAULT_PIP_GEOMETRY: &str = "480x270-40-40";
 
@@ -125,6 +130,21 @@ pub(crate) fn is_valid_hdr_compute_peak(s: &str) -> bool {
     matches!(s, "yes" | "no")
 }
 
+/// `window.screen` に保存したモニター名を、現在接続中のモニター列の
+/// インデックスへ解決する（FR-31、仕様決定 AZ）。`--screen` の番号は
+/// `available_monitors()` の列挙順と同じ並びを前提とする。
+/// 同名モニターが複数あるときは先頭を返す。未設定（空）・現在接続中の
+/// モニターに名前が無い場合は None（mpv 既定の配置に任せる）。
+pub(crate) fn screen_index_of(names: &[Option<String>], saved: &str) -> Option<u32> {
+    if saved.is_empty() {
+        return None;
+    }
+    names
+        .iter()
+        .position(|n| n.as_deref() == Some(saved))
+        .map(|i| i as u32)
+}
+
 #[derive(Debug, Error)]
 pub enum MpvError {
     #[error("mpv の起動に失敗: {0}。mpv がインストールされているか確認してください")]
@@ -143,6 +163,7 @@ mod tests {
         fit_pip_geometry, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
         pip_default_enabled, pip_fit_aspect_enabled,
         player::{split_extra_args, video_aspect_of},
+        screen_index_of,
     };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
@@ -357,5 +378,25 @@ mod tests {
         // 空・空白のみは引数なし
         assert!(split_extra_args("").is_empty());
         assert!(split_extra_args("   ").is_empty());
+    }
+
+    /// `window.screen` の保存名 → モニター列インデックスの解決
+    /// （FR-31、仕様決定 AZ）。空・未検出は mpv 既定（None）。
+    #[test]
+    fn screen_index_resolution() {
+        let names = vec![
+            Some("\\\\.\\DISPLAY1".to_string()),
+            Some("\\\\.\\DISPLAY2".to_string()),
+        ];
+        assert_eq!(screen_index_of(&names, "\\\\.\\DISPLAY2"), Some(1));
+        assert_eq!(screen_index_of(&names, ""), None);
+        // 切断済み・未知の名前は mpv 既定にフォールバックする
+        assert_eq!(screen_index_of(&names, "\\\\.\\DISPLAY9"), None);
+        // 名前が取れないモニターは一致対象にしない
+        let mixed = vec![None, Some("HDMI-1".to_string())];
+        assert_eq!(screen_index_of(&mixed, "HDMI-1"), Some(1));
+        // 同名モニターは先頭側を返す
+        let dup = vec![Some("M".to_string()), Some("M".to_string())];
+        assert_eq!(screen_index_of(&dup, "M"), Some(0));
     }
 }

@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::db::Db;
 use crate::error::UiError;
-use crate::model::{DbStatus, SettingChanged, YtDlpStatus};
+use crate::model::{DbStatus, MonitorInfo, SettingChanged, YtDlpStatus};
 use crate::yt::{self, YtDlpResolver};
 
 const MAX_SETTING_KEY_LEN: usize = 128;
@@ -62,6 +62,35 @@ pub async fn settings_set(
     // 再読み取りなしで同期できる。購読者がいなくても正常なので失敗は捨てる
     let _ = app.emit("settings://changed", SettingChanged { key, value });
     Ok(())
+}
+
+/// `monitor_list`（FR-31、仕様決定 AZ）。再生窓の起動ディスプレイ選択肢として
+/// 接続中のモニターを列挙順で返す。列挙自体に失敗した環境では空列を返す。
+#[tauri::command]
+pub fn monitor_list(app: AppHandle) -> Vec<MonitorInfo> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    // プライマリ判定は Monitor の等値比較が無いため、名前・位置・サイズの一致で推す
+    let primary = app.primary_monitor().ok().flatten();
+    monitors
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let pos = m.position();
+            let size = m.size();
+            let primary = primary
+                .as_ref()
+                .is_some_and(|p| p.name() == m.name() && p.position() == pos && p.size() == size);
+            MonitorInfo {
+                name: m.name().map(|n| n.to_string()),
+                index: i as u32,
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+                primary,
+            }
+        })
+        .collect()
 }
 
 /// yt-dlp の解決パスとバージョン（設計書 §5 の運用確認用）。

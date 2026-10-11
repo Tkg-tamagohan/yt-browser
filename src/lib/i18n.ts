@@ -356,6 +356,21 @@ const ja = {
   "settings.pip.unsaved":
     "保存中に PiP の値が変更されました。DB には既定値が保存されたため、もう一度保存してください",
 
+  // Phase 39: 再生窓の起動ディスプレイ（FR-31、仕様決定 AZ）
+  "settings.window.title": "再生窓",
+  "settings.window.desc":
+    "mpv 再生窓を開くディスプレイの選択。変更は次回の再生開始から有効（PiP 小窓の位置とサイズは PiP 節で設定）",
+  "settings.window.screen": "起動ディスプレイ",
+  "settings.window.screen.auto": "自動（mpv 既定）",
+  "settings.window.screen.desc":
+    "選択したモニター上で再生窓を開きます。選択したモニターが外れているときは自動へフォールバックします",
+  "settings.window.screen.none": "接続中のモニターを取得できませんでした",
+  "settings.window.screen.missing": "{name}（現在は未接続）",
+  "settings.window.monitor": "{name}（{dims}）",
+  "settings.window.monitorPrimary": "{name}（{dims}・プライマリ）",
+  "settings.window.unsaved":
+    "保存中に起動ディスプレイの値が変更されました。もう一度保存してください",
+
   // Phase 29: フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
   "settings.feed.title": "フィード",
   "settings.feed.desc": "フィード一覧の表示設定。次回の一覧取得から反映される",
