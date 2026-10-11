@@ -56,6 +56,25 @@ describe("DP-01 parseDescription の分割", () => {
     ]);
   });
 
+  test("URL は非 ASCII・引用符・括弧類で打ち切る", () => {
+    // URL の直後に空白無く続く日本語の文は URL に取り込まない
+    expect(parseDescription("https://x.com/aを参照")).toEqual([
+      { kind: "url", text: "https://x.com/a", url: "https://x.com/a" },
+      { kind: "text", text: "を参照" },
+    ]);
+    // 全角括弧・引用符で囲まれた URL も本体だけ切り出す
+    expect(parseDescription("「https://x.com/b」")).toEqual([
+      { kind: "text", text: "「" },
+      { kind: "url", text: "https://x.com/b", url: "https://x.com/b" },
+      { kind: "text", text: "」" },
+    ]);
+    expect(parseDescription('"https://x.com/c"')).toEqual([
+      { kind: "text", text: '"' },
+      { kind: "url", text: "https://x.com/c", url: "https://x.com/c" },
+      { kind: "text", text: '"' },
+    ]);
+  });
+
   test("空文字列は空列を返す", () => {
     expect(parseDescription("")).toEqual([]);
   });
