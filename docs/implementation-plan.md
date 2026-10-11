@@ -347,10 +347,10 @@ Phase 29 の shorts 除外は Phase 32 のチャンネル別表示にも波及�
 
 ### Phase 40：ウインドウごとの音声出力先（FR-32、仕様決定 BA）
 
-- [ ] `audio_device_list` コマンドで `mpv --audio-device=help` の列挙をパースして返す（`'name' (desc)` 形式。desc 内の括弧を許容するパーサ回帰テスト）
-- [ ] `PlayerAction` に `audio_device` を追加し、`set_property audio-device` で稼働中インスタンスの出力先を切り替える（実行時変更可否は mpv 0.41 で実機確認済み）。`audio-device` を監視プロパティへ加え `PlayerState` に現在値を載せる
-- [ ] プレイヤーカードに音声出力先ドロップダウンを追加する（セッション内のみ有効・DB 非保存。列挙失敗時は直接入力へ縮退）
-- [ ] 要件定義書（FR-32 新設）・決定記録（BA）・設計書（§3.1・§3.2・§4.x）・ユーザーガイドを更新する
+- [x] `audio_device_list` コマンドで `mpv --audio-device=help` の列挙をパースして返す（`'name' (desc)` 形式。desc 内の括弧を許容するパーサ回帰テスト）
+- [x] `PlayerAction` に `audio_device` を追加し、`set_property audio-device` で稼働中インスタンスの出力先を切り替える（実行時変更可否は mpv 0.41 で実機確認済み）。`audio-device` を監視プロパティへ加え `PlayerState` に現在値を載せる
+- [x] プレイヤーカードに音声出力先ドロップダウンを追加する（セッション内のみ有効・DB 非保存。列挙失敗時は直接入力へ縮退）
+- [x] 要件定義書（FR-32 新設）・決定記録（BA）・設計書（§3.1・§3.2・§4.8）・ユーザーガイドを更新する
 - [ ] 受け入れ：窓ごとに音声出力先を切り替えられること（Windows 実機検証）
 
 ## 残課題（既知の制限と観察メモ）

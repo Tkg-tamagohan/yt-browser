@@ -2,12 +2,14 @@
 //! 1 再生 = 1 mpv プロセス + 1 IPC ソケット。マルチビューはインスタンスを増やすだけで済む
 //! （仕様決定 B / FR-1）。再生制御はすべてこのモジュールを経由する。
 
+mod devices;
 mod ipc;
 mod manager;
 pub(crate) mod player;
 mod spawn;
 mod terminal;
 
+pub(crate) use devices::list_audio_devices;
 pub(crate) use ipc::IpcClient;
 use ipc::{IpcError, IpcEvent};
 pub use manager::PlayerManager;

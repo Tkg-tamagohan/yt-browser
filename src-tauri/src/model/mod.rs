@@ -54,6 +54,9 @@ pub struct PlayerState {
     pub pip: bool,
     /// 現在適用中の画質式（`ytdl-format`）。起動時解決値または Quality 変更後の値。
     pub format: String,
+    /// 現在の音声出力デバイス（mpv `audio-device`、FR-32、仕様決定 BA）。
+    /// 既定・自動選択は "auto"。
+    pub audio_device: String,
 }
 
 /// `player://ended` イベントのペイロード（設計書 §3.2）。
@@ -98,6 +101,21 @@ pub enum PlayerAction {
     FrameBackStep,
     /// PiP 表示の切り替え（設計書 §4.5: ontop・枠なし・小窓配置）。
     Pip { enabled: bool },
+    /// 音声出力デバイスの切り替え（mpv `audio-device`、FR-32、仕様決定 BA）。
+    /// 値は `audio_device_list` が返すデバイス名（`auto` は mpv 既定）。
+    /// セッション内のみ有効で DB には保存しない。
+    AudioDevice { device: String },
+}
+
+/// `audio_device_list` コマンドの戻り値要素（FR-32、仕様決定 BA）。
+/// mpv が列挙した音声出力デバイス 1 件分。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDevice {
+    /// デバイス識別子（mpv の `audio-device` プロパティ値、`wasapi/{...}` 等）。
+    pub name: String,
+    /// 人向けの表示名。mpv が説明を出さないデバイスでは空文字。
+    pub description: String,
 }
 
 /// `watch_history` テーブルの 1 行（設計書 §8）。

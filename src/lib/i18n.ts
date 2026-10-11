@@ -56,6 +56,12 @@ const ja = {
   "player.window.hint":
     "既定が PiP のため、このボタンは通常のウィンドウで再生します（既定表示の設定は変わりません）",
 
+  // Phase 40: ウインドウごとの音声出力先（FR-32、仕様決定 BA）
+  "player.audio": "音声出力",
+  "player.audio.hint":
+    "このウィンドウだけの音声出力先を変更します（セッション内のみ有効。次回の再生は自動に戻ります）",
+  "player.audio.placeholder": "デバイス名を直接入力",
+
   // Phase 17: ループ再生（FR-16、仕様決定 AA）
   "player.loop.none": "ループ: なし",
   "player.loop.all": "ループ: 全体",
