@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- yt-browser opener ポップアップ（Phase 38、仕様決定 AX）。
+     「yt-browser で開く」と「キューに追加」の 2 択。対象判定は
+     popup.js が background.js の classify へ問い合わせて行う -->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>yt-browser</title>
+    <style>
+      body {
+        width: 200px;
+        margin: 0;
+        padding: 8px;
+        font-family: sans-serif;
+        font-size: 13px;
+        background: #1e1f24;
+        color: #e8e9ed;
+      }
+      button {
+        display: block;
+        width: 100%;
+        margin: 4px 0;
+        padding: 8px 10px;
+        border: 1px solid #3a3b42;
+        border-radius: 6px;
+        background: #2a2b31;
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: #34353d;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="open" type="button" disabled>yt-browser で開く</button>
+    <button id="queue" type="button" disabled>キューに追加</button>
+    <script src="popup.js"></script>
+  </body>
+</html>

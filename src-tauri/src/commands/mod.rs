@@ -8,6 +8,7 @@ mod feed;
 mod filter;
 mod library;
 mod player;
+mod queue;
 mod search;
 mod system;
 
@@ -17,6 +18,7 @@ pub use feed::*;
 pub use filter::*;
 pub use library::*;
 pub use player::*;
+pub use queue::*;
 pub use search::*;
 pub use system::*;
 

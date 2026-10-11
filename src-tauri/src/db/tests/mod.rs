@@ -4,6 +4,7 @@ mod filters;
 mod history;
 mod library;
 mod migrations;
+mod queue;
 mod settings;
 
 fn vref(video_id: &str, title: &str) -> crate::model::VideoRef {

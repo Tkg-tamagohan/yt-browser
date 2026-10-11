@@ -1,5 +1,6 @@
-//! カスタムスキーム `yt-browser://open?url=<encoded>` の受け取り
-//! （FR-17、仕様決定 AC）。
+//! カスタムスキーム `yt-browser://<action>?url=<encoded>` の受け取り
+//! （FR-17・FR-29、仕様決定 AC・AX）。アクション（`open` / `queue`）の
+//! 解釈はフロント側で行い、ここではスキーム URL をそのまま転送する。
 //!
 //! deep link での起動・URL 転送は 2 経路ある:
 //!

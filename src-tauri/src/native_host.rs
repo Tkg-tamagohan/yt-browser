@@ -5,9 +5,10 @@
 //! Tauri を組まずに [`run_host`] へ分岐する。
 //!
 //! - 通信：4 バイトのネイティブエンディアン長と UTF-8 JSON の組を 1 往復だけ行う。
-//!   要求は `{"url": "<対象 URL>"}`、応答は `{"ok": true}` か
+//!   要求は `{"url": "<対象 URL>", "action": "open" | "queue"}`
+//!   （`action` 省略は `open`、仕様決定 AX）、応答は `{"ok": true}` か
 //!   `{"ok": false, "error": "<コード>"}`
-//! - 起動：`yt-browser://open?url=<encoded>` を OS の既定ハンドラで開く。
+//! - 起動：`yt-browser://<action>?url=<encoded>` を OS の既定ハンドラで開く。
 //!   以降は既存の deep link 受信経路（未起動なら起動、起動中なら
 //!   single-instance で転送）に乗る
 //! - 登録：本体の setup で [`register`] を呼び、ホスト定義を冪等に書く
@@ -31,7 +32,32 @@ pub const EXTENSION_ID: &str = "hmfhiknpeefgjdmkjoofahdpkflfnkdl";
 /// 受け取るメッセージの上限。要求は URL 1 本なので小さく抑える。
 const MAX_MESSAGE_LEN: u32 = 64 * 1024;
 
-const SCHEME_PREFIX: &str = "yt-browser://open?url=";
+/// スキームアクション（FR-29、仕様決定 AX）。`open` は再生・取り込み、
+/// `queue` は一時キューへの追加（再生しない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Open,
+    Queue,
+}
+
+impl Action {
+    /// `action` フィールドの受理値。省略は `open`、受理集合外は `invalid_action`。
+    fn parse(raw: Option<&str>) -> Result<Self, ErrorCode> {
+        match raw.unwrap_or("open") {
+            "open" => Ok(Self::Open),
+            "queue" => Ok(Self::Queue),
+            _ => Err(ErrorCode::InvalidAction),
+        }
+    }
+
+    /// アクションに対応するスキーム URL のプレフィックス。
+    fn scheme_prefix(self) -> &'static str {
+        match self {
+            Self::Open => "yt-browser://open?url=",
+            Self::Queue => "yt-browser://queue?url=",
+        }
+    }
+}
 
 /// 引数に Chrome のホスト起動の印（`chrome-extension://<ID>/`）が含まれるか。
 /// Windows では `--parent-window=<hwnd>` も渡されるが判定には使わない。
@@ -74,6 +100,8 @@ pub enum ErrorCode {
     InvalidMessage,
     /// `url` が http(s) の URL として解析できない
     InvalidUrl,
+    /// `action` が受理集合（`open` / `queue`）外
+    InvalidAction,
     /// OS の既定ハンドラで開けなかった
     OpenFailed,
 }
@@ -83,6 +111,7 @@ impl ErrorCode {
         match self {
             Self::InvalidMessage => "invalid_message",
             Self::InvalidUrl => "invalid_url",
+            Self::InvalidAction => "invalid_action",
             Self::OpenFailed => "open_failed",
         }
     }
@@ -132,6 +161,7 @@ pub fn write_message<W: Write>(writer: &mut W, value: &serde_json::Value) -> io:
 #[derive(Deserialize)]
 struct Request {
     url: String,
+    action: Option<String>,
 }
 
 /// `url` が http(s) の URL として解析できるかだけを確かめる。
@@ -144,9 +174,10 @@ pub fn validate_url(raw: &str) -> bool {
 }
 
 /// 対象 URL をアプリのスキーム URL へ包む。
-pub fn scheme_url(target: &str) -> String {
+pub fn scheme_url(target: &str, action: Action) -> String {
     format!(
-        "{SCHEME_PREFIX}{}",
+        "{}{}",
+        action.scheme_prefix(),
         utf8_percent_encode(target, NON_ALPHANUMERIC)
     )
 }
@@ -160,10 +191,14 @@ where
         Ok(r) => r,
         Err(_) => return Response::Error(ErrorCode::InvalidMessage),
     };
+    let action = match Action::parse(req.action.as_deref()) {
+        Ok(a) => a,
+        Err(code) => return Response::Error(code),
+    };
     if !validate_url(&req.url) {
         return Response::Error(ErrorCode::InvalidUrl);
     }
-    match opener(&scheme_url(&req.url)) {
+    match opener(&scheme_url(&req.url, action)) {
         Ok(()) => Response::Ok,
         Err(e) => {
             eprintln!("yt-browser native host: スキーム URL を開けません: {e}");
@@ -442,6 +477,71 @@ mod tests {
         assert!(!write_if_changed(&path, "a").unwrap());
         assert!(write_if_changed(&path, "b").unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "b");
+    }
+
+    /// DB-NM-11: `action` フィールド（FR-29、仕様決定 AX）。
+    /// 省略は `open` と同じスキームを組み立て、`queue` は
+    /// `yt-browser://queue?url=` を開く。受理集合外は `invalid_action` で、
+    /// URL 検証より先に弾く（開かない）。
+    #[test]
+    fn handle_request_action_variants() {
+        let opened = std::cell::RefCell::new(Vec::<String>::new());
+        // handle_request は FnOnce を受け取るため、呼び出しごとに
+        // 記録用の内部クロージャを新しく作る
+        let call = |body: &[u8]| -> Response {
+            handle_request(body, |u| {
+                opened.borrow_mut().push(u.to_string());
+                Ok(())
+            })
+        };
+        // action 省略は従来どおり open スキーム
+        let body = serde_json::to_vec(&json!({ "url": "https://youtu.be/dQw4w9WgXcQ" })).unwrap();
+        assert_eq!(call(&body), Response::Ok);
+        assert!(opened.borrow()[0].starts_with("yt-browser://open?url="));
+        // action: "open" の明示も同じ
+        let body = serde_json::to_vec(
+            &json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": "open" }),
+        )
+        .unwrap();
+        assert_eq!(call(&body), Response::Ok);
+        assert!(opened.borrow()[1].starts_with("yt-browser://open?url="));
+        // action: "queue" は queue スキーム
+        let body = serde_json::to_vec(
+            &json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": "queue" }),
+        )
+        .unwrap();
+        assert_eq!(call(&body), Response::Ok);
+        assert!(opened.borrow()[2].starts_with("yt-browser://queue?url="));
+        // 受理集合外は invalid_action で、URL 検証より先に弾く
+        let never = |_: &str| -> io::Result<()> { panic!("開いてはいけない") };
+        for action in ["play", "QUEUE", "", " open"] {
+            let body = serde_json::to_vec(
+                &json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": action }),
+            )
+            .unwrap();
+            assert_eq!(
+                handle_request(&body, never),
+                Response::Error(ErrorCode::InvalidAction),
+                "action={action:?}"
+            );
+        }
+        let body = serde_json::to_vec(
+            &json!({ "url": "not a url", "action": "play" }),
+        )
+        .unwrap();
+        assert_eq!(
+            handle_request(&body, never),
+            Response::Error(ErrorCode::InvalidAction)
+        );
+        // action が文字列でない要求は invalid_message
+        let body = serde_json::to_vec(
+            &json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": 5 }),
+        )
+        .unwrap();
+        assert_eq!(
+            handle_request(&body, never),
+            Response::Error(ErrorCode::InvalidMessage)
+        );
     }
 
     /// DB-NM-10: 実際の標準入出力と同じ形の 1 往復。

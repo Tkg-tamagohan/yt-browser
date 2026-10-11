@@ -1,6 +1,7 @@
 // deep link の URL 解析の回帰テスト（FR-17、仕様決定 AC）。
 // DL-01: `yt-browser://open?url=` のスキーム解析（受理形のバリエーション）
 // DL-02: 対象 URL の振り分け（動画・プレイリスト・watch+list 複合・対象外）
+// DL-03: `yt-browser://queue?url=` のキュー追加解析（動画のみ受理、FR-29）
 import { describe, expect, test } from "vitest";
 import { classifyTarget, parseOpenUrl } from "./deeplink.svelte";
 
@@ -93,5 +94,41 @@ describe("DL-02 classifyTarget", () => {
     expect(classifyTarget("https://example.com/watch?v=dQw4w9WgXcQ")).toBeNull();
     expect(classifyTarget("https://www.youtube.com/watch?v=short")).toBeNull();
     expect(classifyTarget("ftp://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBeNull();
+  });
+});
+
+describe("DL-03 queue アクション（FR-29、仕様決定 AX）", () => {
+  test("動画 URL をキュー対象として返す。watch+list 複合も動画扱い", () => {
+    const q = (u: string) =>
+      `yt-browser://queue?url=${encodeURIComponent(u)}`;
+    expect(parseOpenUrl(q(WATCH))).toEqual({
+      kind: "queue",
+      videoId: "dQw4w9WgXcQ",
+    });
+    expect(parseOpenUrl(q(`${WATCH}&list=PLtest12345`))).toEqual({
+      kind: "queue",
+      videoId: "dQw4w9WgXcQ",
+    });
+    expect(parseOpenUrl(q("https://youtu.be/dQw4w9WgXcQ"))).toEqual({
+      kind: "queue",
+      videoId: "dQw4w9WgXcQ",
+    });
+  });
+
+  test("プレイリスト単体と対象外 URL は null（unsupported 通知へ）", () => {
+    const q = (u: string) =>
+      `yt-browser://queue?url=${encodeURIComponent(u)}`;
+    expect(parseOpenUrl(q(LIST))).toBeNull();
+    expect(parseOpenUrl(q("https://example.com/watch?v=dQw4w9WgXcQ"))).toBeNull();
+    expect(parseOpenUrl("yt-browser://queue")).toBeNull();
+  });
+
+  test("t= の開始位置はキュー項目へ持ち越さない（仕様決定 AX）", () => {
+    const q = (u: string) =>
+      `yt-browser://queue?url=${encodeURIComponent(u)}`;
+    expect(parseOpenUrl(q(`${WATCH}&t=2630s`))).toEqual({
+      kind: "queue",
+      videoId: "dQw4w9WgXcQ",
+    });
   });
 });

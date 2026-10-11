@@ -12,6 +12,8 @@
 //! ループ状態もインスタンス別にフロントが持ち、武装対象の選択で実現する
 //! （1 項目は現在項目のみ、全体は末尾到達で先頭へ戻る回転順、キュー無しは
 //! 現在項目を巡回登録）。
+//! 一時キューだけは項目列・表示メタ・現在位置を DB へ永続化し
+//! （FR-30、仕様決定 AY）、起動時に停止状態として復元する。
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -26,9 +28,15 @@ import {
   indexAfterMove,
   indexAfterRemove,
   indexAfterStop,
+  persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
+  restoredIndex,
+  type QueuePersistItem,
 } from "./queue-logic";
+import { t } from "$lib/i18n";
+import { notify } from "$lib/notices.svelte";
+import { asErrorMessage } from "$lib/players.svelte";
 
 /// キューの識別子。`null` は一時キュー（キュースタック、FR-20）、
 /// 数値はそのプレイリストのキュー（FR-26、仕様決定 AS）
@@ -93,8 +101,9 @@ export function queueKeyOfInstance(instanceId: number): QueueKey | undefined {
   return undefined;
 }
 
-/// キュー項目の表示メタ（FR-20、仕様決定 AM）。セッション内メモリのみで
-/// DB には保存しない。同一動画の重複登録は同じメタを共有し、
+/// キュー項目の表示メタ（FR-20、仕様決定 AM）。一時キューの分は
+/// persistTempQueue 経由で DB へ保存される（FR-30、仕様決定 AY）。
+/// 同一動画の重複登録は同じメタを共有し、
 /// メタはキューをまたいで共有する（同じ動画は同じ表示になる）
 export type QueueItemMeta = {
   title: string;
@@ -154,6 +163,74 @@ function pruneMeta(): void {
     }
   }
   if (next) queueMeta.list = next;
+}
+
+// `queue_save` の直列化。invoke の到着順は保証されないため、
+// 保存要求を一本の Promise チェーンに載せ、後にスナップショットした
+// 意図が必ず最後に届くようにする（armRuns と同じ考え方）
+let persistChain: Promise<void> = Promise.resolve();
+
+/// 一時キューの項目列と現在位置を DB へ全置換で保存する
+/// （FR-30、仕様決定 AY の write-through）。一時キューの全
+/// ミューテーションの後に呼ぶ。失敗してもメモリ上のキュー操作は
+/// 完了済みのため、通知だけ出す
+function persistTempQueue(): void {
+  const q = tempQueue();
+  const items = persistItemsOf(q.items, queueMetaOf);
+  const currentIndex = q.index;
+  persistChain = persistChain
+    .then(() =>
+      invoke<unknown>("queue_save", { items, currentIndex }).then(() => {}),
+    )
+    .catch((e) => {
+      notify(t("queue.persistFailed", { message: asErrorMessage(e) }));
+    });
+}
+
+/// 起動時の一時キュー復元（FR-30、仕様決定 AY）。`queue_load` で
+/// 項目列と保存位置を読み、停止状態（instanceId なし）のキューとして
+/// 組み立てる。表示メタもキュー項目から `queueMeta` へ戻す
+async function restoreTempQueue(): Promise<void> {
+  const snap = await invoke<{
+    items: QueuePersistItem[];
+    currentIndex: number;
+  }>("queue_load");
+  const q = tempQueue();
+  const next = new Map(queueMeta.list);
+  for (const item of snap.items) {
+    if (!next.has(item.videoId)) {
+      next.set(item.videoId, {
+        title: item.title || item.videoId,
+        channelTitle: item.channelTitle,
+        thumbnailUrl: item.thumbnailUrl,
+      });
+    }
+  }
+  queueMeta.list = next;
+  q.items = snap.items.map((i) => i.videoId);
+  q.index = restoredIndex(snap.items.length, snap.currentIndex);
+  q.playingCurrent = true;
+}
+
+let initPromise: Promise<void> | null = null;
+
+/// キューの初期化。一時キューの復元 → `initQueueEvents` のイベント購読の
+/// 順で一度だけ行い、以後は同じ promise を返す（FR-30、仕様決定 AY）。
+/// deep link のキュー追加が復元済みキューの末尾へ追記されるよう、
+/// deeplink 側もキュー項目へ触れる前にこれを await する（FR-29、
+/// 仕様決定 AX）
+export function initQueue(): Promise<void> {
+  if (!initPromise) {
+    initPromise = (async () => {
+      try {
+        await restoreTempQueue();
+      } catch (e) {
+        notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
+      }
+      await initQueueEvents();
+    })();
+  }
+  return initPromise;
 }
 
 /// ループ状態（仕様決定 AA）。「なし」「プレイリスト全体」「1 項目」の 3 状態。
@@ -377,6 +454,7 @@ export async function startQueue(
   // 上書きで外れた旧スナップショット項目のメタを解放する
   // （discard 系以外では prune が走らないため）
   pruneMeta();
+  if (playlistId === null) persistTempQueue();
   await armQueue(q);
 }
 
@@ -419,6 +497,7 @@ export function discardQueue(key: QueueKey): void {
     queues.list = next;
   }
   pruneMeta();
+  if (key === null) persistTempQueue();
 }
 
 /// 「連続再生を止める」（FR-20・FR-26、仕様決定 AM・AS）。
@@ -432,6 +511,7 @@ export function queueStop(key: QueueKey): void {
   detachInstance(q);
   q.index = indexAfterStop(q.playlistId, q.index);
   q.playingCurrent = true;
+  if (key === null) persistTempQueue();
 }
 
 /// 「キューに追加」（FR-20、仕様決定 AM・AS）。一時キューの末尾へ積む。
@@ -442,6 +522,7 @@ export function queueAdd(v: VideoRef): void {
   const q = tempQueue();
   rememberMeta(v);
   q.items = [...q.items, v.videoId];
+  persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -454,6 +535,7 @@ export function queuePlayNext(v: VideoRef): void {
   const items = [...q.items];
   items.splice(at, 0, v.videoId);
   q.items = items;
+  persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -476,6 +558,7 @@ export function queueRemoveAt(key: QueueKey, i: number): void {
   q.items = items;
   q.index = indexAfterRemove(q.index, i, items.length);
   pruneMeta();
+  if (key === null) persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -492,6 +575,7 @@ export function queueMove(key: QueueKey, from: number, to: number): void {
   items.splice(to2, 0, m);
   q.index = indexAfterMove(q.index, from, to2);
   q.items = items;
+  if (key === null) persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -533,7 +617,7 @@ export function queuePlayingAt(
   );
 }
 
-let initPromise: Promise<void> | null = null;
+let eventsPromise: Promise<void> | null = null;
 
 /// `player://ended` を購読して各キューを進め、キュー外インスタンスの
 /// ループ繰り返しを再武装する。最初の onMount で一度だけ登録する。
@@ -542,8 +626,8 @@ let initPromise: Promise<void> | null = null;
 /// 先頭に戻してキューを残し、それ以外の消失ではキューを畳む
 /// （queueEndOutcome）。一時キューは理由に関わらず畳む
 export function initQueueEvents(): Promise<void> {
-  if (!initPromise) {
-    initPromise = (async () => {
+  if (!eventsPromise) {
+    eventsPromise = (async () => {
       await listen<PlayerEnded>("player://ended", (ev) => {
         const p = ev.payload;
         // 観測世代を更新してから各分岐で使う
@@ -590,6 +674,7 @@ export function initQueueEvents(): Promise<void> {
           ) {
             q.playingCurrent = true;
           }
+          if (key === null) persistTempQueue();
           // 意図の変更が世代ずれで backend に拒否されていたときだけ
           // 最新世代で再適用する。通常の遷移では deque を置き換えない
           // （古い置換が消費済み項目を復活させるのを防ぐ、仕様決定 AD）
@@ -610,5 +695,5 @@ export function initQueueEvents(): Promise<void> {
       });
     })();
   }
-  return initPromise;
+  return eventsPromise;
 }

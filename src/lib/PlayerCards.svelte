@@ -36,7 +36,7 @@
     clearLoop,
     cycleLoop,
     discardQueue,
-    initQueueEvents,
+    initQueue,
     loopMode,
     queueKeyOfInstance,
     queuePanel,
@@ -262,7 +262,7 @@
 
   onMount(async () => {
     await initPlayerEvents();
-    await initQueueEvents();
+    await initQueue();
     await initChatEvents();
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
