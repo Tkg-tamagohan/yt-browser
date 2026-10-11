@@ -180,6 +180,7 @@ pub fn run() {
             commands::player_list,
             commands::player_control,
             commands::player_close,
+            commands::audio_device_list,
             commands::player_set_queue,
             commands::player_switch,
             commands::history_get,
