@@ -114,6 +114,26 @@ pub struct WatchHistory {
     pub completed: bool,
 }
 
+/// `monitor_list` コマンドの戻り値要素（FR-31、仕様決定 AZ）。
+/// 接続中モニター 1 台分。起動ディスプレイ設定の選択肢として使う。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorInfo {
+    /// モニター名。`window.screen` に保存する識別子。
+    /// 名前を取得できない環境では None。
+    pub name: Option<String>,
+    /// 列挙順のインデックス。mpv `--screen` の番号と同じ並びを前提とする。
+    pub index: u32,
+    /// 仮想デスクトップ上の左上座標（物理ピクセル）。表示補助用。
+    pub x: i32,
+    pub y: i32,
+    /// 寸法（物理ピクセル）。表示補助用。
+    pub width: u32,
+    pub height: u32,
+    /// プライマリモニターかどうか。表示補助用。
+    pub primary: bool,
+}
+
 /// `ytdlp_status` コマンドの戻り値。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

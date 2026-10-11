@@ -2,9 +2,10 @@
 use super::player::{MpvPlayer, SpawnOptions};
 use super::{
     is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
-    pip_fit_aspect_enabled, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
+    pip_fit_aspect_enabled, screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
     SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING, SETTING_MPV_EXTRA_ARGS,
     SETTING_PIP_FIT_ASPECT, SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
+    SETTING_WINDOW_SCREEN,
 };
 use crate::db::Db;
 use crate::model::{PlayerAction, PlayerEnded, PlayerState};
@@ -123,6 +124,7 @@ impl PlayerManager {
             tone_mapping,
             hdr_compute_peak,
             extra_args,
+            screen: self.screen_index(),
         };
         let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
         let emitter = self.spawn_emitter(player.clone());
@@ -292,6 +294,22 @@ impl PlayerManager {
     /// `pip.fit_aspect` 設定値の解釈（仕様決定 AL）。未設定・その他は on。
     fn pip_fit_aspect(&self) -> bool {
         pip_fit_aspect_enabled(self.db.setting_get(SETTING_PIP_FIT_ASPECT).ok().flatten())
+    }
+
+    /// `window.screen` の保存名を現在接続中モニターのインデックスへ解決する
+    /// （FR-31、仕様決定 AZ）。未設定・保存名が現在の列挙に無い・モニター
+    /// 列挙自体の失敗は None（mpv 既定の配置にフォールバックする）。
+    /// `--screen` は起動時引数のため、稼働中インスタンスには影響しない。
+    fn screen_index(&self) -> Option<u32> {
+        let saved = self.db.setting_get(SETTING_WINDOW_SCREEN).ok().flatten()?;
+        let names: Vec<Option<String>> = self
+            .app
+            .available_monitors()
+            .ok()?
+            .iter()
+            .map(|m| m.name().map(|n| n.to_string()))
+            .collect();
+        screen_index_of(&names, saved.trim())
     }
 
     /// `pip.fit_aspect` の変更を稼働中の全インスタンスへ反映する

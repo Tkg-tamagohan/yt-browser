@@ -32,6 +32,8 @@
   import SettingsSponsorSection from "$lib/SettingsSponsorSection.svelte";
   import SettingsUpdateSection from "$lib/SettingsUpdateSection.svelte";
   import SettingsWheelSection from "$lib/SettingsWheelSection.svelte";
+  import SettingsWindowSection from "$lib/SettingsWindowSection.svelte";
+  import type { MonitorInfo } from "$lib/monitors";
 
   // 設計書 §4.3 のプリセット表（プレイヤーカードの画質選択と共有）
   const PRESETS = QUALITY_PRESETS;
@@ -68,6 +70,11 @@
   let pipQuality = $state("");
   // フィード一覧に Shorts を表示するか（feed.show_shorts、仕様決定 AP）。既定は off
   let feedShowShorts = $state(false);
+  // 再生窓を開くディスプレイ（window.screen、FR-31・仕様決定 AZ）。
+  // 値はモニター名。空は自動（mpv 既定）
+  let windowScreen = $state("");
+  // monitor_list の列挙結果。取得失敗環境では空列のまま（選択肢が無効になる）
+  let monitors = $state<MonitorInfo[]>([]);
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
   let pendingApply = $state<string | null>(null);
 
@@ -191,6 +198,15 @@
         invalid = true;
         notify(t("settings.feed.unsaved"));
       }
+      // window.screen: モニター名をそのまま保存（空は自動＝mpv 既定）。
+      // 保存待ちの間に select が変更されると DB と画面がずれるため、
+      // スナップショットと比較してずれていれば未保存として通知する
+      const ws = windowScreen;
+      await invoke("settings_set", { key: "window.screen", value: ws });
+      if (windowScreen !== ws) {
+        invalid = true;
+        notify(t("settings.window.unsaved"));
+      }
       // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
       // そのまま保存（auto は未指定として扱う）。選択肢 ID はドット無しなので
       // TONE_MAPPING_MPV で mpv の値へ変換する。
@@ -277,6 +293,12 @@
 
   onMount(async () => {
     await initPlayerEvents();
+    // モニター列挙は設定読み取りと独立して行う（失敗しても他設定を読む）
+    try {
+      monitors = await invoke<MonitorInfo[]>("monitor_list");
+    } catch {
+      monitors = [];
+    }
     try {
       const stored = await invoke<string | null>("settings_get", {
         key: "quality.format",
@@ -319,6 +341,12 @@
         key: "feed.show_shorts",
       });
       feedShowShorts = feedShowShortsEnabled(feedShortsRaw);
+      const screenRaw = await invoke<string | null>("settings_get", {
+        key: "window.screen",
+      });
+      if (screenRaw !== null) {
+        windowScreen = screenRaw.trim();
+      }
       const toneRaw = await invoke<string | null>("settings_get", {
         key: "hdr.tone_mapping",
       });
@@ -392,6 +420,12 @@
     bind:pipFitAspect={pipFitAspect}
     bind:pipGeometry={pipGeometry}
     bind:pipQuality={pipQuality}
+  />
+
+  <SettingsWindowSection
+    {loading}
+    {monitors}
+    bind:windowScreen={windowScreen}
   />
 
   <SettingsHdrSection

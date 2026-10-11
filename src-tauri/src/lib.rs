@@ -175,6 +175,7 @@ pub fn run() {
             commands::db_status,
             commands::settings_get,
             commands::settings_set,
+            commands::monitor_list,
             commands::play_video,
             commands::player_list,
             commands::player_control,
