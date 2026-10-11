@@ -83,3 +83,15 @@ pub async fn get_related(
     });
     Ok(results)
 }
+
+/// `get_description`（設計書 §3.1、FR-33、仕様決定 BB）。InnerTube `player` の
+/// `videoDetails.shortDescription` をそのまま返す（空・未設定は空文字列）。
+/// 概要欄パネルが開くたびと再生中動画の切替で呼ばれ、結果はキャッシュしない。
+#[tauri::command]
+pub async fn get_description(
+    video_id: String,
+    innertube: State<'_, Arc<crate::innertube::InnerTube>>,
+) -> Result<String, UiError> {
+    let video_id = parse_video_id(&video_id)?;
+    Ok(innertube.description(&video_id).await?)
+}

@@ -219,6 +219,7 @@ pub fn run() {
             commands::feed_backfill,
             commands::search,
             commands::get_related,
+            commands::get_description,
             commands::block_channel,
             commands::unblock_channel,
             commands::blocked_channels,

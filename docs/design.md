@@ -107,6 +107,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置、`errors`） |
 | `search` | `query`, `count?`（返す表示件数の上限。省略時 20・上限 500。ytsearch に継続が無いため、「さらに読み込む」は count を増やした再取得＋画面側の差分追記とする（仕様決定 AR）） | `Result<Vec<SearchResult>>` |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
+| `get_description` | `video_id` | `Result<String>`（InnerTube `player` の `videoDetails.shortDescription`。空・未設定は空文字列。FR-33、仕様決定 BB） |
 | `block_channel` | `channel_id`, `title` | `Result<()>` |
 | `unblock_channel` | `channel_id` | `Result<()>` |
 | `blocked_channels` | なし | `Result<Vec<BlockedChannel>>` |
@@ -587,11 +588,16 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 ### 6.1 共有の土台
 
 `innertube` モジュールは watch ページから `INNERTUBE_API_KEY`・`INNERTUBE_CONTEXT_CLIENT_VERSION`・`VISITOR_DATA` を一度だけ取得してキャッシュし、`post_json` を提供する。
-このクライアントをチャットポーラーと関連動画取得（`next`）が共用する。
+このクライアントをチャットポーラーと関連動画取得（`next`）、概要欄取得（`player`）が共用する。
 
 `next` 応答の関連動画は、2026-10 時点の WEB クライアントでは `lockupViewModel`（`contentType == LOCKUP_CONTENT_TYPE_VIDEO`）で返る。
 パーサーは旧来の `compactVideoRenderer` / `videoWithContextRenderer` も併せてキー名で再帰探索し、レイアウト差分に耐える。
 各フィールドの対応は、`contentId` → 動画 ID、`metadata.lockupMetadataViewModel.title.content` → タイトル、`metadataRows[0]` → チャンネル名、`metadataRows[1]` 先頭 → 短縮表記の再生数、アバター内 `browseEndpoint.browseId` → UC チャンネル ID、サムネイルオーバーレイの `thumbnailBadgeViewModel.text` → 動画長、とする。
+
+`player` エンドポイントは再生中動画の概要欄パネル（FR-33、仕様決定 BB）が使い、`videoDetails.shortDescription` をそのまま返す。
+`playabilityStatus` が UNPLAYABLE の応答でも `videoDetails` は返るため、再生可否とは独立に概要欄を取得できる（2026-10 の実応答で確認）。
+パネルは開くたびと再生中動画の切替（連続再生・ループ遷移）で取り直し、結果はキャッシュも DB 保存もしない。
+表示側は改行を保持するプレーンテキストで、本文中の `http(s)` URL は `tauri-plugin-opener` の `openUrl` で既定ブラウザへ開き、`mm:ss` / `h:mm:ss` の時刻表記は `player_control` の `seek` でそのインスタンスへシークする。
 
 ### 6.2 チャットポーラー（仕様決定 F）
 

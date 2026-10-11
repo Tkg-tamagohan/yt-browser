@@ -172,6 +172,14 @@ const ja = {
   "related.empty": "関連動画が見つかりません",
   "related.failed": "関連動画の取得に失敗: {message}",
 
+  // Phase 41: 再生中動画の概要欄表示（FR-33、仕様決定 BB）
+  "desc.title": "概要欄",
+  "desc.show": "概要欄を表示",
+  "desc.hide": "概要欄を閉じる",
+  "desc.loading": "読み込み中…",
+  "desc.empty": "この動画に概要欄はありません",
+  "desc.failed": "概要欄の取得に失敗: {message}",
+
   "blocked.title": "ブロック中のチャンネル",
   "blocked.desc": "ブロックしたチャンネルの動画はフィード・検索・関連動画に表示されません。",
   "blocked.empty": "ブロック中のチャンネルはありません",

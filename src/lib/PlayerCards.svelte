@@ -14,6 +14,7 @@
   import { QUALITY_PRESETS } from "$lib/quality";
   import { notify } from "$lib/notices.svelte";
   import ChatPanel from "$lib/ChatPanel.svelte";
+  import DescPanel from "$lib/DescPanel.svelte";
   import RelatedPanel from "$lib/RelatedPanel.svelte";
   import {
     chatPanels,
@@ -51,6 +52,9 @@
   // 関連動画パネルの開閉（インスタンス ID ごと）。パネルの内容は
   // RelatedPanel が開くたびのマウントで取り直す
   let relatedOpen = $state<Set<number>>(new Set());
+  // 概要欄パネルの開閉（FR-33、仕様決定 BB）。内容は DescPanel が
+  // 開くたび・動画切替で取り直す
+  let descOpen = $state<Set<number>>(new Set());
 
   // 再生中チャンネルの購読導線（FR-12）。解決結果は videoId ごとに 1 回だけ取る。
   // null は「解決不能」（yt-dlp 失敗・メタ無し）で、ボタンは無効表示のままにする
@@ -265,6 +269,9 @@
       const rel = new Set(relatedOpen);
       rel.delete(id);
       relatedOpen = rel;
+      const dsc = new Set(descOpen);
+      dsc.delete(id);
+      descOpen = dsc;
       formatOverrides.delete(id);
       // 手動 close は player://ended を伴わないため、キューを背負って
       // いたインスタンスならここでキュー側も畳む（FR-26 のインスタンス消失）
@@ -291,6 +298,13 @@
     if (next.has(id)) next.delete(id);
     else next.add(id);
     relatedOpen = next;
+  }
+
+  function toggleDesc(id: number): void {
+    const next = new Set(descOpen);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    descOpen = next;
   }
 
   let unlistenFns: UnlistenFn[] = [];
@@ -324,11 +338,18 @@
         }
         // 再生終了したインスタンスのチャットパネルも片付け、ポーラーを解放する
         cleanupChatPanel(ev.payload.instanceId, ev.payload.videoId);
-        // 関連パネルの開閉エントリも除去する（手動 close と同じ片付け。
+        // 関連・概要欄パネルの開閉エントリも除去する（手動 close と同じ片付け。
         // ended ではカード自体はマップから消えるが、ここに残ると残存になる）
         const rel = new Set(relatedOpen);
         rel.delete(ev.payload.instanceId);
         relatedOpen = rel;
+        // 概要欄は連続再生・ループ遷移で開いたまま取り直す仕様（FR-33、
+        // 仕様決定 BB）なので、カードが消える非継続の終了時だけ除去する
+        if (!ev.payload.continued) {
+          const dsc = new Set(descOpen);
+          dsc.delete(ev.payload.instanceId);
+          descOpen = dsc;
+        }
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直させる
         runPlaybackHooks();
       }),
@@ -515,6 +536,9 @@
         <button class="danger" onclick={() => closePlayer(p.instanceId)}>
           {t("player.close")}
         </button>
+        <button class="link" onclick={() => toggleDesc(p.instanceId)}>
+          {descOpen.has(p.instanceId) ? t("desc.hide") : t("desc.show")}
+        </button>
         <button class="link" onclick={() => toggleRelated(p.instanceId)}>
           {relatedOpen.has(p.instanceId) ? t("related.hide") : t("related.show")}
         </button>
@@ -550,6 +574,10 @@
 
       {#if chatPanel(p.instanceId)?.open}
         <ChatPanel instanceId={p.instanceId} videoId={p.videoId} />
+      {/if}
+
+      {#if descOpen.has(p.instanceId)}
+        <DescPanel instanceId={p.instanceId} videoId={p.videoId} />
       {/if}
 
       {#if relatedOpen.has(p.instanceId)}
