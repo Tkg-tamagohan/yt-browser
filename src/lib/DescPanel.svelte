@@ -46,8 +46,14 @@
   }
 
   // パネルを開くたび（マウント）と、連続再生・ループで再生中動画が
-  // 変わるたびに取り直す
+  // 変わるたびに取り直す。
+  // videoId はカードの状態ポーリングで値が同じでも prop の再評価が走り
+  // $effect が繰り返し発火するため、前回値と比較して変化時だけ取り直す
+  // （取り直しループで読み込み表示と本文が往復する振動の防止）
+  let lastVideoId: string | null = null;
   $effect(() => {
+    if (videoId === lastVideoId) return;
+    lastVideoId = videoId;
     const gen = ++generation;
     void loadDescription(videoId, gen);
   });
