@@ -5,6 +5,7 @@
 // MQ-01: 複数キューの終端処置（eof 消費完了で残す／それ以外で消滅）（FR-26）
 // MQ-02: 「連続再生を止める」後のキュー位置（一時は先頭・プレイリストは保存）（FR-26）
 // LP-04: 一時キュー永続化の項目変換と復元位置（FR-30、仕様決定 AY）
+// QM-01: キュー表示メタのフォールバック判定（FR-29、仕様決定 BD）
 import { describe, expect, test } from "vitest";
 import {
   armPlanFor,
@@ -12,6 +13,7 @@ import {
   indexAfterMove,
   indexAfterRemove,
   indexAfterStop,
+  isFallbackTitle,
   persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
@@ -215,5 +217,18 @@ describe("LP-04 一時キュー永続化の項目変換と復元位置（FR-30�
     expect(restoredIndex(3, 5)).toBe(2);
     expect(restoredIndex(3, -1)).toBe(0);
     expect(restoredIndex(3, 1)).toBe(1);
+  });
+});
+
+describe("QM-01 isFallbackTitle（FR-29、仕様決定 BD）", () => {
+  test("タイトルが動画 ID と同一または空ならフォールバック", () => {
+    expect(isFallbackTitle("abcdefghijk", "abcdefghijk")).toBe(true);
+    expect(isFallbackTitle("", "abcdefghijk")).toBe(true);
+  });
+
+  test("実タイトルはフォールバックでない（先勝ちで維持する）", () => {
+    expect(isFallbackTitle("動画タイトル", "abcdefghijk")).toBe(false);
+    // 別動画の ID はこの項目にとっては実タイトル扱い（上書きしない）
+    expect(isFallbackTitle("xyz98765432", "abcdefghijk")).toBe(false);
   });
 });

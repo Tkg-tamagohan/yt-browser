@@ -20,14 +20,17 @@ import { listen } from "@tauri-apps/api/event";
 import {
   playerStates,
   type PlayerEnded,
+  type PlayerState,
   type VideoRef,
 } from "$lib/players.svelte";
+import { sanitizeMediaTitle } from "./copy-link-logic";
 import {
   armPlanFor,
   headPlayingAfterRemove,
   indexAfterMove,
   indexAfterRemove,
   indexAfterStop,
+  isFallbackTitle,
   persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
@@ -123,18 +126,31 @@ export const queuePanel = $state<{ open: boolean; selected: QueueKey }>({
 });
 
 /// メタを記憶する。キューへの投入経路（キューに追加・次に再生・
-/// プレイリストキューのスナップショット作成）ごとに呼び、
-/// 重複登録は先のメタを維持する。タイトルが空のときは動画 ID に
-/// 潰して、一覧表示が空白にならないようにする
+/// プレイリストキューのスナップショット作成）と後着メタの到着経路
+/// （遅延解決・復元時の再補完・再生中の mediaTitle）ごとに呼ぶ。
+/// 実タイトルの重複登録は先のメタを維持するが、フォールバック
+/// （タイトル＝動画 ID または空）の項目は後着の実タイトルで上書きする
+/// （FR-29、仕様決定 BD）。タイトルが空のときは動画 ID に
+/// 潰して、一覧表示が空白にならないようにする。
+/// フォールバックからの更新が一時キュー項目に及ぶときは永続化へ反映する
 export function rememberMeta(v: VideoRef): void {
-  if (queueMeta.list.has(v.videoId)) return;
+  const cur = queueMeta.list.get(v.videoId);
+  if (
+    cur !== undefined &&
+    (!isFallbackTitle(cur.title, v.videoId) || v.title === "")
+  ) {
+    return;
+  }
   const next = new Map(queueMeta.list);
   next.set(v.videoId, {
     title: v.title || v.videoId,
-    channelTitle: v.channelTitle,
-    thumbnailUrl: v.thumbnailUrl,
+    channelTitle: v.channelTitle ?? cur?.channelTitle ?? null,
+    thumbnailUrl: v.thumbnailUrl ?? cur?.thumbnailUrl ?? null,
   });
   queueMeta.list = next;
+  if (cur !== undefined && tempQueue().items.includes(v.videoId)) {
+    persistTempQueue();
+  }
 }
 
 /// キュー項目の表示メタを引く。未登録は videoId をタイトル代わりに返す
@@ -210,6 +226,26 @@ async function restoreTempQueue(): Promise<void> {
   q.items = snap.items.map((i) => i.videoId);
   q.index = restoredIndex(snap.items.length, snap.currentIndex);
   q.playingCurrent = true;
+  // フォールバック（タイトル＝動画 ID）で保存された項目は、保存以降に
+  // 台帳・履歴へ入ったメタで再補完する（仕様決定 BD）。失敗は
+  // フォールバック表示のまま残し、復元自体は妨げない
+  const fallbackIds = [
+    ...new Set(
+      q.items.filter((id) => isFallbackTitle(queueMetaOf(id).title, id)),
+    ),
+  ];
+  await Promise.all(
+    fallbackIds.map(async (id) => {
+      try {
+        const v = await invoke<VideoRef | null>("video_meta_lookup", {
+          videoId: id,
+        });
+        if (v !== null && v.title !== "") rememberMeta(v);
+      } catch {
+        // 再補完の失敗はフォールバック表示のまま残す
+      }
+    }),
+  );
 }
 
 let initPromise: Promise<void> | null = null;
@@ -628,6 +664,27 @@ let eventsPromise: Promise<void> | null = null;
 export function initQueueEvents(): Promise<void> {
   if (!eventsPromise) {
     eventsPromise = (async () => {
+      // フォールバック表示のキュー項目を、再生で届いた実タイトルで更新する
+      // （仕様決定 BD）。media-title の URL 形式値は未取得フォールバック
+      // として sanitize で弾く（copy-link-logic と同じ判定）
+      await listen<PlayerState>("player://state", (ev) => {
+        const title = sanitizeMediaTitle(ev.payload.mediaTitle);
+        if (title === "") return;
+        const cur = queueMeta.list.get(ev.payload.videoId);
+        if (
+          cur === undefined ||
+          !isFallbackTitle(cur.title, ev.payload.videoId)
+        ) {
+          return;
+        }
+        rememberMeta({
+          videoId: ev.payload.videoId,
+          title,
+          channelId: null,
+          channelTitle: null,
+          thumbnailUrl: null,
+        });
+      });
       await listen<PlayerEnded>("player://ended", (ev) => {
         const p = ev.payload;
         // 観測世代を更新してから各分岐で使う

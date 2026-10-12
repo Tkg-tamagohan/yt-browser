@@ -1,5 +1,7 @@
 //! 一時キューの永続化と拡張からのメタ補完（FR-29・FR-30、仕様決定 AX・AY）。
 
+use std::sync::Arc;
+
 use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
@@ -52,4 +54,16 @@ pub fn queue_load(db: State<'_, Db>) -> Result<QueueSnapshot, UiError> {
 pub fn video_meta_lookup(video_id: String, db: State<'_, Db>) -> Result<Option<VideoRef>, UiError> {
     let id = parse_video_id(&video_id)?;
     Ok(db.video_meta_lookup(&id)?)
+}
+
+/// `video_meta_resolve`（FR-29、仕様決定 BD）。台帳・履歴の補完が外れた
+/// キュー項目の表示メタを InnerTube `player` の `videoDetails` から
+/// 遅延解決する。タイトルが取れなければ None。
+#[tauri::command]
+pub async fn video_meta_resolve(
+    video_id: String,
+    innertube: State<'_, Arc<crate::innertube::InnerTube>>,
+) -> Result<Option<VideoRef>, UiError> {
+    let id = parse_video_id(&video_id)?;
+    Ok(innertube.video_meta(&id).await?)
 }

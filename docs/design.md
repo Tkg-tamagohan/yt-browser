@@ -122,6 +122,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `queue_save` | `items`（`QueueItem` 列）、`current_index` | `Result<()>` |
 | `queue_load` | なし | `Result<QueueSnapshot>`（`items`＋`current_index`） |
 | `video_meta_lookup` | `video_id` | `Result<Option<VideoRef>>`（台帳・履歴のどちらにも無ければ None） |
+| `video_meta_resolve` | `video_id` | `Result<Option<VideoRef>>`（InnerTube `player` の `videoDetails` から表示メタ。タイトルが取れなければ None。FR-29、仕様決定 BD） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -152,6 +153,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `take_open_urls` は deep link の保留分を取り出す初期ドレイン用で、呼び出し後は `app://open_url` イベント経路のみで届く。戻り値とイベントは `{seq, url}` で、seq は重複除去用の配送識別子（§3.4）。
 `queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタ付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
 `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
+`video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
 
 ### 3.2 イベント（Rust → フロント）
 
@@ -221,7 +223,13 @@ URL がイベントだけでは届かず失われる）。ドレインで `ready
 その場で再生、プレイリスト URL → `playlist_import` で取り込み、
 `watch`+`list` 複合は動画として扱う。`queue` は動画 URL のみ受理し、
 `video_meta_lookup` で表示メタを補完してから一時キューの末尾へ追加する
-（再生は開始しない）。非対応 URL は通知のみで落とさない。
+（再生は開始しない）。補完が外れた、または補完結果のタイトルが空の項目は
+`video_meta_resolve` で非同期に遅延解決し、結果が届けば表示メタを実タイトルへ
+更新して `queue_save` で永続化へ反映する（仕様決定 BD）。キュー表示メタの
+更新規則は「既存がフォールバック（タイトル＝動画 ID）の項目に限り後着の実タイトルで
+上書き」で、起動時の一時キュー復元での再補完と、`player://state` の `mediaTitle`
+到着（URL 形式の未取得値は sanitize で除外）による更新も同じ規則で行う。
+非対応 URL は通知のみで落とさない。
 
 `extension/` の MV3 拡張（ストア未公開、パッケージ化なし読み込み）は
 YouTube ページ上のアクション実行とリンク右クリックメニューから起動する。

@@ -15,7 +15,7 @@ import { goto } from "$app/navigation";
 import { t } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
 import { asErrorMessage, type VideoRef } from "$lib/players.svelte";
-import { initQueue, queueAdd } from "$lib/queue.svelte";
+import { initQueue, queueAdd, rememberMeta } from "$lib/queue.svelte";
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
@@ -133,6 +133,18 @@ async function dispatch(target: OpenTarget): Promise<void> {
         },
       );
       notify(t("queue.added"));
+      // 補完が外れた、またはタイトル空の項目は InnerTube で遅延解決する
+      // （仕様決定 BD）。届いた実タイトルは rememberMeta のフォールバック
+      // 上書き規則で表示と永続化へ届き、失敗は動画 ID 表示のまま残す
+      if (meta === null || meta.title === "") {
+        void invoke<VideoRef | null>("video_meta_resolve", {
+          videoId: target.videoId,
+        })
+          .then((v) => {
+            if (v !== null) rememberMeta(v);
+          })
+          .catch(() => {});
+      }
     } catch (e) {
       notify(t("deeplink.queueFailed", { message: asErrorMessage(e) }));
     }
