@@ -1,5 +1,8 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
-use super::player::{MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS, RECOVERY_WINDOW};
+use super::player::{
+    prune_mpv_logs, MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS, MPV_LOG_KEEP,
+    RECOVERY_WINDOW,
+};
 use super::{
     hwdec_mode, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
     network_timeout_ms, pip_fit_aspect_enabled, screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY,
@@ -65,6 +68,11 @@ impl PlayerManager {
         wheel_script: Option<PathBuf>,
         log_dir: Option<PathBuf>,
     ) -> Self {
+        // mpv ログの掃除は「自アプリの mpv がまだ存在しない」起動時のみ行う。
+        // 稼働中インスタンスが書き込み中のログを消すと wedge 記録が失われる
+        if let Some(dir) = &log_dir {
+            prune_mpv_logs(dir, MPV_LOG_KEEP);
+        }
         Self {
             players: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU32::new(1),

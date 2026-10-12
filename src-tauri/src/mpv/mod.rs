@@ -489,18 +489,18 @@ mod tests {
         }
     }
 
-    /// DB-PF-09: mpv ログの保持数上限（仕様決定 BE）。古い順に消えて
-    /// `mpv-*.log` 以外と最新 `keep` 件は残る。
+    /// DB-PF-09: mpv ログの保持数上限（仕様決定 BE）。更新時刻の古い順に消えて
+    /// 最新 `keep` 世代と `mpv-*.log` 以外のファイルが残る。
     #[test]
     fn prune_mpv_logs_keeps_newest() {
+        use std::time::{Duration, SystemTime};
         let dir = tempfile::tempdir().unwrap();
-        // 連続した mtime を作るため後に作ったものほど新しい
-        for i in 0..5 {
-            std::fs::write(
-                dir.path().join(format!("mpv-100-1-{i}.log")),
-                format!("gen {i}"),
-            )
-            .unwrap();
+        // mtime を明示して新旧を確定させる（gen 番号が大きいほど新しい）
+        let base = SystemTime::now() - Duration::from_secs(10_000);
+        for i in 0..5u64 {
+            let p = dir.path().join(format!("mpv-100-1-{i}.log"));
+            let f = std::fs::File::create(&p).unwrap();
+            f.set_modified(base + Duration::from_secs(i)).unwrap();
         }
         // mpv ログ以外のファイルは対象外
         std::fs::write(dir.path().join("app.log"), "x").unwrap();
@@ -513,14 +513,20 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         names.sort();
-        // 新しい 3 世代 + 対象外 2 件が残る
-        assert_eq!(names.len(), 5);
-        assert!(names.contains(&"app.log".to_string()));
-        assert!(names.contains(&"mpv-notes.txt".to_string()));
+        // 最新 3 世代（gen 2,3,4）+ 対象外 2 件が残り、古い 0,1 は消える
+        assert_eq!(
+            names,
+            [
+                "app.log",
+                "mpv-100-1-2.log",
+                "mpv-100-1-3.log",
+                "mpv-100-1-4.log",
+                "mpv-notes.txt",
+            ]
+        );
         // keep 件以下なら何も消さない
         prune_mpv_logs(dir.path(), 10);
-        let names2: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
-        assert_eq!(names2.len(), 5);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 5);
     }
 
     /// `window.screen` の保存名 → モニター列インデックスの解決

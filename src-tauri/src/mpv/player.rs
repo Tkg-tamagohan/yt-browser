@@ -267,12 +267,17 @@ fn log_file_path(opts: &SpawnOptions, instance_id: u32, generation: u32) -> Opti
     })
 }
 
-/// 残しておく mpv ログの世代数（仕様決定 BE）。再生・再起動のたびに
-/// 新ファイルができるため、無制限に溜まるとディスクを圧迫する。
-const MPV_LOG_KEEP: usize = 10;
+/// アプリ起動時に残しておく mpv ログの世代数（仕様決定 BE）。
+/// 再生・再起動のたびに新ファイルができるため、起動ごとに古い分を掃除して
+/// 無制限の蓄積を防ぐ。稼働中インスタンスのログを誤って消さないよう、
+/// spawn/respawn 時ではなく「まだ自アプリの mpv が存在しない」起動時にのみ
+/// 実行する。
+pub(crate) const MPV_LOG_KEEP: usize = 10;
 
 /// `log_dir` の `mpv-*.log` を更新時刻の新しい順に `keep` 件だけ残して掃除する。
-/// 失敗してもログ生成自体は止めない（ベストエフォート）。署名入りストリーム URL
+/// アプリ起動時（PlayerManager::new）からのみ呼ぶこと。稼働中の mpv が
+/// 書き込み中のログは消さないため、再生中・再起動中には呼ばない。
+/// 失敗しても起動は止めない（ベストエフォート）。署名入りストリーム URL
 /// が mpv のデバッグ出力へ残り得るため、保持数で露出範囲も抑える。
 pub(crate) fn prune_mpv_logs(dir: &Path, keep: usize) {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -316,10 +321,6 @@ impl MpvPlayer {
         // 同名ソケットが残っていれば掃除する（前回プロセスの残骸対策）
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        // ログの新規作成に合わせて古い世代を掃除し、無制限の蓄積を防ぐ
-        if let Some(dir) = &opts.log_dir {
-            prune_mpv_logs(dir, MPV_LOG_KEEP);
-        }
         let args = mpv_args(&opts, &socket_path, log_file_path(&opts, instance_id, 1));
         let (child, ipc, ev_rx) = launch(&socket_path, &args, OBSERVED_PROPERTIES).await?;
 
@@ -578,10 +579,6 @@ impl MpvPlayer {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string())
         });
-        // 世代が増えるたびに古いログを掃除する（初回 spawn と同じ上限）
-        if let Some(dir) = &opts.log_dir {
-            prune_mpv_logs(dir, MPV_LOG_KEEP);
-        }
         let args = mpv_args(
             &opts,
             &self.socket_path,
