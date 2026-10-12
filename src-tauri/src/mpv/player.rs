@@ -267,6 +267,41 @@ fn log_file_path(opts: &SpawnOptions, instance_id: u32, generation: u32) -> Opti
     })
 }
 
+/// 残しておく mpv ログの世代数（仕様決定 BE）。再生・再起動のたびに
+/// 新ファイルができるため、無制限に溜まるとディスクを圧迫する。
+const MPV_LOG_KEEP: usize = 10;
+
+/// `log_dir` の `mpv-*.log` を更新時刻の新しい順に `keep` 件だけ残して掃除する。
+/// 失敗してもログ生成自体は止めない（ベストエフォート）。署名入りストリーム URL
+/// が mpv のデバッグ出力へ残り得るため、保持数で露出範囲も抑える。
+pub(crate) fn prune_mpv_logs(dir: &Path, keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut logs: Vec<(PathBuf, std::time::SystemTime)> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("mpv-") && n.ends_with(".log"))
+        })
+        .filter_map(|p| {
+            std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| (p, t))
+        })
+        .collect();
+    if logs.len() <= keep {
+        return;
+    }
+    logs.sort_by_key(|(_, t)| *t);
+    for (p, _) in logs.iter().take(logs.len() - keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 impl MpvPlayer {
     /// mpv を起動し、IPC ソケットに接続してプロパティ監視とファイルロードを行う。
     /// イベントポンプ（IPC イベント→状態変換）は player 内部が所有し、
@@ -281,6 +316,10 @@ impl MpvPlayer {
         // 同名ソケットが残っていれば掃除する（前回プロセスの残骸対策）
         let _ = tokio::fs::remove_file(&socket_path).await;
 
+        // ログの新規作成に合わせて古い世代を掃除し、無制限の蓄積を防ぐ
+        if let Some(dir) = &opts.log_dir {
+            prune_mpv_logs(dir, MPV_LOG_KEEP);
+        }
         let args = mpv_args(&opts, &socket_path, log_file_path(&opts, instance_id, 1));
         let (child, ipc, ev_rx) = launch(&socket_path, &args, OBSERVED_PROPERTIES).await?;
 
@@ -539,6 +578,10 @@ impl MpvPlayer {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string())
         });
+        // 世代が増えるたびに古いログを掃除する（初回 spawn と同じ上限）
+        if let Some(dir) = &opts.log_dir {
+            prune_mpv_logs(dir, MPV_LOG_KEEP);
+        }
         let args = mpv_args(
             &opts,
             &self.socket_path,
@@ -550,8 +593,12 @@ impl MpvPlayer {
         *self.child.lock().await = child;
         *self.pump.lock().await = Some(tokio::spawn(event_pump(self.clone(), ev_rx)));
 
-        // 新プロセス用に終端トラッカーと SponsorBlock 状態を掃除する
+        // 新プロセス用に終端トラッカーと SponsorBlock 状態を掃除する。
+        // last_healthy は旧世代の file-loaded 時刻が残ると、新世代が
+        // file-loaded へ達する前に wedge しても「回復済み」と誤判定されて
+        // 再起動カウンタが毎回リセットされるため、ここで消す
         self.terminal.reset();
+        *lock(&self.last_healthy) = None;
         *lock(&self.sponsor) = SponsorState::default();
         *lock(&self.video_aspect) = None;
         // PiP 起動時は --geometry で適用済みの値を記録する（spawn と同じ要領）
@@ -577,11 +624,12 @@ impl MpvPlayer {
             return Err(MpvError::Ipc(e));
         }
         // 実行時設定を新プロセスへ復元する（mpv は再起動で音量・速度・
-        // 出力先を既定へ戻す）。復元失敗は再開自体を止めない
+        // 出力先・一時停止を既定へ戻す）。復元失敗は再開自体を止めない
         for (name, value) in [
             ("volume", json!(snap.volume)),
             ("speed", json!(snap.speed)),
             ("audio-device", json!(snap.audio_device)),
+            ("pause", json!(snap.pause)),
         ] {
             let _ = self
                 .ipc

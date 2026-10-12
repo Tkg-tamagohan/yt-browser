@@ -218,7 +218,7 @@ mod tests {
         fit_pip_geometry, hwdec_mode, is_valid_hdr_compute_peak, is_valid_hwdec,
         is_valid_pip_geometry, is_valid_tone_mapping, network_timeout_ms, pip_default_enabled,
         pip_fit_aspect_enabled,
-        player::{split_extra_args, video_aspect_of},
+        player::{prune_mpv_logs, split_extra_args, video_aspect_of},
         screen_index_of, DEFAULT_HWDEC, DEFAULT_NETWORK_TIMEOUT_MS,
     };
 
@@ -487,6 +487,40 @@ mod tests {
                 "{bad} は既定値へ戻すべき"
             );
         }
+    }
+
+    /// DB-PF-09: mpv ログの保持数上限（仕様決定 BE）。古い順に消えて
+    /// `mpv-*.log` 以外と最新 `keep` 件は残る。
+    #[test]
+    fn prune_mpv_logs_keeps_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        // 連続した mtime を作るため後に作ったものほど新しい
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("mpv-100-1-{i}.log")),
+                format!("gen {i}"),
+            )
+            .unwrap();
+        }
+        // mpv ログ以外のファイルは対象外
+        std::fs::write(dir.path().join("app.log"), "x").unwrap();
+        std::fs::write(dir.path().join("mpv-notes.txt"), "x").unwrap();
+
+        prune_mpv_logs(dir.path(), 3);
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        // 新しい 3 世代 + 対象外 2 件が残る
+        assert_eq!(names.len(), 5);
+        assert!(names.contains(&"app.log".to_string()));
+        assert!(names.contains(&"mpv-notes.txt".to_string()));
+        // keep 件以下なら何も消さない
+        prune_mpv_logs(dir.path(), 10);
+        let names2: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names2.len(), 5);
     }
 
     /// `window.screen` の保存名 → モニター列インデックスの解決
