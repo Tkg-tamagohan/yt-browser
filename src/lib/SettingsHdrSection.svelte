@@ -1,17 +1,21 @@
 <script lang="ts">
   import { t, TONE_MAPPING_MPV } from "$lib/i18n";
-  import { TONE_MAPPINGS } from "$lib/settings-consts";
+  import { HWDEC_MODES, TONE_MAPPINGS } from "$lib/settings-consts";
 
   let {
     loading,
     toneMapping = $bindable(),
     computePeak = $bindable(),
     mpvExtraArgs = $bindable(),
+    networkTimeout = $bindable(),
+    hwdec = $bindable(),
   }: {
     loading: boolean;
     toneMapping: string;
     computePeak: string;
     mpvExtraArgs: string;
+    networkTimeout: string;
+    hwdec: string;
   } = $props();
 </script>
 
@@ -49,6 +53,27 @@
         />
       </label>
       <p class="subtle desc">{t("settings.hdr.extraArgs.desc")}</p>
+      <label class="wheel-row">
+        {t("settings.hdr.networkTimeout")}
+        <input
+          type="number"
+          class="timeout-input"
+          min="0"
+          step="1000"
+          bind:value={networkTimeout}
+          placeholder="30000"
+        />
+      </label>
+      <p class="subtle desc">{t("settings.hdr.networkTimeout.desc")}</p>
+      <label class="wheel-row">
+        {t("settings.hdr.hwdec")}
+        <select bind:value={hwdec}>
+          {#each HWDEC_MODES as m}
+            <option value={m}>{m}</option>
+          {/each}
+        </select>
+      </label>
+      <p class="subtle desc">{t("settings.hdr.hwdec.desc")}</p>
     {/if}
   </section>
 
@@ -67,6 +92,11 @@
     width: 100%;
     margin-top: 4px;
     font-family: monospace;
+  }
+
+  .timeout-input {
+    width: 110px;
+    margin-top: 4px;
   }
 
   .wheel-row {

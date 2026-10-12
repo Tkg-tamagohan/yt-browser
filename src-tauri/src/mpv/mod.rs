@@ -37,6 +37,19 @@ pub(crate) const SETTING_HDR_TONE_MAPPING: &str = "hdr.tone_mapping";
 pub(crate) const SETTING_HDR_COMPUTE_PEAK: &str = "hdr.compute_peak";
 /// 設定キー: mpv への追加引数（空白区切りで spawn 引数の末尾へ、仕様決定 Y）。
 pub(crate) const SETTING_MPV_EXTRA_ARGS: &str = "mpv.extra_args";
+/// 設定キー: mpv のストリーム読み取りタイムアウト（ミリ秒、仕様決定 BE）。
+/// `--stream-lavf-o-append=timeout=<マイクロ秒>` へ換算して渡す。
+/// 未設定・空・非整数は既定値として扱い、0 は無効化（引数を付けない）。
+pub(crate) const SETTING_MPV_NETWORK_TIMEOUT_MS: &str = "mpv.network_timeout_ms";
+/// `mpv.network_timeout_ms` の既定値（30 秒、仕様決定 BE）。
+pub(crate) const DEFAULT_NETWORK_TIMEOUT_MS: u64 = 30_000;
+/// 設定キー: mpv の `--hwdec` 値（仕様決定 BE）。BG-5 の調査で
+/// d3d11va ハードウェアデコードがドライバ内で応答停止（wedge）する事象を
+/// 確認したため、回避経路として `no` などへの差し替えを設定化する。
+/// 未設定・空・未知の値は `auto-safe`（現行動作）として扱う。
+pub(crate) const SETTING_MPV_HWDEC: &str = "mpv.hwdec";
+/// `mpv.hwdec` の既定値（仕様決定 BE）。mpv 側既定と同じ `auto-safe`。
+pub(crate) const DEFAULT_HWDEC: &str = "auto-safe";
 /// 設定キー: 再生窓を開くディスプレイ（仕様決定 AZ、FR-31）。
 /// 値は `monitor_list` が列挙したモニター名。空・未設定は自動（mpv 既定）。
 /// 保存名は mpv へ渡さず、起動時にモニター列のインデックスへ解決してから
@@ -132,6 +145,46 @@ pub(crate) fn is_valid_hdr_compute_peak(s: &str) -> bool {
     matches!(s, "yes" | "no")
 }
 
+/// `mpv.hwdec` として受理する値（仕様決定 BE）。mpv の `--hwdec` が
+/// 取り得る汎用モードと Windows 系メソッド名に限定し、任意文字列の
+/// 混入を防ぐ。`no` は HW デコードを無効化する回避策。
+pub(crate) fn is_valid_hwdec(s: &str) -> bool {
+    matches!(
+        s,
+        "auto-safe"
+            | "auto"
+            | "auto-copy"
+            | "d3d11va"
+            | "d3d11va-copy"
+            | "dxva2"
+            | "dxva2-copy"
+            | "nvdec"
+            | "nvdec-copy"
+            | "vulkan"
+            | "no"
+    )
+}
+
+/// `mpv.hwdec` の保存値を解釈する（仕様決定 BE）。受理集合外は既定値へ戻す。
+pub(crate) fn hwdec_mode(value: Option<String>) -> String {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| is_valid_hwdec(v))
+        .unwrap_or_else(|| DEFAULT_HWDEC.to_string())
+}
+
+/// `mpv.network_timeout_ms` の保存値を解釈する（仕様決定 BE）。
+/// 非負の整数だけを受理し、未設定・空・非整数（負数・小数・桁溢れを含む）は
+/// 既定値へ戻す。0 は無効化としてそのまま返す。
+pub(crate) fn network_timeout_ms(value: Option<String>) -> u64 {
+    let Some(v) = value else {
+        return DEFAULT_NETWORK_TIMEOUT_MS;
+    };
+    v.trim()
+        .parse::<u64>()
+        .unwrap_or(DEFAULT_NETWORK_TIMEOUT_MS)
+}
+
 /// `window.screen` に保存したモニター名を、現在接続中のモニター列の
 /// インデックスへ解決する（FR-31、仕様決定 AZ）。`--screen` の番号は
 /// `available_monitors()` の列挙順と同じ並びを前提とする。
@@ -162,10 +215,11 @@ pub enum MpvError {
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_pip_geometry, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
-        pip_default_enabled, pip_fit_aspect_enabled,
-        player::{split_extra_args, video_aspect_of},
-        screen_index_of,
+        fit_pip_geometry, hwdec_mode, is_valid_hdr_compute_peak, is_valid_hwdec,
+        is_valid_pip_geometry, is_valid_tone_mapping, network_timeout_ms, pip_default_enabled,
+        pip_fit_aspect_enabled,
+        player::{prune_mpv_logs, split_extra_args, video_aspect_of},
+        screen_index_of, DEFAULT_HWDEC, DEFAULT_NETWORK_TIMEOUT_MS,
     };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
@@ -380,6 +434,99 @@ mod tests {
         // 空・空白のみは引数なし
         assert!(split_extra_args("").is_empty());
         assert!(split_extra_args("   ").is_empty());
+    }
+
+    /// DB-PF-07: `mpv.network_timeout_ms` の解釈（仕様決定 BE）。
+    /// 0 は無効化、正整数はそのまま、未設定・空・非整数は既定値へ戻す。
+    #[test]
+    fn network_timeout_ms_values() {
+        assert_eq!(network_timeout_ms(None), DEFAULT_NETWORK_TIMEOUT_MS);
+        assert_eq!(network_timeout_ms(Some("0".to_string())), 0);
+        assert_eq!(network_timeout_ms(Some("5000".to_string())), 5_000);
+        assert_eq!(network_timeout_ms(Some("  1500  ".to_string())), 1_500);
+        // 先頭の `+` は整数パースで受理される
+        assert_eq!(network_timeout_ms(Some("+5".to_string())), 5);
+        for bad in ["", "  ", "abc", "-1", "1.5", "18446744073709551616"] {
+            assert_eq!(
+                network_timeout_ms(Some(bad.to_string())),
+                DEFAULT_NETWORK_TIMEOUT_MS,
+                "{bad} は既定値へ戻すべき"
+            );
+        }
+    }
+
+    /// DB-PF-08: `mpv.hwdec` の受理集合と解釈（仕様決定 BE）。
+    /// 受理集合外・未設定・空は `auto-safe`（現行動作）へ戻す。
+    #[test]
+    fn hwdec_mode_values() {
+        for ok in [
+            "auto-safe",
+            "auto",
+            "auto-copy",
+            "d3d11va",
+            "d3d11va-copy",
+            "dxva2",
+            "dxva2-copy",
+            "nvdec",
+            "nvdec-copy",
+            "vulkan",
+            "no",
+        ] {
+            assert!(is_valid_hwdec(ok), "{ok} は受理されるべき");
+        }
+        for ng in ["", "yes", "AUTO-SAFE", "vaapi; rm -rf", "bogus"] {
+            assert!(!is_valid_hwdec(ng), "{ng} は拒否されるべき");
+        }
+        assert_eq!(hwdec_mode(None), DEFAULT_HWDEC);
+        assert_eq!(hwdec_mode(Some("no".to_string())), "no");
+        assert_eq!(hwdec_mode(Some("  dxva2  ".to_string())), "dxva2");
+        for bad in ["", "  ", "AUTO-SAFE", "bogus"] {
+            assert_eq!(
+                hwdec_mode(Some(bad.to_string())),
+                DEFAULT_HWDEC,
+                "{bad} は既定値へ戻すべき"
+            );
+        }
+    }
+
+    /// DB-PF-09: mpv ログの保持数上限（仕様決定 BE）。更新時刻の古い順に消えて
+    /// 最新 `keep` 世代と `mpv-*.log` 以外のファイルが残る。
+    #[test]
+    fn prune_mpv_logs_keeps_newest() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        // mtime を明示して新旧を確定させる（gen 番号が大きいほど新しい）
+        let base = SystemTime::now() - Duration::from_secs(10_000);
+        for i in 0..5u64 {
+            let p = dir.path().join(format!("mpv-100-1-{i}.log"));
+            let f = std::fs::File::create(&p).unwrap();
+            f.set_modified(base + Duration::from_secs(i)).unwrap();
+        }
+        // mpv ログ以外のファイルは対象外
+        std::fs::write(dir.path().join("app.log"), "x").unwrap();
+        std::fs::write(dir.path().join("mpv-notes.txt"), "x").unwrap();
+
+        prune_mpv_logs(dir.path(), 3);
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        // 最新 3 世代（gen 2,3,4）+ 対象外 2 件が残り、古い 0,1 は消える
+        assert_eq!(
+            names,
+            [
+                "app.log",
+                "mpv-100-1-2.log",
+                "mpv-100-1-3.log",
+                "mpv-100-1-4.log",
+                "mpv-notes.txt",
+            ]
+        );
+        // keep 件以下なら何も消さない
+        prune_mpv_logs(dir.path(), 10);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 5);
     }
 
     /// `window.screen` の保存名 → モニター列インデックスの解決

@@ -1,9 +1,51 @@
 //! mpv 起動・IPC 接続確立の下請け。エンドポイント解決・ソケット待機・
 //! 失敗時の掃除・`loadfile ... replace` 送信をまとめる。
-use super::{IpcClient, IpcError, MpvError};
+use super::{IpcClient, IpcError, IpcEvent, MpvError};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+/// mpv 子プロセスを起動し、IPC ソケットの出現待ち・接続・プロパティ監視まで行う。
+/// 初回 spawn と自動再起動（仕様決定 BE）の両方から使う共通経路で、
+/// 失敗時は子プロセスを kill してソケット残骸を掃除してから返す。
+/// `observed` は `observe_property` に渡す (id, プロパティ名) の並び。
+pub(crate) async fn launch(
+    socket_path: &Path,
+    args: &[String],
+    observed: &[(u64, &str)],
+) -> Result<(tokio::process::Child, IpcClient, mpsc::Receiver<IpcEvent>), MpvError> {
+    let mut mpv_cmd = tokio::process::Command::new("mpv");
+    mpv_cmd.args(args).kill_on_drop(true);
+    #[cfg(windows)]
+    mpv_cmd.creation_flags(crate::CREATE_NO_WINDOW);
+    let mut child = mpv_cmd.spawn().map_err(MpvError::Spawn)?;
+
+    if let Err(e) = wait_for_socket(socket_path, &mut child).await {
+        cleanup_failed_spawn(&mut child, socket_path).await;
+        return Err(e);
+    }
+
+    let (ev_tx, ev_rx) = mpsc::channel(64);
+    let ipc = match IpcClient::connect(socket_path, ev_tx).await {
+        Ok(ipc) => ipc,
+        Err(e) => {
+            cleanup_failed_spawn(&mut child, socket_path).await;
+            return Err(e.into());
+        }
+    };
+
+    for (id, name) in observed {
+        if let Err(e) = ipc
+            .command(vec![json!("observe_property"), json!(id), json!(name)])
+            .await
+        {
+            cleanup_failed_spawn(&mut child, socket_path).await;
+            return Err(MpvError::Ipc(e));
+        }
+    }
+    Ok((child, ipc, ev_rx))
+}
 
 /// mpv プロセスが IPC ソケットを作るまでの待ち時間。
 const SOCKET_WAIT_TIMEOUT: Duration = Duration::from_secs(5);

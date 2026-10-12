@@ -47,6 +47,14 @@ export type PlayerEnded = {
   armedSeq: number;
 };
 
+/// `player://restarted` イベント（設計書 §3.2、仕様決定 BE）。
+/// IPC 無応答ウォッチドッグによる mpv 自動再起動の開始。インスタンスは消滅しない
+export type PlayerRestarted = {
+  instanceId: number;
+  videoId: string;
+  attempt: number;
+};
+
 /// `sponsor://skipped` イベント（設計書 §3.2）。action は "skip" | "notify"。
 export type SponsorSkipped = {
   instanceId: number;

@@ -1,9 +1,13 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
-use super::player::{MpvPlayer, SpawnOptions};
+use super::player::{
+    prune_mpv_logs, MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS, MPV_LOG_KEEP,
+    RECOVERY_WINDOW,
+};
 use super::{
-    is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
-    pip_fit_aspect_enabled, screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
-    SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING, SETTING_MPV_EXTRA_ARGS,
+    hwdec_mode, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
+    network_timeout_ms, pip_fit_aspect_enabled, screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY,
+    DEFAULT_YTDL_FORMAT, SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING,
+    SETTING_MPV_EXTRA_ARGS, SETTING_MPV_HWDEC, SETTING_MPV_NETWORK_TIMEOUT_MS,
     SETTING_PIP_FIT_ASPECT, SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
     SETTING_WINDOW_SCREEN,
 };
@@ -22,6 +26,11 @@ use tokio::task::JoinHandle;
 const EMIT_INTERVAL: Duration = Duration::from_millis(300);
 /// 再生位置を `watch_history` へ永続化する間隔。
 const PERSIST_INTERVAL: Duration = Duration::from_secs(5);
+/// IPC 無応答ウォッチドッグの生存確認間隔（仕様決定 BE）。
+/// この間隔より新しい IPC 受信がある間は ping を省略する。
+const WATCHDOG_INTERVAL: Duration = Duration::from_secs(15);
+/// ping 応答タイムアウトの連続回数で無応答と判定する閾値（仕様決定 BE）。
+const WATCHDOG_PING_LIMIT: u32 = 3;
 
 /// 全 mpv インスタンスの管理（設計書 §4.5 のマルチビュー前提）。
 /// `play` が発行する `instance_id` が UI 側の操作対象識別子。
@@ -36,15 +45,17 @@ pub struct PlayerManager {
     ytdlp_resolver: crate::yt::YtDlpResolver,
     /// `--script` で読ませる wheel.lua のパス。書き出しに失敗した環境では None。
     wheel_script: Option<PathBuf>,
+    /// mpv の `--log-file` 出力先（アプリのログディレクトリ、仕様決定 BE）。
+    /// 取得不能な環境では mpv ログを付けない。
+    log_dir: Option<PathBuf>,
     /// SponsorBlock API 呼び出し用の HTTP クライアント（設計書 §4.4）。
     http: reqwest::Client,
 }
 
 struct PlayerEntry {
     player: Arc<MpvPlayer>,
-    /// IPC イベントポンプ。
-    pump: JoinHandle<()>,
-    /// 状態サンプリング送出と履歴永続化のタスク。終了通知で自然終了する。
+    /// 状態サンプリング送出・履歴永続化・IPC ウォッチドッグのタスク。
+    /// 終了通知で自然終了する。IPC イベントポンプは MpvPlayer が所有する。
     emitter: JoinHandle<()>,
 }
 
@@ -55,7 +66,13 @@ impl PlayerManager {
         socket_dir: PathBuf,
         ytdlp_resolver: crate::yt::YtDlpResolver,
         wheel_script: Option<PathBuf>,
+        log_dir: Option<PathBuf>,
     ) -> Self {
+        // mpv ログの掃除は「自アプリの mpv がまだ存在しない」起動時のみ行う。
+        // 稼働中インスタンスが書き込み中のログを消すと wedge 記録が失われる
+        if let Some(dir) = &log_dir {
+            prune_mpv_logs(dir, MPV_LOG_KEEP);
+        }
         Self {
             players: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU32::new(1),
@@ -64,6 +81,7 @@ impl PlayerManager {
             socket_dir,
             ytdlp_resolver,
             wheel_script,
+            log_dir,
             http: reqwest::Client::new(),
         }
     }
@@ -125,8 +143,16 @@ impl PlayerManager {
             hdr_compute_peak,
             extra_args,
             screen: self.screen_index(),
+            network_timeout_ms: network_timeout_ms(
+                self.db
+                    .setting_get(SETTING_MPV_NETWORK_TIMEOUT_MS)
+                    .ok()
+                    .flatten(),
+            ),
+            hwdec: hwdec_mode(self.db.setting_get(SETTING_MPV_HWDEC).ok().flatten()),
+            log_dir: self.log_dir.clone(),
         };
-        let (player, pump) = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
+        let player = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
         let emitter = self.spawn_emitter(player.clone());
 
         Self::spawn_sponsor_fetch(&self.db, &self.http, player.clone(), video_id.to_string());
@@ -135,7 +161,6 @@ impl PlayerManager {
             id,
             PlayerEntry {
                 player: player.clone(),
-                pump,
                 emitter,
             },
         );
@@ -330,18 +355,13 @@ impl PlayerManager {
     /// 既に終端処理済み（emitter が除去済み）のインスタンスに対しても冪等に成功する。
     pub async fn close(&self, instance_id: u32) -> Result<(), MpvError> {
         let entry = lock(&self.players).remove(&instance_id);
-        let Some(PlayerEntry {
-            player,
-            pump,
-            emitter,
-        }) = entry
-        else {
+        let Some(PlayerEntry { player, emitter }) = entry else {
             // 終端イベントで既に掃除済み。close は冪等に成功させる。
             tracing::debug!(instance_id, "close 対象のインスタンスは既に存在しない");
             return Ok(());
         };
         emitter.abort();
-        pump.abort();
+        player.abort_pump().await;
         // 終端理由が eof なら completed を維持して保存する（途中保存で上書きしない）
         self.persist_history(&player, player.terminal_completed());
         player.shutdown().await;
@@ -358,14 +378,9 @@ impl PlayerManager {
     /// アプリ終了時のクリーンアップ。全インスタンスを止める。
     pub async fn close_all(&self) {
         let entries: Vec<PlayerEntry> = lock(&self.players).drain().map(|(_, e)| e).collect();
-        for PlayerEntry {
-            player,
-            pump,
-            emitter,
-        } in entries
-        {
+        for PlayerEntry { player, emitter } in entries {
             emitter.abort();
-            pump.abort();
+            player.abort_pump().await;
             self.persist_history(&player, player.terminal_completed());
             player.shutdown().await;
         }
@@ -374,6 +389,8 @@ impl PlayerManager {
     /// 状態のサンプリング送出と履歴の定期保存。
     /// 終了通知を受けたら最終保存・UI への ended 送出をして、エントリを外して mpv を止める。
     /// 終端で mpv プロセスを残さないのは、UI がカードを外した後もプロセスが浮遊するのを防ぐため。
+    /// あわせて IPC 無応答ウォッチドッグ（仕様決定 BE）を載せ、検知時は同一
+    /// インスタンス内で mpv を再起動する（上限超過時は reason=error の終端経路へ切替）。
     fn spawn_emitter(&self, player: Arc<MpvPlayer>) -> JoinHandle<()> {
         let app = self.app.clone();
         let db = self.db.clone();
@@ -382,6 +399,8 @@ impl PlayerManager {
         let mut ended_rx = player.subscribe_ended();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(EMIT_INTERVAL);
+            let mut watchdog = tokio::time::interval(WATCHDOG_INTERVAL);
+            let mut ping_fails: u32 = 0;
             let mut last_sent: Option<PlayerState> = None;
             let mut last_persist = Instant::now();
             loop {
@@ -397,6 +416,86 @@ impl PlayerManager {
                         if last_persist.elapsed() >= PERSIST_INTERVAL {
                             persist_now(&db, &player, false);
                             last_persist = Instant::now();
+                        }
+                    }
+                    _ = watchdog.tick() => {
+                        // IPC 無応答の検知（仕様決定 BE）。loadfile 処理中は
+                        // オープン完了まで猶予し、猶予超過は wedge として扱う。
+                        // 直近に IPC 受信がある間は ping を省略する
+                        let wedged = match player.loading_age() {
+                            Some(age) => age > LOADING_GRACE,
+                            None => {
+                                if player.ipc_idle().await < WATCHDOG_INTERVAL {
+                                    ping_fails = 0;
+                                    false
+                                } else {
+                                    match player.ping().await {
+                                        Ok(()) => {
+                                            ping_fails = 0;
+                                            false
+                                        }
+                                        Err(_) => {
+                                            ping_fails += 1;
+                                            ping_fails >= WATCHDOG_PING_LIMIT
+                                        }
+                                    }
+                                }
+                            }
+                        };
+                        if !wedged {
+                            continue;
+                        }
+                        tracing::warn!(
+                            instance_id = player.instance_id(),
+                            ping_fails,
+                            "mpv が IPC 無応答と判定された"
+                        );
+                        // 回復済み（file-loaded 後 30 秒稼働）なら連続カウントを
+                        // リセットしてから試行番号を採る
+                        if player.healthy_for(RECOVERY_WINDOW) {
+                            player.reset_restarts();
+                        }
+                        let attempt = player.bump_restarts();
+                        let mut give_up = attempt > MAX_RESTARTS;
+                        if !give_up {
+                            let video_id = player.video_id();
+                            let _ = app.emit(
+                                "player://restarted",
+                                serde_json::json!({
+                                    "instanceId": player.instance_id(),
+                                    "videoId": video_id,
+                                    "attempt": attempt,
+                                }),
+                            );
+                            match player.respawn().await {
+                                Ok(()) => {
+                                    ping_fails = 0;
+                                    Self::spawn_sponsor_fetch(
+                                        &db,
+                                        &http,
+                                        player.clone(),
+                                        video_id,
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        instance_id = player.instance_id(),
+                                        error = %e,
+                                        "mpv の自動再起動に失敗"
+                                    );
+                                    give_up = true;
+                                }
+                            }
+                        }
+                        if give_up {
+                            // 再起動上限の超過・再起動自体の失敗は、通常の終端
+                            // reason=error 経路へ切り替えて失敗を通知する。
+                            // 先にポンプとプロセスを潰してから終端を注入し、
+                            // 後続の Disconnected が先着して reason が
+                            // process_exit へ化けるのを防ぐ
+                            player.abort_pump().await;
+                            player.kill_child().await;
+                            player.end_with("error");
                         }
                     }
                     reason = ended_rx.recv() => {
@@ -441,9 +540,9 @@ impl PlayerManager {
                         // 管理表から外し、ポンプを止めて mpv を終了させる。
                         // close() との競合は先に外した側が掃除を担い、後着側は冪等に成功する。
                         if let Some(entry) = lock(&players).remove(&player.instance_id()) {
-                            entry.pump.abort();
                             drop(entry.emitter);
                         }
+                        player.abort_pump().await;
                         player.shutdown().await;
                         break;
                     }
