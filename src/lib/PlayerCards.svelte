@@ -9,8 +9,10 @@
   import { onDestroy, onMount, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
+  import { linkCopyText } from "$lib/copy-link-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
   import { notify } from "$lib/notices.svelte";
   import ChatPanel from "$lib/ChatPanel.svelte";
@@ -307,6 +309,18 @@
     descOpen = next;
   }
 
+  // タイトル＋視聴ページ URL のコピー（FR-34、仕様決定 BC）。
+  // mediaTitle が空または URL 形式の未取得フォールバック値の動画は
+  // URL のみを出力し、再生位置 t= は含めない（文面の組み立ては copy-link-logic.ts）
+  async function copyLink(p: PlayerState): Promise<void> {
+    try {
+      await writeText(linkCopyText(p.videoId, p.mediaTitle));
+      notify(t("player.linkCopied"));
+    } catch (e) {
+      notify(t("player.copyLinkFailed", { message: asErrorMessage(e) }));
+    }
+  }
+
   let unlistenFns: UnlistenFn[] = [];
 
   onMount(async () => {
@@ -544,6 +558,13 @@
         </button>
         <button class="link" onclick={() => toggleChat(p.instanceId, p.videoId)}>
           {chatPanel(p.instanceId)?.open ? t("chat.hide") : t("chat.show")}
+        </button>
+        <button
+          class="link"
+          title={t("player.copyLink.hint")}
+          onclick={() => void copyLink(p)}
+        >
+          {t("player.copyLink")}
         </button>
         <!-- キューを背負うカードから自分のキューを選択状態でパネルを開く
              （FR-20・FR-26、仕様決定 AM・AS） -->

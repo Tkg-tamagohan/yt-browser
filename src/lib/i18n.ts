@@ -56,6 +56,13 @@ const ja = {
   "player.window.hint":
     "既定が PiP のため、このボタンは通常のウィンドウで再生します（既定表示の設定は変わりません）",
 
+  // Phase 42: 再生中動画のタイトルとリンクのコピー（FR-34、仕様決定 BC）
+  "player.copyLink": "リンクをコピー",
+  "player.copyLink.hint":
+    "再生中の動画タイトルと YouTube の視聴ページ URL をクリップボードへコピーします",
+  "player.linkCopied": "タイトルとリンクをコピーしました",
+  "player.copyLinkFailed": "リンクのコピーに失敗: {message}",
+
   // Phase 40: ウインドウごとの音声出力先（FR-32、仕様決定 BA）
   "player.audio": "音声出力",
   "player.audio.hint":
