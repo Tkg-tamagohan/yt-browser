@@ -1,11 +1,12 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
 use super::player::{MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS, RECOVERY_WINDOW};
 use super::{
-    is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping, network_timeout_ms,
-    pip_fit_aspect_enabled, screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT,
-    SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING, SETTING_MPV_EXTRA_ARGS,
-    SETTING_MPV_NETWORK_TIMEOUT_MS, SETTING_PIP_FIT_ASPECT, SETTING_PIP_GEOMETRY,
-    SETTING_WHEEL_VOLUME_DELTA, SETTING_WINDOW_SCREEN,
+    hwdec_mode, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
+    network_timeout_ms, pip_fit_aspect_enabled, screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY,
+    DEFAULT_YTDL_FORMAT, SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING,
+    SETTING_MPV_EXTRA_ARGS, SETTING_MPV_HWDEC, SETTING_MPV_NETWORK_TIMEOUT_MS,
+    SETTING_PIP_FIT_ASPECT, SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
+    SETTING_WINDOW_SCREEN,
 };
 use crate::db::Db;
 use crate::model::{PlayerAction, PlayerEnded, PlayerState};
@@ -140,6 +141,7 @@ impl PlayerManager {
                     .ok()
                     .flatten(),
             ),
+            hwdec: hwdec_mode(self.db.setting_get(SETTING_MPV_HWDEC).ok().flatten()),
             log_dir: self.log_dir.clone(),
         };
         let player = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;

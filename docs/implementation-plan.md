@@ -392,6 +392,7 @@ Phase 29 の shorts 除外は Phase 32 のチャンネル別表示にも波及�
 - [x] MpvPlayer の IPC・プロセス・イベントポンプを差し替え可能にして同一インスタンス自動再起動を実装し、`player://restarted` を発火する
 - [x] 全 spawn に `--log-file=<app_log_dir>/mpv-<アプリpid>-<instance>-<世代>.log` を付与する
 - [x] 設定画面にタイムアウト入力を追加し、i18n（`player.restarted`・`settings.hdr.networkTimeout` 系）を整備する
+- [x] `mpv.hwdec` 設定を新設し、`--hwdec` 値を受理集合へ検証して spawn 引数へ反映する（解釈の回帰テスト。回避策 `no` の任意適用）
 - [x] 要件定義書（BG-5 新設）・決定記録（BE）・設計書（§3.2・§3.3・§4.1・§4.9）を更新する
 - [ ] 受け入れ：スタールするローカル HTTP/HLS サーバでタイムアウトの検出、無応答検知からの自動再起動と位置復帰、再起動上限到達時の失敗通知を確認する（Windows 実機検証）
 

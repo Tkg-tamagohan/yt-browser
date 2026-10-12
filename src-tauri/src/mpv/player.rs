@@ -175,6 +175,10 @@ pub(crate) struct SpawnOptions {
     /// ストリーム読み取りタイムアウト（ミリ秒、設定 `mpv.network_timeout_ms`、
     /// 仕様決定 BE）。0 なら引数を付けない（無効化）。
     pub(crate) network_timeout_ms: u64,
+    /// `--hwdec` に渡す値（設定 `mpv.hwdec`、仕様決定 BE）。
+    /// 呼び出し側で受理集合へ解決済み。d3d11va 系で応答停止する環境への
+    /// 回避策として `no` を任意適用できるようにする設定。
+    pub(crate) hwdec: String,
     /// `--log-file` の出力先ディレクトリ（アプリログと同じ場所、仕様決定 BE）。
     /// None なら引数を付けない。
     pub(crate) log_dir: Option<PathBuf>,
@@ -190,7 +194,9 @@ fn mpv_args(opts: &SpawnOptions, socket_path: &Path, log_file: Option<PathBuf>) 
         format!("--ytdl-format={}", opts.ytdl_format),
         "--hr-seek=yes".into(),
         "--cache=yes".into(),
-        "--hwdec=auto-safe".into(),
+        // HW デコード方式は設定 `mpv.hwdec`（仕様決定 BE、既定 auto-safe）。
+        // d3d11va がドライバ内で wedge する環境では `no` で回避できる
+        format!("--hwdec={}", opts.hwdec),
         "--keep-open=yes".into(),
         // アプリ識別のためタイトルに動画 ID を入れる
         format!("--title={}-yt-browser", opts.video_id),

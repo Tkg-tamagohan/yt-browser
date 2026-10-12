@@ -19,6 +19,7 @@
   } from "$lib/players.svelte";
   import {
     CUSTOM,
+    HWDEC_MODES,
     SPONSOR_CATEGORIES,
     TONE_MAPPINGS,
     type SponsorCategory,
@@ -82,6 +83,7 @@
   let computePeak = $state("auto");
   let mpvExtraArgs = $state("");
   let mpvNetworkTimeout = $state("");
+  let mpvHwdec = $state("auto-safe");
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -246,6 +248,13 @@
         invalid = true;
         notify(t("settings.hdr.unsaved"));
       }
+      // mpv.hwdec: select の値は受理集合内なのでそのまま保存する
+      const hwSnapshot = mpvHwdec;
+      await invoke("settings_set", { key: "mpv.hwdec", value: hwSnapshot });
+      if (mpvHwdec !== hwSnapshot) {
+        invalid = true;
+        notify(t("settings.hdr.unsaved"));
+      }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       // （invalid には未保存変更の検出も含む）
@@ -392,6 +401,15 @@
       if (ntRaw !== null) {
         mpvNetworkTimeout = ntRaw.trim();
       }
+      const hwRaw = await invoke<string | null>("settings_get", {
+        key: "mpv.hwdec",
+      });
+      if (
+        hwRaw !== null &&
+        (HWDEC_MODES as readonly string[]).includes(hwRaw.trim())
+      ) {
+        mpvHwdec = hwRaw.trim();
+      }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
         if (Number.isFinite(n)) wheelDelta = n;
@@ -452,6 +470,7 @@
     bind:computePeak={computePeak}
     bind:mpvExtraArgs={mpvExtraArgs}
     bind:networkTimeout={mpvNetworkTimeout}
+    bind:hwdec={mpvHwdec}
   />
 
   <SettingsSponsorSection {loading} bind:sponsorActions={sponsorActions} />

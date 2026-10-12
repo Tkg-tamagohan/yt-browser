@@ -36,6 +36,24 @@ export const TONE_MAPPINGS = [
   "bt2446a",
 ];
 
+// mpv --hwdec の選択肢（仕様決定 BE、設定キー mpv.hwdec）。
+// 既定の auto-safe は mpv 側既定と同じ。no は HW デコードを無効化し、
+// d3d11va がドライバ内で応答停止する環境（BG-5）への回避策になる。
+// バックエンド側の受理集合は src-tauri/src/mpv/mod.rs の is_valid_hwdec
+export const HWDEC_MODES = [
+  "auto-safe",
+  "auto",
+  "auto-copy",
+  "d3d11va",
+  "d3d11va-copy",
+  "dxva2",
+  "dxva2-copy",
+  "nvdec",
+  "nvdec-copy",
+  "vulkan",
+  "no",
+] as const;
+
 // NG フィルタ（FR-9）。対象・種別は DDL の CHECK と同じ値集合
 export const FILTER_TARGETS = [
   "video_title",

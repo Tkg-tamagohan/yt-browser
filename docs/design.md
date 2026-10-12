@@ -198,6 +198,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
 | `mpv.network_timeout_ms` | 整数（ミリ秒） | mpv のストリーム読み取りタイムアウト（§4.9、仕様決定 BE）。未設定・空・非整数は既定 `30000` で、`0` は無効化 |
+| `mpv.hwdec` | mpv `--hwdec` の値 | mpv のハードウェアデコード方式（§4.9、仕様決定 BE）。受理集合は `auto-safe` / `auto` / `auto-copy` / `d3d11va` / `d3d11va-copy` / `dxva2` / `dxva2-copy` / `nvdec` / `nvdec-copy` / `vulkan` / `no`。未設定・空・集合外は既定 `auto-safe`。`no` はドライバ内デッドロック環境での回避策 |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定） |
@@ -294,7 +295,7 @@ mpv --idle=yes
     --ytdl-format=<設定値>
     --hr-seek=yes
     --cache=yes
-    --hwdec=auto-safe
+    --hwdec=<mpv.hwdec 値>
     --keep-open=yes
     --stream-lavf-o-append=timeout=<mpv.network_timeout_ms×1000>
     --log-file=<app_log_dir>/mpv-<アプリpid>-<instance>-<世代>.log
@@ -578,6 +579,12 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 
 ライブ HLS の再生中に mpv のストリーム読み取りが無限待ちへ入り、プロセスが残ったまま IPC が応答を返さなくなる wedge 状態が実機で発生した（BG-5）。
 この種の応答停止への対策は 3 層で構成する。
+
+後続の実機調査で、観測された wedge の発生機序は当初想定のネットワーク読み取り待ちではなく、mpv メインループが D3D11VA ハードウェアデコード経路で GPU ドライバ（AMD ユーザーモードドライバ amdxx64.dll）内にブロックされるデッドロックであることをミニダンプ解析で確認した。
+素の mpv＋最小 IPC クライアントでもライブ・VOD 双方で再現し、コーデック（H.264/AV1）・音声出力（`--ao=null`）・映像出力（`--vo=null`）・レンダラ（`--gpu-api=opengl`）・コピー方式（`d3d11va-copy`）を変えても発生する一方、`--hwdec=no` のソフトウェアデコードでは発生しないことを対照実験で確認した。
+アプリの mpv 経路コードは発生環境と非発生観測期間で差分がなく、発生は確率的なドライバ内レースコンディションと推定される（厳密なドライバ内部条件は未同定）。
+回避経路として設定 `mpv.hwdec` で `--hwdec` 値を差し替え可能にする（既定 `auto-safe`＝mpv 既定と同じ、回避策は `no` で CPU 負荷増のトレードオフ）。
+上記の 3 層は原因を問わず応答停止を検知・復帰するため、HW デコード回避を使わない環境の保険としてそのまま維持する。
 
 第 1 層はネットワーク読み取りのタイムアウトで、応答しない接続へのブロッキングを検出可能なエラーへ変換する。
 mpv のストリーム層は読み取り系に既定のタイムアウトを持たないため、`--stream-lavf-o-append=timeout=<マイクロ秒>` で ffmpeg のプロトコル層へ設定する。

@@ -210,6 +210,9 @@ const ja = {
   "settings.hdr.extraArgs.desc": "空白区切りで起動引数の末尾に追加します（例: --target-colorspace-hint=yes --gpu-api=d3d11）。空白を含む値は引用符で囲めます（例: --icc-profile=\"C:\\dir\\a.icc\"）。無効な引数は mpv 起動失敗になります",
   "settings.hdr.networkTimeout": "ストリーム読み取りタイムアウト (ms)",
   "settings.hdr.networkTimeout.desc": "応答しない接続での読み取り待ち時間。空欄・不正値は既定の 30000ms、0 で無効化します。ライブ再生中に mpv が応答しなくなる事象への対策です",
+  "settings.hdr.hwdec": "HW デコード方式",
+  "settings.hdr.hwdec.desc":
+    "mpv の --hwdec に渡す値。既定の auto-safe は mpv 既定と同じです。再生中に mpv が応答しなくなる環境（GPU ドライバのデッドロック等）では no でハードウェアデコードを無効化して回避できますが、CPU 負荷が増えます",
   "settings.hdr.unsaved":
     "保存中に HDR・mpv 引数の値が変更されました。DB には変更前の値が保存されたため、もう一度保存してください",
 

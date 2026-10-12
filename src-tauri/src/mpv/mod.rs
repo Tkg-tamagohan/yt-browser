@@ -43,6 +43,13 @@ pub(crate) const SETTING_MPV_EXTRA_ARGS: &str = "mpv.extra_args";
 pub(crate) const SETTING_MPV_NETWORK_TIMEOUT_MS: &str = "mpv.network_timeout_ms";
 /// `mpv.network_timeout_ms` の既定値（30 秒、仕様決定 BE）。
 pub(crate) const DEFAULT_NETWORK_TIMEOUT_MS: u64 = 30_000;
+/// 設定キー: mpv の `--hwdec` 値（仕様決定 BE）。BG-5 の調査で
+/// d3d11va ハードウェアデコードがドライバ内で応答停止（wedge）する事象を
+/// 確認したため、回避経路として `no` などへの差し替えを設定化する。
+/// 未設定・空・未知の値は `auto-safe`（現行動作）として扱う。
+pub(crate) const SETTING_MPV_HWDEC: &str = "mpv.hwdec";
+/// `mpv.hwdec` の既定値（仕様決定 BE）。mpv 側既定と同じ `auto-safe`。
+pub(crate) const DEFAULT_HWDEC: &str = "auto-safe";
 /// 設定キー: 再生窓を開くディスプレイ（仕様決定 AZ、FR-31）。
 /// 値は `monitor_list` が列挙したモニター名。空・未設定は自動（mpv 既定）。
 /// 保存名は mpv へ渡さず、起動時にモニター列のインデックスへ解決してから
@@ -138,6 +145,34 @@ pub(crate) fn is_valid_hdr_compute_peak(s: &str) -> bool {
     matches!(s, "yes" | "no")
 }
 
+/// `mpv.hwdec` として受理する値（仕様決定 BE）。mpv の `--hwdec` が
+/// 取り得る汎用モードと Windows 系メソッド名に限定し、任意文字列の
+/// 混入を防ぐ。`no` は HW デコードを無効化する回避策。
+pub(crate) fn is_valid_hwdec(s: &str) -> bool {
+    matches!(
+        s,
+        "auto-safe"
+            | "auto"
+            | "auto-copy"
+            | "d3d11va"
+            | "d3d11va-copy"
+            | "dxva2"
+            | "dxva2-copy"
+            | "nvdec"
+            | "nvdec-copy"
+            | "vulkan"
+            | "no"
+    )
+}
+
+/// `mpv.hwdec` の保存値を解釈する（仕様決定 BE）。受理集合外は既定値へ戻す。
+pub(crate) fn hwdec_mode(value: Option<String>) -> String {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| is_valid_hwdec(v))
+        .unwrap_or_else(|| DEFAULT_HWDEC.to_string())
+}
+
 /// `mpv.network_timeout_ms` の保存値を解釈する（仕様決定 BE）。
 /// 非負の整数だけを受理し、未設定・空・非整数（負数・小数・桁溢れを含む）は
 /// 既定値へ戻す。0 は無効化としてそのまま返す。
@@ -180,10 +215,11 @@ pub enum MpvError {
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_pip_geometry, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
-        network_timeout_ms, pip_default_enabled, pip_fit_aspect_enabled,
+        fit_pip_geometry, hwdec_mode, is_valid_hdr_compute_peak, is_valid_hwdec,
+        is_valid_pip_geometry, is_valid_tone_mapping, network_timeout_ms, pip_default_enabled,
+        pip_fit_aspect_enabled,
         player::{split_extra_args, video_aspect_of},
-        screen_index_of, DEFAULT_NETWORK_TIMEOUT_MS,
+        screen_index_of, DEFAULT_HWDEC, DEFAULT_NETWORK_TIMEOUT_MS,
     };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
@@ -414,6 +450,40 @@ mod tests {
             assert_eq!(
                 network_timeout_ms(Some(bad.to_string())),
                 DEFAULT_NETWORK_TIMEOUT_MS,
+                "{bad} は既定値へ戻すべき"
+            );
+        }
+    }
+
+    /// DB-PF-08: `mpv.hwdec` の受理集合と解釈（仕様決定 BE）。
+    /// 受理集合外・未設定・空は `auto-safe`（現行動作）へ戻す。
+    #[test]
+    fn hwdec_mode_values() {
+        for ok in [
+            "auto-safe",
+            "auto",
+            "auto-copy",
+            "d3d11va",
+            "d3d11va-copy",
+            "dxva2",
+            "dxva2-copy",
+            "nvdec",
+            "nvdec-copy",
+            "vulkan",
+            "no",
+        ] {
+            assert!(is_valid_hwdec(ok), "{ok} は受理されるべき");
+        }
+        for ng in ["", "yes", "AUTO-SAFE", "vaapi; rm -rf", "bogus"] {
+            assert!(!is_valid_hwdec(ng), "{ng} は拒否されるべき");
+        }
+        assert_eq!(hwdec_mode(None), DEFAULT_HWDEC);
+        assert_eq!(hwdec_mode(Some("no".to_string())), "no");
+        assert_eq!(hwdec_mode(Some("  dxva2  ".to_string())), "dxva2");
+        for bad in ["", "  ", "AUTO-SAFE", "bogus"] {
+            assert_eq!(
+                hwdec_mode(Some(bad.to_string())),
+                DEFAULT_HWDEC,
                 "{bad} は既定値へ戻すべき"
             );
         }
