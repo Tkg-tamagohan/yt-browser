@@ -838,6 +838,7 @@ GPU なし環境（ソフトウェアレンダリング）の webkit2gtk で、D
 - 外部リンクは WebView 内遷移ではなくシステムブラウザに開く
 - アカウント連携を持たないため Cookie やトークンの保存は発生しない（仕様決定 H）
 - アプリの自動更新は tauri-plugin-updater で `latest.json`（GitHub Releases の `releases/latest/download/latest.json`）を確認する。起動時の自動確認と設定画面の手動確認を併用し、検知時は確認ダイアログ→承認でダウンロード・インストール・再起動する（FR-15、仕様決定 AB）。対象は AppImage と NSIS。更新成果物は minisign で署名し、公開鍵を `tauri.conf.json` の `plugins.updater.pubkey`、秘密鍵を GitHub Secrets（`TAURI_SIGNING_PRIVATE_KEY`）に置く。確認・ダウンロードはネイティブ側で行うため WebView の CSP には影響しない
+- クリップボードへの書き込みは tauri-plugin-clipboard-manager 経由に限定し、capabilities では `clipboard-manager:allow-write-text` のみを許可する。読み取り権限は付けない（FR-34、仕様決定 BC）
 
 ## 11. リポジトリ構成
 
