@@ -148,6 +148,13 @@ export function persistItemsOf(
   });
 }
 
+/// キュー表示メタがフォールバック（タイトルが動画 ID と同一、または空）か。
+/// フォールバック項目に限り後着の実タイトルで上書きする更新規則の判定に
+/// 使う（FR-29、仕様決定 BD）。実タイトルの先勝ちはこの判定の否定で表す
+export function isFallbackTitle(title: string, videoId: string): boolean {
+  return title === "" || title === videoId;
+}
+
 /// `queue_load` の保存位置を項目数へ収める（FR-30）。
 /// 空キューは 0、末尾超過は末尾へ
 export function restoredIndex(itemCount: number, index: number): number {

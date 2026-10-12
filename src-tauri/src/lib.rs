@@ -207,6 +207,7 @@ pub fn run() {
             commands::queue_save,
             commands::queue_load,
             commands::video_meta_lookup,
+            commands::video_meta_resolve,
             commands::ytdlp_status,
             commands::ytdlp_update,
             commands::subscribe_channel,

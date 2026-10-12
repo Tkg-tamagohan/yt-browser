@@ -9,7 +9,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use thiserror::Error;
 
-use crate::model::SearchResult;
+use crate::model::{SearchResult, VideoRef};
 
 /// ytcfg の取得元。どの watch ページでも同じ値が入るため固定動画で取得する。
 const YTCFG_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
@@ -115,6 +115,16 @@ impl InnerTube {
             .post_json("player", json!({ "videoId": video_id }))
             .await?;
         Ok(parse_description(&v))
+    }
+
+    /// `player` エンドポイントで `videoDetails` から表示メタを取る
+    /// （FR-29、仕様決定 BD）。キュー追加時の遅延解決用。
+    /// タイトルが取れなければ None を返す。
+    pub async fn video_meta(&self, video_id: &str) -> Result<Option<VideoRef>, InnerTubeError> {
+        let v = self
+            .post_json("player", json!({ "videoId": video_id }))
+            .await?;
+        Ok(parse_video_meta(&v))
     }
 
     /// 指定動画の watch ページ HTML を取得する（チャットの初期継続トークン用）。
@@ -403,6 +413,42 @@ fn parse_description(v: &Value) -> String {
         .and_then(|s| s.as_str())
         .unwrap_or_default()
         .to_string()
+}
+
+/// `player` 応答の `videoDetails` からキュー表示用のメタを取る
+/// （FR-29、仕様決定 BD）。`title` の欠落・空文字は解決失敗として None。
+/// `playabilityStatus` は見ない（UNPLAYABLE でも `videoDetails` は返る。
+/// parse_description と同じ判断）。サムネイルは応答の列挙末尾（最大解像度）を
+/// 優先し、無ければ `hqdefault.jpg` を組み立てる
+fn parse_video_meta(v: &Value) -> Option<VideoRef> {
+    let d = v.get("videoDetails")?;
+    let title = d.get("title").and_then(|s| s.as_str())?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let video_id = d.get("videoId").and_then(|s| s.as_str())?;
+    let thumbnail_url = d
+        .get("thumbnail")
+        .and_then(|t| t.get("thumbnails"))
+        .and_then(|t| t.as_array())
+        .and_then(|t| t.last())
+        .and_then(|t| t.get("url"))
+        .and_then(|u| u.as_str())
+        .map(|u| u.to_string())
+        .or_else(|| Some(format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")));
+    Some(VideoRef {
+        video_id: video_id.to_string(),
+        title: title.to_string(),
+        channel_id: d
+            .get("channelId")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
+        channel_title: d
+            .get("author")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
+        thumbnail_url,
+    })
 }
 
 /// `next` 応答から `compactVideoRenderer` / `videoWithContextRenderer` /
@@ -780,6 +826,46 @@ mod tests {
         assert_eq!(
             parse_description(&serde_json::json!({"videoDetails": {"shortDescription": "本文"}})),
             "本文"
+        );
+    }
+
+    /// golden fixture: `youtube_player.json` の `videoDetails` から
+    /// タイトル・チャンネル・サムネイルを取る（FR-29、仕様決定 BD）
+    #[test]
+    fn parse_video_meta_golden_fixture() {
+        let v: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/youtube_player.json")).unwrap();
+        let m = parse_video_meta(&v).unwrap();
+        assert_eq!(m.video_id, "lTRiuFIWV54");
+        assert_eq!(m.title, "1 A.M Study Session 📚 [lofi hip hop]");
+        assert_eq!(m.channel_id.as_deref(), Some("UCSJ4gkVC6NrvII8umztf0Ow"));
+        assert_eq!(m.channel_title.as_deref(), Some("Lofi Girl"));
+        assert!(m
+            .thumbnail_url
+            .as_deref()
+            .unwrap_or("")
+            .contains("i.ytimg.com/vi/lTRiuFIWV54"));
+    }
+
+    /// タイトルの欠落・空文字・`videoDetails` 自体の欠落は None。
+    /// サムネイル列挙が無い応答は `hqdefault.jpg` へ倒す
+    #[test]
+    fn parse_video_meta_missing_title_is_none() {
+        assert!(parse_video_meta(&serde_json::json!({})).is_none());
+        assert!(parse_video_meta(&serde_json::json!({"videoDetails": {}})).is_none());
+        assert!(parse_video_meta(&serde_json::json!({"videoDetails": {"title": ""}})).is_none());
+        assert!(parse_video_meta(&serde_json::json!({"videoDetails": {"title": "   "}})).is_none());
+    }
+
+    #[test]
+    fn parse_video_meta_missing_thumbnail_fallback() {
+        let m = parse_video_meta(&serde_json::json!({
+            "videoDetails": {"videoId": "abc12345678", "title": "タイトル"}
+        }))
+        .unwrap();
+        assert_eq!(
+            m.thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/abc12345678/hqdefault.jpg")
         );
     }
 
