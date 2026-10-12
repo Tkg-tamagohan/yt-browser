@@ -12,6 +12,7 @@
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
+  import { linkCopyText } from "$lib/copy-link-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
   import { notify } from "$lib/notices.svelte";
   import ChatPanel from "$lib/ChatPanel.svelte";
@@ -309,13 +310,11 @@
   }
 
   // タイトル＋視聴ページ URL のコピー（FR-34、仕様決定 BC）。
-  // mediaTitle が空（未取得・URL 形式値のガードで潰された場合）の動画は
-  // URL のみを出力し、再生位置 t= は含めない
+  // mediaTitle が空または URL 形式の未取得フォールバック値の動画は
+  // URL のみを出力し、再生位置 t= は含めない（文面の組み立ては copy-link-logic.ts）
   async function copyLink(p: PlayerState): Promise<void> {
-    const url = `https://www.youtube.com/watch?v=${p.videoId}`;
-    const text = p.mediaTitle !== "" ? `${p.mediaTitle}\n${url}` : url;
     try {
-      await writeText(text);
+      await writeText(linkCopyText(p.videoId, p.mediaTitle));
       notify(t("player.linkCopied"));
     } catch (e) {
       notify(t("player.copyLinkFailed", { message: asErrorMessage(e) }));
