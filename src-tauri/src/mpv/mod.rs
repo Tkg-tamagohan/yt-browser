@@ -37,6 +37,12 @@ pub(crate) const SETTING_HDR_TONE_MAPPING: &str = "hdr.tone_mapping";
 pub(crate) const SETTING_HDR_COMPUTE_PEAK: &str = "hdr.compute_peak";
 /// 設定キー: mpv への追加引数（空白区切りで spawn 引数の末尾へ、仕様決定 Y）。
 pub(crate) const SETTING_MPV_EXTRA_ARGS: &str = "mpv.extra_args";
+/// 設定キー: mpv のストリーム読み取りタイムアウト（ミリ秒、仕様決定 BE）。
+/// `--stream-lavf-o-append=timeout=<マイクロ秒>` へ換算して渡す。
+/// 未設定・空・非整数は既定値として扱い、0 は無効化（引数を付けない）。
+pub(crate) const SETTING_MPV_NETWORK_TIMEOUT_MS: &str = "mpv.network_timeout_ms";
+/// `mpv.network_timeout_ms` の既定値（30 秒、仕様決定 BE）。
+pub(crate) const DEFAULT_NETWORK_TIMEOUT_MS: u64 = 30_000;
 /// 設定キー: 再生窓を開くディスプレイ（仕様決定 AZ、FR-31）。
 /// 値は `monitor_list` が列挙したモニター名。空・未設定は自動（mpv 既定）。
 /// 保存名は mpv へ渡さず、起動時にモニター列のインデックスへ解決してから
@@ -132,6 +138,18 @@ pub(crate) fn is_valid_hdr_compute_peak(s: &str) -> bool {
     matches!(s, "yes" | "no")
 }
 
+/// `mpv.network_timeout_ms` の保存値を解釈する（仕様決定 BE）。
+/// 非負の整数だけを受理し、未設定・空・非整数（負数・小数・桁溢れを含む）は
+/// 既定値へ戻す。0 は無効化としてそのまま返す。
+pub(crate) fn network_timeout_ms(value: Option<String>) -> u64 {
+    let Some(v) = value else {
+        return DEFAULT_NETWORK_TIMEOUT_MS;
+    };
+    v.trim()
+        .parse::<u64>()
+        .unwrap_or(DEFAULT_NETWORK_TIMEOUT_MS)
+}
+
 /// `window.screen` に保存したモニター名を、現在接続中のモニター列の
 /// インデックスへ解決する（FR-31、仕様決定 AZ）。`--screen` の番号は
 /// `available_monitors()` の列挙順と同じ並びを前提とする。
@@ -163,9 +181,9 @@ pub enum MpvError {
 mod tests {
     use super::{
         fit_pip_geometry, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
-        pip_default_enabled, pip_fit_aspect_enabled,
+        network_timeout_ms, pip_default_enabled, pip_fit_aspect_enabled,
         player::{split_extra_args, video_aspect_of},
-        screen_index_of,
+        screen_index_of, DEFAULT_NETWORK_TIMEOUT_MS,
     };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
@@ -380,6 +398,25 @@ mod tests {
         // 空・空白のみは引数なし
         assert!(split_extra_args("").is_empty());
         assert!(split_extra_args("   ").is_empty());
+    }
+
+    /// DB-PF-07: `mpv.network_timeout_ms` の解釈（仕様決定 BE）。
+    /// 0 は無効化、正整数はそのまま、未設定・空・非整数は既定値へ戻す。
+    #[test]
+    fn network_timeout_ms_values() {
+        assert_eq!(network_timeout_ms(None), DEFAULT_NETWORK_TIMEOUT_MS);
+        assert_eq!(network_timeout_ms(Some("0".to_string())), 0);
+        assert_eq!(network_timeout_ms(Some("5000".to_string())), 5_000);
+        assert_eq!(network_timeout_ms(Some("  1500  ".to_string())), 1_500);
+        // 先頭の `+` は整数パースで受理される
+        assert_eq!(network_timeout_ms(Some("+5".to_string())), 5);
+        for bad in ["", "  ", "abc", "-1", "1.5", "18446744073709551616"] {
+            assert_eq!(
+                network_timeout_ms(Some(bad.to_string())),
+                DEFAULT_NETWORK_TIMEOUT_MS,
+                "{bad} は既定値へ戻すべき"
+            );
+        }
     }
 
     /// `window.screen` の保存名 → モニター列インデックスの解決

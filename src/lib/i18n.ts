@@ -39,6 +39,8 @@ const ja = {
   "player.failed":
     "再生を開始できませんでした（{videoId}）。yt-dlp によるストリーム解決に失敗した可能性があります（YouTube 側のブロック・フォーマット不一致・yt-dlp の古さなど）",
   "player.error": "エラー: {message}",
+  "player.restarted":
+    "mpv が応答しなくなったため再生を再起動します（{attempt} 回目）",
   "player.frameStep": "1 コマ進み",
   "player.frameBackStep": "1 コマ戻り",
 
@@ -206,6 +208,8 @@ const ja = {
   "settings.hdr.no": "計測しない",
   "settings.hdr.extraArgs": "mpv 追加引数",
   "settings.hdr.extraArgs.desc": "空白区切りで起動引数の末尾に追加します（例: --target-colorspace-hint=yes --gpu-api=d3d11）。空白を含む値は引用符で囲めます（例: --icc-profile=\"C:\\dir\\a.icc\"）。無効な引数は mpv 起動失敗になります",
+  "settings.hdr.networkTimeout": "ストリーム読み取りタイムアウト (ms)",
+  "settings.hdr.networkTimeout.desc": "応答しない接続での読み取り待ち時間。空欄・不正値は既定の 30000ms、0 で無効化します。ライブ再生中に mpv が応答しなくなる事象への対策です",
   "settings.hdr.unsaved":
     "保存中に HDR・mpv 引数の値が変更されました。DB には変更前の値が保存されたため、もう一度保存してください",
 

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -113,6 +113,10 @@ pub struct IpcClient {
     writer: AsyncMutex<imp::WriteHalf>,
     pending: Arc<Mutex<PendingMap>>,
     next_request_id: AtomicU64,
+    /// 受信活動の最終時刻。reader タスクが行単位で更新する。
+    /// IPC 無応答ウォッチドッグ（仕様決定 BE）が「受信が止まった」かを
+    /// 判定するための入力で、std Mutex で保持する（reader が同期文脈で更新）。
+    last_rx: Arc<Mutex<Instant>>,
 }
 
 impl IpcClient {
@@ -121,12 +125,19 @@ impl IpcClient {
     pub async fn connect(path: &Path, events: mpsc::Sender<IpcEvent>) -> Result<Self, IpcError> {
         let (read_half, write_half) = imp::connect(path).await?;
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(read_half, events, pending.clone());
+        let last_rx = Arc::new(Mutex::new(Instant::now()));
+        spawn_reader(read_half, events, pending.clone(), last_rx.clone());
         Ok(Self {
             writer: AsyncMutex::new(write_half),
             pending,
             next_request_id: AtomicU64::new(1),
+            last_rx,
         })
+    }
+
+    /// 直近の受信からの経過時間（ウォッチドッグの判定入力）。
+    pub fn idle_for(&self) -> Duration {
+        lock(&self.last_rx).elapsed()
     }
 
     /// JSON コマンドを送り、`request_id` に対応する応答を待つ。
@@ -159,10 +170,12 @@ fn spawn_reader(
     read: imp::ReadHalf,
     events: mpsc::Sender<IpcEvent>,
     pending: Arc<Mutex<PendingMap>>,
+    last_rx: Arc<Mutex<Instant>>,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(read).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            *lock(&last_rx) = Instant::now();
             dispatch_line(&line, &events, &pending);
         }
         // 応答待ちのコマンドをすべて失敗させてから切断を通知する

@@ -162,6 +162,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice }` | observe_property の変化を間引いて発火[^statesample] |
 | `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, armedSeq }` | 終了またはエラー |
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
+| `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
 | `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
@@ -196,6 +197,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
+| `mpv.network_timeout_ms` | 整数（ミリ秒） | mpv のストリーム読み取りタイムアウト（§4.9、仕様決定 BE）。未設定・空・非整数は既定 `30000` で、`0` は無効化 |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定） |
@@ -294,11 +296,15 @@ mpv --idle=yes
     --cache=yes
     --hwdec=auto-safe
     --keep-open=yes
+    --stream-lavf-o-append=timeout=<mpv.network_timeout_ms×1000>
+    --log-file=<app_log_dir>/mpv-<アプリpid>-<instance>-<世代>.log
     --script=<app_data>/mpv/wheel.lua
     --script-opts=ytdl_hook-ytdl_path=<yt-dlp のパス>,wheel-volume_delta=<設定値>
 ```
 
 Windows の `--input-ipc-server` は `\\.\pipe\yt-browser-mpv-<instance>-<pid>`（名前付きパイプ、アプリ多重起動の衝突回避にプロセス ID を含める）を渡す。名前付きパイプはファイルシステムに実体を持たないため、出現待ちは `Path::exists` ではなく接続プローブで判定する。
+
+`--stream-lavf-o-append` と `--log-file` は応答停止対策（§4.9、仕様決定 BE）のための常時付与で、前者は設定 `mpv.network_timeout_ms` の値（0 は省略して無効化）をマイクロ秒へ換算して渡す。
 
 `ytdl_path` を明示するのは、同梱 yt-dlp とシステム yt-dlp が混在する環境でどちらが使われるかを確定させるためである。
 `wheel-volume_delta` も同じ `--script-opts` の値に併合される。
@@ -567,6 +573,32 @@ mpv issue #15268（d3d11 が SDR でも HDR swapchain を選びうる既知不�
 同一インスタンスの連続再生遷移では mpv プロセスが維持されるため選択値も維持される。
 未知のデバイス名もプロパティ自体は受理されるため、無効値へのフォールバックは mpv 側に委ねる。
 列挙に失敗した環境（mpv 不在等）ではカード側をデバイス名の直接入力欄へ縮退させる。
+
+### 4.9 mpv の応答停止検知と自動再起動（仕様決定 BE）
+
+ライブ HLS の再生中に mpv のストリーム読み取りが無限待ちへ入り、プロセスが残ったまま IPC が応答を返さなくなる wedge 状態が実機で発生した（BG-5）。
+この種の応答停止への対策は 3 層で構成する。
+
+第 1 層はネットワーク読み取りのタイムアウトで、応答しない接続へのブロッキングを検出可能なエラーへ変換する。
+mpv のストリーム層は読み取り系に既定のタイムアウトを持たないため、`--stream-lavf-o-append=timeout=<マイクロ秒>` で ffmpeg のプロトコル層へ設定する。
+この値は HLS デマクサが内部で張るセグメント接続にも伝播し、スタールした読み取りを指定時間後のデマクサエラーへ変えることを実測で確認した（同条件下で `rw_timeout` は発動せず採用していない）。
+タイムアウトの値は設定 `mpv.network_timeout_ms`（ミリ秒、既定 30000、`0` で無効化して引数を省略）に従い、次回の spawn から反映する。
+エラー化した読み取りは `end-file reason=error` として既存の終端・失敗通知経路へ流れる。
+
+第 2 層は IPC の応答監視で、タイムアウト設定が届かない経路での wedge を検知する。
+emitter タスクが 15 秒間隔で生存確認を行い、IPC の受信が直近 15 秒にある間は ping を省略する（再生中は property-change が絶えず流れるため、実際に ping を送るのは停止・一時停止・idle のみ）。
+`get_property` への応答がタイムアウト（10 秒）3 連続した場合、および `loadfile` 処理中の猶予が 90 秒を超えた場合を無応答と判定する。
+`loadfile` 処理中は yt-dlp 解決とストリームオープンでプレイループが正常に詰まるため、オープン完了（`file-loaded` / `end-file`）または猶予超過まで判定を止める。
+
+第 3 層は同一インスタンス内での mpv 再起動である。
+無応答を判定したら旧プロセスを kill し、新規 spawn・IPC 再接続・プロパティ再監視を行い、最終スナップショット位置で `loadfile` を再実行する。
+`instanceId`・PlayerState・連続再生の武装キュー・PiP 状態は MpvPlayer が保持したままプロセス側が差し替わるため、チャットや関連・概要欄パネルの紐付けは維持され、終了イベントは発火しない。
+再起動の開始は `player://restarted`（`{instanceId, videoId, attempt}`）で通知し、回復の判定は再起動後に `file-loaded` へ達して 30 秒稼働した時点とする。
+回復判定のない連続再起動は 3 回で打ち切り、超過時は通常の終端 `reason=error` 経路へ切り替えて失敗を通知する。
+
+発生時の直接証拠を残すため、全 spawn に `--log-file=<app_log_dir>/mpv-<アプリpid>-<instance>-<世代>.log` を常時付与する。
+世代番号は再起動のたびに増え、再起動前の wedge 状態のログを温存する。
+`app_log_dir` はアプリのログディレクトリ（§9.3）で、アプリ側ログと同じ場所に配置する。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

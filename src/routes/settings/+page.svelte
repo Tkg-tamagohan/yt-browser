@@ -81,6 +81,7 @@
   let toneMapping = $state("auto");
   let computePeak = $state("auto");
   let mpvExtraArgs = $state("");
+  let mpvNetworkTimeout = $state("");
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -234,6 +235,17 @@
         invalid = true;
         notify(t("settings.hdr.unsaved"));
       }
+      // mpv.network_timeout_ms: 生の入力文字列を保存する。空欄・不正値・0 の
+      // 解釈はバックエンド側に寄せる（空欄=既定、0=無効化、仕様決定 BE）
+      const nt = mpvNetworkTimeout.trim();
+      await invoke("settings_set", {
+        key: "mpv.network_timeout_ms",
+        value: nt,
+      });
+      if (mpvNetworkTimeout.trim() !== nt) {
+        invalid = true;
+        notify(t("settings.hdr.unsaved"));
+      }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       // （invalid には未保存変更の検出も含む）
@@ -374,6 +386,12 @@
       if (extraRaw !== null) {
         mpvExtraArgs = extraRaw;
       }
+      const ntRaw = await invoke<string | null>("settings_get", {
+        key: "mpv.network_timeout_ms",
+      });
+      if (ntRaw !== null) {
+        mpvNetworkTimeout = ntRaw.trim();
+      }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
         if (Number.isFinite(n)) wheelDelta = n;
@@ -433,6 +451,7 @@
     bind:toneMapping={toneMapping}
     bind:computePeak={computePeak}
     bind:mpvExtraArgs={mpvExtraArgs}
+    bind:networkTimeout={mpvNetworkTimeout}
   />
 
   <SettingsSponsorSection {loading} bind:sponsorActions={sponsorActions} />

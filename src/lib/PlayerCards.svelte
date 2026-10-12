@@ -33,6 +33,7 @@
     type AudioDevice,
     type PlayerAction,
     type PlayerEnded,
+    type PlayerRestarted,
     type PlayerState,
     type SponsorSkipped,
   } from "$lib/players.svelte";
@@ -366,6 +367,12 @@
         }
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直させる
         runPlaybackHooks();
+      }),
+      // ウォッチドッグによる mpv 自動再起動（仕様決定 BE）。インスタンスは
+      // 消滅しないためカード・パネル・キューの紐付けはそのまま維持し、
+      // トーストだけ出す。最終的な失敗は player://ended の reason=error で届く
+      await listen<PlayerRestarted>("player://restarted", (ev) => {
+        notify(t("player.restarted", { attempt: ev.payload.attempt }));
       }),
       await listen<SponsorSkipped>("sponsor://skipped", (ev) => {
         const key =

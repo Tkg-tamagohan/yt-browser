@@ -76,6 +76,13 @@ impl TerminalTracker {
     pub(crate) fn completed(&self) -> bool {
         lock(&self.ended_reason).as_deref() == Some("eof")
     }
+
+    /// プロセス再起動（仕様決定 BE）で全状態を初期値へ戻す。
+    /// 記録済みの終端理由と残りの replace 予約を消す。
+    pub(crate) fn reset(&self) {
+        *lock(&self.ended_reason) = None;
+        self.pending_replaces.store(0, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]

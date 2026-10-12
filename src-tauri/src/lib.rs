@@ -103,7 +103,7 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let log_dir = app.path().app_log_dir().ok();
-            let log_guard = init_tracing(log_dir);
+            let log_guard = init_tracing(log_dir.clone());
             app.manage(log_guard);
             let db = db::Db::connect(&dir.join("yt-browser.db"))
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
@@ -139,6 +139,7 @@ pub fn run() {
                 socket_dir,
                 ytdlp_resolver,
                 wheel_script,
+                log_dir,
             ));
 
             // InnerTube クライアント（設計書 §6.1）。関連動画とチャットが共用する。

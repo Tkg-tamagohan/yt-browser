@@ -1,6 +1,6 @@
 //! mpv プロセス 1 台分の制御。起動・プロパティ監視・再生制御・
 //! SponsorBlock 判定を `MpvPlayer` にまとめる。
-use super::spawn::{cleanup_failed_spawn, ipc_endpoint, loadfile_replace, wait_for_socket};
+use super::spawn::{ipc_endpoint, launch, loadfile_replace};
 use super::terminal::TerminalTracker;
 use super::{fit_pip_geometry, IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
 use crate::model::{PlayStatus, PlayerAction, PlayerState};
@@ -8,10 +8,11 @@ use crate::util::lock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 /// quit 送信後、mpv の自発終了を待つ猶予。
@@ -37,13 +38,45 @@ const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
     (10, "audio-device"),
 ];
 
+/// `loadfile` 処理中としてウォッチドッグ判定を猶予する上限（仕様決定 BE）。
+/// yt-dlp 解決とストリームオープンでプレイループが正常に詰まる期間を
+/// 誤検知しないための猶予で、これを超えたらオープン自体の wedge として扱う。
+pub(crate) const LOADING_GRACE: Duration = Duration::from_secs(90);
+/// 再起動後の回復判定窓。`file-loaded` 到達からこの時間だけ稼働した
+/// インスタンスは回復済みとみなし、連続再起動カウントをリセットする。
+pub(crate) const RECOVERY_WINDOW: Duration = Duration::from_secs(30);
+/// 回復判定のないまま許容する自動再起動の上限（仕様決定 BE）。
+/// 超過時は通常の終端 reason=error 経路へ切り替える。
+pub(crate) const MAX_RESTARTS: u32 = 3;
+
 /// mpv プロセス 1 台分の制御ハンドル。
 pub(crate) struct MpvPlayer {
     instance_id: u32,
-    ipc: IpcClient,
+    /// IPC クライアント。再起動（仕様決定 BE）で新プロセス側へ差し替えるため
+    /// RwLock で保持する。差し替え中に旧クライアントへ進行したコマンドは
+    /// Closed で失敗し、操作エラーとして表面化する。
+    ipc: RwLock<IpcClient>,
+    /// イベントポンプ（IPC イベント→状態変換）。再起動で旧ポンプを abort して
+    /// 新しい ev_rx 側へ張り替えるため、player 内部で所有する。
+    pump: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     /// wait/kill のため tokio Mutex で保持（async 文脈で &mut を取る）。
     child: tokio::sync::Mutex<tokio::process::Child>,
     socket_path: PathBuf,
+    /// 再起動時に再利用する起動条件。動画・画質・PiP は差し替え時に
+    /// 現在値で上書きして使う。
+    spawn_opts: Mutex<SpawnOptions>,
+    /// spawn の世代（初回=1、再起動ごとに +1）。ログファイル名の世代番号に使う。
+    spawn_gen: AtomicU32,
+    /// 回復判定のないまま続いた自動再起動の回数。
+    restarts: AtomicU32,
+    /// 直近の `file-loaded` 到達時刻。回復判定（仕様決定 BE）に使う。
+    /// 未受信は None（起動直後の wedge は回復前の継続として数える）。
+    last_healthy: Mutex<Option<Instant>>,
+    /// `loadfile` 処理中の開始時刻。猶予中はウォッチドッグの無応答判定を
+    /// 止める（オープン中はプレイループが正常に詰まるため）。
+    loading_since: Mutex<Option<Instant>>,
+    /// 自動再起動の直列化。
+    respawn_op: tokio::sync::Mutex<()>,
     /// reader タスクが更新し、emitter タスクがサンプリングして UI へ流す。
     state: Mutex<PlayerState>,
     /// 終了通知（end-file / ソケット切断）。payload は mpv の reason 文字列。
@@ -106,7 +139,8 @@ pub(crate) struct SponsorState {
     backoff: HashMap<usize, Instant>,
 }
 
-/// `PlayerManager::play` に渡す起動条件。
+/// `PlayerManager::play` に渡す起動条件。再起動で再利用するため Clone 可能にする。
+#[derive(Clone)]
 pub(crate) struct SpawnOptions {
     pub(crate) video_id: String,
     /// レジューム開始位置（秒）。0 なら先頭から。
@@ -138,112 +172,128 @@ pub(crate) struct SpawnOptions {
     /// FR-31・仕様決定 AZ）。呼び出し側でモニター名→列挙順へ解決済み。
     /// None なら mpv 既定の配置に任せる。
     pub(crate) screen: Option<u32>,
+    /// ストリーム読み取りタイムアウト（ミリ秒、設定 `mpv.network_timeout_ms`、
+    /// 仕様決定 BE）。0 なら引数を付けない（無効化）。
+    pub(crate) network_timeout_ms: u64,
+    /// `--log-file` の出力先ディレクトリ（アプリログと同じ場所、仕様決定 BE）。
+    /// None なら引数を付けない。
+    pub(crate) log_dir: Option<PathBuf>,
+}
+
+/// SpawnOptions から mpv の起動引数を組み立てる。初回 spawn と自動再起動
+/// （仕様決定 BE）の両方で同じ手順を使う。
+fn mpv_args(opts: &SpawnOptions, socket_path: &Path, log_file: Option<PathBuf>) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "--idle=yes".into(),
+        format!("--input-ipc-server={}", socket_path.display()),
+        "--ytdl=yes".into(),
+        format!("--ytdl-format={}", opts.ytdl_format),
+        "--hr-seek=yes".into(),
+        "--cache=yes".into(),
+        "--hwdec=auto-safe".into(),
+        "--keep-open=yes".into(),
+        // アプリ識別のためタイトルに動画 ID を入れる
+        format!("--title={}-yt-browser", opts.video_id),
+    ];
+    // ネットワーク読み取りタイムアウト（仕様決定 BE）。0 は無効化として省略する。
+    // ffmpeg のプロトコル層オプションはマイクロ秒単位で、HLS デマクサが
+    // 内部で張るセグメント接続にも伝播する
+    if opts.network_timeout_ms > 0 {
+        args.push(format!(
+            "--stream-lavf-o-append=timeout={}",
+            opts.network_timeout_ms.saturating_mul(1000)
+        ));
+    }
+    // mpv 自身のログを常時保存して wedge 事象の直接証拠を残す（仕様決定 BE）
+    if let Some(path) = log_file {
+        args.push(format!("--log-file={}", path.display()));
+    }
+    // --script-opts はリスト型で、同じ指定を重ねると後が前を上書きする。
+    // そのため全エントリを 1 つのカンマ区切り値にまとめて渡す。
+    let mut script_opts = Vec::new();
+    if let Some(path) = &opts.ytdlp_path {
+        // 同梱 / システム混在環境でどちらを使うか確定させる（設計書 §4.1）
+        script_opts.push(format!("ytdl_hook-ytdl_path={path}"));
+    }
+    if let Some(delta) = &opts.wheel_volume_delta {
+        script_opts.push(format!("wheel-volume_delta={delta}"));
+    }
+    if !script_opts.is_empty() {
+        args.push(format!("--script-opts={}", script_opts.join(",")));
+    }
+    if let Some(script) = &opts.wheel_script {
+        args.push(format!("--script={}", script.display()));
+    }
+    // 起動ディスプレイ（FR-31、仕様決定 AZ）。geometry の位置は
+    // 指定ディスプレイ上での相対座標として解釈される
+    if let Some(screen) = opts.screen {
+        args.push(format!("--screen={screen}"));
+    }
+    // PiP は起動時フラグで指定する（設計書 §4.5: ontop・枠なし・小窓配置）
+    if let Some(geo) = &opts.pip_geometry {
+        args.push("--ontop=yes".into());
+        args.push("--border=no".into());
+        args.push(format!("--geometry={geo}"));
+    }
+    // HDR 関連（仕様決定 Y）。値は呼び出し側で受理集合に検証済み
+    if let Some(tm) = &opts.tone_mapping {
+        args.push(format!("--tone-mapping={tm}"));
+    }
+    if let Some(cp) = &opts.hdr_compute_peak {
+        args.push(format!("--hdr-compute-peak={cp}"));
+    }
+    // 汎用追加引数は末尾に置き、必要なら固定引数を上書きできるようにする。
+    // 無効な引数は mpv の起動失敗として MpvError::Spawn の通知経路に乗る（暫定）
+    if let Some(extra) = &opts.extra_args {
+        args.extend(split_extra_args(extra));
+    }
+    args
+}
+
+/// mpv ログの出力パス（`<log_dir>/mpv-<アプリpid>-<instance>-<世代>.log`、
+/// 仕様決定 BE）。世代番号で再起動前の wedge 状態のログを温存する。
+fn log_file_path(opts: &SpawnOptions, instance_id: u32, generation: u32) -> Option<PathBuf> {
+    opts.log_dir.as_ref().map(|dir| {
+        dir.join(format!(
+            "mpv-{}-{instance_id}-{generation}.log",
+            std::process::id()
+        ))
+    })
 }
 
 impl MpvPlayer {
     /// mpv を起動し、IPC ソケットに接続してプロパティ監視とファイルロードを行う。
-    /// 戻り値の `JoinHandle` はイベントポンプ（IPC イベント→状態変換）で、
-    /// 呼び出し側（PlayerManager）が保持して終了時に abort する。
+    /// イベントポンプ（IPC イベント→状態変換）は player 内部が所有し、
+    /// 終了・再起動の経路で張り替える。
     pub(crate) async fn spawn(
         instance_id: u32,
         socket_dir: &Path,
         opts: SpawnOptions,
         app: AppHandle,
-    ) -> Result<(Arc<Self>, JoinHandle<()>), MpvError> {
+    ) -> Result<Arc<Self>, MpvError> {
         let socket_path = ipc_endpoint(socket_dir, instance_id);
         // 同名ソケットが残っていれば掃除する（前回プロセスの残骸対策）
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        let mut args: Vec<String> = vec![
-            "--idle=yes".into(),
-            format!("--input-ipc-server={}", socket_path.display()),
-            "--ytdl=yes".into(),
-            format!("--ytdl-format={}", opts.ytdl_format),
-            "--hr-seek=yes".into(),
-            "--cache=yes".into(),
-            "--hwdec=auto-safe".into(),
-            "--keep-open=yes".into(),
-            // アプリ識別のためタイトルに動画 ID を入れる
-            format!("--title={}-yt-browser", opts.video_id),
-        ];
-        // --script-opts はリスト型で、同じ指定を重ねると後が前を上書きする。
-        // そのため全エントリを 1 つのカンマ区切り値にまとめて渡す。
-        let mut script_opts = Vec::new();
-        if let Some(path) = &opts.ytdlp_path {
-            // 同梱 / システム混在環境でどちらを使うか確定させる（設計書 §4.1）
-            script_opts.push(format!("ytdl_hook-ytdl_path={path}"));
-        }
-        if let Some(delta) = &opts.wheel_volume_delta {
-            script_opts.push(format!("wheel-volume_delta={delta}"));
-        }
-        if !script_opts.is_empty() {
-            args.push(format!("--script-opts={}", script_opts.join(",")));
-        }
-        if let Some(script) = &opts.wheel_script {
-            args.push(format!("--script={}", script.display()));
-        }
-        // 起動ディスプレイ（FR-31、仕様決定 AZ）。geometry の位置は
-        // 指定ディスプレイ上での相対座標として解釈される
-        if let Some(screen) = opts.screen {
-            args.push(format!("--screen={screen}"));
-        }
-        // PiP は起動時フラグで指定する（設計書 §4.5: ontop・枠なし・小窓配置）
-        if let Some(geo) = &opts.pip_geometry {
-            args.push("--ontop=yes".into());
-            args.push("--border=no".into());
-            args.push(format!("--geometry={geo}"));
-        }
-        // HDR 関連（仕様決定 Y）。値は呼び出し側で受理集合に検証済み
-        if let Some(tm) = &opts.tone_mapping {
-            args.push(format!("--tone-mapping={tm}"));
-        }
-        if let Some(cp) = &opts.hdr_compute_peak {
-            args.push(format!("--hdr-compute-peak={cp}"));
-        }
-        // 汎用追加引数は末尾に置き、必要なら固定引数を上書きできるようにする。
-        // 無効な引数は mpv の起動失敗として MpvError::Spawn の通知経路に乗る（暫定）
-        if let Some(extra) = &opts.extra_args {
-            args.extend(split_extra_args(extra));
-        }
-        let mut mpv_cmd = tokio::process::Command::new("mpv");
-        mpv_cmd.args(&args).kill_on_drop(true);
-        #[cfg(windows)]
-        mpv_cmd.creation_flags(crate::CREATE_NO_WINDOW);
-        let mut child = mpv_cmd.spawn().map_err(MpvError::Spawn)?;
-
-        if let Err(e) = wait_for_socket(&socket_path, &mut child).await {
-            cleanup_failed_spawn(&mut child, &socket_path).await;
-            return Err(e);
-        }
-
-        let (ev_tx, ev_rx) = mpsc::channel(64);
-        let ipc = match IpcClient::connect(&socket_path, ev_tx).await {
-            Ok(ipc) => ipc,
-            Err(e) => {
-                cleanup_failed_spawn(&mut child, &socket_path).await;
-                return Err(e.into());
-            }
-        };
-
-        for (id, name) in OBSERVED_PROPERTIES {
-            if let Err(e) = ipc
-                .command(vec![json!("observe_property"), json!(id), json!(name)])
-                .await
-            {
-                cleanup_failed_spawn(&mut child, &socket_path).await;
-                return Err(MpvError::Ipc(e));
-            }
-        }
+        let args = mpv_args(&opts, &socket_path, log_file_path(&opts, instance_id, 1));
+        let (child, ipc, ev_rx) = launch(&socket_path, &args, OBSERVED_PROPERTIES).await?;
 
         let (ended_tx, _) = broadcast::channel(8);
         let player = Arc::new(Self {
             instance_id,
-            ipc,
+            ipc: RwLock::new(ipc),
+            pump: tokio::sync::Mutex::new(None),
             child: tokio::sync::Mutex::new(child),
             socket_path,
+            spawn_opts: Mutex::new(opts.clone()),
+            spawn_gen: AtomicU32::new(1),
+            restarts: AtomicU32::new(0),
+            last_healthy: Mutex::new(None),
+            loading_since: Mutex::new(None),
+            respawn_op: tokio::sync::Mutex::new(()),
             state: Mutex::new(PlayerState {
                 instance_id,
-                video_id: opts.video_id,
+                video_id: opts.video_id.clone(),
                 pause: false,
                 position: 0.0,
                 duration: 0.0,
@@ -273,25 +323,27 @@ impl MpvPlayer {
         });
 
         // IPC イベント → 状態スナップショット/終了通知への変換ポンプ
-        let pump = tokio::spawn(event_pump(player.clone(), ev_rx));
+        *player.pump.lock().await = Some(tokio::spawn(event_pump(player.clone(), ev_rx)));
 
         // ファイルロード（レジューム位置つき）。mpv 0.38 で loadfile の引数形式が
         // 変わったため loadfile_replace が新旧両形式に対応する。
         // options の値は文字列のみ受ける mpv（0.34 系など）があるため文字列で渡す。
+        player.begin_loading();
         let url = format!("https://www.youtube.com/watch?v={}", player.video_id());
         if let Err(e) = loadfile_replace(
-            &player.ipc,
+            &*player.ipc.read().await,
             &url,
             json!({ "start": format!("{}", opts.start_sec) }),
         )
         .await
         {
+            player.end_loading();
             // この時点ではまだマネージャ未登録なので、ここで mpv を確実に止める。
-            pump.abort();
+            player.abort_pump().await;
             player.shutdown().await;
             return Err(MpvError::Ipc(e));
         }
-        Ok((player, pump))
+        Ok(player)
     }
 
     pub(crate) fn instance_id(&self) -> u32 {
@@ -377,17 +429,187 @@ impl MpvPlayer {
         self.terminal.cancel_replace();
     }
 
+    /// 生存確認用の軽いコマンド（ウォッチドッグの ping、仕様決定 BE）。
+    /// 応答の中身は使わず、届くかどうかだけを見る。
+    pub(crate) async fn ping(&self) -> Result<(), MpvError> {
+        self.ipc
+            .read()
+            .await
+            .command(vec![json!("get_property"), json!("mpv-version")])
+            .await
+            .map(|_| ())
+            .map_err(MpvError::Ipc)
+    }
+
+    /// IPC 受信が止まってからの経過時間（ウォッチドッグの判定入力）。
+    pub(crate) async fn ipc_idle(&self) -> Duration {
+        self.ipc.read().await.idle_for()
+    }
+
+    /// `loadfile` 処理中の開始からの経過。処理中でなければ None。
+    pub(crate) fn loading_age(&self) -> Option<Duration> {
+        lock(&self.loading_since).map(|t| t.elapsed())
+    }
+
+    /// `loadfile` 処理中フラグを立てる。`file-loaded` / 終端 `end-file` /
+    /// 切断のいずれかで解除する（event_pump 側の処理と対になる）。
+    fn begin_loading(&self) {
+        *lock(&self.loading_since) = Some(Instant::now());
+    }
+
+    fn end_loading(&self) {
+        *lock(&self.loading_since) = None;
+    }
+
+    /// `file-loaded` 到達の記録（回復判定の基準時刻、仕様決定 BE）。
+    fn mark_healthy(&self) {
+        *lock(&self.last_healthy) = Some(Instant::now());
+    }
+
+    /// 直近の `file-loaded` から `window` 以上稼働していれば回復済みとみなす。
+    pub(crate) fn healthy_for(&self, window: Duration) -> bool {
+        lock(&self.last_healthy).is_some_and(|t| t.elapsed() >= window)
+    }
+
+    /// 連続再起動カウンタを 0 に戻す（回復判定が出たときに呼ぶ）。
+    pub(crate) fn reset_restarts(&self) {
+        self.restarts.store(0, Ordering::SeqCst);
+    }
+
+    /// 連続再起動カウンタを進めて試行番号を返す（1 起番）。
+    pub(crate) fn bump_restarts(&self) -> u32 {
+        self.restarts.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// イベントポンプを止める。再起動・終了のどちらでも旧ポンプを先に
+    /// 殺してから後始末を行い、古いイベントを本物の終端にしない。
+    pub(crate) async fn abort_pump(&self) {
+        if let Some(p) = self.pump.lock().await.take() {
+            p.abort();
+        }
+    }
+
+    /// mpv プロセスを即 kill する。応答しない wedge 状態のインスタンスを
+    /// 捨てる用途で、quit コマンドが通らない前提で直接殺す。
+    pub(crate) async fn kill_child(&self) {
+        let mut child = self.child.lock().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+
+    /// 終了理由を emitter の終端分岐へ注入する。ウォッチドッグの再起動
+    /// 打ち切りが、通常の終端処理（履歴保存・ended 送出・掃除）を
+    /// 再利用するための口。
+    pub(crate) fn end_with(&self, reason: &str) {
+        let _ = self.ended_tx.send(reason.to_string());
+    }
+
+    /// IPC 無応答 wedge からの同一インスタンス再起動（仕様決定 BE）。
+    /// 旧プロセスを kill してプロセス・IPC・イベントポンプを差し替え、
+    /// 最終スナップショット位置で `loadfile` を再実行する。
+    /// `instanceId`・PlayerState・連続再生の武装キューは保持し、
+    /// 終了イベントは発火しない（再起動前の mpv プロセスだけを捨てる）。
+    /// 失敗時は呼び出し側が打ち切り（終端 reason=error 経路）を決める。
+    pub(crate) async fn respawn(self: &Arc<Self>) -> Result<(), MpvError> {
+        let _op = self.respawn_op.lock().await;
+        // 先に旧ポンプを止める: kill で上がる Disconnected を本物の終端に
+        // しないため。ended_tx は保持するので emitter の購読は維持される
+        self.abort_pump().await;
+        {
+            let mut child = self.child.lock().await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        let _ = tokio::fs::remove_file(&self.socket_path).await;
+
+        let generation = self.spawn_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        let snap = self.snapshot();
+        // 起動条件は現在値へ引き直す（画質・動画の変更と PiP の切り替えを温存する）
+        let mut opts = lock(&self.spawn_opts).clone();
+        opts.video_id = snap.video_id.clone();
+        opts.ytdl_format = snap.format.clone();
+        opts.pip_geometry = snap.pip.then(|| {
+            lock(&self.pip_base)
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string())
+        });
+        let args = mpv_args(
+            &opts,
+            &self.socket_path,
+            log_file_path(&opts, self.instance_id, generation),
+        );
+
+        let (child, ipc, ev_rx) = launch(&self.socket_path, &args, OBSERVED_PROPERTIES).await?;
+        *self.ipc.write().await = ipc;
+        *self.child.lock().await = child;
+        *self.pump.lock().await = Some(tokio::spawn(event_pump(self.clone(), ev_rx)));
+
+        // 新プロセス用に終端トラッカーと SponsorBlock 状態を掃除する
+        self.terminal.reset();
+        *lock(&self.sponsor) = SponsorState::default();
+        *lock(&self.video_aspect) = None;
+        // PiP 起動時は --geometry で適用済みの値を記録する（spawn と同じ要領）
+        *lock(&self.pip_sent) = opts.pip_geometry.clone();
+        *lock(&self.pip_prev_maximized) = false;
+        {
+            let mut st = lock(&self.state);
+            st.state = PlayStatus::Idle;
+            st.pause = false;
+            // position は保持する（再ロードの開始位置とカード表示の連続性のため）
+        }
+
+        self.begin_loading();
+        let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
+        if let Err(e) = loadfile_replace(
+            &*self.ipc.read().await,
+            &url,
+            json!({ "start": format!("{}", snap.position) }),
+        )
+        .await
+        {
+            self.end_loading();
+            return Err(MpvError::Ipc(e));
+        }
+        // 実行時設定を新プロセスへ復元する（mpv は再起動で音量・速度・
+        // 出力先を既定へ戻す）。復元失敗は再開自体を止めない
+        for (name, value) in [
+            ("volume", json!(snap.volume)),
+            ("speed", json!(snap.speed)),
+            ("audio-device", json!(snap.audio_device)),
+        ] {
+            let _ = self
+                .ipc
+                .read()
+                .await
+                .command(vec![json!("set_property"), json!(name), value])
+                .await;
+        }
+        Ok(())
+    }
+
     /// 連続再生: 同じ mpv プロセスで別動画を再生する。`start_sec` は開始位置
     /// （秒、0 で先頭）。旧ファイルの end-file は emitter が既に消費済みか
     /// 呼び出し側が begin_replace で抑止する前提で、ここでは張らない。
     /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
     pub(crate) async fn load_video(&self, video_id: &str, start_sec: f64) -> Result<(), MpvError> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        loadfile_replace(&self.ipc, &url, json!({ "start": format!("{start_sec}") })).await?;
+        self.begin_loading();
+        if let Err(e) = loadfile_replace(
+            &*self.ipc.read().await,
+            &url,
+            json!({ "start": format!("{start_sec}") }),
+        )
+        .await
+        {
+            self.end_loading();
+            return Err(MpvError::Ipc(e));
+        }
         // --keep-open=yes 下では EOF 後の mpv が pause=true で残るため、
         // loadfile だけでは次項目が一時停止のまま黒画面で止まる（実機検証で確認）。
         // 読み替えのたびに pause を明示的に解除する
         self.ipc
+            .read()
+            .await
             .command(vec![json!("set_property"), json!("pause"), json!(false)])
             .await?;
         {
@@ -409,29 +631,39 @@ impl MpvPlayer {
         match action {
             PlayerAction::Pause { value } => {
                 self.ipc
+                    .read()
+                    .await
                     .command(vec![json!("set_property"), json!("pause"), json!(value)])
                     .await?;
             }
             PlayerAction::Seek { seconds } => {
                 self.ipc
+                    .read()
+                    .await
                     .command(vec![json!("seek"), json!(seconds), json!("absolute")])
                     .await?;
             }
             PlayerAction::Volume { value } => {
                 let v = value.clamp(0.0, 130.0);
                 self.ipc
+                    .read()
+                    .await
                     .command(vec![json!("set_property"), json!("volume"), json!(v)])
                     .await?;
             }
             PlayerAction::Speed { value } => {
                 let v = value.clamp(0.1, 16.0);
                 self.ipc
+                    .read()
+                    .await
                     .command(vec![json!("set_property"), json!("speed"), json!(v)])
                     .await?;
             }
             PlayerAction::Quality { format } => {
                 // 画質式を差し替え、現在位置を保持してリロードする（設計書 §4.3）
                 self.ipc
+                    .read()
+                    .await
                     .command(vec![
                         json!("set_property"),
                         json!("ytdl-format"),
@@ -442,10 +674,16 @@ impl MpvPlayer {
                 let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
                 // replace で発生する旧ファイルの end-file は終了とみなさない
                 self.terminal.begin_replace();
-                if let Err(e) =
-                    loadfile_replace(&self.ipc, &url, json!({ "start": format!("{}", pos) })).await
+                self.begin_loading();
+                if let Err(e) = loadfile_replace(
+                    &*self.ipc.read().await,
+                    &url,
+                    json!({ "start": format!("{}", pos) }),
+                )
+                .await
                 {
                     self.terminal.cancel_replace();
+                    self.end_loading();
                     return Err(MpvError::Ipc(e));
                 }
                 // 適用済みの画質式を状態へ反映する（カードの画質表示が追従する）
@@ -460,7 +698,7 @@ impl MpvPlayer {
                 } else {
                     vec![json!("frame-step")]
                 };
-                self.ipc.command(cmd).await?;
+                self.ipc.read().await.command(cmd).await?;
             }
             PlayerAction::FrameBackStep => {
                 let cmd = if self.has_wheel_script {
@@ -468,7 +706,7 @@ impl MpvPlayer {
                 } else {
                     vec![json!("frame-back-step")]
                 };
-                self.ipc.command(cmd).await?;
+                self.ipc.read().await.command(cmd).await?;
             }
             PlayerAction::Pip { enabled } => {
                 // 設定値（pip.geometry）の解決は PlayerManager::control で行う。
@@ -481,6 +719,8 @@ impl MpvPlayer {
                 // プロパティ自体は受理され、AO の初期化時に mpv 側が
                 // フォールバックする。状態への反映は監視プロパティ経由
                 self.ipc
+                    .read()
+                    .await
                     .command(vec![
                         json!("set_property"),
                         json!("audio-device"),
@@ -516,6 +756,8 @@ impl MpvPlayer {
             return Ok(());
         }
         self.ipc
+            .read()
+            .await
             .command(vec![
                 json!("set_property"),
                 json!("geometry"),
@@ -575,6 +817,8 @@ impl MpvPlayer {
             // 場合も正しく解除できるように）
             let maximized = self
                 .ipc
+                .read()
+                .await
                 .command(vec![json!("get_property"), json!("window-maximized")])
                 .await
                 .ok()
@@ -585,6 +829,8 @@ impl MpvPlayer {
             }
             if maximized {
                 self.ipc
+                    .read()
+                    .await
                     .command(vec![
                         json!("set_property"),
                         json!("window-maximized"),
@@ -604,9 +850,13 @@ impl MpvPlayer {
         // 上書きすると遷移中の設定変更が失われるため
         *lock(&self.pip_base) = enabled.then(|| geometry.to_string());
         self.ipc
+            .read()
+            .await
             .command(vec![json!("set_property"), json!("ontop"), json!(enabled)])
             .await?;
         self.ipc
+            .read()
+            .await
             .command(vec![
                 json!("set_property"),
                 json!("border"),
@@ -625,6 +875,8 @@ impl MpvPlayer {
             if restore {
                 let _ = self
                     .ipc
+                    .read()
+                    .await
                     .command(vec![
                         json!("set_property"),
                         json!("window-maximized"),
@@ -639,7 +891,7 @@ impl MpvPlayer {
 
     /// mpv を終了させる。quit を送り、猶予後に生きていれば kill する。
     pub(crate) async fn shutdown(&self) {
-        let _ = self.ipc.command(vec![json!("quit")]).await;
+        let _ = self.ipc.read().await.command(vec![json!("quit")]).await;
         let mut child = self.child.lock().await;
         tokio::select! {
             _ = child.wait() => {}
@@ -813,10 +1065,13 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("unknown")
                         .to_string();
-                    // replace（画質変更）由来の end-file は終了イベントとしない
+                    // replace（画質変更）由来の end-file は終了イベントとしない。
+                    // 予約で消化されたものは新ファイルの読み込みが続くため
+                    // loadfile 処理中フラグも維持する
                     if !player.terminal.on_end_file(&reason) {
                         continue;
                     }
+                    player.end_loading();
                     {
                         let mut st = lock(&player.state);
                         st.state = PlayStatus::Ended;
@@ -824,12 +1079,17 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                     let _ = player.ended_tx.send(reason);
                 }
                 "file-loaded" => {
-                    // 新ファイルのロード完了。replace 予約の取りこぼしを掃除する
+                    // 新ファイルのロード完了。replace 予約の取りこぼしを掃除し、
+                    // オープン完了として loadfile 猶予を終わらせる。
+                    // 回復判定の基準時刻もここで更新する（仕様決定 BE）
                     player.terminal.on_file_loaded();
+                    player.end_loading();
+                    player.mark_healthy();
                 }
                 _ => {}
             },
             IpcEvent::Disconnected => {
+                player.end_loading();
                 if !player.terminal.on_disconnect() {
                     continue;
                 }
