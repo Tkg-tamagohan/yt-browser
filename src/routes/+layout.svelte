@@ -4,6 +4,7 @@
   import { t } from "$lib/i18n";
   import { appNotices } from "$lib/notices.svelte";
   import { initDeepLinks } from "$lib/deeplink.svelte";
+  import { preventFileDrop } from "$lib/file-drop-logic";
   import PlayerCards from "$lib/PlayerCards.svelte";
   import QueuePanel from "$lib/QueuePanel.svelte";
   import { queuePanel, tempQueue } from "$lib/queue.svelte";
@@ -19,6 +20,10 @@
   // /chat はチャットポップアップ窓（FR-27）専用の画面で、ナビ・
   // プレイヤーカード・deep link・更新確認を持たない
   const isChatPopup = $derived(page.url.pathname === "/chat");
+
+  // ファイルを窓へドロップしたときのページ遷移を抑止する（仕様決定 BG）。
+  // アプリ内のドラッグ並べ替えは妨げない
+  $effect(() => preventFileDrop());
 
   // deep link（yt-browser://open?url=...）の受信を開始する
   // （FR-17、仕様決定 AC）。リスナー登録と保留分ドレインを行い、
