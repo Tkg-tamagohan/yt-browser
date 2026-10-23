@@ -95,15 +95,58 @@ impl Db {
         Ok(out)
     }
 
+    /// プレイリスト作成（FR-7）。一覧の末尾に置くため `sort_order` は
+    /// 既存の最大値 + 1 とする（FR-35、仕様決定 BF）。並べ替え前の全行 0 の
+    /// データでも `ORDER BY sort_order, id` の作成順を崩さない。
+    /// 取り込み（`playlist_import`）もこの経路で作る。
     pub fn playlist_create(&self, name: &str) -> Result<Playlist, DbError> {
         let conn = self.lock()?;
-        conn.execute("INSERT INTO playlists (name) VALUES (?1)", [name])?;
+        let sort_order: i64 = conn.query_row(
+            "INSERT INTO playlists (name, sort_order)
+             VALUES (?1, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM playlists))
+             RETURNING sort_order",
+            [name],
+            |r| r.get(0),
+        )?;
         Ok(Playlist {
             id: conn.last_insert_rowid(),
             name: name.to_string(),
-            sort_order: 0,
+            sort_order,
             item_count: 0,
         })
+    }
+
+    /// プレイリスト一覧の並べ替え（FR-35、仕様決定 BF）。`playlist_ids` が
+    /// 現在のプレイリスト全件と同一集合（順不同・重複なし）であることを
+    /// このトランザクション内で検証し、一致しない場合は
+    /// `DbError::MismatchedItems` で変更しない。一致すれば `sort_order` を
+    /// 渡した順に 0..n-1 へ振り直す（`playlist_reorder` と同じ方針）。
+    pub fn playlist_reorder_lists(&self, playlist_ids: &[i64]) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let mut current: Vec<i64> = Vec::new();
+        {
+            let mut stmt = tx.prepare("SELECT id FROM playlists")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                current.push(row.get(0)?);
+            }
+        }
+        let incoming: std::collections::HashSet<i64> = playlist_ids.iter().copied().collect();
+        let same = playlist_ids.len() == current.len()
+            && incoming.len() == playlist_ids.len()
+            && current.iter().all(|id| incoming.contains(id));
+        if !same {
+            return Err(DbError::MismatchedItems);
+        }
+        for (pos, id) in playlist_ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE playlists SET sort_order = ?2 WHERE id = ?1",
+                rusqlite::params![id, pos as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// 名称変更。対象が存在しなければ `DbError::NotFound`。

@@ -90,6 +90,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_remove` | `playlist_id`, `video_id` | `Result<()>` |
 | `playlist_import` | `url`, `name?` | `Result<Playlist>` |
 | `playlist_reorder` | `playlist_id`, `video_ids` | `Result<()>` |
+| `playlist_reorder_lists` | `playlist_ids`（プレイリスト全件の新しい表示順） | `Result<()>` |
 | `playlist_sort` | `playlist_id` | `Result<()>` |
 | `playlist_reverse` | `playlist_id` | `Result<()>` |
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
@@ -146,6 +147,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `playlist_reorder` は項目順の一括書き換え（FR-11、仕様決定 T）。渡した `video_ids` が
 現在の項目と同一集合でない場合は変更せずエラーとする（並行編集の誤適用防止。
 検証は `playlist_items` の更新と同じ書き込みトランザクション内で行う）。
+`playlist_reorder_lists` はプレイリスト一覧の表示順の一括書き換え（FR-35、仕様決定 BF）。`playlist_reorder` と同じ方針で、渡した `playlist_ids` が現在のプレイリスト全件と同一集合でない場合（欠落・余剰・重複）は変更せずエラーとし、検証と `playlists.sort_order` の 0..n-1 への書き換えを同じ書き込みトランザクションで行う。
+`playlist_list` は `ORDER BY sort_order, id` で返し、`playlist_create`（`playlist_import` も同じ経路）は `sort_order` に既存の `MAX(sort_order)+1` を付けて末尾に置く。並べ替え前の全行 0 のデータも id 順のまま崩れず、初回の並べ替え保存で 0..n-1 に正規化される。
+フロントは一覧の並べ替え保存を直列化し、飛行中の保存があれば完了を待って最新順で追い送りする。一覧の再取得（`playlist_list`）も飛行中の保存の確定を待ってから行い、保存前の DB 順でローカルの並べ替え結果を巻き戻さない。保存に失敗したら `playlist_list` を取り直して確定済みの DB 順で表示し直す。行アクションの「プレイリストに追加」メニューは同じ `playlist_list` の順序を使い、キューパネルの切替タブ（FR-26）はキュー作成順のまま据え置く。
 `playlist_sort` は `published_at` 昇順の一括ソート（one-shot）。`published_at` の無い項目は末尾に寄せ、同キー内は現在順を保つ。
 `playlist_reverse` は項目順の一括反転（one-shot、FR-11、仕様決定 Z）。読み出しと書き込みを同一トランザクションで行い、YouTube が新しい順で返すプレイリストを古い順へ変える用途に使う。
 フロント側では一括操作（`playlist_sort`・`playlist_reverse`）の実行中に行の並べ替え保存を開始せず、開始前に飛行中の `playlist_reorder` の確定を待つ。一括操作と個別並べ替えの適用順を「確定した並べ替え → 一括操作」に固定し、結果の反映は項目取得の世代管理で行う（操作後は必ず確定済みの DB 順を再取得して表示する）。

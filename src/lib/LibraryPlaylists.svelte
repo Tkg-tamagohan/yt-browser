@@ -1,5 +1,5 @@
 <script lang="ts">
-  // プレイリストタブ（FR-7, FR-10, FR-11, FR-25, FR-26）。
+  // プレイリストタブ（FR-7, FR-10, FR-11, FR-25, FR-26, FR-35）。
   // 状態・取得・編集ロジックはページ側のファクトリ（lib）が持ち、
   // このコンポーネントは表示とイベント配線だけを受け持つ。
   // 参照は props 爆発を避けるため lib.x へ直接アクセスする（D-2 方式）
@@ -53,9 +53,19 @@
         {#if lib.va.playlists.length === 0}
           <p class="subtle">{t("library.playlists.empty")}</p>
         {:else}
+          <p class="subtle drag-hint">{t("library.playlist.dragHint")}</p>
           <ul class="pl-names">
-            {#each lib.va.playlists as pl (pl.id)}
-              <li class:active={lib.selectedId === pl.id}>
+            {#each lib.va.playlists as pl, index (pl.id)}
+              <li
+                class:active={lib.selectedId === pl.id}
+                class:drop-target={lib.listDragOver === index && lib.listDragFrom !== index}
+                draggable={lib.renamingId !== pl.id}
+                ondragstart={(e) => lib.listDragStart(index, e)}
+                ondragover={(e) => lib.listDragOverAt(index, e)}
+                ondragleave={() => lib.listDragLeave(index)}
+                ondrop={(e) => lib.listDrop(index, e)}
+                ondragend={() => lib.listDragEnd()}
+              >
                 {#if lib.renamingId === pl.id}
                   <input
                     type="text"
@@ -71,6 +81,18 @@
                     {pl.name}
                     <span class="subtle">{t("library.playlist.items", { count: pl.itemCount })}</span>
                   </button>
+                  <button
+                    class="link"
+                    title={t("library.playlist.moveUp")}
+                    disabled={index === 0 || lib.listReorderBusy}
+                    onclick={() => lib.moveList(index, -1)}>↑</button
+                  >
+                  <button
+                    class="link"
+                    title={t("library.playlist.moveDown")}
+                    disabled={index === lib.va.playlists.length - 1 || lib.listReorderBusy}
+                    onclick={() => lib.moveList(index, 1)}>↓</button
+                  >
                   <button
                     class="link"
                     title={t("library.playlist.rename")}
@@ -235,6 +257,14 @@
     gap: 4px;
     padding: 4px 0;
     border-bottom: 1px solid #2d2f33;
+  }
+
+  .pl-names li[draggable="true"] {
+    cursor: grab;
+  }
+
+  .pl-names li.drop-target {
+    border-top: 2px solid #8ab4f8;
   }
 
   .pl-names li.active .pl-name {

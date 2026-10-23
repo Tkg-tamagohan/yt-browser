@@ -202,6 +202,7 @@ pub fn run() {
             commands::playlist_remove,
             commands::playlist_import,
             commands::playlist_reorder,
+            commands::playlist_reorder_lists,
             commands::playlist_sort,
             commands::playlist_reverse,
             commands::take_open_urls,

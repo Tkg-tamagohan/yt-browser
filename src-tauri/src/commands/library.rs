@@ -248,6 +248,25 @@ pub fn playlist_reorder(
     })
 }
 
+/// `playlist_reorder_lists`（FR-35、仕様決定 BF）。
+/// プレイリスト一覧の表示順の一括書き換え。渡した `playlist_ids` は現在の
+/// プレイリスト全件と同一集合である必要があり、一致しない場合は変更せず
+/// エラーとする（`playlist_reorder` と同じ並行編集の誤適用防止）。
+#[tauri::command]
+pub fn playlist_reorder_lists(playlist_ids: Vec<i64>, db: State<'_, Db>) -> Result<(), UiError> {
+    if playlist_ids.iter().any(|&id| id <= 0) {
+        return Err(UiError::invalid_input("playlist_id が不正です"));
+    }
+    // 同一集合の検証は db.playlist_reorder_lists が書き込みトランザクション内で行う
+    db.playlist_reorder_lists(&playlist_ids)
+        .map_err(|e| match e {
+            crate::db::DbError::MismatchedItems => {
+                UiError::invalid_input("並べ替え後のプレイリストが現在の一覧と一致しません")
+            }
+            e => e.into(),
+        })
+}
+
 /// `playlist_sort`（FR-11、仕様決定 T）。
 /// 投稿日時の昇順で一括ソートする（one-shot）。`published_at` の無い項目は
 /// 末尾に寄せ、同キー内は現在順を保つ。
