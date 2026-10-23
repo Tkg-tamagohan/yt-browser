@@ -267,3 +267,79 @@ fn playlist_reverse_flips_positions() {
     assert!(db.playlist_items(empty.id).unwrap().is_empty());
     assert!(matches!(db.playlist_reverse(999), Err(DbError::NotFound)));
 }
+
+/// DB-LD-11: プレイリスト一覧の並べ替え（FR-35、仕様決定 BF）。
+/// 新規作成は末尾（MAX(sort_order)+1）に入り、並べ替え結果は
+/// `playlist_list` の順序に反映される。集合の不一致（欠落・余剰・重複）は
+/// `MismatchedItems` で拒否して順序を変えない。
+#[test]
+fn playlist_reorder_lists_updates_list_order() {
+    let db = Db::connect_in_memory().unwrap();
+    let a = db.playlist_create("A").unwrap();
+    let b = db.playlist_create("B").unwrap();
+    let c = db.playlist_create("C").unwrap();
+    assert_eq!([a.sort_order, b.sort_order, c.sort_order], [0, 1, 2]);
+    let names = |db: &Db| {
+        db.playlist_list()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>()
+    };
+    db.playlist_reorder_lists(&[c.id, a.id, b.id]).unwrap();
+    assert_eq!(names(&db), ["C", "A", "B"]);
+    assert_eq!(
+        db.playlist_list()
+            .unwrap()
+            .iter()
+            .map(|p| p.sort_order)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    for bad in [
+        vec![c.id, a.id],            // 欠落
+        vec![c.id, a.id, b.id, 999], // 余剰
+        vec![c.id, a.id, a.id],      // 重複
+        vec![c.id, a.id, 999],       // 未登録の id
+    ] {
+        assert!(matches!(
+            db.playlist_reorder_lists(&bad),
+            Err(DbError::MismatchedItems)
+        ));
+    }
+    assert_eq!(names(&db), ["C", "A", "B"]);
+    // 並べ替え後の新規作成も末尾に入る
+    let d = db.playlist_create("D").unwrap();
+    assert_eq!(d.sort_order, 3);
+    assert_eq!(names(&db), ["C", "A", "B", "D"]);
+}
+
+/// DB-LD-12: 並べ替え前（全行 sort_order = 0）の既存データでも
+/// 新規作成が末尾に入り、初回の並べ替え保存で 0..n-1 に正規化される
+/// （FR-35、仕様決定 BF）。
+#[test]
+fn playlist_create_appends_after_legacy_zero_rows() {
+    let db = Db::connect_in_memory().unwrap();
+    let a = db.playlist_create("A").unwrap();
+    let b = db.playlist_create("B").unwrap();
+    db.lock()
+        .unwrap()
+        .execute("UPDATE playlists SET sort_order = 0", [])
+        .unwrap();
+    let c = db.playlist_create("C").unwrap();
+    assert_eq!(c.sort_order, 1);
+    let list = db.playlist_list().unwrap();
+    assert_eq!(
+        list.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        ["A", "B", "C"]
+    );
+    db.playlist_reorder_lists(&[a.id, b.id, c.id]).unwrap();
+    assert_eq!(
+        db.playlist_list()
+            .unwrap()
+            .iter()
+            .map(|p| p.sort_order)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+}

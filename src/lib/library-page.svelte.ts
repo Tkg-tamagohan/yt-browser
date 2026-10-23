@@ -70,6 +70,12 @@ export function createLibraryPageState(opts: Options) {
   let reorderBusy = $state(false);
   let sortBusy = $state(false);
 
+  // プレイリスト一覧の並べ替え（FR-35、仕様決定 BF）。項目の並べ替えと
+  // 同じ操作体系で、ドラッグ状態と保存中フラグを別に持つ
+  let listDragFrom = $state<number | null>(null);
+  let listDragOver = $state<number | null>(null);
+  let listReorderBusy = $state(false);
+
   // 行アクションの共通配線（FR-7）。ライブラリ固有の後処理
   // （お気に入り一覧からの除去・プレイリスト一覧の世代進め）だけ差し込む
   const va = createVideoActionState({
@@ -286,6 +292,9 @@ export function createLibraryPageState(opts: Options) {
       try {
         for (;;) {
           listAgain = false;
+          // 飛行中の一覧並べ替え保存より先に取得すると、保存前の DB 順で
+          // ローカルの並べ替え結果を巻き戻すため、確定を待ってから取る
+          while (listReorderRun) await listReorderRun;
           const req = ++listsReq;
           const list = await invoke<Playlist[]>("playlist_list");
           if (req === listsReq) va.playlists = list;
@@ -503,6 +512,102 @@ export function createLibraryPageState(opts: Options) {
   function itemDragEnd(): void {
     dragFrom = null;
     dragOver = null;
+  }
+
+  /// プレイリスト一覧の並べ替え保存の直列化（FR-35、仕様決定 BF）。
+  /// 飛行中に次の変更が来たら完了を待って最新順で追い送りする。
+  /// 失敗時は playlist_list を取り直して確定済みの DB 順へ戻す
+  let listReorderRun: Promise<void> | null = null;
+  let listReorderAgain = false;
+
+  async function persistListOrder(): Promise<void> {
+    if (listReorderRun) {
+      listReorderAgain = true;
+      return listReorderRun;
+    }
+    listReorderBusy = true;
+    let failed = false;
+    listReorderRun = (async () => {
+      try {
+        for (;;) {
+          listReorderAgain = false;
+          try {
+            await invoke("playlist_reorder_lists", {
+              playlistIds: va.playlists.map((p) => p.id),
+            });
+          } catch (e) {
+            notify(
+              t("library.playlist.reorderFailed", {
+                message: asErrorMessage(e),
+              }),
+            );
+            failed = true;
+            return;
+          }
+          if (!listReorderAgain) return;
+        }
+      } finally {
+        listReorderRun = null;
+        listReorderBusy = false;
+      }
+    })();
+    const run = listReorderRun;
+    await run;
+    if (failed) {
+      try {
+        await refreshPlaylists();
+      } catch {
+        // 取り直しの失敗は既存表示のまま
+      }
+    }
+  }
+
+  /// ローカルの一覧順を変えて保存する。飛行中の一覧取得の応答が
+  /// 並べ替え前の順で上書きしないよう世代を進める
+  function applyListOrder(from: number, to: number): void {
+    const lists = [...va.playlists];
+    const [m] = lists.splice(from, 1);
+    lists.splice(to, 0, m);
+    ++listsReq;
+    va.playlists = lists;
+    void persistListOrder();
+  }
+
+  /// 一覧の上下ボタン（仕様決定 BF）。隣と交換して保存する
+  function moveList(index: number, dir: -1 | 1): void {
+    const to = index + dir;
+    if (to < 0 || to >= va.playlists.length) return;
+    applyListOrder(index, to);
+  }
+
+  function listDragStart(index: number, e: DragEvent): void {
+    listDragFrom = index;
+    e.dataTransfer?.setData("text/plain", String(va.playlists[index].id));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+
+  function listDragOverAt(index: number, e: DragEvent): void {
+    if (listDragFrom === null) return;
+    e.preventDefault();
+    listDragOver = index;
+  }
+
+  function listDragLeave(index: number): void {
+    if (listDragOver === index) listDragOver = null;
+  }
+
+  /// DnD: ドロップ位置へ移動して保存（仕様決定 BF）
+  function listDrop(index: number, e: DragEvent): void {
+    if (listDragFrom === null) return;
+    e.preventDefault();
+    if (listDragFrom !== index) applyListOrder(listDragFrom, index);
+    listDragFrom = null;
+    listDragOver = null;
+  }
+
+  function listDragEnd(): void {
+    listDragFrom = null;
+    listDragOver = null;
   }
 
   /// 一括操作（ソート・反転）の共通直列化。飛行中の並べ替え保存を
@@ -744,6 +849,15 @@ export function createLibraryPageState(opts: Options) {
     set sortBusy(v: boolean) {
       sortBusy = v;
     },
+    get listDragFrom() {
+      return listDragFrom;
+    },
+    get listDragOver() {
+      return listDragOver;
+    },
+    get listReorderBusy() {
+      return listReorderBusy;
+    },
     loadHistory,
     loadFavorites,
     play,
@@ -764,6 +878,12 @@ export function createLibraryPageState(opts: Options) {
     itemDragLeave,
     itemDrop,
     itemDragEnd,
+    moveList,
+    listDragStart,
+    listDragOverAt,
+    listDragLeave,
+    listDrop,
+    listDragEnd,
     sortByPublished,
     reverseItems,
     playQueue,
