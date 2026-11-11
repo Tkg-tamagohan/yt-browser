@@ -23,7 +23,7 @@
     thumbnailUrl?: string | null;
     /// サムネイル幅: sm=96px, md=120px, lg=160px。
     thumbSize?: "sm" | "md" | "lg";
-    /// 既読などの減光表示（フィードの既読行）。
+    /// 既読などの減光表示（フィードの既読行）。行アクションは減光しない（仕様決定 BH）。
     dimmed?: boolean;
     /// 関連パネルの小さめ表示（小フォント・狭余白・罫線なし）。
     dense?: boolean;
@@ -144,7 +144,12 @@
     align-items: center;
   }
 
-  .vr.dimmed {
+  /* 既読行の淡色化はサムネイル・タイトル・補足行だけに掛ける（仕様決定 BH）。
+     行全体へ opacity を掛けると行内のポップアップメニューが半透明になり、
+     重なり順の階層ができて後続行の下に隠れる */
+  .vr.dimmed .thumb,
+  .vr.dimmed .title,
+  .vr.dimmed .sub {
     opacity: 0.55;
   }
 

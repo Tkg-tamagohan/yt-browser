@@ -420,7 +420,7 @@ Phase 29 の shorts 除外は Phase 32 のチャンネル別表示にも波及�
 BG-6 は設定 1 か所の変更で 3 か所の並べ替えに効く見込みのため、BG-7 の CSS 修正と 1 つの PR にまとめる。
 
 - [ ] `src-tauri/tauri.conf.json` のメインウインドウに `dragDropEnabled: false` を指定する（仕様決定 BG）
-- [ ] ファイルを WebView へドロップしたときにページが遷移しないよう、document 全体の `dragover` と `drop` で、`dataTransfer.types` に `Files` を含むドラッグだけ既定動作を抑止する。アプリ内の並べ替え（`text/plain`）は妨げない。判定は純粋関数に切り出して vitest で回帰テストする
+- [ ] ファイルを WebView へドロップしたときにページが遷移しないよう、document 全体の `dragover` と `drop` で、`dataTransfer.types` に `Files` または `text/uri-list` を含むドラッグだけ既定動作を抑止する（Linux の WebKitGTK はファイルのドラッグを `text/uri-list` として渡す）。アプリ内の並べ替え（`text/plain`）は妨げない。判定は純粋関数に切り出して vitest で回帰テストする
 - [ ] `VideoRow` の `.dimmed` を行全体の `opacity` から `.thumb`・`.title`・`.sub` への指定に変え、行アクションを通常の濃さにする（仕様決定 BH）。`actionsPlacement` が `side` と `below` のどちらでも行アクションが淡色化されないことを確かめる
 - [ ] 設計書とユーザーガイドに修正の必要な記述がないことを確認する（並べ替えとメニューの利用者向け説明は変わらない）
 - [ ] 受け入れ（BG-6）：Windows の Devin VM で、実マウス操作のドラッグにより一覧、項目、キューパネルの 3 か所で並べ替えられ、ファイルを窓へドロップしても画面が遷移しないことを確認する。最後にユーザーの自端末で確認する
