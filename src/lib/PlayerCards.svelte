@@ -18,6 +18,7 @@
   import ChatPanel from "$lib/ChatPanel.svelte";
   import DescPanel from "$lib/DescPanel.svelte";
   import RelatedPanel from "$lib/RelatedPanel.svelte";
+  import SeekBar from "$lib/SeekBar.svelte";
   import {
     chatPanels,
     cleanupChatPanel,
@@ -34,7 +35,10 @@
     type PlayerAction,
     type PlayerEnded,
     type PlayerRestarted,
+    sponsorSegments,
+    sponsorShowSegments,
     type PlayerState,
+    type SponsorSegment,
     type SponsorSkipped,
   } from "$lib/players.svelte";
   import {
@@ -51,7 +55,15 @@
   // 再生中インスタンスの状態は共有ストア（ページ遷移で消えないようコンポーネント外に置く）
   const players = $derived(playerStates.list);
   // シークバーはドラッグ中に state 更新で暴れないよう、操作中の値を別で持つ
+  // （時刻表示だけがこの値を参照する。バー自体のプレビューは SeekBar 内で持つ）
   let seekPreview = $state<Map<number, number>>(new Map());
+
+  // このインスタンスの動画に対する SponsorBlock 区間（FR-36、仕様決定 BI）。
+  // 継続遷移直後など、別動画の区間が残っている場合は表示しない
+  function segmentsFor(p: PlayerState): SponsorSegment[] {
+    const entry = sponsorSegments.list.get(p.instanceId);
+    return entry && entry.videoId === p.videoId ? entry.segments : [];
+  }
   // 関連動画パネルの開閉（インスタンス ID ごと）。パネルの内容は
   // RelatedPanel が開くたびのマウントで取り直す
   let relatedOpen = $state<Set<number>>(new Set());
@@ -405,24 +417,19 @@
         <span class="badge">#{p.instanceId}</span>
       </div>
 
-      <input
-        class="seek"
-        type="range"
-        min="0"
-        max={Math.max(p.duration, 1)}
-        step="0.5"
-        value={seekPreview.get(p.instanceId) ?? p.position}
+      <SeekBar
+        position={p.position}
+        duration={p.duration}
         disabled={p.duration <= 0}
-        oninput={(e) => {
-          const next = new Map(seekPreview);
-          next.set(p.instanceId, Number(e.currentTarget.value));
-          seekPreview = next;
-        }}
-        onchange={(e) => {
-          const seconds = Number(e.currentTarget.value);
+        segments={segmentsFor(p)}
+        showSegments={sponsorShowSegments.enabled}
+        onseek={(seconds) => {
           control(p.instanceId, { type: "seek", seconds });
+        }}
+        onpreview={(seconds) => {
           const next = new Map(seekPreview);
-          next.delete(p.instanceId);
+          if (seconds === null) next.delete(p.instanceId);
+          else next.set(p.instanceId, seconds);
           seekPreview = next;
         }}
       />
@@ -636,10 +643,6 @@
     font-weight: 400;
     font-size: 0.85rem;
     margin-left: 8px;
-  }
-
-  .seek {
-    width: 100%;
   }
 
   .times {

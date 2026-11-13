@@ -175,6 +175,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat://reset` | `{ videoId }` | リプレイの後方シーク再アンカー。対象動画を開くパネルは既表示行を消してから後続の再送分を表示する（FR-24） |
 | `chat://open_panel` | `{ instanceId, videoId }` | `chat_popup_return` がメイン窓へだけ発行するパネル復帰要求（FR-27） |
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
+| `sponsor://segments` | `{ instanceId, videoId, segments: [{ category, start, end, action }] }` | SponsorBlock 区間の取得完了時にインスタンスごとに送出（FR-36、仕様決定 BI）。区間なしと取得失敗は空列。`action` は `"skip"` / `"notify"` / `"off"` |
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=` / `yt-browser://queue?url=`）の受信（§3.4） |
 | `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
 | `settings://changed` | `{ key, value }` | `settings_set` のコミット毎に発火。コミット済みの値を載せるため購読側の再読み取りは不要。設定値を保持する画面（ホームの逆モードボタンが使う `pip.default` など）が画面外の変更に追従するために使う |
@@ -192,6 +193,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 |---|---|---|
 | `quality.format` | `ytdl-format` 式 | 画質。プリセットまたは自由記述のフォーマット式（§4.3） |
 | `sponsor.categories` | JSON マップ `{"<カテゴリ>":"<動作>"}` | SponsorBlock のカテゴリごとの動作（§4.4）。動作は `skip` / `notify` / `off` |
+| `sponsor.show_segments` | `on` / `off` | シークバーへの SponsorBlock 区間帯の表示（§4.4、FR-36、仕様決定 BI）。未設定・その他の値は `on` |
 | `wheel.volume_delta` | 数値 | ホイール再生中の 1 ノッチあたりの音量変化量（§4.2、mpv script-opts の `wheel-volume_delta`） |
 | `pip.geometry` | `WxH±x±y` | PiP 小窓の位置とサイズ（§4.5、既定 `480x270-40-40`） |
 | `pip.quality.format` | `ytdl-format` 式 | PiP インスタンスの既定画質（§4.5）。未設定・空文字は `quality.format` に従う（仕様決定 W） |
@@ -418,6 +420,13 @@ mpv 標準の `,` / `.` キーバインドは `wheel.lua` や `player_control` �
 `time-pos` の監視で現在位置が区間 `[start, end)` に入ったら `seek` で `end` に飛ばし、`sponsor://skipped` を発火する。
 スキップはアプリ側の責務に寄せるため、mpv 側の SponsorBlock スクリプトには依存しない。
 カテゴリごとの「スキップ / 通知のみ / 無効」は設定で持つ。
+
+取得した区間は判定用にインスタンスへ差し込むと同時に `sponsor://segments` で UI へ送り、プレイヤーカードのシークバー上に色帯として重ねる（FR-36、仕様決定 BI）。
+シークバーは `input[type=range]` の値丸めでドラッグ終点がずれる問題（BG-8）を避けるため、Pointer Events でピクセル→割合→秒を直接換算する自前スライダーとし、左右キー ±5 秒と Home/End のキーボード操作を備える。
+帯の描画は設定 `sponsor.show_segments`（既定 `on`）が on のときだけ行い、動作が `off` の区間は出さない。
+動作別の色分けはせず単色とし、カテゴリ名は帯のホバーで示す。
+取得の応答が遅れて再生中動画が変わっていた場合は、前動画の区間を差し込みも送出もしない（応答時の video_id 照合）。
+区間なしと取得失敗は空列を送り、フロントは `player://ended`（継続を含む）と `player://closed` でインスタンスの区間保持を消す。
 
 ### 4.5 PiP とマルチビュー
 
@@ -926,7 +935,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```

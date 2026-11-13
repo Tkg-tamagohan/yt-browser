@@ -8,9 +8,12 @@
   let {
     loading,
     sponsorActions = $bindable(),
+    sponsorShowSegments = $bindable(),
   }: {
     loading: boolean;
     sponsorActions: Record<SponsorCategory, string>;
+    /// シークバーへの区間帯表示（sponsor.show_segments、FR-36）
+    sponsorShowSegments: boolean;
   } = $props();
 </script>
 
@@ -20,6 +23,10 @@
     {#if loading}
       <p class="subtle">…</p>
     {:else}
+      <label class="show-segments">
+        <input type="checkbox" bind:checked={sponsorShowSegments} />
+        <span>{t("settings.sponsor.showSegments")}</span>
+      </label>
       <div class="sponsor-table">
         {#each SPONSOR_CATEGORIES as cat}
           <label>
@@ -46,6 +53,14 @@
   .desc {
     font-size: 0.9rem;
     margin-top: 0;
+  }
+
+  .show-segments {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    font-size: 0.95rem;
   }
 
   .sponsor-table {

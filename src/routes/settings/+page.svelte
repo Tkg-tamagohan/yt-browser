@@ -49,6 +49,8 @@
     >),
     sponsor: "skip",
   });
+  // シークバーへの区間帯表示（sponsor.show_segments、FR-36。既定 on）
+  let sponsorShowSegments = $state(true);
   let loading = $state(true);
   let saving = $state(false);
   let notices = $state<string[]>([]);
@@ -112,6 +114,10 @@
       await invoke("settings_set", {
         key: "sponsor.categories",
         value: JSON.stringify(sponsorActions),
+      });
+      await invoke("settings_set", {
+        key: "sponsor.show_segments",
+        value: sponsorShowSegments ? "on" : "off",
       });
       // 不正値があっても他キーの保存自体は行うが、全体の成功通知は出さない
       let invalid = false;
@@ -335,6 +341,9 @@
       const sponsorRaw = await invoke<string | null>("settings_get", {
         key: "sponsor.categories",
       });
+      const sponsorShowRaw = await invoke<string | null>("settings_get", {
+        key: "sponsor.show_segments",
+      });
       const wheelRaw = await invoke<string | null>("settings_get", {
         key: "wheel.volume_delta",
       });
@@ -414,6 +423,8 @@
         const n = Number(wheelRaw);
         if (Number.isFinite(n)) wheelDelta = n;
       }
+      // 未設定・その他の値は on（仕様決定 BI）
+      sponsorShowSegments = sponsorShowRaw !== "off";
       if (sponsorRaw) {
         try {
           const parsed = JSON.parse(sponsorRaw) as Record<string, string>;
@@ -473,7 +484,11 @@
     bind:hwdec={mpvHwdec}
   />
 
-  <SettingsSponsorSection {loading} bind:sponsorActions={sponsorActions} />
+  <SettingsSponsorSection
+    {loading}
+    bind:sponsorActions
+    bind:sponsorShowSegments
+  />
 
   <SettingsFeedSection {loading} bind:feedShowShorts={feedShowShorts} />
 
