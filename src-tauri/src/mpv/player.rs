@@ -49,6 +49,56 @@ pub(crate) const RECOVERY_WINDOW: Duration = Duration::from_secs(30);
 /// 超過時は通常の終端 reason=error 経路へ切り替える。
 pub(crate) const MAX_RESTARTS: u32 = 3;
 
+/// `file-loaded` 前の読み込み失敗に対する自動再送の遅延（BG-9、仕様決定 BJ）。
+const LOAD_RETRY_DELAY: Duration = Duration::from_millis(1500);
+
+/// ロード失敗の自動再送の予約状態（BG-9、仕様決定 BJ）。
+/// loadfile 1 回につき再送を 1 回だけ許す。
+#[derive(Default)]
+struct LoadRetryState {
+    spec: Option<LoadSpec>,
+    /// 発行世代（`arm` のたびに +1）。遅延中に別のロードへ置き換わった
+    /// 古い再送を弾く照合に使う。
+    gen: u64,
+}
+
+/// 最後に発行した loadfile のパラメータ。
+struct LoadSpec {
+    url: String,
+    options: serde_json::Value,
+    gen: u64,
+    /// このロードに対して再送済みか。
+    retried: bool,
+}
+
+impl LoadRetryState {
+    /// 新しい loadfile の発行を記録し、再送回数をリセットする。
+    fn arm(&mut self, url: &str, options: serde_json::Value) {
+        self.gen += 1;
+        self.spec = Some(LoadSpec {
+            url: url.to_string(),
+            options,
+            gen: self.gen,
+            retried: false,
+        });
+    }
+
+    /// 再送を 1 回だけ予約する。予約できれば再送の世代を返す。
+    fn begin_retry(&mut self) -> Option<u64> {
+        let spec = self.spec.as_mut().filter(|s| !s.retried)?;
+        spec.retried = true;
+        Some(spec.gen)
+    }
+
+    /// 世代が一致する再送対象のパラメータを返す。世代ずれは None。
+    fn spec_for(&self, gen: u64) -> Option<(String, serde_json::Value)> {
+        self.spec
+            .as_ref()
+            .filter(|s| s.gen == gen)
+            .map(|s| (s.url.clone(), s.options.clone()))
+    }
+}
+
 /// mpv プロセス 1 台分の制御ハンドル。
 pub(crate) struct MpvPlayer {
     instance_id: u32,
@@ -75,6 +125,9 @@ pub(crate) struct MpvPlayer {
     /// `loadfile` 処理中の開始時刻。猶予中はウォッチドッグの無応答判定を
     /// 止める（オープン中はプレイループが正常に詰まるため）。
     loading_since: Mutex<Option<Instant>>,
+    /// `file-loaded` 前の失敗への自動再送の予約状態
+    /// （BG-9・仕様決定 BJ）。発行のたびに世代が進む。
+    load_retry: Mutex<LoadRetryState>,
     /// 自動再起動の直列化。
     respawn_op: tokio::sync::Mutex<()>,
     /// reader タスクが更新し、emitter タスクがサンプリングして UI へ流す。
@@ -336,6 +389,7 @@ impl MpvPlayer {
             restarts: AtomicU32::new(0),
             last_healthy: Mutex::new(None),
             loading_since: Mutex::new(None),
+            load_retry: Mutex::new(LoadRetryState::default()),
             respawn_op: tokio::sync::Mutex::new(()),
             state: Mutex::new(PlayerState {
                 instance_id,
@@ -374,15 +428,10 @@ impl MpvPlayer {
         // ファイルロード（レジューム位置つき）。mpv 0.38 で loadfile の引数形式が
         // 変わったため loadfile_replace が新旧両形式に対応する。
         // options の値は文字列のみ受ける mpv（0.34 系など）があるため文字列で渡す。
-        player.begin_loading();
         let url = format!("https://www.youtube.com/watch?v={}", player.video_id());
-        if let Err(e) = loadfile_replace(
-            &*player.ipc.read().await,
-            &url,
-            json!({ "start": format!("{}", opts.start_sec) }),
-        )
-        .await
-        {
+        let options = json!({ "start": format!("{}", opts.start_sec) });
+        player.arm_load(&url, options.clone());
+        if let Err(e) = loadfile_replace(&*player.ipc.read().await, &url, options).await {
             player.end_loading();
             // この時点ではまだマネージャ未登録なので、ここで mpv を確実に止める。
             player.abort_pump().await;
@@ -508,8 +557,52 @@ impl MpvPlayer {
         *lock(&self.loading_since) = Some(Instant::now());
     }
 
+    /// loadfile を発行する直前に呼ぶ。処理中フラグを立て、
+    /// `file-loaded` 前の失敗への自動再送（BG-9、仕様決定 BJ）で使う
+    /// パラメータを世代付きで記録する。
+    fn arm_load(&self, url: &str, options: serde_json::Value) {
+        self.begin_loading();
+        lock(&self.load_retry).arm(url, options);
+    }
+
     fn end_loading(&self) {
         *lock(&self.loading_since) = None;
+    }
+
+    /// `file-loaded` 前の読み込み失敗への自動再送を 1 回だけ予約する
+    /// （BG-9、仕様決定 BJ）。再送対象のパラメータがあって未再送なら、
+    /// 記録済みの終端理由を撤回して再送の世代を返す（撤回しないと
+    /// 再送後の end-file が受理されない）。
+    fn begin_load_retry(&self) -> Option<u64> {
+        let gen = lock(&self.load_retry).begin_retry()?;
+        self.terminal.clear_ended_reason();
+        Some(gen)
+    }
+
+    /// 予約済みの自動再送。遅延の間にインスタンス終了や別のロードへの
+    /// 置き換えが起きた世代は再送しない。再送コマンド自体の失敗は
+    /// 従来の reason=error 終端経路へ流す。
+    async fn retry_failed_load(self: &Arc<Self>, gen: u64) {
+        tokio::time::sleep(LOAD_RETRY_DELAY).await;
+        if lock(&self.state).state == PlayStatus::Ended {
+            return;
+        }
+        let spec = lock(&self.load_retry).spec_for(gen);
+        let Some((url, options)) = spec else { return };
+        tracing::info!(
+            instance_id = self.instance_id(),
+            "ロード失敗のため loadfile を再送する"
+        );
+        self.begin_loading();
+        if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
+            self.end_loading();
+            tracing::warn!(
+                instance_id = self.instance_id(),
+                error = %e,
+                "loadfile の再送に失敗"
+            );
+            self.end_with("error");
+        }
     }
 
     /// `file-loaded` 到達の記録（回復判定の基準時刻、仕様決定 BE）。
@@ -613,15 +706,10 @@ impl MpvPlayer {
             // position は保持する（再ロードの開始位置とカード表示の連続性のため）
         }
 
-        self.begin_loading();
         let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
-        if let Err(e) = loadfile_replace(
-            &*self.ipc.read().await,
-            &url,
-            json!({ "start": format!("{}", snap.position) }),
-        )
-        .await
-        {
+        let options = json!({ "start": format!("{}", snap.position) });
+        self.arm_load(&url, options.clone());
+        if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
             self.end_loading();
             return Err(MpvError::Ipc(e));
         }
@@ -649,14 +737,9 @@ impl MpvPlayer {
     /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
     pub(crate) async fn load_video(&self, video_id: &str, start_sec: f64) -> Result<(), MpvError> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        self.begin_loading();
-        if let Err(e) = loadfile_replace(
-            &*self.ipc.read().await,
-            &url,
-            json!({ "start": format!("{start_sec}") }),
-        )
-        .await
-        {
+        let options = json!({ "start": format!("{start_sec}") });
+        self.arm_load(&url, options.clone());
+        if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
             self.end_loading();
             return Err(MpvError::Ipc(e));
         }
@@ -730,14 +813,9 @@ impl MpvPlayer {
                 let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
                 // replace で発生する旧ファイルの end-file は終了とみなさない
                 self.terminal.begin_replace();
-                self.begin_loading();
-                if let Err(e) = loadfile_replace(
-                    &*self.ipc.read().await,
-                    &url,
-                    json!({ "start": format!("{}", pos) }),
-                )
-                .await
-                {
+                let options = json!({ "start": format!("{}", pos) });
+                self.arm_load(&url, options.clone());
+                if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
                     self.terminal.cancel_replace();
                     self.end_loading();
                     return Err(MpvError::Ipc(e));
@@ -1127,6 +1205,17 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                     if !player.terminal.on_end_file(&reason) {
                         continue;
                     }
+                    // file-loaded 前の読み込み失敗は一過性エラーに備えて
+                    // 1 回だけ loadfile を再送する（BG-9、仕様決定 BJ）。
+                    // 再送を予約できたときは終端処理を行わず、処理中フラグも
+                    // 再送まで持続させる（ウォッチドッグ猶予の継続）
+                    if reason == "error" && player.loading_age().is_some() {
+                        if let Some(gen) = player.begin_load_retry() {
+                            let p = player.clone();
+                            tokio::spawn(async move { p.retry_failed_load(gen).await });
+                            continue;
+                        }
+                    }
                     player.end_loading();
                     {
                         let mut st = lock(&player.state);
@@ -1204,5 +1293,54 @@ async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
     };
     if let Err(e) = player.app.emit("sponsor://skipped", payload) {
         tracing::warn!(error = %e, "sponsor://skipped の送出に失敗");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LoadRetryState;
+    use serde_json::json;
+
+    /// ロード失敗の自動再送: 1 ロードにつき 1 回だけ予約できる（BG-9、仕様決定 BJ）。
+    #[test]
+    fn load_retry_allows_one_retry_per_load() {
+        let mut s = LoadRetryState::default();
+        s.arm("u1", json!({}));
+        assert!(s.begin_retry().is_some());
+        // 同じロードへの 2 回目の予約はできない（無限再試行の防止）
+        assert!(s.begin_retry().is_none());
+    }
+
+    /// ロード失敗の自動再送: 新しい loadfile の発行で再送回数がリセットされる。
+    #[test]
+    fn load_retry_rearms_on_new_load() {
+        let mut s = LoadRetryState::default();
+        s.arm("u1", json!({}));
+        assert!(s.begin_retry().is_some());
+        s.arm("u2", json!({}));
+        assert!(s.begin_retry().is_some());
+    }
+
+    /// ロード失敗の自動再送: 世代が違う古い予約の再送対象は返さない。
+    #[test]
+    fn load_retry_rejects_stale_generation() {
+        let mut s = LoadRetryState::default();
+        s.arm("u1", json!({"start": "1"}));
+        let gen = s.begin_retry().unwrap();
+        // 遅延中に別のロードが発行されたら、古い世代の再送は成立しない
+        s.arm("u2", json!({"start": "2"}));
+        assert!(s.spec_for(gen).is_none());
+        // 同じ世代なら記録したパラメータを返す
+        let gen2 = s.begin_retry().unwrap();
+        let (url, opts) = s.spec_for(gen2).unwrap();
+        assert_eq!(url, "u2");
+        assert_eq!(opts["start"], "2");
+    }
+
+    /// ロード失敗の自動再送: loadfile を一度も発行していなければ予約できない。
+    #[test]
+    fn load_retry_requires_armed_spec() {
+        let mut s = LoadRetryState::default();
+        assert!(s.begin_retry().is_none());
     }
 }

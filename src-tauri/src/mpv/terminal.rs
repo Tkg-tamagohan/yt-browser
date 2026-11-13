@@ -77,6 +77,14 @@ impl TerminalTracker {
         lock(&self.ended_reason).as_deref() == Some("eof")
     }
 
+    /// `file-loaded` 前のロード失敗への自動再送（BG-9、仕様決定 BJ）で、
+    /// 記録済みの終端理由を撤回する。撤回しないと再送後の end-file が
+    /// record の二重記録抑止で受理されない。replace 予約は再送対象の
+    /// end-file が既に消化済みなので触らない。
+    pub(crate) fn clear_ended_reason(&self) {
+        *lock(&self.ended_reason) = None;
+    }
+
     /// プロセス再起動（仕様決定 BE）で全状態を初期値へ戻す。
     /// 記録済みの終端理由と残りの replace 予約を消す。
     pub(crate) fn reset(&self) {
@@ -161,6 +169,27 @@ mod tests {
         // 2 本目の途中終了が受理される
         assert!(t.on_end_file("error"));
         assert!(!t.completed());
+    }
+
+    /// 終端判定: ロード失敗の自動再送（BG-9、仕様決定 BJ）で撤回した終端理由は
+    /// 再送後の end-file が受理される。撤回しても replace 予約は消えない。
+    #[test]
+    fn clear_ended_reason_reenables_terminal_detection() {
+        let t = TerminalTracker::default();
+        // 1 回目のロード失敗が終端として記録される
+        assert!(t.on_end_file("error"));
+        // 自動再送の予約で撤回すると、再送後の end-file が終端として受理される
+        t.clear_ended_reason();
+        assert!(t.on_end_file("error"));
+        assert!(!t.on_end_file("eof")); // 二重記録はしない
+
+        // replace 予約は撤回の影響を受けない
+        let t = TerminalTracker::default();
+        t.begin_replace();
+        assert!(!t.on_end_file("stop"));
+        assert!(t.on_end_file("error"));
+        t.clear_ended_reason();
+        assert!(t.on_end_file("eof"));
     }
 
     /// 終端判定: replace 予約中に届いた旧ファイルの eof-reached は
