@@ -16,6 +16,13 @@ pub const API_BASE: &str = "https://sponsor.ajay.app";
 /// 設定キー: カテゴリごとの動作（JSON マップ `{"sponsor":"skip",...}`）。
 pub const SETTING_CATEGORIES: &str = "sponsor.categories";
 
+/// 設定キー: シークバーへの SponsorBlock 区間帯の表示（FR-36、仕様決定 BI）。
+/// `on` / `off`。未設定・その他の値は `on`。
+/// フロントが settings_get で読む表示側だけの設定でバックエンドでは参照しないが、
+/// 設定キー表との両方向照合（check_docs_consistency）のため定数として保持する。
+#[allow(dead_code)]
+pub const SETTING_SHOW_SEGMENTS: &str = "sponsor.show_segments";
+
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
@@ -165,6 +172,58 @@ pub struct SkippedPayload {
     pub segment: [f64; 2],
     /// "skip" | "notify"。
     pub action: &'static str,
+}
+
+/// `sponsor://segments` イベントの 1 区間分（FR-36、仕様決定 BI、設計書 §3.2）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentInfo {
+    pub category: String,
+    pub start: f64,
+    pub end: f64,
+    /// "skip" | "notify" | "off"。
+    pub action: &'static str,
+}
+
+/// `sponsor://segments` イベントのペイロード（FR-36、仕様決定 BI）。
+/// 区間取得の完了時にインスタンスごとに送出し、区間なし・取得失敗は空列を送る。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentsPayload {
+    pub instance_id: u32,
+    pub video_id: String,
+    pub segments: Vec<SegmentInfo>,
+}
+
+/// 動作のイベント表現（`sponsor://skipped` / `sponsor://segments` で共用）。
+pub fn action_name(action: CategoryAction) -> &'static str {
+    match action {
+        CategoryAction::Skip => "skip",
+        CategoryAction::Notify => "notify",
+        CategoryAction::Off => "off",
+    }
+}
+
+/// `sponsor://segments` のペイロードを組み立てる。
+/// 送出側は取得した区間をそのまま渡す（Off 区間も含み、描画側で除く）。
+pub fn segments_payload(
+    instance_id: u32,
+    video_id: &str,
+    segments: &[ActiveSegment],
+) -> SegmentsPayload {
+    SegmentsPayload {
+        instance_id,
+        video_id: video_id.to_string(),
+        segments: segments
+            .iter()
+            .map(|s| SegmentInfo {
+                category: s.category.clone(),
+                start: s.start,
+                end: s.end,
+                action: action_name(s.action),
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]

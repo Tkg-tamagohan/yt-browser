@@ -64,6 +64,23 @@ export type SponsorSkipped = {
   action: "skip" | "notify";
 };
 
+/// `sponsor://segments` の 1 区間分（FR-36、仕様決定 BI、設計書 §3.2）。
+export type SponsorSegment = {
+  category: string;
+  start: number;
+  end: number;
+  /// "skip" | "notify" | "off"。off の区間はシークバーへ出さない。
+  action: "skip" | "notify" | "off";
+};
+
+/// `sponsor://segments` イベント（設計書 §3.2）。
+/// 区間取得の完了時にインスタンスごとに届き、区間なし・取得失敗は空列。
+export type SponsorSegmentsPayload = {
+  instanceId: number;
+  videoId: string;
+  segments: SponsorSegment[];
+};
+
 export type WatchHistory = {
   videoId: string;
   title: string;
@@ -198,6 +215,24 @@ export const playerStates = $state<{
   list: Map<number, PlayerState>;
 }>({ list: new Map() });
 
+/// インスタンスごとの SponsorBlock 区間（FR-36、仕様決定 BI）。
+/// 動画 ID を併せて持ち、描画側で現在再生中の動画と照合する。
+export const sponsorSegments = $state<{
+  list: Map<number, { videoId: string; segments: SponsorSegment[] }>;
+}>({ list: new Map() });
+
+/// シークバーへの SponsorBlock 区間帯の表示（`sponsor.show_segments`、FR-36）。
+/// 既定・読み取り失敗は on。
+export const sponsorShowSegments = $state({ enabled: true });
+
+/// instanceId の区間エントリを外す（終了・クローズ・動画遷移時の片付け）。
+function dropSponsorSegments(instanceId: number): void {
+  if (!sponsorSegments.list.has(instanceId)) return;
+  const next = new Map(sponsorSegments.list);
+  next.delete(instanceId);
+  sponsorSegments.list = next;
+}
+
 /// インスタンス別画質を指定済みの instanceId 集合（仕様決定 X。セッション内のみ有効）。
 /// プレイヤーカードの画質選択が成功した時点で登録し、インスタンス終了で解放する。
 /// 設定画面の全体画質の即時適用はこの集合のインスタンスを除外する
@@ -226,8 +261,22 @@ export function initPlayerEvents(): Promise<void> {
         next.set(ev.payload.instanceId, ev.payload);
         playerStates.list = next;
       });
+      // SponsorBlock 区間の表示用データ（FR-36、仕様決定 BI）。
+      // 前動画の区間が残らないよう ended/closed で削除し、
+      // 区間なし・取得失敗は空列で届く
+      await listen<SponsorSegmentsPayload>("sponsor://segments", (ev) => {
+        const next = new Map(sponsorSegments.list);
+        next.set(ev.payload.instanceId, {
+          videoId: ev.payload.videoId,
+          segments: ev.payload.segments,
+        });
+        sponsorSegments.list = next;
+      });
       await listen<PlayerEnded>("player://ended", (ev) => {
         inFlight.add(ev.payload.instanceId);
+        // 継続・非継続を問わずこの動画の区間表示は終わる。継続先の区間は
+        // 次動画分の sponsor://segments で届くまで無しとする
+        dropSponsorSegments(ev.payload.instanceId);
         // 連続再生で次項目へ進んだインスタンスは稼働中のまま残す
         // （FR-10、仕様決定 S。カードが消えずに新しい状態へ移行する）
         // continuedVideoId は実際に読み込みが始まった項目なので、
@@ -260,7 +309,29 @@ export function initPlayerEvents(): Promise<void> {
         next.delete(ev.payload.instanceId);
         playerStates.list = next;
         formatOverrides.delete(ev.payload.instanceId);
+        dropSponsorSegments(ev.payload.instanceId);
       });
+      // sponsor.show_segments（FR-36、仕様決定 BI）。画面外の変更は
+      // settings://changed で追従する。未設定・その他の値は on
+      let showSegChanged = false;
+      await listen<{ key: string; value: string }>(
+        "settings://changed",
+        (ev) => {
+          if (ev.payload.key !== "sponsor.show_segments") return;
+          showSegChanged = true;
+          sponsorShowSegments.enabled = ev.payload.value !== "off";
+        },
+      );
+      try {
+        const raw = await invoke<string | null>("settings_get", {
+          key: "sponsor.show_segments",
+        });
+        if (!showSegChanged) {
+          sponsorShowSegments.enabled = raw !== "off";
+        }
+      } catch {
+        // 読み取り失敗は既定 on のままにする
+      }
       // リロード後はイベントが来ない一時停止中インスタンスがあるため、
       // 登録直後に一覧を取得してカードを復元する。
       const snapshot = await invoke<PlayerState[]>("player_list");

@@ -178,6 +178,8 @@ impl PlayerManager {
 
     /// SponsorBlock の区間取得をバックグラウンドで行い、判定用にプレイヤーへ差し込む。
     /// 取得失敗は再生を阻害しない（スキップが動かないだけ）。連続再生の次項目でも再利用する。
+    /// 取得完了時は `sponsor://segments` で区間を UI へ送る（FR-36、仕様決定 BI）。
+    /// 失敗時も空列を送って前動画の区間が残らないようにする。
     fn spawn_sponsor_fetch(
         db: &Db,
         http: &reqwest::Client,
@@ -191,9 +193,23 @@ impl PlayerManager {
             .flatten();
         tokio::spawn(async move {
             let cats = crate::sponsor::parse_categories(categories.as_deref());
-            match crate::sponsor::fetch_segments(&http, &video_id, &cats).await {
-                Ok(segs) => player.set_sponsor_segments(segs),
-                Err(e) => tracing::warn!(video_id, error = %e, "SponsorBlock の区間取得に失敗"),
+            let segments = match crate::sponsor::fetch_segments(&http, &video_id, &cats).await {
+                Ok(segs) => segs,
+                Err(e) => {
+                    tracing::warn!(video_id, error = %e, "SponsorBlock の区間取得に失敗");
+                    Vec::new()
+                }
+            };
+            // 応答が遅れて再生中動画が変わっていたら、前動画の区間を
+            // 判定・表示へ混ぜないよう反映も送出もしない
+            if player.video_id() != video_id {
+                return;
+            }
+            player.set_sponsor_segments(segments.clone());
+            let payload =
+                crate::sponsor::segments_payload(player.instance_id(), &video_id, &segments);
+            if let Err(e) = player.app().emit("sponsor://segments", payload) {
+                tracing::warn!(error = %e, "sponsor://segments の送出に失敗");
             }
         });
     }

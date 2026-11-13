@@ -396,6 +396,11 @@ impl MpvPlayer {
         self.instance_id
     }
 
+    /// `sponsor://segments` など、管理側からのイベント送出に使う（FR-36）。
+    pub(crate) fn app(&self) -> &AppHandle {
+        &self.app
+    }
+
     pub(crate) fn video_id(&self) -> String {
         lock(&self.state).video_id.clone()
     }
@@ -1195,11 +1200,7 @@ async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
         video_id: player.video_id(),
         category: seg.category,
         segment: [seg.start, seg.end],
-        action: if seg.action == crate::sponsor::CategoryAction::Skip {
-            "skip"
-        } else {
-            "notify"
-        },
+        action: crate::sponsor::action_name(seg.action),
     };
     if let Err(e) = player.app.emit("sponsor://skipped", payload) {
         tracing::warn!(error = %e, "sponsor://skipped の送出に失敗");

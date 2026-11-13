@@ -32,6 +32,8 @@ const ja = {
   "player.fps": "{fps} fps",
   "player.volume": "音量",
   "player.speed": "速度",
+  // Phase 47: シークバー自前化＋SponsorBlock 区間表示（FR-36、仕様決定 BI）
+  "player.seekbar": "シーク位置（左右キーで 5 秒ずつ、Home/End で先頭・末尾）",
   "player.quality": "画質",
   "player.quality.hint":
     "このインスタンスだけの画質式を変更（セッション内のみ有効。次回再生は既定画質に戻る）",
@@ -238,6 +240,8 @@ const ja = {
   "settings.sponsor.action.skip": "スキップ",
   "settings.sponsor.action.notify": "通知のみ",
   "settings.sponsor.action.off": "無効",
+  // Phase 47: シークバーへの区間帯表示（FR-36、仕様決定 BI）
+  "settings.sponsor.showSegments": "シークバーに区間を表示",
   "sponsor.cat.sponsor": "広告・提供読み",
   "sponsor.cat.selfpromo": "自社宣伝・無料宣伝",
   "sponsor.cat.interaction": "登録・高評価の呼びかけ",
