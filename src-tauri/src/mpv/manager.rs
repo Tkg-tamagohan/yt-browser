@@ -206,11 +206,8 @@ impl PlayerManager {
                 return;
             }
             player.set_sponsor_segments(segments.clone());
-            let payload = crate::sponsor::segments_payload(
-                player.instance_id(),
-                &video_id,
-                &segments,
-            );
+            let payload =
+                crate::sponsor::segments_payload(player.instance_id(), &video_id, &segments);
             if let Err(e) = player.app().emit("sponsor://segments", payload) {
                 tracing::warn!(error = %e, "sponsor://segments の送出に失敗");
             }
