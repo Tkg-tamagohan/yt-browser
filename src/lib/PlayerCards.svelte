@@ -13,8 +13,16 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
+  import { focusDisabledKey } from "$lib/focus-logic";
   import { linkCopyText } from "$lib/copy-link-logic";
+  import { subTrackLabel } from "$lib/subtitle-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
+  import {
+    pipTileGeometry,
+    pipTileGrid,
+    pipTileMonitor,
+  } from "$lib/pip-tile-logic";
+  import type { MonitorInfo } from "$lib/monitors";
   import { notify } from "$lib/notices.svelte";
   import ChatPanel from "$lib/ChatPanel.svelte";
   import DescPanel from "$lib/DescPanel.svelte";
@@ -236,6 +244,81 @@
   // 応答後も次の状態イベントが届く猶予を置いてから再有効化する
   let pipBusy = $state<Set<number>>(new Set());
 
+  // mpv 窓の移動・前面化が関わる表示環境の分類（windowing_system、
+  // FR-41・FR-42）。整列ボタンと前面化ボタンの有効化判定で共有する。
+  // 空文字は未判定（onMount の取得前・取得失敗）で、その間は
+  // ボタンを無効側へ倒さない
+  let windowing = $state("");
+
+  // PiP 窓の一括整列（FR-41、仕様決定 BQ）。対象ディスプレイは
+  // `window.screen` の保存名で解決し、未設定・未接続はプライマリ。
+  // 実行時の窓位置変更には mpv 0.38 以降と Win32/X11 の環境が要る
+  // （仕様決定 BU）。Wayland は恒久制限のためボタンを無効化する
+  let pipTileBusy = $state(false);
+  const pipCount = $derived(
+    [...players.values()].filter((p) => p.pip).length,
+  );
+
+  async function tilePips(): Promise<void> {
+    const pips = [...players.values()]
+      .filter((p) => p.pip)
+      .map((p) => p.instanceId)
+      .sort((a, b) => a - b);
+    if (pipTileBusy || pips.length === 0) return;
+    pipTileBusy = true;
+    try {
+      const [monitors, saved] = await Promise.all([
+        invoke<MonitorInfo[]>("monitor_list"),
+        invoke<string | null>("settings_get", { key: "window.screen" }),
+      ]);
+      const target = pipTileMonitor(monitors, saved);
+      if (!target) {
+        notify(t("player.pipTile.noMonitor"));
+        return;
+      }
+      const { cols, rows } = pipTileGrid(pips.length);
+      let ok = 0;
+      let firstErr = "";
+      for (let i = 0; i < pips.length; i++) {
+        try {
+          await invoke("player_control", {
+            instanceId: pips[i],
+            action: {
+              type: "pip_tile",
+              geometry: pipTileGeometry(
+                i,
+                cols,
+                rows,
+                target.width,
+                target.height,
+              ),
+            },
+          });
+          ok += 1;
+        } catch (e) {
+          if (firstErr === "") firstErr = asErrorMessage(e);
+        }
+      }
+      if (firstErr === "") {
+        notify(t("player.pipTile.done", { count: ok }));
+      } else if (ok > 0) {
+        notify(
+          t("player.pipTile.partial", {
+            ok,
+            total: pips.length,
+            message: firstErr,
+          }),
+        );
+      } else {
+        notify(t("player.pipTile.failed", { message: firstErr }));
+      }
+    } catch (e) {
+      notify(t("player.pipTile.failed", { message: asErrorMessage(e) }));
+    } finally {
+      pipTileBusy = false;
+    }
+  }
+
   // インスタンス別画質の変更中セット。応答までの連続操作を防ぎ、
   // 失敗時は select の表示を現在の適用値へ戻す
   let qualityBusy = $state<Set<number>>(new Set());
@@ -274,6 +357,32 @@
     return d.description !== "" ? d.description : d.name;
   }
 
+  // 字幕選択の変更中セット（FR-40、仕様決定 BP）。応答までの連続操作を
+  // 防ぎ、失敗時は select の表示を現在値へ戻す
+  let subBusy = $state<Set<number>>(new Set());
+
+  async function setSubtitle(
+    id: number,
+    sid: string,
+    el: HTMLSelectElement,
+  ): Promise<void> {
+    if (subBusy.has(id)) {
+      el.value = playerStates.list.get(id)?.sid ?? "auto";
+      return;
+    }
+    subBusy = new Set(subBusy).add(id);
+    try {
+      await control(id, { type: "sub_track", sid });
+    } catch {
+      // control がエラー通知を出す。欄の表示だけ実態へ戻す
+      el.value = playerStates.list.get(id)?.sid ?? "auto";
+    } finally {
+      const s = new Set(subBusy);
+      s.delete(id);
+      subBusy = s;
+    }
+  }
+
   async function setQuality(id: number, format: string, el: HTMLSelectElement): Promise<void> {
     if (qualityBusy.has(id)) return;
     qualityBusy = new Set(qualityBusy).add(id);
@@ -302,6 +411,21 @@
         s.delete(id);
         pipBusy = s;
       }, 400);
+    }
+  }
+
+  // mpv 窓の前面化（FR-42、仕様決定 BR）。表示環境は上記 windowing で
+  // 判定し、Wayland・その他の不明環境ではボタンを無効化する
+  const focusKey = $derived(focusDisabledKey(windowing));
+
+  async function focusPlayer(id: number): Promise<void> {
+    try {
+      await invoke("player_control", {
+        instanceId: id,
+        action: { type: "focus_window" },
+      });
+    } catch (e) {
+      notify(t("player.focus.failed", { message: asErrorMessage(e) }));
     }
   }
 
@@ -381,6 +505,14 @@
     } catch {
       audioListFailed = true;
     }
+    // mpv 窓の移動・前面化可否（整列・前面化ボタンの有効化判定、
+    // FR-41・FR-42）。取得失敗は未判定（空文字）のままにし、
+    // 操作時のエラー通知に委ねる
+    try {
+      windowing = await invoke<string>("windowing_system");
+    } catch {
+      // 判定不能の環境ではボタンを無効側へ倒さない
+    }
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
     unlistenFns.push(
@@ -450,6 +582,22 @@
   class="player-cards container"
   class:hidden={page.url.pathname !== "/"}
 >
+  <!-- PiP 窓の一括整列（FR-41、仕様決定 BQ）。全 PiP インスタンスの
+       窓を window.screen の対象ディスプレイへ格子状に並べる -->
+  {#if players.size > 0}
+    <div class="pip-tile-bar">
+      <button
+        title={windowing === "wayland"
+          ? t("player.pipTile.wayland")
+          : t("player.pipTile.hint")}
+        disabled={pipTileBusy || pipCount === 0 || windowing === "wayland"}
+        onclick={() => void tilePips()}
+      >
+        {t("player.pipTile")}
+      </button>
+      <span class="subtle">{t("player.pipTile.count", { count: pipCount })}</span>
+    </div>
+  {/if}
   {#each [...players.values()] as p (p.instanceId)}
     {@const info = channelInfos.get(p.videoId)}
     <section class="player panel panel--filled">
@@ -589,6 +737,32 @@
             <span class="subtle">…</span>
           {/if}
         </label>
+        <label>
+          {t("player.subtitle")}
+          <select
+            value={p.sid}
+            title={t("player.subtitle.hint")}
+            disabled={subBusy.has(p.instanceId)}
+            onchange={(e) =>
+              setSubtitle(p.instanceId, e.currentTarget.value, e.currentTarget)}
+          >
+            <option value="no" selected={p.sid === "no"}>
+              {t("player.subtitle.none")}
+            </option>
+            <option value="auto" selected={p.sid === "auto"}>
+              {t("player.subtitle.auto")}
+            </option>
+            {#each p.subTracks as tr}
+              <option value={String(tr.id)} selected={String(tr.id) === p.sid}>
+                {subTrackLabel(tr)}
+              </option>
+            {/each}
+            <!-- 選択肢に無い現在値（track-list 更新直後の切替等）も残す -->
+            {#if p.sid !== "no" && p.sid !== "auto" && !p.subTracks.some((tr) => String(tr.id) === p.sid)}
+              <option value={p.sid} selected>{p.sid}</option>
+            {/if}
+          </select>
+        </label>
         <button
           title={t("player.loop.hint")}
           onclick={() => void cycleLoop(p.instanceId)}
@@ -613,6 +787,13 @@
           onclick={() => togglePip(p.instanceId, !p.pip)}
         >
           {p.pip ? t("player.unpip") : t("player.pip")}
+        </button>
+        <button
+          title={focusKey ? t(focusKey) : t("player.focus.hint")}
+          disabled={focusKey !== null}
+          onclick={() => void focusPlayer(p.instanceId)}
+        >
+          {t("player.focus")}
         </button>
         <button class="danger" onclick={() => closePlayer(p.instanceId)}>
           {t("player.close")}
@@ -678,6 +859,13 @@
 <style>
   .player-cards.hidden {
     display: none;
+  }
+
+  .pip-tile-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
   }
 
   /* カード骨格はグローバル .panel + .panel--filled。ここでは間隔だけ */

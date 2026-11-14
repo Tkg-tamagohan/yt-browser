@@ -93,6 +93,14 @@ pub fn monitor_list(app: AppHandle) -> Vec<MonitorInfo> {
         .collect()
 }
 
+/// `windowing_system`（FR-41・FR-42、仕様決定 BQ・BR）。mpv 窓の移動・
+/// 前面化が動作するかを UI がボタン可否の判定に使う表示環境の分類を返す。
+/// 値は "windows" / "x11" / "wayland" / "other"。Wayland は恒久制限で非対応。
+#[tauri::command]
+pub fn windowing_system() -> &'static str {
+    crate::mpv::windowing_system()
+}
+
 /// yt-dlp の解決パスとバージョン（設計書 §5 の運用確認用）。
 #[tauri::command]
 pub async fn ytdlp_status(
