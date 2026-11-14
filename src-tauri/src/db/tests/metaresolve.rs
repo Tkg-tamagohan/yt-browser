@@ -51,10 +51,11 @@ fn set_state(db: &Db, video_id: &str, kind_state: i64, meta_checked: i64) {
         .unwrap();
 }
 
-/// DB-MR-01: 遅延解決の対象選出（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）。
-/// kind 未確定（0）・失敗（2）の行と、投稿日時 NULL でメタ応答未試行の
-/// 行が対象。確定済みで投稿日時ありの行・メタ応答試行済みの行は対象外。
-/// 対象行は欠けている情報の旗（needs_published / needs_kind）を立てて返す。
+/// DB-MR-01: 遅延解決の対象選出（FR-53・FR-56・FR-57・FR-85、仕様決定
+/// CD・CG・CH・DJ）。kind 未確定（0）・失敗（2）の行、投稿日時 NULL で
+/// メタ応答未試行の行、説明文 NULL の行が対象。全欠落が解決済みの行は
+/// 対象外。対象行は欠けている情報の旗
+/// （needs_published / needs_kind / needs_desc）を立てて返す。
 #[test]
 fn meta_resolve_targets_selects_missing_only() {
     let db = Db::connect_in_memory().unwrap();
@@ -73,24 +74,31 @@ fn meta_resolve_targets_selects_missing_only() {
     set_state(&db, "v_fail", 2, 0);
     set_state(&db, "v_done", 1, 0);
     set_state(&db, "v_checked", 1, 1);
+    // 完全解決済みにする行は説明文も埋める（説明欠落は選出対象。FR-85・DJ）
+    set_desc(&db, "v_done", Some("説明文"));
+    set_desc(&db, "v_checked", Some(""));
+    // 旗の確認を絞るため、kind/日時だけが欠けた行には説明文を入れておく
+    set_desc(&db, "v_kind", Some("説明文"));
+    set_desc(&db, "v_pub", Some("説明文"));
+    set_desc(&db, "v_fail", Some("説明文"));
 
     let targets = db.meta_resolve_targets(50).unwrap();
     let get = |id: &str| targets.iter().find(|t| t.video_id == id);
 
-    // 未確定 + 日時なしは両旗
+    // 未確定 + 日時なし + 説明なしは全旗
     let t = get("v_both").expect("v_both は対象");
-    assert!(t.needs_published && t.needs_kind);
+    assert!(t.needs_published && t.needs_kind && t.needs_desc);
     // 未確定だけの行は needs_kind のみ
     let t = get("v_kind").expect("v_kind は対象");
-    assert!(!t.needs_published && t.needs_kind);
+    assert!(!t.needs_published && t.needs_kind && !t.needs_desc);
     // 確定済み + 日時なし + 未試行は needs_published のみ
     let t = get("v_pub").expect("v_pub は対象");
-    assert!(t.needs_published && !t.needs_kind);
+    assert!(t.needs_published && !t.needs_kind && !t.needs_desc);
     // 失敗行は再試行対象（needs_kind のみ）
     let t = get("v_fail").expect("v_fail は対象");
-    assert!(!t.needs_published && t.needs_kind);
+    assert!(!t.needs_published && t.needs_kind && !t.needs_desc);
     assert_eq!(t.kind, "live");
-    // 確定済み + 日時あり、確定済み + 試行済みは対象外
+    // 全欠落が解決済みの行は対象外
     assert!(get("v_done").is_none());
     assert!(get("v_checked").is_none());
 }
@@ -227,6 +235,10 @@ fn videos_set_kind_state_and_retry_selection() {
             ("s_r", "video", Some("2026-01-01T00:00:00+00:00")),
         ],
     );
+    // 説明文は解決済みとしておき、kind_state の遷移だけを見る
+    // （説明欠落は FR-85・仕様決定 DJ で選出対象になる）
+    set_desc(&db, "s_p", Some(""));
+    set_desc(&db, "s_r", Some(""));
     // 失敗を記録すると再選出対象になる（kind_state<>1 の選出条件）
     assert!(db.videos_set_kind_state("s_p", 2).unwrap());
     assert!(db
@@ -402,4 +414,187 @@ fn feed_filter_live_covers_broadcast_kinds() {
         .map(|i| i.video_id)
         .collect();
     assert_eq!(ids, vec!["f_v"]);
+}
+
+/// 説明列の有無だけを変える補助。`set_state` が kind_state /
+/// meta_checked を触るのに対し、こちらは description のみ書き換える。
+fn set_desc(db: &Db, video_id: &str, desc: Option<&str>) {
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE videos SET description = ?2 WHERE video_id = ?1",
+            rusqlite::params![video_id, desc],
+        )
+        .unwrap();
+}
+
+/// DB-MR-09: 遅延解決の対象選出に説明文の欠落を加える
+/// （FR-85、仕様決定 DJ）。description が NULL の行は他の欠落が
+/// 無くても選出され needs_desc が立つ。空文字は解決済み・説明なし
+/// なので対象外。既存値を持つ行も対象外。
+#[test]
+fn meta_resolve_targets_selects_missing_desc() {
+    let db = Db::connect_in_memory().unwrap();
+    seed(
+        &db,
+        &[
+            // 確定済み + 日時あり + 説明なし → needs_desc のみで選出
+            ("d_null", "short", Some("2026-01-01T00:00:00+00:00")),
+            // 確定済み + 日時あり + 説明あり → 対象外
+            ("d_have", "short", Some("2026-01-01T00:00:00+00:00")),
+            // 確定済み + 日時あり + 説明解決済み（空文字）→ 対象外
+            ("d_empty", "short", Some("2026-01-01T00:00:00+00:00")),
+            // 未確定 + 説明なし → needs_kind と needs_desc が両立
+            ("d_both", "video", Some("2026-01-01T00:00:00+00:00")),
+        ],
+    );
+    set_state(&db, "d_null", 1, 1);
+    set_state(&db, "d_have", 1, 1);
+    set_state(&db, "d_empty", 1, 1);
+    set_desc(&db, "d_have", Some("既存の説明文"));
+    set_desc(&db, "d_empty", Some(""));
+
+    let targets = db.meta_resolve_targets(50).unwrap();
+    let get = |id: &str| targets.iter().find(|t| t.video_id == id);
+
+    let t = get("d_null").expect("d_null は説明欠落で対象");
+    assert!(t.needs_desc && !t.needs_kind && !t.needs_published);
+    let t = get("d_both").expect("d_both は kind 未確定で対象");
+    assert!(t.needs_desc && t.needs_kind);
+    // 説明あり・空文字（解決済み・説明なし）は対象外
+    assert!(get("d_have").is_none());
+    assert!(get("d_empty").is_none());
+}
+
+/// DB-MR-10: 説明文の遅延書き戻し（FR-85、仕様決定 DJ）。
+/// description が NULL の行だけを埋め、既存値は上書きしない。
+/// 応答が説明文を持たない（空文字）場合も書き込んで解決済みにし、
+/// 以降の選出対象から外す。
+#[test]
+fn videos_set_description_fills_null_only() {
+    let db = Db::connect_in_memory().unwrap();
+    seed(&db, &[("s_null", "video", None), ("s_have", "video", None)]);
+    set_desc(&db, "s_have", Some("既存の説明文"));
+
+    // NULL の行は書き込める（true）。2 行目の既存値は上書きしない（false）
+    assert!(db.videos_set_description("s_null", "新しい説明").unwrap());
+    assert!(!db.videos_set_description("s_have", "上書きしない").unwrap());
+    let conn = db.lock().unwrap();
+    let got: String = conn
+        .query_row(
+            "SELECT description FROM videos WHERE video_id = 's_null'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(got, "新しい説明");
+    let kept: String = conn
+        .query_row(
+            "SELECT description FROM videos WHERE video_id = 's_have'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "既存の説明文");
+    // 空文字の書き込みも成功し、説明なしを確定する
+    drop(conn);
+    seed(&db, &[("s_empty", "video", None)]);
+    assert!(db.videos_set_description("s_empty", "").unwrap());
+    let conn = db.lock().unwrap();
+    let v: String = conn
+        .query_row(
+            "SELECT description FROM videos WHERE video_id = 's_empty'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(v, "");
+    drop(conn);
+    // 空文字は解決済み扱い（description IS NULL の選出条件を外れ、
+    // kind 未確定で選ばれても needs_desc は立たない）
+    let t = db
+        .meta_resolve_targets(50)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.video_id == "s_empty")
+        .expect("kind 未確定の行自体は対象");
+    assert!(!t.needs_desc && t.needs_kind);
+}
+
+/// DB-MR-11: v22 マイグレーション（FR-85、仕様決定 DJ）。
+/// videos に description 列が追加され、既存行は NULL（未解決）になり
+/// 遅延解決の対象に加わる。説明列は `feed_list_filtered` の一覧取得で
+/// 一緒に取れる（video_desc 評価の材料）。
+#[test]
+fn migrate_v22_adds_description_column() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 22) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO channels (channel_id, title) VALUES ('UCchan000000000000001', 'C')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO videos
+           (video_id, channel_id, title, kind, is_read, ingested, kind_state)
+         VALUES ('m_v', 'UCchan000000000000001', 't', 'video', 1, 1, 1)",
+        [],
+    )
+    .unwrap();
+    let v22 = migrations::MIGRATIONS
+        .iter()
+        .find(|m| m.version == 22)
+        .expect("v22 マイグレーション");
+    conn.execute_batch(v22.sql).unwrap();
+    conn.execute("INSERT INTO schema_migrations (version) VALUES (22)", [])
+        .unwrap();
+
+    // 既存行の description は NULL（未解決）
+    let desc: Option<String> = conn
+        .query_row(
+            "SELECT description FROM videos WHERE video_id = 'm_v'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(desc, None);
+    // 選出側（Db 経由）でも説明欠落行が needs_desc で対象になる
+    // （この行は kind_state=1 済みだが published_at も NULL なので
+    //   needs_published も立つ）
+    let db = Db {
+        conn: Arc::new(Mutex::new(conn)),
+        history_suppressed: Arc::new(Mutex::new(HashSet::new())),
+    };
+    let t = db
+        .meta_resolve_targets(10)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.video_id == "m_v")
+        .expect("説明欠落行は対象");
+    assert!(t.needs_desc);
+    // 書き込みと読み出しができ、一覧行は説明文を保持して返す
+    // （video_desc 評価で説明文を参照する前提）
+    db.videos_set_description("m_v", "説明文").unwrap();
+    let items = db
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
+        .unwrap();
+    let it = items
+        .iter()
+        .find(|i| i.video_id == "m_v")
+        .expect("一覧に m_v が出る");
+    assert_eq!(it.description.as_deref(), Some("説明文"));
 }

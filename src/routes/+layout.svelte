@@ -9,6 +9,7 @@
   import { initLiveWaits } from "$lib/livewait.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
   import QueuePanel from "$lib/QueuePanel.svelte";
+  import SetupWizard from "$lib/SetupWizard.svelte";
   import { queuePanel, tempQueue } from "$lib/queue.svelte";
   import {
     appUpdate,
@@ -98,6 +99,9 @@
 <!-- プレイヤーカードは常時マウント（webkit2gtk のヒットずれ対策。
      中身の表示は PlayerCards 側でパス判定して hidden にする） -->
 <PlayerCards />
+<!-- 初回起動の依存検出画面（FR-75、仕様決定 CZ）。表示済みフラグが
+     無い起動時だけ SetupWizard 側でオーバーレイを出す -->
+<SetupWizard />
 
 <div class="toasts" aria-live="polite">
   {#each appNotices as n (n.id)}

@@ -1,10 +1,12 @@
-//! メタの遅延解決基盤（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH、設計書 §4.18）。
+//! メタの遅延解決基盤（FR-53・FR-56・FR-57・FR-85、仕様決定 CD・CG・CH・DJ、
+//! 設計書 §4.18）。
 //!
-//! RSS・バックフィル・ライブラリ登録で欠けた `videos` の投稿日時（`published_at`）
-//! と種別（`kind`）を、InnerTube `player` 応答で後から埋める常駐ワーカー。
-//! `video_meta_resolve` と同じ `player` 経路を使い、投稿日時・放送状態・再生状態を
-//! 1 応答から取る（仕様決定 CD・CG の共用方針）。kind の試行失敗は定期的に
-//! 再試行する（仕様決定 CH）。処理量はバッチ件数と巡回間隔で上限化する（CD）。
+//! RSS・バックフィル・ライブラリ登録で欠けた `videos` の投稿日時（`published_at`）・
+//! 種別（`kind`）・説明文（`description`）を、InnerTube `player` 応答で後から
+//! 埋める常駐ワーカー。`video_meta_resolve` と同じ `player` 経路を使い、
+//! 投稿日時・放送状態・再生状態・説明文を 1 応答から取る（仕様決定 CD・CG の
+//! 共用方針。説明文の遅延保存は FR-85・仕様決定 DJ で追加）。kind の試行失敗は
+//! 定期的に再試行する（仕様決定 CH）。処理量はバッチ件数と巡回間隔で上限化する（CD）。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -93,10 +95,11 @@ enum ResolveError {
     Shorts(reqwest::Error),
 }
 
-/// メタの遅延解決ワーカー（仕様決定 CD・CG・CH）。`run` を起動時に spawn する。
-/// 対象の選出は `db.meta_resolve_targets`（kind_state / published_at /
-/// meta_checked で絞る）、書き戻しは `videos_set_published_at` /
-/// `videos_resolve_kind` / `videos_set_kind_state`。
+/// メタの遅延解決ワーカー（仕様決定 CD・CG・CH・DJ）。`run` を起動時に
+/// spawn する。対象の選出は `db.meta_resolve_targets`（kind_state /
+/// published_at / meta_checked / description で絞る）、書き戻しは
+/// `videos_set_published_at` / `videos_resolve_kind` /
+/// `videos_set_kind_state` / `videos_set_description`。
 pub struct MetaResolver {
     db: Db,
     app: AppHandle,
@@ -144,9 +147,11 @@ impl MetaResolver {
     }
 
     /// 1 サイクル分の解決。候補を DB から取り、起動内失敗上限に達した行を
-    /// 外して最大 `BATCH_MAX` 件まで順次処理する。kind 変化または
-    /// published_at 埋めが 1 件でもあれば `feed://kind_updated` を出す
-    /// （イベント名の維持。ペイロードは変化件数）。
+    /// 外して最大 `BATCH_MAX` 件まで順次処理する。kind 変化・published_at
+    /// または description の埋めが 1 件でもあれば `feed://kind_updated` を
+    /// 出す（イベント名の維持。ペイロードは変化件数。description が NG
+    /// フィルタ `video_desc` の評価に載るため、説明の解決でも一覧の
+    /// 再読込が要る。FR-85、仕様決定 DJ）。
     async fn resolve_once(&self) {
         let targets = match self.db.meta_resolve_targets(CANDIDATES) {
             Ok(t) => t,
@@ -194,11 +199,12 @@ impl MetaResolver {
         }
     }
 
-    /// 1 行分の解決。InnerTube メタ応答 1 件で published_at と kind をまとめて
-    /// 埋める（仕様決定 CD の共用）。戻り値は UI 更新を要する変化の件数。
+    /// 1 行分の解決。InnerTube メタ応答 1 件で published_at・kind・
+    /// description をまとめて埋める（仕様決定 CD の共用。description は
+    /// FR-85・仕様決定 DJ で追加）。戻り値は UI 更新を要する変化の件数。
     async fn resolve_one(&self, t: &MetaResolveTarget) -> Result<usize, ResolveError> {
         let mut changed = 0usize;
-        let snap = if t.needs_published || t.needs_kind {
+        let snap = if t.needs_published || t.needs_kind || t.needs_desc {
             let s = self.inner.meta_snapshot(&t.video_id).await?;
             if t.needs_published {
                 if let Some(at) = &s.published_at {
@@ -210,6 +216,16 @@ impl MetaResolver {
             // 応答を得た時点で試行済み。publishDate を持たない応答でも立て、
             // 投稿日時だけが欠けた行を「もう一度問う」対象から外す。
             self.db.videos_mark_meta_checked(&t.video_id)?;
+            // 説明文は応答に無くても空文字を書いて解決済みにする
+            // （説明なしの行へ繰り返し問い合わせないため。FR-85、仕様決定 DJ）。
+            // 書き込みは NULL の行だけで、NG 評価が変わり得るので変化に数える。
+            if t.needs_desc
+                && self
+                    .db
+                    .videos_set_description(&t.video_id, &s.description)?
+            {
+                changed += 1;
+            }
             Some(s)
         } else {
             None
@@ -282,6 +298,7 @@ mod tests {
     ) -> MetaSnapshot {
         MetaSnapshot {
             published_at: None,
+            description: String::new(),
             broadcast: BroadcastStatus {
                 is_live_now,
                 start_ms,

@@ -4,7 +4,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::db::Db;
 use crate::error::UiError;
-use crate::model::{DbSize, DbStatus, ExportDump, MonitorInfo, SettingChanged, YtDlpStatus};
+use crate::model::{
+    DbSize, DbStatus, DepStatus, ExportDump, MonitorInfo, SettingChanged, YtDlpStatus,
+};
 use crate::yt::{self, YtDlpResolver};
 
 const MAX_SETTING_KEY_LEN: usize = 128;
@@ -120,6 +122,25 @@ pub async fn ytdlp_update(
 ) -> Result<String, UiError> {
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
     Ok(yt::update(&path).await?)
+}
+
+/// `deps_status`（FR-74、仕様決定 CY）。mpv・yt-dlp・deno の検出状況・
+/// バージョン・解決パスを返す。設定画面の診断節と初回起動の依存検出画面
+/// （FR-75）が同じ一覧を表示する。
+#[tauri::command]
+pub async fn deps_status(
+    db: State<'_, Db>,
+    resolver: State<'_, YtDlpResolver>,
+) -> Result<Vec<DepStatus>, UiError> {
+    Ok(crate::deps::collect_deps_status(&db, &resolver).await)
+}
+
+/// `setup_deps_pending`（FR-75、仕様決定 CZ）。初回起動の依存検出画面を
+/// まだ表示していないか（`setup.deps_shown` が on 系でないか）を返す。
+#[tauri::command]
+pub fn setup_deps_pending(db: State<'_, Db>) -> Result<bool, UiError> {
+    let raw = db.setting_get(crate::deps::SETTING_SETUP_DEPS_SHOWN)?;
+    Ok(!crate::deps::setup_deps_shown_enabled(raw))
 }
 
 /// `data_export`（FR-62、仕様決定 CM）。`channels`/`categories`/`settings`/
