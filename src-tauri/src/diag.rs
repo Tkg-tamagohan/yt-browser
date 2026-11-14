@@ -307,15 +307,14 @@ fn settings_json(ctx: &DiagContext<'_>, masker: &Masker) -> Result<String, DiagE
 async fn environment_json(ctx: &DiagContext<'_>, masker: &Masker) -> Result<String, DiagError> {
     // 依存コマンドの検出は FR-74 の deps_status と同じ経路を使い、
     // 解決パスだけ診断出力用にマスクする（検出本体は再実装しない）
-    let deps: Vec<crate::model::DepStatus> =
-        crate::deps::collect_deps_status(ctx.db, ctx.ytdlp)
-            .await
-            .into_iter()
-            .map(|mut d| {
-                d.path = d.path.map(|p| masker.mask(&p));
-                d
-            })
-            .collect();
+    let deps: Vec<crate::model::DepStatus> = crate::deps::collect_deps_status(ctx.db, ctx.ytdlp)
+        .await
+        .into_iter()
+        .map(|mut d| {
+            d.path = d.path.map(|p| masker.mask(&p));
+            d
+        })
+        .collect();
 
     let generated_at = ctx.db.local_timestamp()?;
     let schema_version = ctx.db.schema_version()?;
