@@ -93,7 +93,7 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          (cd extension && zip -r ../dist/yt-browser-extension-${TAG_NAME}.zip .)
+          (cd extension && zip -r ../dist/yt-browser-extension-${TAG_NAME}.zip . -x "*.test.js")
       - name: Generate updater manifest (latest.json)
         env:
           # チェックアウトしないジョブなので対象リポジトリを明示する

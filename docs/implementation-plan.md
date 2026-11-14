@@ -698,13 +698,13 @@ FR-84（E2E テスト基盤、仕様決定 DI）は継続検証系の独立作�
 
 ### Phase 81：Chrome 拡張の初期状態、再生位置取得、境界判定の修復と整理（BG-11、仕様決定 DN）
 
-- [ ] アクションの全体既定を無効化し、ワーカー起動時・onInstalled・onStartup で既存タブの有効状態を同期する。タブ消失時の未処理エラー捕捉、invoke 応答、contextMenus の removeAll を入れる
-- [ ] content.js で広告再生中を除外しメインプレイヤーとアクティブな Shorts リールを優先して再生位置を取得する。popup.js の「再生位置を引き継いで開く」押下時に最新位置を再取得する
-- [ ] background を ES Module 化して classifyKind・classify・schemePrefix を shared.js へ集約し、/shorts/ と /live/ の末尾境界判定を拡張と本体 deeplink.svelte.ts の双方で厳密化する
-- [ ] release.yml の拡張 zip から *.test.js を除外し、manifest.json と background.js の重複マッチパターンを整理する
-- [ ] shared.test.js と deeplink-logic.test.ts に回帰テストを追加する
-- [ ] docs/design.md（§3.4 周辺）を更新する
-- [ ] 受け入れ：単体テストと整合チェックがすべて通過することを確認する
+- [x] アクションの全体既定を無効化し、ワーカー起動時・onInstalled・onStartup で既存タブの有効状態を同期する。タブ消失時の未処理エラー捕捉、invoke 応答、contextMenus の removeAll を入れる
+- [x] content.js で広告再生中を除外しメインプレイヤーとアクティブな Shorts リールを優先して再生位置を取得する。popup.js の「再生位置を引き継いで開く」押下時に最新位置を再取得する
+- [x] background を ES Module 化して classifyKind・classify・schemePrefix を shared.js へ集約し、/shorts/ と /live/ の末尾境界判定を拡張と本体 deeplink.svelte.ts の双方で厳密化する
+- [x] release.yml の拡張 zip から *.test.js を除外し、manifest.json と background.js の重複マッチパターンを整理する
+- [x] shared.test.js と deeplink-logic.test.ts に回帰テストを追加する
+- [x] docs/design.md（§3.4 周辺）を更新する
+- [x] 受け入れ：単体テストと整合チェックがすべて通過することを確認する
 
 ## 残課題（既知の制限と観察メモ）
 

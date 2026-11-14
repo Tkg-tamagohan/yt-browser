@@ -7,11 +7,12 @@
   "permissions": ["contextMenus", "tabs", "nativeMessaging"],
   "host_permissions": [],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["*://*.youtube.com/*", "*://music.youtube.com/*"],
+      "matches": ["*://*.youtube.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

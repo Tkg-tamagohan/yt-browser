@@ -1,11 +1,12 @@
 // yt-browser opener — YouTube の動画・プレイリストを yt-browser で開く／
-// 動画を一時キューやプレイリストへ追加する（yt-browser Phase 19・23・38・60、
-// 仕様決定 AC・AH・AX・CA・CB）
+// 動画を一時キューやプレイリストへ追加する（yt-browser Phase 19・23・38・60・81、
+// 仕様決定 AC・AH・AX・CA・CB・DN）
 //
 // - アクション（ツールバーボタン）: 動画画面・プレイリスト画面で有効。
 //   ポップアップで「yt-browser で開く」「再生位置を引き継いで開く」
 //   「キューに追加」「プレイリストへ追加」を選ぶ。
-//   対象外ページでは無効化して押せないようにする
+//   対象外ページでは無効化して押せないようにする（既定は無効とし、
+//   ワーカー起動・インストール・ブラウザ起動時に既存タブを同期する）
 // - 右クリックメニュー: 「yt-browser で開く」は動画・プレイリストへの
 //   リンク上で、「yt-browser のキューに追加」は動画リンク上でのみ表示
 // - 起動は Native Messaging で yt-browser 本体のホストモードへ URL と
@@ -20,52 +21,11 @@
 //   同じ action のスキーム方式でタブをアクティブで開き、バッジ「!」と
 //   ツールチップで理由を示す
 
+import { classify, classifyKind, schemePrefix } from "./shared.js";
+
 const HOST_NAME = "io.github.tkg_tamagohan.yt_browser";
 
 const DEFAULT_TITLE = "yt-browser で開く";
-
-// アクション別のスキームプレフィックス（native_host.rs の
-// scheme_prefix と揃える）
-function schemePrefix(action) {
-  return `yt-browser://${action}?url=`;
-}
-
-const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
-
-// 対象 URL の種別: 動画（watch / youtu.be / shorts / live）は "video"、
-// プレイリスト（/playlist?list=）は "playlist"、対象外は null。
-// watch+list 複合は動画として扱う（アプリ側の classify と揃える）
-function classifyKind(url) {
-  let u;
-  try {
-    u = new URL(url);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-  const host = u.hostname.replace(/^www\./, "");
-  if (host === "youtu.be") {
-    return VIDEO_ID.test(u.pathname.split("/")[1] ?? "") ? "video" : null;
-  }
-  if (
-    host !== "youtube.com" &&
-    host !== "music.youtube.com" &&
-    host !== "m.youtube.com"
-  ) {
-    return null;
-  }
-  const path = u.pathname;
-  if (path === "/playlist") return u.searchParams.get("list") ? "playlist" : null;
-  if (path === "/watch") {
-    return VIDEO_ID.test(u.searchParams.get("v") ?? "") ? "video" : null;
-  }
-  return /^\/(shorts|live)\/[A-Za-z0-9_-]{11}/.test(path) ? "video" : null;
-}
-
-// 「yt-browser で開く」の対象は動画・プレイリスト両方
-function classify(url) {
-  return classifyKind(url) !== null;
-}
 
 // Native Messaging で本体のホストへ URL と action を渡す。応答が ok
 // でなければ同じ action のスキーム方式へフォールバックする。
@@ -101,8 +61,12 @@ function openViaScheme(targetUrl, action, extra = {}) {
     scheme += `&playlist_id=${extra.playlistId}`;
   }
   chrome.tabs.create({ url: scheme, active: true }, (tab) => {
-    if (tab.id !== undefined) {
-      setTimeout(() => chrome.tabs.remove(tab.id), 5000);
+    if (tab?.id !== undefined) {
+      setTimeout(() => {
+        chrome.tabs.remove(tab.id, () => {
+          void chrome.runtime.lastError;
+        });
+      }, 5000);
     }
   });
 }
@@ -136,10 +100,29 @@ async function clearFailure() {
 
 async function updateActionState(tabId, url) {
   const ok = typeof url === "string" && classify(url);
-  if (ok) {
-    await chrome.action.enable(tabId);
-  } else {
-    await chrome.action.disable(tabId);
+  try {
+    if (ok) {
+      await chrome.action.enable(tabId);
+    } else {
+      await chrome.action.disable(tabId);
+    }
+  } catch {
+    // 判定中にタブが閉じられた場合は無視する
+  }
+}
+
+// 全タブ既定のアクションを無効化した上で、既存タブの有効状態を同期する
+async function syncActionStates() {
+  try {
+    await chrome.action.disable();
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(
+      tabs
+        .filter((tab) => tab.id !== undefined)
+        .map((tab) => updateActionState(tab.id, tab.url)),
+    );
+  } catch {
+    // 起動直後等でタブ取得できない場合は無視する
   }
 }
 
@@ -148,13 +131,15 @@ chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  const tab = await chrome.tabs.get(tabId);
-  void updateActionState(tabId, tab.url);
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await updateActionState(tabId, tab.url);
+  } catch {
+    // タブがすでに閉じられている場合は無視する
+  }
 });
 
-// --- ポップアップからの要求。種別判定とプレイリスト一覧の中継を返し、
-// 起動はここへ委譲させる ---
-// 判定ロジックを popup.js へ複製しないよう、分類はすべてこのリスナが担う
+// --- ポップアップからの要求。プレイリスト一覧の中継と起動委譲を返す ---
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "classify" && typeof msg.url === "string") {
     sendResponse({ kind: classifyKind(msg.url) });
@@ -196,40 +181,47 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     ) {
       sendToApp(msg.url, "playlist_add", { playlistId: msg.playlistId });
     }
+    sendResponse({ ok: true });
   }
 });
 
 // --- 右クリックメニュー（YouTube リンク上のみ） ---
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "open-in-yt-browser",
-    title: "yt-browser で開く",
-    contexts: ["link"],
-    targetUrlPatterns: [
-      "*://*.youtube.com/watch*",
-      "*://*.youtube.com/playlist*",
-      "*://*.youtube.com/shorts/*",
-      "*://*.youtube.com/live/*",
-      "*://youtu.be/*",
-      "*://music.youtube.com/watch*",
-      "*://music.youtube.com/playlist*",
-    ],
-  });
-  // キュー追加は動画リンクのみ（プレイリスト単体は対象外、仕様決定 AX）
-  chrome.contextMenus.create({
-    id: "queue-in-yt-browser",
-    title: "yt-browser のキューに追加",
-    contexts: ["link"],
-    targetUrlPatterns: [
-      "*://*.youtube.com/watch*",
-      "*://*.youtube.com/shorts/*",
-      "*://*.youtube.com/live/*",
-      "*://youtu.be/*",
-      "*://music.youtube.com/watch*",
-    ],
+  void syncActionStates();
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "open-in-yt-browser",
+      title: "yt-browser で開く",
+      contexts: ["link"],
+      targetUrlPatterns: [
+        "*://*.youtube.com/watch*",
+        "*://*.youtube.com/playlist*",
+        "*://*.youtube.com/shorts/*",
+        "*://*.youtube.com/live/*",
+        "*://youtu.be/*",
+      ],
+    });
+    // キュー追加は動画リンクのみ（プレイリスト単体は対象外、仕様決定 AX）
+    chrome.contextMenus.create({
+      id: "queue-in-yt-browser",
+      title: "yt-browser のキューに追加",
+      contexts: ["link"],
+      targetUrlPatterns: [
+        "*://*.youtube.com/watch*",
+        "*://*.youtube.com/shorts/*",
+        "*://*.youtube.com/live/*",
+        "*://youtu.be/*",
+      ],
+    });
   });
 });
+
+chrome.runtime.onStartup.addListener(() => {
+  void syncActionStates();
+});
+
+void syncActionStates();
 
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === "open-in-yt-browser" && info.linkUrl) {

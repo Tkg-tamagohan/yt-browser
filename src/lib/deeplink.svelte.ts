@@ -97,7 +97,7 @@ export function classifyTarget(url: string): OpenTarget | null {
     // watch+list 複合は動画として扱う（playlist 判定より後に置かないよう注意）
     return VIDEO_ID.test(v) ? { kind: "video", videoId: v, startSec } : null;
   }
-  const short = path.match(/^\/(shorts|live)\/([A-Za-z0-9_-]{11})/);
+  const short = path.match(/^\/(shorts|live)\/([A-Za-z0-9_-]{11})(?:\/|$)/);
   if (short) return { kind: "video", videoId: short[2], startSec };
   return null;
 }
