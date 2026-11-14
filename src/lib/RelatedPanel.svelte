@@ -16,6 +16,7 @@
   import { panelFetchKey } from "$lib/remount-logic";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import {
@@ -130,6 +131,7 @@
           thumbnailUrl={r.thumbnailUrl}
           dense={true}
           onplay={() => playRelated(r)}
+          oncontextmenu={(e) => openVideoContextMenu(e, videoRefOf(r), va)}
         >
           {#snippet sub()}{r.channelTitle ?? ""}{/snippet}
           {#snippet actions()}

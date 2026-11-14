@@ -477,4 +477,15 @@ pub const MIGRATIONS: &[Migration] = &[
                 FROM filters_migr;
               DROP TABLE filters_migr;",
     },
+    // Phase 76: video_desc フィルタの評価対象化（FR-85、仕様決定 DJ）。
+    // InnerTube `player` 応答の `videoDetails.shortDescription` を遅延解決で
+    // 保存する説明列。NULL は未解決、空文字は解決済みで説明なし
+    // （応答に shortDescription が無い・空の場合に空文字を書き、
+    //   説明を持たない行への繰り返し問い合わせを抑止する）。
+    // 既存行はすべて NULL になり、遅延解決の対象として順次解決される。
+    Migration {
+        version: 22,
+        name: "videos_description",
+        sql: "ALTER TABLE videos ADD COLUMN description TEXT;",
+    },
 ];

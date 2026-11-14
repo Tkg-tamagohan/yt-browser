@@ -11,6 +11,7 @@
   import VideoRow from "$lib/VideoRow.svelte";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import type { WatchHistory } from "$lib/players.svelte";
@@ -79,6 +80,13 @@
             videoId={h.videoId}
             title={h.title || h.videoId}
             onplay={() => play(h.videoId, true)}
+            oncontextmenu={(e) =>
+              openVideoContextMenu(
+                e,
+                videoRefOf({ ...h, title: h.title || h.videoId }),
+                va,
+                onPlaylistAdd,
+              )}
           >
             {#snippet sub()}
               {#if h.channelTitle}{h.channelTitle}{/if}

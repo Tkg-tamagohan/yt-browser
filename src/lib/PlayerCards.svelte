@@ -919,7 +919,7 @@
   }
 
   .badge {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-weight: 400;
     font-size: 0.85rem;
     margin-left: 8px;
@@ -934,7 +934,7 @@
   }
 
   .buffering {
-    color: #f9ab00;
+    color: var(--warn);
   }
 
   .controls {
@@ -950,7 +950,7 @@
     gap: 8px;
     align-items: center;
     font-size: 0.9rem;
-    color: #c8c9cc;
+    color: var(--fg-dim);
   }
 
   .controls select {

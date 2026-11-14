@@ -1,0 +1,49 @@
+<script lang="ts">
+  // キーボードショートカット節（FR-79、仕様決定 DD）。
+  // `ui.shortcuts` で既定キーマップを有効化する。既定は off（暫定解釈）。
+  // 値の解釈とキーマップの内訳は shortcuts-logic.ts が持つ
+  import { t } from "$lib/i18n";
+
+  let {
+    loading,
+    shortcutsEnabled = $bindable(),
+  }: {
+    loading: boolean;
+    shortcutsEnabled: boolean;
+  } = $props();
+</script>
+
+<section class="panel panel--filled">
+  <h2>{t("settings.shortcuts.title")}</h2>
+  <p class="subtle desc">{t("settings.shortcuts.desc")}</p>
+  <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
+       hidden 切替（ヒットずれ対策、FR-80） -->
+  <p class="subtle" class:hidden={!loading}>…</p>
+  <div class:hidden={loading}>
+    <label class="wheel-row">
+      <input type="checkbox" bind:checked={shortcutsEnabled} />
+      {t("settings.shortcuts.enabled")}
+    </label>
+    <p class="subtle desc">{t("settings.shortcuts.enabled.desc")}</p>
+  </div>
+</section>
+
+<style>
+  h2 {
+    font-size: 1.1rem;
+    margin: 0 0 4px;
+  }
+
+  .desc {
+    font-size: 0.9rem;
+    margin-top: 0;
+  }
+
+  .wheel-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0;
+    font-size: 0.95rem;
+  }
+</style>

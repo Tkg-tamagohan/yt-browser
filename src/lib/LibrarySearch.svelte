@@ -13,6 +13,7 @@
   } from "$lib/library-search-logic";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import type { LibrarySearchItem } from "$lib/players.svelte";
@@ -63,6 +64,13 @@
             title={it.title || it.videoId}
             thumbnailUrl={it.thumbnailUrl}
             onplay={() => play(it.videoId, true)}
+            oncontextmenu={(e) =>
+              openVideoContextMenu(
+                e,
+                videoRefOf({ ...it, title: it.title || it.videoId }),
+                va,
+                onPlaylistAdd,
+              )}
           >
             {#snippet sub()}
               {#each sortSources(it.sources) as src (src)}
@@ -103,9 +111,9 @@
     display: inline-block;
     margin-right: 4px;
     padding: 0 6px;
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    color: #8ab4f8;
+    color: var(--accent);
     font-size: 0.75rem;
   }
 </style>

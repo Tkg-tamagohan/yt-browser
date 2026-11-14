@@ -50,10 +50,11 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§4.16） |
-| `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57、§4.18） |
+| `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時・説明文と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57・FR-85、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
+| `ui` | 表示設定（`ui.*` キー）の解釈の正。配色と一覧密度はフロントだけで使う（FR-76・FR-77、仕様決定 DA・DB） |
 | `db` | 接続、マイグレーション、クエリ |
 | `model` | `Video`、`ChatEvent`、`FeedItem` などの共通型 |
 | `error` | `UiError { code, message }` への直列化と、各エラー型からの変換 |
@@ -106,6 +107,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `library_search` | `query`, `limit?`（既定 200、上限 1000） | `Result<Vec<LibrarySearchItem>>`（FR-60、仕様決定 CK。ライブラリ横断検索。同一動画は `sources` に区分を持つ 1 件へまとめる） |
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
+| `deps_status` | なし | `Result<Vec<DepStatus>>`（mpv・yt-dlp・deno の検出状況・バージョン・解決パス。FR-74、仕様決定 CY、§5） |
+| `setup_deps_pending` | なし | `Result<bool>`（初回起動の依存検出画面が未表示か。FR-75、仕様決定 CZ、§5） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
 | `playing_channel` | `video_id` | `Result<PlayingChannel>`（FR-12。videos → watch_history → yt-dlp メタの順に `subscribe_channel` へ渡せる入力と表示名を解決し、UC 確定時は購読済みかも返す） |
 | `unsubscribe_channel` | `channel_id` | `Result<()>` |
@@ -153,6 +156,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_size` | なし | `Result<DbSize>`（`bytes`。FR-66、仕様決定 CQ） |
 | `db_vacuum` | なし | `Result<()>`（FR-66、仕様決定 CQ） |
 | `db_cleanup_orphans` | なし | `Result<u64>`（削除した行数。FR-66、仕様決定 CQ） |
+| `diag_export` | `path`（保存先ファイルパス。保存ダイアログで選択） | `Result<()>`（FR-82、仕様決定 DG、§4.21） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -188,7 +192,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタと `uid`（項目のユニーク ID、BG-10、仕様決定 BK）付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
 `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
 `video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
-`videos` 台帳の投稿日時・kind を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56、仕様決定 CD・CG、§4.18）。
+`videos` 台帳の投稿日時・kind・説明文を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56・FR-85、仕様決定 CD・CG・DJ、§4.18）。
 `history_list` のカーソルは末尾行の `(last_watched_at, rowid)` の対で、一覧の全順序（`last_watched_at` 降順、同時刻は rowid 降順）と同じ基準で「その行の次（より古い側）から」を取る（FR-52、仕様決定 CC。`history_prune` の保持対象とも同じ順序）。`next_cursor` の有無は `limit`+1 件の取得で確定し、末尾ちょうどのページでも空の次ページを要求しない。`query` はタイトルと `channel_title` への `%...%` 部分一致 LIKE で、`%`・`_`・`\` を退避して利用者入力のワイルドカードを無力化する（FR-61、仕様決定 CL。空・空白のみは絞り込みなし）。一覧取得のページングであり、保持上限 10000 件の剪定運用（仕様決定 AV）とは別物。
 `watch_later_add` は `favorite_add` と同じく `video_upsert` で `videos` 台帳へ登録してから `watch_later` へ挿入し、`watch_later_list` は台帳との JOIN で表示メタを取る（FR-59、仕様決定 CJ）。
 `library_search` は履歴・お気に入り・プレイリスト項目・あとで見るの 4 区分をタイトルとチャンネル名の `%...%` 部分一致 LIKE（`history_list` の `query` と同じ退避規則）で横断検索する（FR-60、仕様決定 CK）。`query` の空・空白のみは 0 件を返す（暫定解釈）。同一動画が複数区分でヒットしたときは 1 件へまとめ、ヒットした区分の列を `sources` に履歴→お気に入り→プレイリスト→あとで見るの正準順で持つ。表示メタは区分をまたいだ先出の行を使い、空欄は後出の行で補完する。履歴区分は履歴行自身の列に加えて `videos` 台帳のメタでも照合する（履歴行の channel 列が未入力でも台帳にあれば拾う）。結果の並びは履歴の新しい順→お気に入りの新しい順→プレイリストの登録順→あとで見るの新しい順の先出順（暫定解釈）で、`limit` は統合後の件数上限。UI はライブラリ画面の「検索」タブに検索ボックスを置き、各行はヒット区分のバッジを付ける（検索 UI の置き場所は FR-60 が指定しないため、タブ構成に合わせた暫定解釈）。
@@ -237,7 +241,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
-| `feed://kind_updated` | `{ count }` | shorts 非同期判定またはメタの遅延解決で `videos.kind` / `published_at` が更新された（一覧の再読込を促す。§4.18）。自動既読（§4.19）で既読化があったときも出す |
+| `feed://kind_updated` | `{ count }` | shorts 非同期判定またはメタの遅延解決で `videos.kind` / `published_at` / `description` が更新された（一覧の再読込を促す。§4.18）。自動既読（§4.19）で既読化があったときも出す |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
@@ -270,7 +274,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `pip.quality.format` | `ytdl-format` 式 | PiP インスタンスの既定画質（§4.5）。未設定・空文字は `quality.format` に従う（仕様決定 W） |
 | `pip.default` | `on` / `off` | 再生の既定表示を PiP 小窓にするか（§4.5、仕様決定 AJ）。未設定・その他の値は `on`（PiP が既定） |
 | `pip.fit_aspect` | `on` / `off` | PiP 小窓のサイズを動画の表示アスペクト比へ追従させるか（§4.5、仕様決定 AL）。未設定・その他の値は `on`（追従する）。受理集合は `pip.default` と同一 |
-| `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5） |
+| `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5）。設定画面の依存節の入力欄からも設定できる（FR-72、仕様決定 CW） |
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
@@ -290,6 +294,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
 | `player.close_on_eof` | `on` / `off` | 再生完了時の自動クローズ（§4.15、FR-43、仕様決定 BS）。`on` のとき継続再生を伴わない `reason=eof` の終端でインスタンスを畳む。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（残す）。終端時点の値で都度判定する |
 | `live_wait.action` | `play` / `notify` | ライブ待機の開始検出時の動作（§4.16、FR-44、仕様決定 BT）。`play` は新規インスタンスで自動再生、`notify` はトースト通知のみ。未設定・その他の値は `play` |
+| `setup.deps_shown` | `on` / `off` | 初回起動の依存検出画面の既出フラグ（§5、FR-75、仕様決定 CZ）。on 系のみ表示済み＝次回以降は出さない。未設定・その他の値は未表示（初回起動で表示する）。受理集合は `feed.show_shorts` と同一 |
+| `ui.theme` | `dark` / `light` / `system` | 配色テーマ（FR-76、仕様決定 DA）。色は `app.css` の CSS 変数で持ち、`<html>` の `data-theme` 属性で切り替える。`system` は OS の `prefers-color-scheme` に従う。未設定・その他の値は `dark`。解釈の正は Rust 側 `src-tauri/src/ui.rs` |
+| `ui.density` | `comfortable` / `compact` | 一覧の表示密度（FR-77、仕様決定 DB）。`compact` は動画行（VideoRow）の行高・サムネイルを CSS 変数で縮小する（暫定解釈: 対象は VideoRow のみ）。`<html>` の `data-density` 属性で切り替える。未設定・その他の値は `comfortable` |
+| `ui.shortcuts` | `on` / `off` | アプリ側キーボードショートカットの有効化（§4.20、FR-79、仕様決定 DD）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（暫定解釈の既定）。値の解釈と既定キーマップの適用はフロント側が持つ |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -956,25 +964,35 @@ eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定
   限られるため、呼び出し側が成功後に `bookmark_list` で取り直す
   （暫定解釈。`livewait://changed` のようなバックエンド発の変更経路が無い）
 
-### 4.18 メタの遅延解決基盤（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）
+### 4.18 メタの遅延解決基盤（FR-53・FR-56・FR-57・FR-85、仕様決定 CD・CG・CH・DJ）
 
 `videos` 行のうち RSS・ローカル記録に欠けた投稿日時（`published_at`）と、
-RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワーカー（`metaresolve`
-モジュール、設計書 §2）が InnerTube `player` 応答で後から埋める。
-`player` の 1 応答から投稿日時・放送状態（`liveBroadcastDetails`・
-`videoDetails.isUpcoming`）・再生状態（`playabilityStatus`）・
-`isLiveContent` をまとめて取り、手動解決の `video_meta_resolve` と同じ
-経路を共用する（仕様決定 CD・CG）。
+RSS・バックフィルの推定に留まる種別（`kind`）、説明文（`description`）を、
+常駐ワーカー（`metaresolve` モジュール、設計書 §2）が InnerTube `player`
+応答で後から埋める。`player` の 1 応答から投稿日時・放送状態
+（`liveBroadcastDetails`・`videoDetails.isUpcoming`）・再生状態
+（`playabilityStatus`）・`isLiveContent`・説明文
+（`videoDetails.shortDescription`）をまとめて取り、手動解決の
+`video_meta_resolve` と同じ経路を共用する（仕様決定 CD・CG。
+説明文の遅延保存は FR-85・仕様決定 DJ で追加）。
 
-- 対象選出: `kind_state` が 0（未確定）または 2（直近の試行が失敗）の行と、
+- 対象選出: `kind_state` が 0（未確定）または 2（直近の試行が失敗）の行、
   `published_at` が NULL で `meta_checked=0`（InnerTube メタ応答を未試行）
-  の行を `first_seen_at` 降順で選ぶ。1 サイクルは最大 20 件、巡回間隔は
-  60 秒として処理量を上限化する（仕様決定 CD）。フィードの新規投入時には
-  `spawn_kind_detection` から `wake` で即時起こされる
+  の行、`description` が NULL の行を `first_seen_at` 降順で選ぶ。
+  1 サイクルは最大 20 件、巡回間隔は 60 秒として処理量を上限化する
+  （仕様決定 CD）。フィードの新規投入時には `spawn_kind_detection` から
+  `wake` で即時起こされる。説明文の選出は NULL 判定だけで試行済み印を
+  持たない（暫定解釈: 応答が説明文を持たないときは空文字を書き込み、
+  NULL でなくなることで解決済みを表す）
 - 投稿日時: `playerMicroformatRenderer.publishDate`（無ければ `uploadDate`）を
   UTC の ISO 表記へ正規化し、NULL の行だけに書き込む（FR-53、仕様決定 CD）。
   応答を得た時点で `meta_checked=1` を立て、publishDate を持たない応答への
   繰り返し問い合わせは抑止する（kind の再試行とは独立した記録）
+- 説明文: `videoDetails.shortDescription` を `description` が NULL の行
+  だけに書き込む（FR-85、仕様決定 DJ）。応答が説明文を持たない
+  （パース結果が空文字）場合も空文字を書き、説明なしを確定させて
+  「もう一度問う」対象から外す。既存値は上書きしない暫定解釈
+  （投稿後に説明文が編集されても追従しない）
 - kind 分類: `isLiveNow` 真は `live`（`isLiveContent` 偽は `premiere`）、
   放送詳細あり・終了時刻なしまたは `isUpcoming` 真は `upcoming`、
   終了時刻ありは `isLiveContent` 真なら `live`（ライブのアーカイブ）、
@@ -990,8 +1008,9 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
   する（FR-57、仕様決定 CH）。同一行の連続失敗が 1 起動内で 5 回を超えたら
   その起動中は対象から外し、次回起動で再び対象に戻す（恒久に失敗する行が
   選出順を占有しないための暫定解釈）
-- `kind` の値が変わった、または `published_at` を埋めた件数の合計が
-  1 件以上で `feed://kind_updated` を出し、一覧の再読込を促す
+- `kind` の値が変わった、または `published_at`・`description` を埋めた
+  件数の合計が 1 件以上で `feed://kind_updated` を出し、一覧の再読込を
+  促す（説明文の解決は `video_desc` フィルタの評価結果を変え得るため）
 - バックフィルのタブ由来など `video` 以外の推定 kind が付いた行へ
   「放送系でない」応答が返ったときは、由来の kind を残したまま確定する
   （放送予定が応答へ載る前の誤確定を避ける暫定解釈）
@@ -1029,6 +1048,126 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
 `ingested=1` の行に限る（`ingested=0` のプレースホルダは一覧に
 出ないため対象外）。
 
+### 4.20 動画行のコンテキストメニューとキーボードショートカット（FR-78・FR-79、仕様決定 DC・DD）
+
+一覧の使い勝手を上げる 2 つの UI 補助。どちらもフロント側に集約し、
+バックエンドは汎用の `settings_get` / `settings_set` の受け渡しのみ。
+
+**コンテキストメニュー（FR-78、仕様決定 DC）**: `VideoRow` の
+`oncontextmenu` で行の右クリックを受け、共有状態 `videoContextMenu`
+（`video-actions.svelte.ts`）へ対象動画・開いた側の行アクション状態・
+クリック位置を積む。OS 既定のコンテキストメニューは抑止する。
+メニュー本体はレイアウトに 1 つだけマウントした `VideoContextMenu`
+が出し、中身は行アクション「＋」が開くのと同じプレイリスト追加
+メニュー（`VideoActions` から抽出した `VideoActionsMenu` 部品）を
+そのまま使う。表示位置はクリック位置を左上とし、ビューポートの
+右端・下端をはみ出すときは内側へ折り返す（開く前は未計測のため
+概算寸法で決める暫定解釈。`context-menu-logic.ts`、VC-NN 系テスト）。
+メニュー外のポインタ操作・Escape・画面遷移で閉じ、別行の右クリックは
+開き直しになる。開く中身はプレイリスト追加メニューだけとし、
+お気に入り・あとで見る・キューの各行アクションはコンテキスト
+メニューに含めない（暫定解釈。仕様は「VideoActions のメニュー」と
+のみ定めるため、既存メニューと同じ中身に限定する）
+
+**キーボードショートカット（FR-79、仕様決定 DD）**: レイアウトで
+`initShortcuts()`（`shortcuts.svelte.ts`）がウィンドウ レベルの
+keydown を購読し、`ui.shortcuts` が on のときだけ既定キーマップを
+効かせる。キーマップ・設定解釈・対象ガード・選択遷移は
+`shortcuts-logic.ts` の純粋関数に集約する（KS-NN 系テスト）。
+設定の変更は `settings://changed` で追従するため設定画面での保存から
+即時に切り替わる。
+
+- 既定キーマップ（暫定解釈）: `j` / `↓` は次の行、`k` / `↑` は前の行、
+  `Enter` は選択行の再生（行のタイトルボタンを押す扱い）、`a` は
+  選択行をキューに追加（行アクションの「キューに追加」と同じ、
+  パネル選択中のキュー）、`q` はキューパネルの開閉
+- 対象の「一覧」は画面に出ている動画行（`li.vr[data-video-id]`）の
+  DOM 順。選択は行位置のインデックスだけを持ち、未選択から下へは
+  先頭・上へは末尾へ入り、端で止まる（折り返さない）。選択行は
+  `data-shortcut-selected` 属性の枠線で示す（暫定解釈）
+- 「キューの操作」の範囲は選択行のキュー追加とパネル開閉までとし、
+  パネル内の項目編集（並べ替え・削除・再生開始）は対象外（暫定解釈）
+- 対象外ガード: 入力欄（input / textarea / select / contenteditable）
+  のフォーカス中、Ctrl / Alt / Meta 付きの打鍵、コンテキストメニュー
+  表示中はショートカットを効かせない。Enter はボタン・リンク上では
+  その要素本来の起動を優先する
+- 設定値の読み取りに失敗したときは既定（off）のまま動く
+
+### 4.21 診断情報のエクスポート（FR-82、仕様決定 DG）
+
+サポート目的で外部へ共有する診断情報を、設定画面の運用節から zip 1 本で
+書き出す。コマンドは `diag_export`（§3.1）で、保存先は
+`tauri-plugin-dialog` の保存ダイアログで選ばせる（既定名
+`yt-browser-diag-<yyyymmdd>-<hhmmss>.zip`。`diag-logic.ts`）。
+
+zip の内容は次のとおり（生成は `src-tauri/src/diag.rs`）。
+
+| エントリ | 内容 |
+|---|---|
+| `README.txt` | 同梱物の説明とマスク方針の注記 |
+| `environment.json` | OS・アーキテクチャ・アプリと Tauri のバージョン、表示環境（§4.14 の windowing_system）、DB スキーマバージョン、依存コマンド（mpv・yt-dlp・deno）の検出状況とバージョン、各種ディレクトリパス（マスク済み）、生成時刻 |
+| `settings.json` | `settings` テーブル全件の `{キー: 値}` オブジェクト（後述のマスク適用） |
+| `logs/` | アプリログ（`yt-browser.log*`）を更新時刻の新しい順に最大 10 件、各ファイル末尾側 2 MiB まで |
+
+依存コマンドの検出は FR-74 の `deps_status` と同じ経路
+（`deps::collect_deps_status`。mpv・deno は PATH 上の
+`<name> --version`、yt-dlp は設定・同梱・PATH を横断する
+リゾルバ経由）を使い、解決パスだけマスクしてから書き出す。
+ログ収集に失敗しても zip 生成は継続し、ログ無しの zip も正常とする
+（暫定解釈）。mpv ログ（`mpv-*.log`）は署名入りストリーム URL が
+mpv 自身の出力として記録され得て内容を制御できないため、
+§4.9 の「外部へ共有しない」前提どおり zip の対象外とする（暫定解釈）。
+
+マスク規則（zip に入れる直前に全テキストへ適用する）:
+
+1. 既知の絶対ディレクトリ（ログ・データ・設定・ホーム）を
+   `<LOG_DIR>`・`<DATA_DIR>`・`<CONFIG_DIR>`・`<HOME>` の
+   プレースホルダへ置き換える（区切りは `\` `/` 双方の表記を対象）
+2. URL クエリで秘匿名の値を `***` へ置き換える
+   （`sig=ABC&x=1` → `sig=***&x=1`）
+3. JSON 片の `"<秘匿名>": <値>` を `"<秘匿名>": "***"` へ置き換える
+4. `Authorization: Bearer|Basic <値>`、`Cookie:`、`Set-Cookie:` の
+   ヘッダ値を `***` へ置き換える（行末まで）
+5. 上記に残った汎用ユーザーディレクトリ（`C:\Users\<名>`・
+   `/home/<名>`・`/Users/<名>`）のユーザー名を `***` へ置き換える
+
+秘匿名は名前の列挙式（暫定解釈）で、署名系（`sig`・`lsig`・
+`signature`・`pot`・`po_token`）、認証系（`token` 系・`auth`・
+`authorization`・`key`・`api_key`・`apikey`・`secret`・
+`client_secret`・`password`・`passwd`・`bearer`）、セッション系
+（`session`・`session_id`・`sid`・`visitor_data`・`continuation`・
+`cookie`・`cookies`）、発信元の秘匿（`ip`・`ipbits`）を対象とする。
+動画 ID・itag・`expire` などの再生系パラメータは診断に要るため残す。
+`settings.json` ではこれに加えて、キー名が `token`・`secret`・
+`password`・`passwd`・`credential`・`cookie` の断片を含む設定は
+値全体を `"***"` とする（`ytdlp.po_token` など、値の中身を解析せず
+潰す）。それ以外の設定値は上記テキスト規則を適用する。
+
+マスク規則は網羅を保証するものではなく、未知の形式の秘匿値が残り得る。
+共有前に内容を確認するようユーザーガイドでも案内する。
+
+回帰テストは DB-DG-01 〜 DB-DG-09（マスク・設定出力・ログ収集・
+zip 生成の一通り）と DX-01（既定ファイル名の規則）。
+
+### 4.22 通知履歴（FR-83、仕様決定 DH）
+
+共有キュー（`notices.svelte.ts` の `notify()`）経由で発行した通知を、
+トースト表示とは別に履歴として保持し、設定画面の履歴一覧
+（`SettingsNoticesSection`）で新しい順に一覧できるようにする。
+履歴項目は `{ id, msg, at, actionLabel? }` で、実行可能な
+コールバックは持たずアクションはラベルのみ表示に留める
+（暫定解釈: 履歴から操作を再実行する要件は無い）。
+
+保持はメモリ内のみとする（暫定解釈: 永続化しない。通知は DB・
+イベント経路を持たないフロント側の一時表示機構であり、再起動を
+跨ぐ記録は要求されていないためマイグレーションは設けない）。
+保持上限は 200 件の暫定解釈（`NOTICE_HISTORY_MAX`）で、超過分は
+古い方から落とす。一覧には手動の消去ボタンを置く。
+なお各ページのローカル notify（設定画面の保存通知など共有キューを
+通らない通知）は履歴の対象外とする（暫定解釈）。
+
+回帰テストは NH-01 〜 NH-03（追加・上限削除・表示順・時刻形式）。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1051,6 +1190,13 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
 - **PO Token**：要求される環境では yt-dlp 側の手順（`--cookies-from-browser` や外部プロバイダ）を利用する
   アプリからの伝達経路は後フェーズの課題とし、README に手順へのポインタを置く。
 - **失敗の扱い**：タイムアウト、非ゼロ終了、JSON パース失敗を区別して記録し、解析失敗は生の先頭部分をログに残す
+
+依存コマンドの設定画面公開と診断・初回誘導を次に置く（Phase 70、FR-72〜FR-75、仕様決定 CW・CX・CY・CZ）。
+
+- **依存節**：設定画面の「依存コマンド」節に `ytdlp.path` のパス入力欄を置く（FR-72、仕様決定 CW）。空欄は自動検出（上記の解決順）で、保存後の次の yt-dlp 呼び出しから有効
+- **診断節**：`deps_status` コマンドが mpv・yt-dlp・deno の検出状況・バージョン・解決パスをこの順で返し、設定画面の「診断」節が一覧する（FR-74、仕様決定 CY）。mpv・deno は PATH 上の `<cmd> --version` で検出する（spawn 成功かつ終了コード 0 を検出とみなし、応答停止対策のタイムアウトは `yt::which_exists` と同じ 10 秒）。解決パスは PATH 解決名としてコマンド名を返す。yt-dlp は `YtDlpResolver` の解決順の結果を使う。`--version` 出力は先頭の非空行をバージョン表示に使う（mpv は後続行にビルド情報、deno は v8 / typescript の行が続くため）。3 件の検出は並行して行う
+- **初回セットアップ**：設定 `setup.deps_shown` が on 系でない起動時に `setup_deps_pending` が true を返し、フロントは FR-74 の依存検出画面（診断節と同じ一覧部品）をオーバーレイで表示してセットアップを誘導する（FR-75、仕様決定 CZ）。「はじめる」で `setup.deps_shown` に `on` を保存して閉じ、次回以降は表示しない。判定の解釈は `feed.show_shorts` 系と同じ on 系受理集合（on/true/1/yes）
+- **節フィルタ**：設定画面上部の絞り込み入力で、節のラベル文字列（見出しと項目名の i18n 解決値とコマンド名）への大小文字を区別しない部分一致で表示する節を絞る（FR-73、仕様決定 CX）。空・空白のみの入力は全節を表示する。非表示は hidden 切替で再マウントしない（§9.4 の方針に揃える暫定解釈）。判定は `settings-filter.ts` の純粋関数に集約し、節とラベルの対応は同ファイルの `SETTINGS_SECTION_DEFS` に登録する
 
 ## 6. InnerTube クライアントとチャットパイプライン
 
@@ -1143,7 +1289,8 @@ NG メッセージも送信自体は行い、UI 側の表示だけをフィル�
 
 - literal はパターン集合を Aho-Corasick で 1 回走査
 - regex は `RegexSet` でプリコンパイルし、ヒットした集合だけ個別 `Regex` で詳細を取る
-- highlight（FR-69、仕様決定 CT）は literal と同じ部分一致の照合を使うが、NG とは別の照合集合を持ち、マッチしたチャット発言を除去ではなく強調表示に使う。適用対象は `chat_text`（本文）と `chat_author`（投稿者名・チャンネル ID）で、NG と同じフィールド解決を踏襲する。動画系 target の highlight 行は登録できるが現行の評価経路では使わない（video_desc の「評価対象外」と同じ扱い。暫定解釈）
+- highlight（FR-69、仕様決定 CT）は literal と同じ部分一致の照合を使うが、NG とは別の照合集合を持ち、マッチしたチャット発言を除去ではなく強調表示に使う。適用対象は `chat_text`（本文）と `chat_author`（投稿者名・チャンネル ID）で、NG と同じフィールド解決を踏襲する。動画系 target の highlight 行は登録できるが現行の評価経路では使わない（暫定解釈）
+- `video_desc` は `videos.description`（遅延解決で保存した説明文、FR-85・仕様決定 DJ・§4.18）へ評価する。一覧の表示経路のうちフィード一覧だけが説明文を持つため、評価するのはフィード経路のみ（検索・関連動画の取得結果は説明文フィールドを持たず `video_desc` は未評価のまま通す暫定解釈）。説明未解決（`description` が NULL）の行は `video_desc` の評価対象にしない暫定解釈（説明文が取れるまで NG にならない）
 - フィルタ変更時にマッチャ全体を再構築する単純な方式にし、増分更新は行わない
 
 `chat_author` フィルタは設定画面の「NG ユーザー」節（仕様決定 CU、FR-70）からも管理でき、そこでは NG 系種別（literal / regex）の `chat_author` 行だけを一覧・追加（部分一致で固定）・解除する。
@@ -1196,7 +1343,9 @@ CREATE TABLE videos (
   first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
   ingested INTEGER NOT NULL DEFAULT 0,     -- 0=ライブラリ由来のプレースホルダ、1=フィード投入済み
   kind_state INTEGER NOT NULL DEFAULT 0,   -- kind の判定状態: 0=未確定, 1=確定, 2=直近の試行が失敗
-  meta_checked INTEGER NOT NULL DEFAULT 0  -- InnerTube メタ応答の試行済み印（投稿日時解決の重複抑止）
+  meta_checked INTEGER NOT NULL DEFAULT 0, -- InnerTube メタ応答の試行済み印（投稿日時解決の重複抑止）
+  description TEXT                         -- 遅延解決済みの説明文（FR-85、v22）。
+                                           -- NULL=未解決、''=解決済み・説明なし
 );
 
 CREATE TABLE watch_history (
@@ -1309,6 +1458,7 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。
   判定の失敗・未確定はメタの遅延解決基盤が定期的に再試行し、投稿日時の欠落と放送系 kind（`live`/`upcoming`/`premiere`）も同じ経路で後から埋める（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH、§4.18）。
   `kind_state` は kind の判定状態（0=未確定 / 1=確定 / 2=直近の試行が失敗）、`meta_checked` は投稿日時解決のための InnerTube メタ応答の試行済み印（§4.18）。
+  `description` は遅延解決で InnerTube `player` 応答の `videoDetails.shortDescription` を保存する説明列（FR-85、仕様決定 DJ。NULL=未解決、''=解決済み・説明なし）。`video_desc` NG フィルタの評価材料で、一覧取得時には返却ペイロードへ入れずフィルタ適用だけに使う。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
 - `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v17 で単一行制約を外した）
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
@@ -1414,14 +1564,17 @@ yt-browser/
       db/             # rusqlite・マイグレーション
       model/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
+      deps.rs         # 依存コマンド（mpv・yt-dlp・deno）の検出と初回セットアップ判定（§5）
+      diag.rs         # 診断情報の zip エクスポートと秘匿マスク（§4.21）
       native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
+      ui.rs           # ui.* 表示設定の解釈の正（FR-76・FR-77、§3.3）
       util.rs
     mpv/wheel.lua     # include_str! でバイナリに埋め込む同梱スクリプト
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

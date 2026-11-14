@@ -77,7 +77,7 @@
     align-items: center;
     gap: 12px;
     padding: 6px 0;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
   }
 
   .blocked-list .ch-title {

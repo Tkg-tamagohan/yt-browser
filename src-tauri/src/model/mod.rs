@@ -233,6 +233,21 @@ pub struct YtDlpStatus {
     pub version: Option<String>,
 }
 
+/// `deps_status` コマンドの戻り値要素（FR-74、仕様決定 CY）。
+/// mpv・yt-dlp・deno の 1 件分。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepStatus {
+    /// 依存コマンドの名前（"mpv" / "yt-dlp" / "deno"）。
+    pub name: String,
+    /// 検出できたか。false のとき path/version は None。
+    pub detected: bool,
+    /// 解決したパスまたは PATH 上のコマンド名。未検出は None。
+    pub path: Option<String>,
+    /// `--version` 出力の先頭非空行。取得失敗・未検出は None。
+    pub version: Option<String>,
+}
+
 /// `channels` テーブルの 1 行（設計書 §8）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -316,6 +331,11 @@ pub struct FeedItem {
     pub published_at: Option<String>,
     pub kind: String,
     pub is_read: bool,
+    /// 遅延解決済みの説明文（FR-85、仕様決定 DJ）。`video_desc` フィルタの
+    /// 評価だけに使う内部フィールドで、一覧行のペイロード増大を避けるため
+    /// 直列化では送らない（NULL は未解決、空文字は解決済み・説明なし）。
+    #[serde(skip)]
+    pub description: Option<String>,
 }
 
 /// `feed://new_items` イベントのペイロード（設計書 §3.2）。

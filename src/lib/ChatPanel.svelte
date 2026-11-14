@@ -47,14 +47,14 @@
   .chat-head .link {
     border: none;
     background: none;
-    color: #8ab4f8;
+    color: var(--accent);
     font-size: 0.85rem;
     cursor: pointer;
     padding: 0;
   }
 
   .chat-status {
-    color: #f9ab00;
+    color: var(--warn);
     font-size: 0.85rem;
     margin: 4px 0;
   }

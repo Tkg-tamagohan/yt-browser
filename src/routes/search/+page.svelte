@@ -9,6 +9,7 @@
   import VideoRow from "$lib/VideoRow.svelte";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import {
@@ -153,6 +154,7 @@
         thumbnailUrl={r.thumbnailUrl}
         thumbSize="lg"
         onplay={() => playItem(r)}
+        oncontextmenu={(e) => openVideoContextMenu(e, videoRefOf(r), va)}
       >
         {#snippet sub()}
           {#if r.channelTitle}{r.channelTitle}{/if}

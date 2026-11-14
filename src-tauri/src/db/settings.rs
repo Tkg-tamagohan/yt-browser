@@ -22,4 +22,17 @@ impl Db {
         )?;
         Ok(())
     }
+
+    /// 全設定をキー順で返す（診断エクスポート用、FR-82・仕様決定 DG）。
+    /// 値のマスクは呼び出し側が行う。
+    pub fn settings_list(&self) -> Result<Vec<(String, String)>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push((row.get(0)?, row.get(1)?));
+        }
+        Ok(out)
+    }
 }

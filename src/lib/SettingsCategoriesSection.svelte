@@ -193,7 +193,7 @@
     align-items: center;
     gap: 4px;
     padding: 4px 0;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
   }
 
   .cat-list li[draggable="true"] {
@@ -201,7 +201,7 @@
   }
 
   .cat-list li.drop-target {
-    border-top: 2px solid #8ab4f8;
+    border-top: 2px solid var(--accent);
   }
 
   .cat-name {

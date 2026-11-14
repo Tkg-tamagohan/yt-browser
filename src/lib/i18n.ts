@@ -571,6 +571,30 @@ const ja = {
   "settings.chatpopup.unsaved":
     "保存中にチャットポップアップの値が変更されました。もう一度保存してください",
 
+  // Phase 71: テーマと表示密度（FR-76・FR-77、仕様決定 DA・DB）
+  "settings.ui.title": "表示",
+  "settings.ui.desc":
+    "画面の配色テーマと一覧の表示密度。保存すると直ちに表示へ反映されます",
+  "settings.ui.theme": "配色テーマ",
+  "settings.ui.theme.dark": "ダーク",
+  "settings.ui.theme.light": "ライト",
+  "settings.ui.theme.system": "システムに合わせる",
+  "settings.ui.density": "一覧の表示密度",
+  "settings.ui.density.comfortable": "標準",
+  "settings.ui.density.compact": "コンパクト",
+  "settings.ui.unsaved":
+    "保存中に表示設定の値が変更されました。もう一度保存してください",
+
+  // Phase 72: キーボードショートカットの有効化（FR-79、仕様決定 DD）
+  "settings.shortcuts.title": "ショートカット",
+  "settings.shortcuts.desc":
+    "一覧とキューをキーボードで操作する既定キーマップ。保存で有効・無効が切り替わる（既定はオフ）",
+  "settings.shortcuts.enabled": "キーボードショートカットを有効にする",
+  "settings.shortcuts.enabled.desc":
+    "一覧の動画行で j / ↓（次の行）・k / ↑（前の行）・Enter（選択行を再生）・a（選択行をキューに追加）・q（キューパネルの開閉）が使えます。入力欄の編集中やコンテキストメニュー表示中は無効です",
+  "settings.shortcuts.unsaved":
+    "保存中にショートカットの値が変更されました。もう一度保存してください",
+
   // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）
   "bookmark.add": "ブックマーク",
   "bookmark.add.hint": "現在位置をブックマークへ保存",
@@ -643,7 +667,45 @@ const ja = {
   "settings.ops.cleanupConfirm": "孤児行を削除します。実行しますか？",
   "settings.ops.cleanupDone": "{count} 件の孤児行を削除しました",
   "settings.ops.cleanupFailed": "孤児行整理に失敗: {message}",
+  "settings.ops.diag": "診断情報をエクスポート",
+  "settings.ops.diag.desc":
+    "アプリログ・設定・環境情報を 1 つの zip にまとめて書き出します。署名 URL やトークン、パス内のユーザー名はマスクされます（FR-82）",
+  "settings.ops.diagExported": "診断情報をエクスポートしました: {path}",
+  "settings.ops.diagFailed": "診断情報のエクスポートに失敗: {message}",
   "settings.ops.busy": "実行中…",
+
+  // Phase 70: 設定と依存診断の拡充（FR-72・FR-73・FR-74・FR-75、仕様決定 CW・CX・CY・CZ）
+  "settings.filter.placeholder": "節を絞り込み（例: 画質、mpv、フィード）",
+  "settings.filter.noMatch": "一致する節がありません",
+  "settings.deps.title": "依存コマンド",
+  "settings.deps.desc":
+    "mpv・yt-dlp・deno など外部コマンドの設定。検出状況の一覧は「診断」節を参照",
+  "settings.deps.ytdlpPath": "yt-dlp のパス",
+  "settings.deps.ytdlpPath.placeholder": "自動検出（空欄）",
+  "settings.deps.ytdlpPath.desc":
+    "yt-dlp 実行ファイルを直接指定します。空欄は自動検出（同梱リソース → PATH の順）です。変更は保存後、次の yt-dlp 呼び出しから有効になります",
+  "settings.deps.unsaved":
+    "保存中に依存コマンドの値が変更されました。もう一度保存してください",
+  "settings.diag.title": "診断",
+  "settings.diag.desc":
+    "外部コマンドの検出状況・バージョン・解決パスの一覧。初回起動時にも同じ一覧が表示されます",
+  "deps.detected": "検出",
+  "deps.missing": "未検出",
+  "deps.refresh": "再検出",
+  "deps.refreshing": "検出中…",
+  "deps.failed": "依存コマンドの検出に失敗: {message}",
+  "setup.title": "初期セットアップ",
+  "setup.desc":
+    "yt-browser の動作に必要な外部コマンドの検出状況です。未検出のコマンドはインストールするか、設定画面の「依存コマンド」節でパスを指定してください。この一覧は設定画面の「診断」節でいつでも再確認できます",
+  "setup.ok": "はじめる",
+
+  // Phase 75: 通知履歴（FR-83、仕様決定 DH）
+  "settings.notices.title": "通知履歴",
+  "settings.notices.desc":
+    "このセッションで発行された通知の一覧です。新しい順に最大 {max} 件を保持し、アプリの再起動で消えます",
+  "settings.notices.empty": "このセッションではまだ通知は発行されていません",
+  "settings.notices.action": "アクション: {label}",
+  "settings.notices.clear": "履歴を消去",
 
 } as const;
 

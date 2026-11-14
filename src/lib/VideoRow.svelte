@@ -7,10 +7,11 @@
   //   VR-1a: タイトルは全行で再生を呼ぶ button（onplay を渡すとボタン化）。
   //   VR-2a: actionsPlacement で below（メタ内下段）/ side（行右端・縦中央）の
   //         2 系統を維持。
-  //   VR-3a: 幅は thumbSize の 3 系統（96/120/160px）を維持し、16:9 cover・
-  //         角丸・下地色は統一。サムネイル欠落時は mqdefault で補完し、
-  //         loading="lazy" を全行に付ける。
-  //   VR-4a: 罫線は border-bottom #2d2f33 に統一。関連パネルは dense variant
+  //   VR-3a: 幅は thumbSize の 3 系統（既定 96/120/160px）を維持し、
+  //         16:9 cover・角丸・下地色は統一。幅は CSS 変数（--thumb-*）で
+  //         持ち、ui.density=compact で縮まる（FR-77、仕様決定 DB）。
+  //         サムネイル欠落時は mqdefault で補完し、loading="lazy" を全行に付ける。
+  //   VR-4a: 罫線は border-bottom var(--border-row) に統一。関連パネルは dense variant
   //         （小フォント・狭余白・罫線なし）。
   import type { Snippet } from "svelte";
 
@@ -30,7 +31,12 @@
     /// アクション群の位置: below=メタ内下段 / side=行右端（縦中央揃え）。
     actionsPlacement?: "below" | "side";
     /// 指定時タイトルを再生ボタンとして描画する。
+    /// キーボードショートカット（FR-79）の Enter 再生もこのボタン
+    /// （data-act="play"）を押す扱いにする
     onplay?: () => void;
+    /// 行の右クリック。VideoActions のコンテキストメニュー（FR-78、
+    /// 仕様決定 DC）を開くときに呼び出し側から渡す
+    oncontextmenu?: (e: MouseEvent) => void;
     /// 行頭の追加要素（プレイリストの順位番号など）。
     leading?: Snippet;
     /// サブ行（チャンネル名や日時など）。中身は各ページの現行マークアップを受ける。
@@ -57,6 +63,7 @@
     dense = false,
     actionsPlacement = "below",
     onplay,
+    oncontextmenu,
     leading,
     sub,
     actions,
@@ -96,7 +103,9 @@
   class:dense
   class:dimmed
   class:drop-target={dropTarget}
+  data-video-id={videoId}
   {draggable}
+  {oncontextmenu}
   {ondragstart}
   {ondragover}
   {ondragleave}
@@ -117,7 +126,7 @@
   {/if}
   <div class="meta">
     {#if onplay}
-      <button class="title" onclick={onplay}>{title}</button>
+      <button class="title" data-act="play" onclick={onplay}>{title}</button>
     {:else}
       <div class="title">{title}</div>
     {/if}
@@ -134,10 +143,10 @@
 <style>
   .vr {
     display: flex;
-    gap: 12px;
+    gap: var(--row-gap);
     align-items: flex-start;
-    padding: 10px 0;
-    border-bottom: 1px solid #2d2f33;
+    padding: var(--row-pad-y) 0;
+    border-bottom: 1px solid var(--border-row);
   }
 
   .vr.side {
@@ -160,7 +169,7 @@
   }
 
   .vr.drop-target {
-    border-top: 2px solid #8ab4f8;
+    border-top: 2px solid var(--accent);
   }
 
   .vr[draggable="true"] {
@@ -171,20 +180,20 @@
     aspect-ratio: 16 / 9;
     object-fit: cover;
     border-radius: 6px;
-    background: #26282c;
+    background: var(--bg-inset);
     flex-shrink: 0;
   }
 
   .thumb.sm {
-    width: 96px;
+    width: var(--thumb-sm);
   }
 
   .thumb.md {
-    width: 120px;
+    width: var(--thumb-md);
   }
 
   .thumb.lg {
-    width: 160px;
+    width: var(--thumb-lg);
   }
 
   .meta {
@@ -203,7 +212,7 @@
     padding: 0;
     border: none;
     background: none;
-    color: #e8e8e8;
+    color: var(--fg);
     font-family: inherit;
     font-size: inherit;
     text-align: left;
@@ -220,9 +229,9 @@
   }
 
   .sub {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.85rem;
-    margin: 4px 0 8px;
+    margin: var(--row-sub-margin);
   }
 
   .side .sub {

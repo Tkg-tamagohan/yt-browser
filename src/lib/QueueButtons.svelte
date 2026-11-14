@@ -23,6 +23,7 @@
 
 <button
   class="icon"
+  data-act="queue-add"
   title={t("queue.add")}
   aria-label={t("queue.add")}
   onclick={add}>Q＋</button
@@ -39,7 +40,7 @@
     padding: 2px 6px;
     border: none;
     background: none;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.8rem;
     line-height: 1.6;
     cursor: pointer;
@@ -47,6 +48,6 @@
   }
 
   .icon:hover {
-    color: #8ab4f8;
+    color: var(--accent);
   }
 </style>

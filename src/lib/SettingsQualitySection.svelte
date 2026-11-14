@@ -71,7 +71,7 @@
   }
 
   .presets code {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.8rem;
     overflow-wrap: anywhere;
   }

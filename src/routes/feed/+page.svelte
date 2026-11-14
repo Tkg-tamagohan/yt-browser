@@ -11,6 +11,7 @@
   import VideoRow from "$lib/VideoRow.svelte";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import { asErrorMessage } from "$lib/players.svelte";
@@ -646,6 +647,8 @@
                 dimmed={it.isRead}
                 actionsPlacement="side"
                 onplay={() => playItem(it)}
+                oncontextmenu={(e) =>
+                  openVideoContextMenu(e, videoRefOf(it), va)}
               >
                 {#snippet sub()}
                   <span class="feed-meta">
@@ -695,6 +698,8 @@
             dimmed={it.isRead}
             actionsPlacement="side"
             onplay={() => playItem(it)}
+            oncontextmenu={(e) =>
+              openVideoContextMenu(e, videoRefOf(it), va)}
           >
             {#snippet sub()}
               <span class="feed-meta">
@@ -795,7 +800,7 @@
     align-items: center;
     gap: 12px;
     padding: 6px 0;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
   }
   .ch-title {
     flex: 1;
@@ -812,7 +817,7 @@
   }
   .chip {
     padding: 2px 10px;
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     border-radius: 999px;
     font-size: 0.85rem;
     max-width: 320px;
@@ -845,7 +850,7 @@
     font-weight: 600;
   }
   .chan-count {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-weight: 400;
     font-size: 0.85rem;
     margin-left: 8px;

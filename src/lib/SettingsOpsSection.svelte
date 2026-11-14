@@ -1,6 +1,7 @@
 <script lang="ts">
   // 運用セクション（FR-62・FR-66、仕様決定 CM・CQ）。
   // - データのエクスポート/インポート（ファイルダイアログ経由）
+  // - 診断情報の zip エクスポート（FR-82、仕様決定 DG）
   // - DB サイズ表示と「VACUUM」「孤児行整理」のメンテナンス
   // いずれも設定画面から即時実行する（保存ボタンは通さない）。
   // 置き換え系の操作（インポート・孤児行整理）は実行前に確認する。
@@ -9,6 +10,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { ask, open, save } from "@tauri-apps/plugin-dialog";
   import { t } from "$lib/i18n";
+  import { diagFileName } from "$lib/diag-logic";
   import { asErrorMessage, type DbSize } from "$lib/players.svelte";
 
   let { notify }: { notify: (msg: string) => void } = $props();
@@ -18,6 +20,7 @@
   let busy = $state(false);
 
   const JSON_FILTER = { name: "JSON", extensions: ["json"] };
+  const ZIP_FILTER = { name: "ZIP", extensions: ["zip"] };
 
   /// バイト数を B/KB/MB 表記にする（運用節の目安表示用）
   function fmtBytes(n: number): string {
@@ -48,6 +51,25 @@
       notify(t("settings.ops.exported", { path }));
     } catch (e) {
       notify(t("settings.ops.exportFailed", { message: asErrorMessage(e) }));
+    } finally {
+      busy = false;
+    }
+  }
+
+  /// 診断情報の zip エクスポート（FR-82、仕様決定 DG、設計書 §4.21）。
+  /// 保存ダイアログで選んだパスへ、ログ・設定・環境情報をマスク済みで書き出す
+  async function exportDiag(): Promise<void> {
+    const path = await save({
+      defaultPath: diagFileName(),
+      filters: [ZIP_FILTER],
+    });
+    if (!path) return;
+    busy = true;
+    try {
+      await invoke("diag_export", { path });
+      notify(t("settings.ops.diagExported", { path }));
+    } catch (e) {
+      notify(t("settings.ops.diagFailed", { message: asErrorMessage(e) }));
     } finally {
       busy = false;
     }
@@ -137,6 +159,15 @@
         {t("settings.ops.import")}
       </button>
     </div>
+    <div class="ops-row">
+      <div class="ops-text">
+        <div>{t("settings.ops.diag")}</div>
+        <div class="subtle">{t("settings.ops.diag.desc")}</div>
+      </div>
+      <button onclick={() => void exportDiag()} disabled={busy}>
+        {t("settings.ops.diag")}
+      </button>
+    </div>
   </div>
 
   <div class="ops-group">
@@ -190,7 +221,7 @@
     align-items: center;
     gap: 12px;
     padding: 8px 0;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
   }
 
   .ops-text {
@@ -203,12 +234,12 @@
   }
 
   .size {
-    color: #8ab4f8;
+    color: var(--accent);
     font-variant-numeric: tabular-nums;
   }
 
   button.danger {
-    border-color: #b06060;
-    color: #e0a0a0;
+    border-color: var(--danger-soft-border);
+    color: var(--danger-soft);
   }
 </style>

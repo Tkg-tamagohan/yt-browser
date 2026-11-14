@@ -115,7 +115,7 @@
   }
 
   .chat-item.superchat {
-    background: #3d2b1f;
+    background: var(--bg-superchat);
     border-radius: 6px;
     padding: 2px 8px;
   }
@@ -124,13 +124,13 @@
      スパチャの茶系と区別しやすい黄土色系を暫定で使う。埋め込み・
      ポップアップとも同じ行構成のため自動的に双方へ効く */
   .chat-item.highlight {
-    background: #4d4419;
+    background: var(--bg-highlight);
     border-radius: 6px;
     padding: 2px 8px;
   }
 
   .chat-time {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-family: monospace;
     /* --chat-font-size の拡大縮小に追従させるため em 相対
        （0.88rem 基準で 0.78rem と同じ比率） */
@@ -139,7 +139,7 @@
   }
 
   .chat-author {
-    color: #8ab4f8;
+    color: var(--accent);
     /* 0.88rem 基準で 0.8rem と同じ比率 */
     font-size: 0.91em;
     flex-shrink: 0;
@@ -150,7 +150,7 @@
   }
 
   .chat-badge {
-    background: #3c4043;
+    background: var(--bg-subtle);
     border-radius: 4px;
     padding: 0 6px;
     /* 0.88rem 基準で 0.75rem と同じ比率 */
@@ -159,8 +159,8 @@
   }
 
   .chat-badge.superchat-badge {
-    background: #f9ab00;
-    color: #202124;
+    background: var(--warn);
+    color: var(--on-warn);
     font-weight: 600;
   }
 
