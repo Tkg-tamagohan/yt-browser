@@ -239,7 +239,8 @@ URL がイベントだけでは届かず失われる）。ドレインで `ready
 切替中の URL 損失を防ぐ。各配送には `seq` を振り、保留分とイベントで
 同一配送が二度届く場合にフロントが seq で重複除去する（URL ではなく
 配送単位で識別するため、同じリンクの再オープンは常に処理される）。
-スキームアクションは `open` と `queue`（FR-29、仕様決定 AX）の 2 種を受理する。
+スキームアクションは `open`・`queue`（FR-29、仕様決定 AX）・`playlist_add`
+（FR-50、仕様決定 CA）の 3 種を受理する。
 フロント側の振り分け（`deeplink.svelte.ts`）は、`open` では動画 URL → `play_video` で
 その場で再生、プレイリスト URL → `playlist_import` で取り込み、
 `watch`+`list` 複合は動画として扱う。`queue` は動画 URL のみ受理し、
@@ -250,13 +251,26 @@ URL がイベントだけでは届かず失われる）。ドレインで `ready
 更新規則は「既存がフォールバック（タイトル＝動画 ID）の項目に限り後着の実タイトルで
 上書き」で、起動時の一時キュー復元での再補完と、`player://state` の `mediaTitle`
 到着（URL 形式の未取得値は sanitize で除外）による更新も同じ規則で行う。
+`playlist_add` は `playlist_id`（正の整数。欠落・非整数は対象外）で指定した
+ローカルプレイリストへ、動画 URL のみを追加する。表示メタの補完と遅延解決は
+`queue` と同じ規則（AX・BD）で、解決した実タイトルは `playlist_add` の
+再実行で台帳へ反映する（`playlist_items` の行は重複登録しないため位置は保たれる）。
 非対応 URL は通知のみで落とさない。
 
 `extension/` の MV3 拡張（ストア未公開、パッケージ化なし読み込み）は
 YouTube ページ上のアクション実行とリンク右クリックメニューから起動する。
-アクションは「yt-browser で開く」「キューに追加」の 2 択ポップアップ、
-メニューは「yt-browser で開く」と動画リンク上のみ出る「yt-browser のキューに追加」の 2 項目
-（FR-29、仕様決定 AX）。対象外ページではアクションを無効化し、メニューは YouTube リンク上のみ出る。
+アクションは「yt-browser で開く」「再生位置を引き継いで開く」「キューに追加」
+「プレイリストへ追加」のポップアップ（FR-29・FR-50・FR-51、仕様決定 AX・CA・CB）、
+メニューは「yt-browser で開く」と動画リンク上のみ出る「yt-browser のキューに追加」の 2 項目。
+対象外ページではアクションを無効化し、メニューは YouTube リンク上のみ出る。
+「再生位置を引き継いで開く」はコンテントスクリプト（`content.js`）が
+ページ内動画要素の `currentTime` を読み、`t=<秒>` 付きの URL で `open` を送る
+（アプリ側の `t=` 解釈は既存の `parseTimeParam` をそのまま使う）。
+再生位置が取れない・冒頭付近（1 秒未満）のときはボタンを無効にする。
+「プレイリストへ追加」は選択肢をホストの `list_playlists` 要求で埋め、
+選んだ ID を `playlist_add` アクションとして送る。一覧が取れない・
+プレイリストが無いときは選択肢を無効のままにする。
+どちらも動画ページでのみ有効で、プレイリスト単体や対象外ページでは無効のまま。
 
 #### 3.4.1 Native Messaging ホスト（仕様決定 AH、Phase 23）
 
@@ -281,11 +295,24 @@ sequenceDiagram
   Windows では `--parent-window=<hwnd>` も渡されるが使わない。
   Tauri の Builder を組む前に分岐するため、single-instance や deep link の初期化は走らない
 - 通信：標準入出力で、4 バイトのネイティブエンディアン長と UTF-8 JSON の組を 1 往復だけ行う。
-  要求は `{"url": "<対象 URL>", "action": "open" | "queue"}`（`action` 省略は `open`、仕様決定 AX）、応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` とする。
-  エラーコードは `invalid_message`（長さ付き JSON として読めない、または `url` が文字列でない）、`invalid_url`（http(s) の URL でない）、`invalid_action`（`action` が受理集合外）、`open_failed`（OS の既定ハンドラで開けない）の 4 種で、受け取る要求の長さは 64KiB までとする。
+  要求は `{"url": "<対象 URL>", "action": "open" | "queue" | "playlist_add", "playlist_id": <数値>}`
+  （`action` 省略は `open`、仕様決定 AX。`playlist_id` は `playlist_add` で必須、FR-50、仕様決定 CA）と、
+  URL を取らない `{"action": "list_playlists"}`（拡張の選択肢表示用）の 2 系統とする。
+  応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` で、`list_playlists` だけは
+  `{"ok": true, "playlists": [{"id": <数値>, "name": "<名前>"}]}` を返す。
+  エラーコードは `invalid_message`（長さ付き JSON として読めない、`url` が文字列でない、
+  必須フィールドが欠けた・形が不正）、`invalid_url`（http(s) の URL でない）、
+  `invalid_action`（`action` が受理集合外）、`open_failed`（OS の既定ハンドラで開けない）、
+  `db_unavailable`（`list_playlists` で本体の DB を開けない・読めない）の 5 種で、受け取る要求の長さは 64KiB までとする。
   ホストは `url` が http(s) の URL として解析できることだけを確かめ、動画とプレイリストの振り分けは従来どおり本体の `deeplink.svelte.ts` が行う
-- 起動：ホストは `yt-browser://<action>?url=<encoded>` を OS の既定ハンドラで開く（Windows は ShellExecute 相当、Linux は xdg-open 相当）。`action` が `queue` のときは `yt-browser://queue?url=` を使う（仕様決定 AX）。
+- 起動：ホストは `yt-browser://<action>?url=<encoded>` を OS の既定ハンドラで開く（Windows は ShellExecute 相当、Linux は xdg-open 相当）。`action` が `queue` のときは `yt-browser://queue?url=`、`playlist_add` のときは `yt-browser://playlist_add?url=<encoded>&playlist_id=<id>` を使う（仕様決定 AX・CA）。
   既存の deep link 受信経路（未起動なら `get_current()`、起動中なら single-instance）をそのまま通るので、本体側の受信処理は変えない
+- 一覧要求：`list_playlists` はスキームを組まず、本体の DB（`<アプリデータ>/yt-browser.db`）を
+  読み取り専用で開き、`playlists` 表を `playlist_list` と同じ `ORDER BY sort_order, id` で読む。
+  ホストモードでは Tauri の PathResolver を組めないため、データディレクトリは
+  OS ごとに自前で解決する（Windows は `%APPDATA%`、Linux は `$XDG_DATA_HOME` または
+  `~/.local/share` 配下のアプリ識別子名）。DB への書き込み経路は持たず、
+  仕様決定 AX の「ホストが DB へ直接書き込む経路は持たない」を維持する
 - 登録：本体の setup で毎回、ホスト定義 JSON を書き、内容が同じなら書き換えない。
   JSON の `path` は実行中のバイナリの絶対パスとし、AppImage では `$APPIMAGE` を使う（マウント先の一時パスを登録しないため）。
   `allowed_origins` は拡張の固定 ID（`manifest.json` の `key` で固定する）の `chrome-extension://<ID>/` とする。
@@ -295,9 +322,10 @@ sequenceDiagram
   - 開発ビルド（`pnpm tauri dev`）も同じ処理で登録するため、最後に起動したバイナリのパスが有効になる
 - 拡張側：`nativeMessaging` 権限を足し、`sendNativeMessage` の応答で分岐する。
   `chrome.runtime.lastError`（ホスト未登録など）か `ok: false` のときは、従来のスキーム方式でタブを**アクティブ**で開いてフォールバックし、バッジ `!` とツールチップに理由を出す。
-  フォールバックのスキーム URL も要求と同じ action で組み立てる（`queue` 操作は `yt-browser://queue?url=`）。
-  成功時はバッジを消す。アクション実行はポップアップ（「yt-browser で開く」「キューに追加」の 2 択）になり、
-  プレイリスト単体のページではキュー追加ボタンを無効化する（FR-29、仕様決定 AX）
+  フォールバックのスキーム URL も要求と同じ action で組み立てる（`queue` 操作は `yt-browser://queue?url=`、`playlist_add` 操作は `playlist_id` を付けた `yt-browser://playlist_add?url=`）。
+  成功時はバッジを消す。アクション実行はポップアップ（「yt-browser で開く」「再生位置を引き継いで開く」「キューに追加」「プレイリストへ追加」）になり、
+  プレイリスト単体のページではキュー追加・プレイリスト追加を無効化する（FR-29・FR-50、仕様決定 AX・CA）。
+  ポップアップのプレイリスト選択肢は `list_playlists` の応答で埋め、失敗時は選択肢を無効のままにする
 
 ## 4. 動画再生サブシステム
 
@@ -1115,7 +1143,7 @@ yt-browser/
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
     lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic の各 .ts。対応する *.test.ts を併置）
-  extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
+  extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```
 
