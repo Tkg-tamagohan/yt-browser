@@ -385,4 +385,11 @@ pub const MIGRATIONS: &[Migration] = &[
               CREATE UNIQUE INDEX idx_queue_state_playlist
                 ON queue_state(playlist_id) WHERE playlist_id IS NOT NULL;",
     },
+    // Phase 63: バックフィルの /shorts タブ対応（FR-55、仕様決定 CF）。
+    // `/videos`・`/streams` と同じく `/shorts` タブの取得済み件数を保持する。
+    Migration {
+        version: 18,
+        name: "channels_backfill_shorts_pos",
+        sql: "ALTER TABLE channels ADD COLUMN backfill_shorts_pos INTEGER NOT NULL DEFAULT 0;",
+    },
 ];

@@ -241,18 +241,18 @@ impl Db {
         Ok(Some(inserted))
     }
 
-    /// バックフィルのタブ別取得済み位置 `(videos, streams)`。
-    /// チャンネル行が無ければ `(0, 0)`。
-    pub fn channel_backfill_positions(&self, channel_id: &str) -> Result<(i64, i64), DbError> {
+    /// バックフィルのタブ別取得済み位置 `(videos, streams, shorts)`
+    /// （`/shorts` は FR-55・仕様決定 CF で追加）。チャンネル行が無ければ `(0, 0, 0)`。
+    pub fn channel_backfill_positions(&self, channel_id: &str) -> Result<(i64, i64, i64), DbError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
-            "SELECT backfill_videos_pos, backfill_streams_pos
+            "SELECT backfill_videos_pos, backfill_streams_pos, backfill_shorts_pos
                FROM channels WHERE channel_id = ?1",
         )?;
         let mut rows = stmt.query([channel_id])?;
         match rows.next()? {
-            Some(row) => Ok((row.get(0)?, row.get(1)?)),
-            None => Ok((0, 0)),
+            Some(row) => Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            None => Ok((0, 0, 0)),
         }
     }
 
@@ -262,12 +262,14 @@ impl Db {
         channel_id: &str,
         videos_pos: i64,
         streams_pos: i64,
+        shorts_pos: i64,
     ) -> Result<(), DbError> {
         let conn = self.lock()?;
         conn.execute(
             "UPDATE channels SET backfill_videos_pos = ?2,
-               backfill_streams_pos = ?3 WHERE channel_id = ?1",
-            rusqlite::params![channel_id, videos_pos, streams_pos],
+               backfill_streams_pos = ?3, backfill_shorts_pos = ?4
+             WHERE channel_id = ?1",
+            rusqlite::params![channel_id, videos_pos, streams_pos, shorts_pos],
         )?;
         Ok(())
     }

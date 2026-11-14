@@ -167,7 +167,8 @@ pub struct AudioDevice {
 }
 
 /// `watch_history` テーブルの 1 行（設計書 §8）。
-#[derive(Debug, Clone, Serialize)]
+/// `history_restore` の入力にも使うため Deserialize も持つ（FR-54、仕様決定 CE）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatchHistory {
     pub video_id: String,
@@ -284,7 +285,7 @@ pub struct FeedFilter {
     pub channel_id: Option<String>,
 }
 
-/// `feed_backfill` の戻り値（FR-21、仕様決定 AN）。
+/// `feed_backfill` の戻り値（FR-21・FR-55、仕様決定 AN・CF）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackfillOutcome {
@@ -295,6 +296,8 @@ pub struct BackfillOutcome {
     pub videos_pos: i64,
     /// `/streams` タブの次回取得開始位置（遡った件数）。
     pub streams_pos: i64,
+    /// `/shorts` タブの次回取得開始位置（遡った件数。FR-55、仕様決定 CF）。
+    pub shorts_pos: i64,
     /// タブごとの取得失敗メッセージ。成功したタブの結果は維持する。
     pub errors: Vec<String>,
 }
@@ -469,7 +472,8 @@ pub struct VideoRef {
 }
 
 /// `favorites` 一覧の 1 行。動画メタは `videos` 台帳から JOIN で取る。
-#[derive(Debug, Clone, Serialize)]
+/// `favorite_restore` の入力にも使うため Deserialize も持つ（FR-54、仕様決定 CE）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FavoriteEntry {
     pub video_id: String,
@@ -491,7 +495,9 @@ pub struct Playlist {
 }
 
 /// `playlist_items` 一覧の 1 行（登録順の position 付き）。
-#[derive(Debug, Clone, Serialize)]
+/// `playlist_item_restore` の入力にも使うため Deserialize も持つ
+/// （FR-54、仕様決定 CE）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistEntry {
     pub position: i64,

@@ -65,6 +65,15 @@ impl Db {
     /// 動画 1 件分の履歴。レジューム可否の判定に使う。
     pub fn history_get(&self, video_id: &str) -> Result<Option<WatchHistory>, DbError> {
         let conn = self.lock()?;
+        Self::history_get_conn(&conn, video_id)
+    }
+
+    /// `history_get` の接続共有版。`history_remove` の「取得→削除」を
+    /// 同一排他区間で行うための内部実装。
+    fn history_get_conn(
+        conn: &Connection,
+        video_id: &str,
+    ) -> Result<Option<WatchHistory>, DbError> {
         let mut stmt = conn.prepare(
             "SELECT video_id, title, channel_id, channel_title,
                     position_sec, duration_sec, last_watched_at, completed
@@ -161,10 +170,39 @@ impl Db {
     /// 抑止はセッション内のみ有効で、明示的な再生開始で解除される。
     /// 削除と抑止登録は conn ロックの同一排他区間で行う
     /// （保存側の「確認→書き込み」と直列化される順序を一致させるため）。
-    pub fn history_remove(&self, video_id: &str) -> Result<(), DbError> {
+    /// 戻り値は削除した行のスナップショット（FR-54、仕様決定 CE の
+    /// 「元に戻す」復元用）。対象行が無ければ None。
+    pub fn history_remove(&self, video_id: &str) -> Result<Option<WatchHistory>, DbError> {
         let conn = self.lock()?;
+        let removed = Self::history_get_conn(&conn, video_id)?;
         conn.execute("DELETE FROM watch_history WHERE video_id = ?1", [video_id])?;
         crate::util::lock(&self.history_suppressed).insert(video_id.to_string());
+        Ok(removed)
+    }
+
+    /// `history_remove` で取得したスナップショットの復元（FR-54、仕様決定 CE）。
+    /// 全列を削除前の値で書き戻し、手動削除の保存抑止も解除する
+    /// （削除が無かった状態へ戻す）。既存行がある場合はスナップショットで
+    /// 置き換える（暫定: 復元は削除直前の状態を正とする）。
+    pub fn history_restore(&self, entry: &WatchHistory) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO watch_history
+               (video_id, title, channel_id, channel_title,
+                position_sec, duration_sec, last_watched_at, completed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                entry.video_id,
+                entry.title,
+                entry.channel_id,
+                entry.channel_title,
+                entry.position_sec,
+                entry.duration_sec,
+                entry.last_watched_at,
+                entry.completed as i64,
+            ],
+        )?;
+        crate::util::lock(&self.history_suppressed).remove(&entry.video_id);
         Ok(())
     }
 

@@ -9,6 +9,7 @@
   import QueueButtons from "$lib/QueueButtons.svelte";
   import {
     asErrorMessage,
+    type FavoriteEntry,
     type Playlist,
     type VideoRef,
   } from "$lib/players.svelte";
@@ -41,8 +42,34 @@
   async function toggleFav(): Promise<void> {
     try {
       if (faved) {
-        await invoke("favorite_remove", { videoId: video.videoId });
-        notify(t("library.favorite.removed"));
+        // 削除した行のスナップショットが返る（FR-54、仕様決定 CE）。
+        // トーストの「元に戻す」で削除前の行を復元する
+        const removed = await invoke<FavoriteEntry | null>(
+          "favorite_remove",
+          { videoId: video.videoId },
+        );
+        if (removed === null) {
+          notify(t("library.favorite.removed"));
+        } else {
+          notify(t("library.favorite.removed"), {
+            label: t("library.undo"),
+            run: () => {
+              void (async () => {
+                try {
+                  await invoke("favorite_restore", { entry: removed });
+                  onfavchange?.(video.videoId, true);
+                  notify(t("library.restored"));
+                } catch (e) {
+                  notify(
+                    t("library.restoreFailed", {
+                      message: asErrorMessage(e),
+                    }),
+                  );
+                }
+              })();
+            },
+          });
+        }
       } else {
         await invoke("favorite_add", { video });
         notify(t("library.favorite.added"));
