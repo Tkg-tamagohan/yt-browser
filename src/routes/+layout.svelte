@@ -179,10 +179,6 @@
     color: var(--fg);
   }
 
-  .hidden {
-    display: none;
-  }
-
   .toasts {
     position: fixed;
     right: 16px;

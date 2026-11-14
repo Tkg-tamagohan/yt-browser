@@ -23,7 +23,7 @@
          hidden 切替（ヒットずれ対策、FR-80） -->
     <p class="subtle" class:hidden={!loading}>…</p>
     <div class:hidden={loading}>
-      <label class="dep-row">
+      <label class="setting-row">
         {t("settings.deps.ytdlpPath")}
         <input
           type="text"
@@ -33,7 +33,7 @@
         />
       </label>
       <p class="subtle desc">{t("settings.deps.ytdlpPath.desc")}</p>
-      <label class="dep-row">
+      <label class="setting-row">
         {t("settings.deps.poToken")}
         <input
           type="text"
@@ -47,24 +47,6 @@
   </section>
 
 <style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .dep-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
-  }
-
   .path-input {
     flex: 1;
     font-family: monospace;

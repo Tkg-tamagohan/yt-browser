@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { t, type MessageKey } from "$lib/i18n";
+  import { t } from "$lib/i18n";
   import { asErrorMessage, type Filter } from "$lib/players.svelte";
   import { ngAuthorRows } from "$lib/nguser-logic";
+  import { filterKindLabel } from "$lib/settings-consts";
 
   let { notify }: { notify: (msg: string) => void } = $props();
 
@@ -51,14 +52,6 @@
     }
   }
 
-  /// 種別の日本語ラベル。未定義の値は生値をそのまま出す
-  /// （SettingsFiltersSection と同じ方式）
-  function kindLabel(kind: string): string {
-    const key = `filter.kind.${kind}` as MessageKey;
-    const s = t(key);
-    return s === key ? kind : s;
-  }
-
   onMount(() => {
     void loadRows();
   });
@@ -67,7 +60,7 @@
   <section class="panel panel--filled">
     <h2>{t("settings.ngusers.title")}</h2>
     <p class="subtle desc">{t("settings.ngusers.desc")}</p>
-    <div class="nguser-form">
+    <div class="filter-form">
       <input
         type="text"
         class="pattern-input"
@@ -84,11 +77,11 @@
     <p class="subtle" class:hidden={rows.length > 0}>
       {t("settings.ngusers.empty")}
     </p>
-      <ul class="nguser-list" class:hidden={rows.length === 0}>
+      <ul class="filter-list" class:hidden={rows.length === 0}>
         {#each rows as f (f.id)}
           <li>
             <code class="f-pattern">{f.pattern}</code>
-            <span class="f-kind">{kindLabel(f.kind)}</span>
+            <span class="f-kind">{filterKindLabel(f.kind)}</span>
             <button class="link" onclick={() => removeUser(f)}>
               {t("settings.ngusers.remove")}
             </button>
@@ -96,53 +89,3 @@
         {/each}
       </ul>
   </section>
-
-<style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .nguser-form {
-    display: flex;
-    gap: 8px;
-    margin: 12px 0;
-    flex-wrap: wrap;
-  }
-
-  .pattern-input {
-    flex: 1;
-    min-width: 200px;
-  }
-
-  .nguser-list {
-    list-style: none;
-    padding: 0;
-    margin: 8px 0 0;
-  }
-
-  .nguser-list li {
-    display: flex;
-    gap: 10px;
-    align-items: baseline;
-    padding: 4px 0;
-    font-size: 0.9rem;
-  }
-
-  .f-pattern {
-    color: var(--fg-strong);
-    overflow-wrap: anywhere;
-    flex: 1;
-  }
-
-  .f-kind {
-    color: var(--fg-muted);
-    font-size: 0.8rem;
-    white-space: nowrap;
-  }
-</style>

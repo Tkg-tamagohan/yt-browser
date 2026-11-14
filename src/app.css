@@ -256,3 +256,78 @@ select {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
+
+/* 設定画面（Settings*Section.svelte 群）の共通スタイル。
+   他ページの .panel（feed のチャネル枠など）には .panel--filled を付けないため、
+   section.panel--filled 直下へのスコープで設定節以外に波及させない */
+section.panel--filled > h2 {
+  font-size: 1.1rem;
+  margin: 0 0 4px;
+}
+
+section.panel--filled > .desc {
+  font-size: 0.9rem;
+  margin-top: 0;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  font-size: 0.95rem;
+}
+
+.format-input {
+  width: 100%;
+  margin-top: 4px;
+  font-family: monospace;
+}
+
+.filter-form {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+  flex-wrap: wrap;
+}
+
+.filter-form select {
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.pattern-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.filter-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+
+.filter-list li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 0;
+  font-size: 0.9rem;
+}
+
+.f-target {
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.f-kind {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.f-pattern {
+  color: var(--fg-strong);
+  overflow-wrap: anywhere;
+  flex: 1;
+}

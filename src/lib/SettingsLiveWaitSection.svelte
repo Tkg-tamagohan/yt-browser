@@ -20,7 +20,7 @@
        hidden 切替（ヒットずれ対策、FR-80） -->
   <p class="subtle" class:hidden={!loading}>…</p>
   <div class:hidden={loading}>
-    <label class="row">
+    <label class="setting-row">
       {t("settings.livewait.action")}
       <select bind:value={liveWaitAction}>
         <option value="play">{t("settings.livewait.action.play")}</option>
@@ -29,23 +29,3 @@
     </label>
   </div>
 </section>
-
-<style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
-  }
-</style>

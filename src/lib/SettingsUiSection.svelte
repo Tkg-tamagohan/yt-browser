@@ -29,7 +29,7 @@
        hidden 切替（ヒットずれ対策、FR-80） -->
   <p class="subtle" class:hidden={!loading}>…</p>
   <div class:hidden={loading}>
-    <label class="row">
+    <label class="setting-row">
       {t("settings.ui.theme")}
       <select bind:value={uiTheme}>
         <option value="dark">{t("settings.ui.theme.dark")}</option>
@@ -37,7 +37,7 @@
         <option value="system">{t("settings.ui.theme.system")}</option>
       </select>
     </label>
-    <label class="row">
+    <label class="setting-row">
       {t("settings.ui.density")}
       <select bind:value={uiDensity}>
         <option value="comfortable">
@@ -46,7 +46,7 @@
         <option value="compact">{t("settings.ui.density.compact")}</option>
       </select>
     </label>
-    <label class="row">
+    <label class="setting-row">
       {t("settings.ui.language")}
       <select bind:value={uiLanguage}>
         <option value="ja">{t("settings.ui.language.ja")}</option>
@@ -55,23 +55,3 @@
     </label>
   </div>
 </section>
-
-<style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
-  }
-</style>

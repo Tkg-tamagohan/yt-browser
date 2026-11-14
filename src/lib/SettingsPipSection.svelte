@@ -24,17 +24,17 @@
          hidden 切替（ヒットずれ対策、FR-80） -->
     <p class="subtle" class:hidden={!loading}>…</p>
     <div class:hidden={loading}>
-      <label class="wheel-row">
+      <label class="setting-row">
         <input type="checkbox" bind:checked={pipDefault} />
         {t("settings.pip.default")}
       </label>
       <p class="subtle desc">{t("settings.pip.default.desc")}</p>
-      <label class="wheel-row">
+      <label class="setting-row">
         <input type="checkbox" bind:checked={pipFitAspect} />
         {t("settings.pip.fitAspect")}
       </label>
       <p class="subtle desc">{t("settings.pip.fitAspect.desc")}</p>
-      <label class="wheel-row">
+      <label class="setting-row">
         {t("settings.pip.geometry")}
         <input
           type="text"
@@ -43,7 +43,7 @@
           placeholder={PIP_GEOMETRY_DEFAULT}
         />
       </label>
-      <label class="wheel-row">
+      <label class="setting-row">
         {t("settings.pip.quality")}
         <input
           type="text"
@@ -55,29 +55,3 @@
       <p class="subtle desc">{t("settings.pip.quality.desc")}</p>
     </div>
   </section>
-
-<style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .format-input {
-    width: 100%;
-    margin-top: 4px;
-    font-family: monospace;
-  }
-
-  .wheel-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
-  }
-</style>

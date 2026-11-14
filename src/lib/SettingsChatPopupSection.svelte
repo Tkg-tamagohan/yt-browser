@@ -25,12 +25,12 @@
        hidden 切替（ヒットずれ対策、FR-80） -->
   <p class="subtle" class:hidden={!loading}>…</p>
   <div class:hidden={loading}>
-    <label class="wheel-row">
+    <label class="setting-row">
       <input type="checkbox" bind:checked={showAuthor} />
       {t("settings.chatpopup.showAuthor")}
     </label>
     <p class="subtle desc">{t("settings.chatpopup.showAuthor.desc")}</p>
-    <label class="wheel-row">
+    <label class="setting-row">
       {t("settings.chatpopup.fontSize")}
       <input
         type="text"
@@ -40,7 +40,7 @@
       />
     </label>
     <p class="subtle desc">{t("settings.chatpopup.fontSize.desc")}</p>
-    <label class="wheel-row">
+    <label class="setting-row">
       {t("settings.chatpopup.opacity")}
       <input
         type="text"
@@ -54,26 +54,8 @@
 </section>
 
 <style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
   .num-input {
     width: 6em;
     font-family: monospace;
-  }
-
-  .wheel-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
   }
 </style>

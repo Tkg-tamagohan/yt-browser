@@ -37,6 +37,15 @@
     TONE_MAPPINGS,
     type SponsorCategory,
   } from "$lib/settings-consts";
+  import {
+    saveOptionalRangeSetting,
+    saveSettingBatch,
+    saveStringSetting,
+    saveToggleSetting,
+    validateAutoReadDays,
+    validateWheelDelta,
+    type SetterFn,
+  } from "$lib/settings-save-logic";
   import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
   import SettingsCategoriesSection from "$lib/SettingsCategoriesSection.svelte";
   import SettingsChatPopupSection from "$lib/SettingsChatPopupSection.svelte";
@@ -203,44 +212,46 @@
       });
       // 不正値があっても他キーの保存自体は行うが、全体の成功通知は出さない
       let invalid = false;
+      const setSetting: SetterFn = (key, value) =>
+        invoke("settings_set", { key, value });
+      const failKey = (msg: string) => {
+        invalid = true;
+        notify(t("settings.failed", { message: msg }));
+      };
+
       // wheel.volume_delta: 有限数値・±100 以内だけ保存する
       // （mpv 側がそのまま script-opts に渡すため、ここで弾く）
-      if (wheelDelta !== undefined) {
-        if (!Number.isFinite(wheelDelta) || Math.abs(wheelDelta) > 100) {
-          invalid = true;
-          notify(
-            t("settings.failed", {
-              message: `wheel.volume_delta: ${wheelDelta}`,
-            }),
-          );
+      const wd = validateWheelDelta(wheelDelta);
+      if (!wd.skip) {
+        if (wd.ok) {
+          await setSetting("wheel.volume_delta", wd.value);
         } else {
-          await invoke("settings_set", {
-            key: "wheel.volume_delta",
-            value: String(wheelDelta),
-          });
+          failKey(`wheel.volume_delta: ${wd.raw}`);
         }
       }
-      // pip.default: チェックボックスの 2 値を on/off で保存する（仕様決定 AJ）。
+      // pip.default / pip.fit_aspect（仕様決定 AJ・AL）。
       // 保存待ちの間に再操作された場合は DB と画面がずれるため未保存と通知する
-      const pd = pipDefault;
-      await invoke("settings_set", {
-        key: "pip.default",
-        value: pd ? "on" : "off",
-      });
-      if (pipDefault !== pd) {
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "pip.default",
+          pipDefault,
+          () => pipDefault,
+          () => notify(t("settings.pip.unsaved")),
+        ))
+      ) {
         invalid = true;
-        notify(t("settings.pip.unsaved"));
       }
-      // pip.fit_aspect: チェックボックスの 2 値を on/off で保存する（仕様決定 AL）。
-      // 稼働中インスタンスへの即時反映はバックエンド側で行われる
-      const fa = pipFitAspect;
-      await invoke("settings_set", {
-        key: "pip.fit_aspect",
-        value: fa ? "on" : "off",
-      });
-      if (pipFitAspect !== fa) {
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "pip.fit_aspect",
+          pipFitAspect,
+          () => pipFitAspect,
+          () => notify(t("settings.pip.unsaved")),
+        ))
+      ) {
         invalid = true;
-        notify(t("settings.pip.unsaved"));
       }
       // pip.geometry: mpv の geometry 形式だけ保存する（ここで弾く）。
       // 空欄は既定値へのリセットとして扱い、不正形式は失敗通知のみ
@@ -250,10 +261,7 @@
         // （失敗時に表示と DB の値がずれないようにする）。
         // 保存中にユーザーが再入力していた場合はその値は DB に残っていない
         // ため、画面の値を残したまま未保存であることを通知する
-        await invoke("settings_set", {
-          key: "pip.geometry",
-          value: PIP_GEOMETRY_DEFAULT,
-        });
+        await setSetting("pip.geometry", PIP_GEOMETRY_DEFAULT);
         if (!pipGeometry.trim()) {
           pipGeometry = PIP_GEOMETRY_DEFAULT;
         } else {
@@ -261,307 +269,288 @@
           notify(t("settings.pip.unsaved"));
         }
       } else if (isValidPipGeometry(geo)) {
-        await invoke("settings_set", { key: "pip.geometry", value: geo });
+        await setSetting("pip.geometry", geo);
       } else {
-        invalid = true;
-        notify(t("settings.failed", { message: `pip.geometry: ${geo}` }));
+        failKey(`pip.geometry: ${geo}`);
       }
       // pip.quality.format: 空欄は未設定（全体画質に従う）。値は自由記述の
-      // フォーマット式なのでバリデーションせずそのまま保存する。
-      // 保存待ちの間に再入力された場合は DB と画面がずれるため未保存と通知する
-      const pq = pipQuality.trim();
-      await invoke("settings_set", {
-        key: "pip.quality.format",
-        value: pq,
-      });
-      if (pipQuality.trim() !== pq) {
-        invalid = true;
-        notify(t("settings.pip.unsaved"));
-      }
-      // feed.show_shorts: チェックボックスの 2 値を on/off で保存する（仕様決定 AP）。
-      // 次回のフィード一覧取得から反映される（list_feed の都度読み取り）
-      const fs = feedShowShorts;
-      await invoke("settings_set", {
-        key: "feed.show_shorts",
-        value: fs ? "on" : "off",
-      });
-      if (feedShowShorts !== fs) {
-        invalid = true;
-        notify(t("settings.feed.unsaved"));
-      }
-      // feed.notify_new: チェックボックスの 2 値を on/off で保存する
-      // （FR-58、仕様決定 CI）。次回のフィード更新での新着検出から反映される
-      const nn = feedNotifyNew;
-      await invoke("settings_set", {
-        key: "feed.notify_new",
-        value: nn ? "on" : "off",
-      });
-      if (feedNotifyNew !== nn) {
-        invalid = true;
-        notify(t("settings.feed.unsaved"));
-      }
-      // feed.auto_read_played: チェックボックスの 2 値を on/off で保存する
-      // （FR-64、仕様決定 CO）。次回の自動既読適用（起動時・フィード更新後）から反映される
-      const ap = feedAutoReadPlayed;
-      await invoke("settings_set", {
-        key: "feed.auto_read_played",
-        value: ap ? "on" : "off",
-      });
-      if (feedAutoReadPlayed !== ap) {
-        invalid = true;
-        notify(t("settings.feed.unsaved"));
-      }
-      // feed.auto_read_days（FR-64、仕様決定 CO）。0 以上の整数だけ保存する
-      // （バックエンドも 0 以下・非整数は 0=無効へ正規化する）。
-      // 空欄は 0（無効）へのリセットとして扱う
-      const ad = feedAutoReadDays;
-      if (ad === undefined || (Number.isInteger(ad) && ad >= 0)) {
-        await invoke("settings_set", {
-          key: "feed.auto_read_days",
-          value: String(ad ?? 0),
-        });
-      } else {
-        invalid = true;
-        notify(t("settings.failed", { message: `feed.auto_read_days: ${ad}` }));
-      }
-      if (feedAutoReadDays !== ad) {
-        invalid = true;
-        notify(t("settings.feed.unsaved"));
-      }
-      // live_wait.action: select の値（play|notify）をそのまま保存する
-      // （FR-44、仕様決定 BT(3)）。次回の開始検出から反映される。
-      // 保存待ちの間に select が変更されると DB と画面がずれるため、
-      // スナップショットと比較してずれていれば未保存として通知する
-      const lwSnapshot = liveWaitAction;
-      await invoke("settings_set", {
-        key: "live_wait.action",
-        value: lwSnapshot,
-      });
-      if (liveWaitAction !== lwSnapshot) {
-        invalid = true;
-        notify(t("settings.livewait.unsaved"));
-      }
-      // ui.shortcuts: チェックボックスの 2 値を on/off で保存する
-      // （FR-79、仕様決定 DD）。settings://changed で即時に切り替わる
-      const sc = shortcutsOn;
-      await invoke("settings_set", {
-        key: "ui.shortcuts",
-        value: sc ? "on" : "off",
-      });
-      if (shortcutsOn !== sc) {
-        invalid = true;
-        notify(t("settings.shortcuts.unsaved"));
-      }
-      // chat.popup_show_author / chat.popup_font_size / chat.popup_opacity
-      // （FR-68、仕様決定 CS）。開いているポップアップへは
-      // settings://changed 経由で即時に反映される
-      const sa = chatShowAuthor;
-      await invoke("settings_set", {
-        key: "chat.popup_show_author",
-        value: sa ? "on" : "off",
-      });
-      if (chatShowAuthor !== sa) {
-        invalid = true;
-        notify(t("settings.chatpopup.unsaved"));
-      }
-      // 空欄は既定値へ戻す操作（空文字を保存し、読み取り側の既定解釈に任せる）。
-      // 範囲外・非数は失敗通知のみで保存しない
-      const fsInput = chatFontSize.trim();
-      if (fsInput === "") {
-        await invoke("settings_set", {
-          key: "chat.popup_font_size",
-          value: "",
-        });
-      } else {
-        const n = Number(fsInput);
-        if (Number.isFinite(n) && n >= 10 && n <= 32) {
-          await invoke("settings_set", {
-            key: "chat.popup_font_size",
-            value: fsInput,
-          });
-        } else {
-          invalid = true;
-          notify(
-            t("settings.failed", {
-              message: `chat.popup_font_size: ${fsInput}`,
-            }),
-          );
-        }
-      }
-      if (chatFontSize.trim() !== fsInput) {
-        invalid = true;
-        notify(t("settings.chatpopup.unsaved"));
-      }
-      const opInput = chatOpacity.trim();
-      if (opInput === "") {
-        await invoke("settings_set", {
-          key: "chat.popup_opacity",
-          value: "",
-        });
-      } else {
-        const n = Number(opInput);
-        if (Number.isFinite(n) && n >= 0.2 && n <= 1.0) {
-          await invoke("settings_set", {
-            key: "chat.popup_opacity",
-            value: opInput,
-          });
-        } else {
-          invalid = true;
-          notify(
-            t("settings.failed", {
-              message: `chat.popup_opacity: ${opInput}`,
-            }),
-          );
-        }
-      }
-      if (chatOpacity.trim() !== opInput) {
-        invalid = true;
-        notify(t("settings.chatpopup.unsaved"));
-      }
-      // player.initial_speed / player.initial_volume（FR-39、仕様決定 BO）。
-      // 空欄は既定値へ戻す操作。範囲外・非数は失敗通知のみで保存しない
-      // （backend 側も範囲外を既定値へ戻すため、ここで弾いて入力ミスを知らせる）
-      const is = initialSpeed.trim();
-      if (is === "") {
-        await invoke("settings_set", { key: "player.initial_speed", value: "" });
-      } else {
-        const n = Number(is);
-        if (Number.isFinite(n) && n >= 0.25 && n <= 4.0) {
-          await invoke("settings_set", {
-            key: "player.initial_speed",
-            value: is,
-          });
-        } else {
-          invalid = true;
-          notify(t("settings.failed", { message: `player.initial_speed: ${is}` }));
-        }
-      }
-      if (initialSpeed.trim() !== is) {
-        invalid = true;
-        notify(t("settings.player.unsaved"));
-      }
-      const iv = initialVolume.trim();
-      if (iv === "") {
-        await invoke("settings_set", { key: "player.initial_volume", value: "" });
-      } else {
-        const n = Number(iv);
-        if (Number.isFinite(n) && n >= 0 && n <= 130) {
-          await invoke("settings_set", {
-            key: "player.initial_volume",
-            value: iv,
-          });
-        } else {
-          invalid = true;
-          notify(t("settings.failed", { message: `player.initial_volume: ${iv}` }));
-        }
-      }
-      if (initialVolume.trim() !== iv) {
-        invalid = true;
-        notify(t("settings.player.unsaved"));
-      }
-      // window.screen: モニター名をそのまま保存（空は自動＝mpv 既定）。
-      // 保存待ちの間に select が変更されると DB と画面がずれるため、
-      // スナップショットと比較してずれていれば未保存として通知する
-      const ws = windowScreen;
-      await invoke("settings_set", { key: "window.screen", value: ws });
-      if (windowScreen !== ws) {
-        invalid = true;
-        notify(t("settings.window.unsaved"));
-      }
-      // player.close_on_eof: チェックボックスの 2 値を on/off で保存する
-      // （FR-43、仕様決定 BS）。終端時点の値で判定されるため即時に効く
-      const ce = closeOnEof;
-      await invoke("settings_set", {
-        key: "player.close_on_eof",
-        value: ce ? "on" : "off",
-      });
-      if (closeOnEof !== ce) {
-        invalid = true;
-        notify(t("settings.window.unsaved"));
-      }
-      // ui.theme / ui.density / ui.language: select の値は受理集合内なので
-      // そのまま保存する（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF）。
-      // 表示への反映は settings://changed を受けた ui-prefs が即時に行う。
-      // 保存待ちの間に select が変更されると DB と画面がずれるため、
-      // スナップショットと比較してずれていれば未保存として通知する
-      const thSnapshot = uiTheme;
-      const dnSnapshot = uiDensity;
-      const lgSnapshot = uiLanguage;
-      await invoke("settings_set", { key: "ui.theme", value: thSnapshot });
-      await invoke("settings_set", { key: "ui.density", value: dnSnapshot });
-      await invoke("settings_set", {
-        key: "ui.language",
-        value: lgSnapshot,
-      });
+      // フォーマット式なのでバリデーションせずそのまま保存する
       if (
-        uiTheme !== thSnapshot ||
-        uiDensity !== dnSnapshot ||
-        uiLanguage !== lgSnapshot
+        !(await saveStringSetting(
+          setSetting,
+          "pip.quality.format",
+          pipQuality.trim(),
+          () => pipQuality.trim(),
+          () => notify(t("settings.pip.unsaved")),
+        ))
       ) {
         invalid = true;
-        notify(t("settings.ui.unsaved"));
       }
-      // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
-      // そのまま保存（auto は未指定として扱う）。選択肢 ID はドット無しなので
-      // TONE_MAPPING_MPV で mpv の値へ変換する。
-      // 保存待ちの間に select が変更されると DB と画面がずれるため、
-      // 先にスナップショットを取り、完了後のずれは未保存として通知する
-      const tmSnapshot = toneMapping;
-      const cpSnapshot = computePeak;
-      await invoke("settings_set", {
-        key: "hdr.tone_mapping",
-        value: TONE_MAPPING_MPV[tmSnapshot] ?? tmSnapshot,
-      });
-      await invoke("settings_set", {
-        key: "hdr.compute_peak",
-        value: cpSnapshot,
-      });
-      if (toneMapping !== tmSnapshot || computePeak !== cpSnapshot) {
+      // feed.show_shorts / feed.notify_new / feed.auto_read_played
+      // （仕様決定 AP・FR-58/CI・FR-64/CO）
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "feed.show_shorts",
+          feedShowShorts,
+          () => feedShowShorts,
+          () => notify(t("settings.feed.unsaved")),
+        ))
+      ) {
         invalid = true;
-        notify(t("settings.hdr.unsaved"));
       }
-      // mpv.extra_args: 無検証の自由記述（仕様決定 Y の汎用受け皿）。
-      // 無効値は mpv 起動失敗として Spawn エラー通知に乗る
-      const extra = mpvExtraArgs.trim();
-      await invoke("settings_set", { key: "mpv.extra_args", value: extra });
-      if (mpvExtraArgs.trim() !== extra) {
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "feed.notify_new",
+          feedNotifyNew,
+          () => feedNotifyNew,
+          () => notify(t("settings.feed.unsaved")),
+        ))
+      ) {
         invalid = true;
-        notify(t("settings.hdr.unsaved"));
       }
-      // mpv.network_timeout_ms: 生の入力文字列を保存する。空欄・不正値・0 の
-      // 解釈はバックエンド側に寄せる（空欄=既定、0=無効化、仕様決定 BE）
-      const nt = mpvNetworkTimeout.trim();
-      await invoke("settings_set", {
-        key: "mpv.network_timeout_ms",
-        value: nt,
-      });
-      if (mpvNetworkTimeout.trim() !== nt) {
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "feed.auto_read_played",
+          feedAutoReadPlayed,
+          () => feedAutoReadPlayed,
+          () => notify(t("settings.feed.unsaved")),
+        ))
+      ) {
         invalid = true;
-        notify(t("settings.hdr.unsaved"));
       }
-      // mpv.hwdec: select の値は受理集合内なのでそのまま保存する
-      const hwSnapshot = mpvHwdec;
-      await invoke("settings_set", { key: "mpv.hwdec", value: hwSnapshot });
-      if (mpvHwdec !== hwSnapshot) {
-        invalid = true;
-        notify(t("settings.hdr.unsaved"));
+      // feed.auto_read_days（FR-64、仕様決定 CO）。0 以上の整数だけ保存する
+      // （空欄は 0＝無効へのリセットとして扱う）
+      const adSnapshot = feedAutoReadDays;
+      const adRes = validateAutoReadDays(adSnapshot);
+      if (adRes.ok) {
+        await setSetting("feed.auto_read_days", adRes.value);
+      } else {
+        failKey(`feed.auto_read_days: ${adRes.raw}`);
       }
-      // ytdlp.path: ユーザー指定の yt-dlp 実行ファイル（FR-72、仕様決定 CW）。
-      // 空欄は自動検出へ戻す。パスの解決は呼び出しごとのため次回の
-      // yt-dlp 起動から有効。保存待ちの間に再入力された場合は未保存と通知する
-      const yp = ytdlpPath.trim();
-      await invoke("settings_set", { key: "ytdlp.path", value: yp });
-      if (ytdlpPath.trim() !== yp) {
+      if (feedAutoReadDays !== adSnapshot) {
         invalid = true;
-        notify(t("settings.deps.unsaved"));
+        notify(t("settings.feed.unsaved"));
       }
-      // ytdlp.po_token: PO Token（FR-86、仕様決定 DK）。空欄は未設定へ戻す。
-      // 値は次の yt-dlp 呼び出し（mpv 経由のストリーム解決を含む）から有効
-      const pt = poToken.trim();
-      await invoke("settings_set", { key: "ytdlp.po_token", value: pt });
-      if (poToken.trim() !== pt) {
+      // live_wait.action: select の値（play|notify）をそのまま保存する（FR-44、BT(3)）
+      if (
+        !(await saveStringSetting(
+          setSetting,
+          "live_wait.action",
+          liveWaitAction,
+          () => liveWaitAction,
+          () => notify(t("settings.livewait.unsaved")),
+        ))
+      ) {
         invalid = true;
-        notify(t("settings.deps.unsaved"));
+      }
+      // ui.shortcuts（FR-79、仕様決定 DD）。settings://changed で即時に切り替わる
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "ui.shortcuts",
+          shortcutsOn,
+          () => shortcutsOn,
+          () => notify(t("settings.shortcuts.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      // chat.popup_show_author / chat.popup_font_size / chat.popup_opacity
+      // （FR-68、仕様決定 CS）。空欄は既定値リセット、範囲外は失敗通知のみ
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "chat.popup_show_author",
+          chatShowAuthor,
+          () => chatShowAuthor,
+          () => notify(t("settings.chatpopup.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      if (
+        !(await saveOptionalRangeSetting(
+          setSetting,
+          "chat.popup_font_size",
+          chatFontSize,
+          () => chatFontSize,
+          10,
+          32,
+          (raw) => failKey(`chat.popup_font_size: ${raw}`),
+          () => notify(t("settings.chatpopup.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      if (
+        !(await saveOptionalRangeSetting(
+          setSetting,
+          "chat.popup_opacity",
+          chatOpacity,
+          () => chatOpacity,
+          0.2,
+          1.0,
+          (raw) => failKey(`chat.popup_opacity: ${raw}`),
+          () => notify(t("settings.chatpopup.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      // player.initial_speed / player.initial_volume（FR-39、仕様決定 BO）
+      if (
+        !(await saveOptionalRangeSetting(
+          setSetting,
+          "player.initial_speed",
+          initialSpeed,
+          () => initialSpeed,
+          0.25,
+          4.0,
+          (raw) => failKey(`player.initial_speed: ${raw}`),
+          () => notify(t("settings.player.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      if (
+        !(await saveOptionalRangeSetting(
+          setSetting,
+          "player.initial_volume",
+          initialVolume,
+          () => initialVolume,
+          0,
+          130,
+          (raw) => failKey(`player.initial_volume: ${raw}`),
+          () => notify(t("settings.player.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      // window.screen / player.close_on_eof（FR-31/AZ・FR-43/BS）
+      if (
+        !(await saveStringSetting(
+          setSetting,
+          "window.screen",
+          windowScreen,
+          () => windowScreen,
+          () => notify(t("settings.window.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      if (
+        !(await saveToggleSetting(
+          setSetting,
+          "player.close_on_eof",
+          closeOnEof,
+          () => closeOnEof,
+          () => notify(t("settings.window.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      // ui.theme / ui.density / ui.language（FR-76・FR-77・FR-81、DA・DB・DF）
+      if (
+        !(await saveSettingBatch(
+          setSetting,
+          [
+            { key: "ui.theme", snapshot: uiTheme, getCurrent: () => uiTheme },
+            {
+              key: "ui.density",
+              snapshot: uiDensity,
+              getCurrent: () => uiDensity,
+            },
+            {
+              key: "ui.language",
+              snapshot: uiLanguage,
+              getCurrent: () => uiLanguage,
+            },
+          ],
+          () => notify(t("settings.ui.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      // hdr.tone_mapping / hdr.compute_peak（選択肢 ID を TONE_MAPPING_MPV で変換）
+      if (
+        !(await saveSettingBatch(
+          setSetting,
+          [
+            {
+              key: "hdr.tone_mapping",
+              snapshot: toneMapping,
+              writeValue: TONE_MAPPING_MPV[toneMapping] ?? toneMapping,
+              getCurrent: () => toneMapping,
+            },
+            {
+              key: "hdr.compute_peak",
+              snapshot: computePeak,
+              getCurrent: () => computePeak,
+            },
+          ],
+          () => notify(t("settings.hdr.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      // mpv.extra_args / mpv.network_timeout_ms / mpv.hwdec（仕様決定 Y・BE）
+      if (
+        !(await saveStringSetting(
+          setSetting,
+          "mpv.extra_args",
+          mpvExtraArgs.trim(),
+          () => mpvExtraArgs.trim(),
+          () => notify(t("settings.hdr.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      if (
+        !(await saveStringSetting(
+          setSetting,
+          "mpv.network_timeout_ms",
+          mpvNetworkTimeout.trim(),
+          () => mpvNetworkTimeout.trim(),
+          () => notify(t("settings.hdr.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      if (
+        !(await saveStringSetting(
+          setSetting,
+          "mpv.hwdec",
+          mpvHwdec,
+          () => mpvHwdec,
+          () => notify(t("settings.hdr.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      // ytdlp.path / ytdlp.po_token（FR-72/CW・FR-86/DK）
+      if (
+        !(await saveStringSetting(
+          setSetting,
+          "ytdlp.path",
+          ytdlpPath.trim(),
+          () => ytdlpPath.trim(),
+          () => notify(t("settings.deps.unsaved")),
+        ))
+      ) {
+        invalid = true;
+      }
+      if (
+        !(await saveStringSetting(
+          setSetting,
+          "ytdlp.po_token",
+          poToken.trim(),
+          () => poToken.trim(),
+          () => notify(t("settings.deps.unsaved")),
+        ))
+      ) {
+        invalid = true;
       }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
@@ -1015,10 +1004,6 @@
 
   .section-filter {
     margin-bottom: 16px;
-  }
-
-  .hidden {
-    display: none;
   }
 
   .save-btn {
