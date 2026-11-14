@@ -1,8 +1,6 @@
 // UI 文字列の日本語リソース（正・全キー網羅）。
 // scripts/check_docs_consistency.py の check_i18n がここから全キーを抽出する。
 export const ja = {
-  "home.lead":
-    "mpv による軽量な再生とローカル完結のデータ管理を一体化した YouTube 専用ブラウザ。",
   "home.db.checking": "DB 接続を確認中…",
   "home.db.ok": "DB 接続: OK（スキーマ v{version}）",
   "home.db.ng": "DB 接続: 失敗 — {error}",
@@ -31,8 +29,7 @@ export const ja = {
   // Phase 47: シークバー自前化＋SponsorBlock 区間表示（FR-36、仕様決定 BI）
   "player.seekbar": "シーク位置（左右キーで 5 秒ずつ、Home/End で先頭・末尾）",
   "player.quality": "画質",
-  "player.quality.hint":
-    "このインスタンスだけの画質式を変更（セッション内のみ有効。次回再生は既定画質に戻る）",
+  "player.quality.hint": "この再生限り有効（次回は既定画質）",
   "player.ended": "再生が終了しました（{reason}）",
   "player.failed":
     "再生を開始できませんでした（{videoId}）。yt-dlp によるストリーム解決に失敗した可能性があります（YouTube 側のブロック・フォーマット不一致・yt-dlp の古さなど）",
@@ -48,13 +45,12 @@ export const ja = {
   "player.unpip": "PiP 解除",
   "player.subscribe": "チャンネル購読",
   "player.subscribed": "購読済み",
-  "player.pip.hint":
-    "最前面・枠なしの小窓で再生。mpv のショートカット（q で終了、m でミュート）は小窓上でも使えます",
+  "player.pip.hint": "mpv ショートカット: q で終了 / m でミュート",
 
   // Phase 53: PiP 窓の一括整列（FR-41、仕様決定 BQ）
   "player.pipTile": "PiP を整列",
   "player.pipTile.hint":
-    "すべての PiP 窓を対象モニターへ格子状に並べます（対象は設定の起動ディスプレイ。自動ならプライマリ）",
+    "起動ディスプレイ設定のモニターへ整列（自動はプライマリ）",
   "player.pipTile.count": "PiP 窓: {count} 台",
   "player.pipTile.done": "{count} 台の PiP 窓を整列しました",
   "player.pipTile.partial":
@@ -66,26 +62,22 @@ export const ja = {
 
   // Phase 25: 再生の既定表示を PiP 化（FR-18、仕様決定 AJ）
   "player.playWindow": "通常窓で再生",
-  "player.window.hint":
-    "既定が PiP のため、このボタンは通常のウィンドウで再生します（既定表示の設定は変わりません）",
+  "player.window.hint": "既定設定は変わりません",
 
   // Phase 42: 再生中動画のタイトルとリンクのコピー（FR-34、仕様決定 BC）
   "player.copyLink": "リンクをコピー",
-  "player.copyLink.hint":
-    "再生中の動画タイトルと YouTube の視聴ページ URL をクリップボードへコピーします",
+  "player.copyLink.hint": "タイトルと URL をコピー",
   "player.linkCopied": "タイトルとリンクをコピーしました",
   "player.copyLinkFailed": "リンクのコピーに失敗: {message}",
 
   // Phase 40: ウインドウごとの音声出力先（FR-32、仕様決定 BA）
   "player.audio": "音声出力",
-  "player.audio.hint":
-    "このウィンドウだけの音声出力先を変更します（セッション内のみ有効。次回の再生は自動に戻ります）",
-  "player.audio.placeholder": "デバイス名を直接入力",
+  "player.audio.hint": "この再生限り有効（次回は自動）",
+  "player.audio.placeholder": "デバイス名",
 
   // Phase 52: 字幕トラックの選択（FR-40、仕様決定 BP）
   "player.subtitle": "字幕",
-  "player.subtitle.hint":
-    "このウィンドウの字幕トラックを選択します（セッション内のみ有効。連続再生の次動画では自動選択に戻ります）",
+  "player.subtitle.hint": "この再生限り有効（連続再生の次動画は自動）",
   "player.subtitle.none": "なし",
   "player.subtitle.auto": "自動",
 
@@ -93,25 +85,20 @@ export const ja = {
   "player.loop.none": "ループ: なし",
   "player.loop.all": "ループ: 全体",
   "player.loop.one": "ループ: 1 項目",
-  "player.loop.hint":
-    "ループ再生の切り替え。押すたび なし → 全体 → 1 項目 の順に変わります",
 
   // Phase 51: A-B リピート（FR-37、仕様決定 BM）
   "player.ab.off": "A-B: なし",
   "player.ab.a": "A-B: A 点",
   "player.ab.loop": "A-B: ループ中",
-  "player.ab.hint":
-    "A-B リピート。押すたび A 点設定 → B 点設定（ループ開始）→ 解除の順に変わります",
 
   // Phase 51: スクリーンショット（FR-38、仕様決定 BN）
   "player.screenshot": "スクリーンショット",
-  "player.screenshot.hint": "再生中のフレームを字幕込みの PNG で保存します",
+  "player.screenshot.hint": "字幕込み PNG で保存",
   "player.screenshot.saved": "スクリーンショットを保存しました: {path}",
   "player.screenshot.failed": "スクリーンショットの保存に失敗: {message}",
   "player.screenshot.openFolder": "フォルダを開く",
   // mpv 窓の前面化（FR-42、仕様決定 BR）
   "player.focus": "前面に出す",
-  "player.focus.hint": "mpv の再生窓を最前面に出します",
   "player.focus.wayland":
     "Wayland では mpv 窓の前面化に対応していません（プロトコルの制約）",
   "player.focus.other": "この表示環境では mpv 窓の前面化に対応していません",
@@ -120,7 +107,7 @@ export const ja = {
   "ytdlp.checking": "yt-dlp を確認中…",
   "ytdlp.ok": "yt-dlp {version}（{path}）",
   "ytdlp.missing":
-    "yt-dlp が見つかりません。インストールするか設定 ytdlp.path でパスを指定してください",
+    "yt-dlp が見つかりません（インストールまたは設定「yt-dlp のパス」で指定）",
   "ytdlp.update": "yt-dlp 更新",
   "ytdlp.updating": "更新中…",
   "ytdlp.updated": "yt-dlp 更新: {output}",
@@ -129,8 +116,7 @@ export const ja = {
   // Phase 2: 設定画面（画質プリセット）
   "settings.title": "設定",
   "settings.quality.title": "画質（ytdl-format）",
-  "settings.quality.desc":
-    "mpv に渡す yt-dlp のフォーマット式をプリセットまたは自由記述で選ぶ。保存すると再生中の動画へも即時適用される。",
+  "settings.quality.desc": "保存すると再生中の動画にも即時反映",
   "settings.quality.preset.1080": "1080p 上限",
   "settings.quality.preset.1080p60": "1080p60 優先",
   "settings.quality.preset.av1": "AV1 優先",
@@ -163,7 +149,7 @@ export const ja = {
   "deeplink.queueFailed": "キューへの追加に失敗しました: {message}",
   "feed.category.label": "カテゴリ",
   "feed.category.none": "未分類",
-  "feed.category.placeholder": "新しいカテゴリ名",
+  "feed.category.placeholder": "カテゴリ名",
   "feed.category.add": "カテゴリ追加",
   "feed.categoryAdded": "カテゴリ「{name}」を追加しました",
   "feed.channels.title": "購読チャンネル",
@@ -229,7 +215,7 @@ export const ja = {
   "desc.failed": "概要欄の取得に失敗: {message}",
 
   "blocked.title": "ブロック中のチャンネル",
-  "blocked.desc": "ブロックしたチャンネルの動画はフィード・検索・関連動画に表示されません。",
+  "blocked.desc": "フィード・検索・関連動画から非表示",
   "blocked.empty": "ブロック中のチャンネルはありません",
   "blocked.added": "{title} をブロックしました",
   "blocked.addFailed": "ブロックに失敗: {message}",
@@ -239,25 +225,29 @@ export const ja = {
 
   // Phase 15: HDR・mpv 引数（仕様決定 Y、INV-1 調査結果の設定化）
   "settings.hdr.title": "HDR・mpv 引数",
-  "settings.hdr.desc": "HDR 動画の変換方法と mpv への追加引数。次回の再生開始から反映されます（SDR 画面では HDR→SDR 変換に効きます）",
+  "settings.hdr.desc":
+    "変更は次回再生から反映（SDR 画面では HDR→SDR 変換に適用）",
   "settings.hdr.toneMapping": "トーンマッピング方式",
   "settings.hdr.computePeak": "ピーク輝度の計測",
   "settings.hdr.auto": "自動（mpv 既定）",
   "settings.hdr.yes": "計測する",
   "settings.hdr.no": "計測しない",
   "settings.hdr.extraArgs": "mpv 追加引数",
-  "settings.hdr.extraArgs.desc": "空白区切りで起動引数の末尾に追加します（例: --target-colorspace-hint=yes --gpu-api=d3d11）。空白を含む値は引用符で囲めます（例: --icc-profile=\"C:\\dir\\a.icc\"）。無効な引数は mpv 起動失敗になります",
+  "settings.hdr.extraArgs.desc":
+    "空白区切り（空白を含む値は引用符で囲む）。無効な引数は mpv 起動に失敗します",
   "settings.hdr.networkTimeout": "ストリーム読み取りタイムアウト (ms)",
-  "settings.hdr.networkTimeout.desc": "応答しない接続での読み取り待ち時間。空欄・不正値は既定の 30000ms、0 で無効化します。ライブ再生中に mpv が応答しなくなる事象への対策です",
+  "settings.hdr.networkTimeout.desc":
+    "0 で無効（空欄・不正値は既定 30000ms）",
   "settings.hdr.hwdec": "HW デコード方式",
   "settings.hdr.hwdec.desc":
-    "mpv の --hwdec に渡す値。既定の auto-safe は mpv 既定と同じです。再生中に mpv が応答しなくなる環境（GPU ドライバのデッドロック等）では no でハードウェアデコードを無効化して回避できますが、CPU 負荷が増えます",
+    "no でハードウェアデコードを無効化（CPU 負荷増）",
   "settings.hdr.unsaved":
-    "保存中に HDR・mpv 引数の値が変更されました。DB には変更前の値が保存されたため、もう一度保存してください",
+    "保存中に HDR・mpv 引数が変更され、変更前の値が保存されました（要再保存）",
 
   // Phase 18: アプリの自動更新（FR-15、仕様決定 AB）
   "update.title": "アプリの更新",
-  "update.body": "新しいバージョン {version} を利用できます。ダウンロードして適用し、再起動しますか？",
+  "update.body":
+    "バージョン {version} をダウンロード・適用して再起動します。",
   "update.apply": "更新する",
   "update.later": "後で",
   "update.installing": "更新を適用しています…",
@@ -266,14 +256,14 @@ export const ja = {
   "update.failed": "更新の確認に失敗: {message}",
   "update.installFailed": "更新の適用に失敗: {message}",
   "settings.update.title": "アプリの更新",
-  "settings.update.desc": "AppImage / NSIS 版は自動更新に対応しています。起動時にも自動で確認します（deb / rpm 版は対象外です）",
+  "settings.update.desc":
+    "起動時に自動確認（自動更新は AppImage / NSIS 版のみ対応）",
   "settings.update.check": "今すぐ確認",
   "settings.update.checking": "確認中…",
 
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",
-  "settings.sponsor.desc":
-    "カテゴリごとに区間へ入ったときの動作を選ぶ。変更は次回の再生から有効",
+  "settings.sponsor.desc": "変更は次回再生から反映",
   "settings.sponsor.action.skip": "スキップ",
   "settings.sponsor.action.notify": "通知のみ",
   "settings.sponsor.action.off": "無効",
@@ -296,9 +286,8 @@ export const ja = {
   "chat.show": "チャットを表示",
   "chat.hide": "チャットを閉じる",
   "chat.popup": "ポップアップ",
-  "chat.popup.hint": "別ウィンドウでチャットを開きます（このパネルは閉じます）",
+  "chat.popup.hint": "別窓で開く（このパネルは閉じます）",
   "chat.pin": "最前面",
-  "chat.pin.hint": "ポップアップを最前面に固定します",
   "chat.toPanel": "パネルに戻す",
   "chat.title": "ライブチャット",
   "chat.empty": "メッセージがありません",
@@ -309,7 +298,7 @@ export const ja = {
 
   "settings.filters.title": "NG フィルタ",
   "settings.filters.desc":
-    "チャット本文・投稿者のほか、動画タイトル・チャンネル名・チャンネル ID も対象にできる（フィード・検索・関連動画の一覧から除外）。種別「ハイライト」はチャット発言を除去せず強調色で表示する。登録・削除は即時に反映される。",
+    "「ハイライト」は除去せず強調表示。追加・削除は即時反映",
   "settings.filters.target": "対象",
   "settings.filters.kind": "種別",
   "settings.filters.pattern.placeholder": "パターン（NG ワード / 正規表現）",
@@ -323,7 +312,7 @@ export const ja = {
   // Phase 68: NG ユーザー節（FR-70、仕様決定 CU）。chat_author フィルタの専用管理
   "settings.ngusers.title": "NG ユーザー",
   "settings.ngusers.desc":
-    "登録した投稿者名またはチャンネル ID にマッチするチャット発言を表示しません。追加・解除は即時に反映されます（chat_author フィルタの部分一致を登録。正規表現は NG フィルタ節で登録できます）",
+    "部分一致で登録・即時反映（正規表現は「NG フィルタ」で登録）",
   "settings.ngusers.placeholder": "投稿者名またはチャンネル ID",
   "settings.ngusers.add": "追加",
   "settings.ngusers.added": "NG ユーザーを追加しました",
@@ -357,7 +346,7 @@ export const ja = {
   "library.history.lastWatched": "最終視聴 {at}",
   // Phase 61: 履歴一覧のページングと検索（FR-52・FR-61、仕様決定 CC・CL）
   "library.history.loadMore": "さらに読み込む",
-  "library.history.searchPlaceholder": "タイトルやチャンネル名で絞り込み",
+  "library.history.searchPlaceholder": "タイトル・チャンネル名",
   "library.history.searchEmpty": "一致する履歴はありません",
   "library.favorite.add": "お気に入りに追加",
   "library.favorite.remove": "お気に入りを解除",
@@ -369,7 +358,7 @@ export const ja = {
   "library.playlist.added": "「{name}」に追加しました",
   "library.playlist.addFailed": "プレイリストへの追加に失敗: {message}",
   "library.playlist.none": "プレイリストがありません",
-  "library.playlist.newPlaceholder": "新しいプレイリスト名",
+  "library.playlist.newPlaceholder": "プレイリスト名",
   "library.playlist.createAdd": "作成して追加",
   "library.playlist.create": "作成",
   "library.playlist.created": "プレイリスト「{name}」を作成しました",
@@ -382,9 +371,9 @@ export const ja = {
   "library.playlist.items": "{count} 件",
   "library.playlist.loadMore": "さらに読み込む",
   "library.playlist.empty": "動画が登録されていません",
-  "library.playlist.selectHint": "左の一覧からプレイリストを選んでください",
+  "library.playlist.selectHint": "プレイリスト未選択",
   "library.playlists.empty": "プレイリストはありません",
-  "library.playlist.importUrl": "YouTube プレイリストの URL",
+  "library.playlist.importUrl": "例: https://www.youtube.com/playlist?list=...",
   "library.playlist.importName": "プレイリスト名（省略可）",
   "library.playlist.import": "取り込み",
   "library.playlist.importing": "取り込み中…",
@@ -397,7 +386,6 @@ export const ja = {
   "library.playlist.moveUp": "上へ",
   "library.playlist.moveDown": "下へ",
   "library.playlist.reorderFailed": "並べ替えに失敗: {message}",
-  "library.playlist.dragHint": "ドラッグで並べ替え",
   "library.playlist.queue": "ここから連続再生",
   "library.playlist.queueFailed": "連続再生の開始に失敗: {message}",
   "library.playlist.queueActive": "連続再生中: {name}（{index}/{count}）",
@@ -437,10 +425,7 @@ export const ja = {
   "library.watchLater.removed": "あとで見るを解除しました",
   "library.watchLater.failed": "あとで見る操作に失敗: {message}",
   "library.watchLater.empty": "あとで見るはありません",
-  "library.search.placeholder":
-    "履歴・お気に入り・プレイリスト・あとで見るを検索",
-  "library.search.hint":
-    "タイトルやチャンネル名でライブラリ全体を検索できます",
+  "library.search.placeholder": "タイトル・チャンネル名",
   "library.search.empty": "一致する項目はありません",
   "library.search.source.history": "履歴",
   "library.search.source.favorites": "お気に入り",
@@ -450,47 +435,37 @@ export const ja = {
   // Phase 7: ホイール割り当て（決定記録: script-opts 注入のため次回再生から有効）
   "settings.wheel.title": "ホイール割り当て",
   "settings.wheel.desc":
-    "mpv のホイール操作は「一時停止中＝コマ送り、再生中＝音量」。ここでは再生中の 1 ノッチあたりの音量変化量を設定する。mpv 起動オプションで渡すため、変更は次回の再生から有効",
+    "一時停止中はコマ送り、再生中は音量。変更は次回再生から反映",
   "settings.wheel.volumeDelta": "音量変化量（ノッチあたり）",
 
   // Phase 52: 再生の初期速度と初期音量（FR-39、仕様決定 BO）
   "settings.player.title": "再生",
-  "settings.player.desc":
-    "新規に再生を開始するインスタンスの初期値。mpv の起動引数で渡すため、変更は次回の再生開始から有効です（再生中インスタンスの速度・音量はカード上で変えられますが、セッション限りです）",
+  "settings.player.desc": "変更は次回再生から反映",
   "settings.player.initialSpeed": "初期速度",
-  "settings.player.initialSpeed.desc":
-    "mpv の --speed に渡す値（0.25〜4.0、既定 1.0）。空欄は既定値に戻します",
+  "settings.player.initialSpeed.desc": "0.25〜4.0（空欄で既定 1.0）",
   "settings.player.initialVolume": "初期音量（%）",
-  "settings.player.initialVolume.desc":
-    "mpv の --volume に渡す値（0〜130、既定 100）。空欄は既定値に戻します",
-  "settings.player.unsaved":
-    "保存中に再生設定の値が変更されました。もう一度保存してください",
+  "settings.player.initialVolume.desc": "0〜130（空欄で既定 100）",
+  "settings.player.unsaved": "保存中に再生設定が変更されました（要再保存）",
 
   // Phase 8: PiP 小窓の位置（次回の PiP 化から有効）
   "settings.pip.title": "PiP",
-  "settings.pip.desc":
-    "PiP（最前面・枠なしの小窓）の位置とサイズ。mpv の --geometry 形式（例: 480x270-40-40 は幅480・高さ270・右下から 40px 内側）。次回の PiP 化から有効",
+  "settings.pip.desc": "変更は次回の PiP 化から反映",
   "settings.pip.default": "再生を既定で PiP 表示にする",
-  "settings.pip.default.desc":
-    "オンにするとすべての再生（連続再生の先頭・外部からの起動を含む）が PiP 小窓で始まります。起動後はプレイヤーカードで切り替えられます",
   "settings.pip.fitAspect": "小窓サイズを動画のアスペクト比に合わせる",
   "settings.pip.fitAspect.desc":
-    "オンにすると小窓の幅・高さを上限枠として、動画の比率に内接するサイズへ自動調整します（例: 480x270 の枠で横長動画は約480x201、縦長動画は約152x270）。オフなら常に指定サイズ",
+    "位置とサイズの幅・高さを上限枠として動画比率に内接調整",
   "settings.pip.geometry": "小窓の位置とサイズ（WxH+±x±y、追従時は上限枠）",
   "settings.pip.quality": "PiP の既定画質（ytdl-format 式）",
-  "settings.pip.quality.desc":
-    "空欄なら全体の画質設定に従う。小窓向けに低めの画質を指定しておくと起動が軽くなる",
+  "settings.pip.quality.desc": "空欄時は全体の画質設定を使用",
   "settings.pip.unsaved":
-    "保存中に PiP の値が変更されました。DB には既定値が保存されたため、もう一度保存してください",
+    "保存中に PiP が変更され、既定値が保存されました（要再保存）",
 
   // Phase 39: 再生窓の起動ディスプレイ（FR-31、仕様決定 AZ）
   "settings.window.title": "再生窓",
-  "settings.window.desc":
-    "mpv 再生窓を開くディスプレイの選択。変更は次回の再生開始から有効（PiP 小窓の位置とサイズは PiP 節で設定）",
+  "settings.window.desc": "変更は次回再生から反映",
   "settings.window.screen": "起動ディスプレイ",
   "settings.window.screen.auto": "自動（mpv 既定）",
-  "settings.window.screen.desc":
-    "選択したモニター上で再生窓を開きます。選択したモニターが外れているときは自動へフォールバックします",
+  "settings.window.screen.desc": "未接続時は自動にフォールバック",
   "settings.window.screen.none": "接続中のモニターを取得できませんでした",
   "settings.window.screen.missing": "{name}（現在は未接続）",
   "settings.window.monitor": "{name}（{dims}）",
@@ -498,29 +473,24 @@ export const ja = {
   // Phase 55: 再生完了時の自動クローズ（FR-43、仕様決定 BS）
   "settings.window.closeOnEof": "再生完了時に窓を自動で閉じる",
   "settings.window.closeOnEof.desc":
-    "オンにすると、連続再生を伴わない最後までの再生（eof）で mpv 窓とプレイヤーカードを自動的に閉じます。オフ（既定）は従来どおり終了後も残します。途中終了やエラー終了は設定に関わらず閉じられます",
-  "settings.window.unsaved":
-    "保存中に再生窓の値が変更されました。もう一度保存してください",
+    "連続再生中は閉じません（途中終了・エラー時は設定に関わらず終了）",
+  "settings.window.unsaved": "保存中に再生窓が変更されました（要再保存）",
 
   // Phase 29: フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
   "settings.feed.title": "フィード",
   "settings.feed.desc":
-    "フィード一覧の表示と新着通知・自動既読の設定。一覧の表示は次回の一覧取得から、通知と自動既読は次回のフィード更新から反映される",
+    "一覧表示は次回取得から、通知・自動既読は次回フィード更新から反映",
   "settings.feed.showShorts": "フィードに Shorts を表示する",
   "settings.feed.showShorts.desc":
-    "オフのとき、フィード一覧の「すべて」「動画」の選択は Shorts を除外します。種別フィルタで「Shorts」を選ぶと常に表示します",
+    "オフ時は「すべて」「動画」から除外（種別で Shorts 選択時は表示）",
   // Phase 65: 新着のデスクトップ通知と自動既読（FR-58・FR-64、仕様決定 CI・CO）
   "settings.feed.notifyNew": "新着をデスクトップ通知する",
-  "settings.feed.notifyNew.desc":
-    "オンにすると、フィード更新で新着を検出したとき OS のデスクトップ通知を出します（既定はオフ）",
   "settings.feed.autoReadPlayed": "再生した項目を自動で既読にする",
-  "settings.feed.autoReadPlayed.desc":
-    "オンにすると、再生履歴のあるフィード項目を自動で既読にします（既定はオフ）。起動時とフィード更新のたびに適用されます",
+  "settings.feed.autoReadPlayed.desc": "起動時とフィード更新時に適用",
   "settings.feed.autoReadDays": "投稿からこの日数が経過した項目を既読にする",
   "settings.feed.autoReadDays.desc":
-    "投稿日時が指定した日数を経過したフィード項目を自動で既読にします。0（既定）は無効です。起動時とフィード更新のたびに適用されます",
-  "settings.feed.unsaved":
-    "保存中にフィードの値が変更されました。もう一度保存してください",
+    "0 で無効（起動時とフィード更新時に適用）",
+  "settings.feed.unsaved": "保存中にフィードが変更されました（要再保存）",
 
   // Phase 56: ライブ配信の待機（FR-44、仕様決定 BT）
   "livewait.add": "配信を待機",
@@ -528,11 +498,10 @@ export const ja = {
   "livewait.remove": "待機を解除",
   "livewait.added": "配信を待機します: {title}",
   "livewait.duplicate": "この動画は既に待機中です",
-  "livewait.live": "この動画はすでに放送中です（待機登録しません）",
+  "livewait.live": "すでに放送中のため待機登録しません",
   "livewait.playNow": "再生する",
-  "livewait.ended": "この配信は終了しています（待機登録しません）",
-  "livewait.notBroadcast":
-    "放送予定のライブ・プレミア公開ではありません（待機登録しません）",
+  "livewait.ended": "終了済みのため待機登録しません",
+  "livewait.notBroadcast": "放送予定ではないため待機登録しません",
   "livewait.addFailed": "配信待機の登録に失敗: {message}",
   "livewait.removed": "待機を解除しました",
   "livewait.removeFailed": "待機の解除に失敗: {message}",
@@ -544,33 +513,26 @@ export const ja = {
 
   // Phase 56: 設定画面のライブ待機セクション（live_wait.action）
   "settings.livewait.title": "ライブ待機",
-  "settings.livewait.desc":
-    "待機中の配信が開始されたときの動作。次回の開始検出から反映される",
+  "settings.livewait.desc": "次回の開始検出から反映",
   "settings.livewait.action": "配信開始時の動作",
   "settings.livewait.action.play": "新規インスタンスで自動再生",
   "settings.livewait.action.notify": "トースト通知のみ",
-  "settings.livewait.unsaved":
-    "保存中にライブ待機の値が変更されました。もう一度保存してください",
+  "settings.livewait.unsaved": "保存中にライブ待機が変更されました（要再保存）",
 
   // Phase 67: チャットポップアップの表示カスタマイズ（FR-68、仕様決定 CS）
   "settings.chatpopup.title": "チャットポップアップ",
-  "settings.chatpopup.desc":
-    "別ウィンドウで開くチャット（ポップアップ）の見た目。開いているポップアップにも即時に反映されます",
+  "settings.chatpopup.desc": "開いているポップアップにも即時反映",
   "settings.chatpopup.showAuthor": "投稿者名を表示する",
-  "settings.chatpopup.showAuthor.desc":
-    "オフ（既定）は投稿時刻と本文のみの表示です。superchat / membership のバッジは投稿者名を表示しても出しません",
+  "settings.chatpopup.showAuthor.desc": "superchat / membership バッジは非表示",
   "settings.chatpopup.fontSize": "文字サイズ（px）",
-  "settings.chatpopup.fontSize.desc": "10〜32 の数値。空欄は既定値 14 に戻します",
+  "settings.chatpopup.fontSize.desc": "10〜32（空欄で既定 14）",
   "settings.chatpopup.opacity": "不透明度",
-  "settings.chatpopup.opacity.desc":
-    "0.2〜1.0 の数値（小さいほど透けます）。空欄は既定値 1.0 に戻します",
+  "settings.chatpopup.opacity.desc": "0.2〜1.0（空欄で既定 1.0）",
   "settings.chatpopup.unsaved":
-    "保存中にチャットポップアップの値が変更されました。もう一度保存してください",
+    "保存中にチャットポップアップが変更されました（要再保存）",
 
   // Phase 71: テーマと表示密度（FR-76・FR-77、仕様決定 DA・DB）
   "settings.ui.title": "表示",
-  "settings.ui.desc":
-    "画面の配色テーマ・一覧の表示密度・UI 言語。保存すると直ちに表示へ反映されます",
   "settings.ui.theme": "配色テーマ",
   "settings.ui.theme.dark": "ダーク",
   "settings.ui.theme.light": "ライト",
@@ -582,22 +544,19 @@ export const ja = {
   "settings.ui.language": "UI 言語",
   "settings.ui.language.ja": "日本語",
   "settings.ui.language.en": "English",
-  "settings.ui.unsaved":
-    "保存中に表示設定の値が変更されました。もう一度保存してください",
+  "settings.ui.unsaved": "保存中に表示設定が変更されました（要再保存）",
 
   // Phase 72: キーボードショートカットの有効化（FR-79、仕様決定 DD）
   "settings.shortcuts.title": "ショートカット",
-  "settings.shortcuts.desc":
-    "一覧とキューをキーボードで操作する既定キーマップ。保存で有効・無効が切り替わる（既定はオフ）",
   "settings.shortcuts.enabled": "キーボードショートカットを有効にする",
   "settings.shortcuts.enabled.desc":
-    "一覧の動画行で j / ↓（次の行）・k / ↑（前の行）・Enter（選択行を再生）・a（選択行をキューに追加）・q（キューパネルの開閉）が使えます。入力欄の編集中やコンテキストメニュー表示中は無効です",
+    "j/↓: 次行、k/↑: 前行、Enter: 再生、a: キュー追加、q: キュー開閉（入力中・メニュー表示中は無効）",
   "settings.shortcuts.unsaved":
-    "保存中にショートカットの値が変更されました。もう一度保存してください",
+    "保存中にショートカットが変更されました（要再保存）",
 
   // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）
   "bookmark.add": "ブックマーク",
-  "bookmark.add.hint": "現在位置をブックマークへ保存",
+  "bookmark.add.hint": "現在位置を保存",
   "bookmark.tab": "ブックマーク",
   "bookmark.empty": "ブックマークはありません",
   "bookmark.saved": "ブックマークを保存しました: {position}",
@@ -628,48 +587,46 @@ export const ja = {
 
   // Phase 66: 設定画面のカテゴリ並べ替え（FR-63、仕様決定 CN）
   "settings.categories.title": "カテゴリ",
-  "settings.categories.desc":
-    "フィードのカテゴリ表示順。上下ボタンかドラッグ＆ドロップで並べ替え（プレイリストと同じ操作。変更は即時に保存されます）",
+  "settings.categories.desc": "変更は即時保存",
   "settings.categories.empty": "カテゴリはありません",
   "settings.categories.moveUp": "上へ",
   "settings.categories.moveDown": "下へ",
-  "settings.categories.dragHint": "ドラッグで並べ替え",
   "settings.categories.reorderFailed": "並べ替えに失敗: {message}",
 
   // Phase 66: 設定画面の運用節（FR-62・FR-66、仕様決定 CM・CQ）
   "settings.ops.title": "運用",
-  "settings.ops.desc":
-    "データのエクスポート/インポートとデータベースのメンテナンス",
-  "settings.ops.export": "データをエクスポート",
+  "settings.ops.export": "エクスポート",
+  "settings.ops.export.label": "データエクスポート",
   "settings.ops.export.desc":
-    "購読チャンネル・カテゴリ・設定・プレイリストを JSON ファイルに書き出します",
+    "購読チャンネル・カテゴリ・設定・プレイリストを JSON 出力",
   "settings.ops.exported": "エクスポートしました: {path}",
   "settings.ops.exportFailed": "エクスポートに失敗: {message}",
-  "settings.ops.import": "データをインポート",
+  "settings.ops.import": "インポート",
+  "settings.ops.import.label": "データインポート",
   "settings.ops.import.desc":
-    "エクスポートした JSON を読み込みます。購読・カテゴリ・設定・プレイリストはファイルの内容で置き換わります",
+    "現在の購読・カテゴリ・設定・プレイリストを上書き",
   "settings.ops.importConfirm":
-    "現在の購読・カテゴリ・設定・プレイリストがファイルの内容で置き換わります。実行しますか？",
+    "現在の購読・カテゴリ・設定・プレイリストをファイルの内容で上書きします。この操作は取り消せません。",
   "settings.ops.imported": "インポートしました: {path}",
   "settings.ops.importFailed": "インポートに失敗: {message}",
   "settings.ops.dbSize": "データベースサイズ",
-  "settings.ops.dbSize.desc":
-    "DB 本体と WAL ファイルの合計（メンテナンスの目安）",
+  "settings.ops.dbSize.desc": "DB 本体 + WAL の合計",
   "settings.ops.dbSize.failed": "サイズの取得に失敗: {message}",
   "settings.ops.vacuum": "VACUUM",
-  "settings.ops.vacuum.desc":
-    "データベースを再構築して空き領域を縮めます",
+  "settings.ops.vacuum.label": "空き領域の縮小",
+  "settings.ops.vacuum.desc": "データベースを再構築",
   "settings.ops.vacuumDone": "VACUUM を実行しました（{before} → {after}）",
   "settings.ops.vacuumFailed": "VACUUM に失敗: {message}",
   "settings.ops.cleanup": "孤児行整理",
-  "settings.ops.cleanup.desc":
-    "購読解除後に残った動画や、参照先の無い項目行を削除します（履歴は消えません）",
-  "settings.ops.cleanupConfirm": "孤児行を削除します。実行しますか？",
+  "settings.ops.cleanup.label": "未参照データの整理",
+  "settings.ops.cleanup.desc": "未参照の動画・項目を削除（履歴は保持）",
+  "settings.ops.cleanupConfirm":
+    "未参照の動画・項目を削除します（履歴は保持）。この操作は取り消せません。",
   "settings.ops.cleanupDone": "{count} 件の孤児行を削除しました",
   "settings.ops.cleanupFailed": "孤児行整理に失敗: {message}",
-  "settings.ops.diag": "診断情報をエクスポート",
+  "settings.ops.diag": "診断情報",
   "settings.ops.diag.desc":
-    "アプリログ・設定・環境情報を 1 つの zip にまとめて書き出します。署名 URL やトークン、パス内のユーザー名はマスクされます（FR-82）",
+    "ログ・設定・環境情報を zip 出力（署名 URL・トークン・ユーザー名はマスク）",
   "settings.ops.diagExported": "診断情報をエクスポートしました: {path}",
   "settings.ops.diagFailed": "診断情報のエクスポートに失敗: {message}",
   "settings.ops.busy": "実行中…",
@@ -678,22 +635,17 @@ export const ja = {
   "settings.filter.placeholder": "節を絞り込み（例: 画質、mpv、フィード）",
   "settings.filter.noMatch": "一致する節がありません",
   "settings.deps.title": "依存コマンド",
-  "settings.deps.desc":
-    "mpv・yt-dlp・deno など外部コマンドの設定。検出状況の一覧は「診断」節を参照",
   "settings.deps.ytdlpPath": "yt-dlp のパス",
   "settings.deps.ytdlpPath.placeholder": "自動検出（空欄）",
   "settings.deps.ytdlpPath.desc":
-    "yt-dlp 実行ファイルを直接指定します。空欄は自動検出（同梱リソース → PATH の順）です。変更は保存後、次の yt-dlp 呼び出しから有効になります",
+    "空欄で自動検出（同梱リソース → PATH）。保存後の次回呼び出しから反映",
   // Phase 77: PO Token の伝達（FR-86、仕様決定 DK）
   "settings.deps.poToken": "PO Token",
   "settings.deps.poToken.placeholder": "未設定（空欄）",
   "settings.deps.poToken.desc":
-    "YouTube が PO Token を要求する環境向けの設定。設定すると yt-dlp 呼び出しへ --extractor-args \"youtube:po_token=<値>\" を自動構成して伝達します（mpv 経由のストリーム解決を含む）。値の形式は yt-dlp の PO Token Guide に従います（例: mweb.gvs+<トークン>）。空欄は未設定で、変更は保存後の次の yt-dlp 呼び出しから有効になります",
-  "settings.deps.unsaved":
-    "保存中に依存コマンドの値が変更されました。もう一度保存してください",
+    "形式: mweb.gvs+<token> 等（yt-dlp PO Token Guide 準拠）。保存後の次回呼び出しから反映",
+  "settings.deps.unsaved": "保存中に依存コマンドが変更されました（要再保存）",
   "settings.diag.title": "診断",
-  "settings.diag.desc":
-    "外部コマンドの検出状況・バージョン・解決パスの一覧。初回起動時にも同じ一覧が表示されます",
   "deps.detected": "検出",
   "deps.missing": "未検出",
   "deps.refresh": "再検出",
@@ -701,14 +653,13 @@ export const ja = {
   "deps.failed": "依存コマンドの検出に失敗: {message}",
   "setup.title": "初期セットアップ",
   "setup.desc":
-    "yt-browser の動作に必要な外部コマンドの検出状況です。未検出のコマンドはインストールするか、設定画面の「依存コマンド」節でパスを指定してください。この一覧は設定画面の「診断」節でいつでも再確認できます",
+    "未検出のコマンドはインストールするか設定「依存コマンド」で指定します。",
   "setup.ok": "はじめる",
 
   // Phase 75: 通知履歴（FR-83、仕様決定 DH）
   "settings.notices.title": "通知履歴",
-  "settings.notices.desc":
-    "このセッションで発行された通知の一覧です。新しい順に最大 {max} 件を保持し、アプリの再起動で消えます",
-  "settings.notices.empty": "このセッションではまだ通知は発行されていません",
+  "settings.notices.desc": "新しい順に最大 {max} 件（再起動で消去）",
+  "settings.notices.empty": "通知はありません",
   "settings.notices.action": "アクション: {label}",
   "settings.notices.clear": "履歴を消去",
 

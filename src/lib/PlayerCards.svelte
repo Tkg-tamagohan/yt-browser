@@ -781,13 +781,11 @@
           </select>
         </label>
         <button
-          title={t("player.loop.hint")}
           onclick={() => void cycleLoop(p.instanceId)}
         >
           {t(LOOP_LABEL[loopMode(p.instanceId)])}
         </button>
         <button
-          title={t("player.ab.hint")}
           onclick={() => void cycleAbLoop(p.instanceId, p.videoId)}
         >
           {t(AB_LABEL[abLoopState(p.instanceId, p.videoId)])}
@@ -806,14 +804,14 @@
           {t("bookmark.add")}
         </button>
         <button
-          title={t("player.pip.hint")}
+          title={p.pip ? undefined : t("player.pip.hint")}
           disabled={pipBusy.has(p.instanceId)}
           onclick={() => togglePip(p.instanceId, !p.pip)}
         >
           {p.pip ? t("player.unpip") : t("player.pip")}
         </button>
         <button
-          title={focusKey ? t(focusKey) : t("player.focus.hint")}
+          title={focusKey ? t(focusKey) : undefined}
           disabled={focusKey !== null}
           onclick={() => void focusPlayer(p.instanceId)}
         >

@@ -137,7 +137,6 @@
     <div class="popup-actions">
       <button
         class:active={ontop}
-        title={t("chat.pin.hint")}
         onclick={() => void toggleOntop()}
       >
         {t("chat.pin")}

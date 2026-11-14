@@ -18,7 +18,6 @@
 
   <section class="panel panel--filled">
     <h2>{t("settings.deps.title")}</h2>
-    <p class="subtle desc">{t("settings.deps.desc")}</p>
     <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
          hidden 切替（ヒットずれ対策、FR-80） -->
     <p class="subtle" class:hidden={!loading}>…</p>

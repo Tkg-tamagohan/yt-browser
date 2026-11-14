@@ -132,12 +132,6 @@
   <p class="subtle" class:hidden={categories.length > 0}>
     {t("settings.categories.empty")}
   </p>
-  <p
-    class="subtle drag-hint"
-    class:hidden={categories.length === 0}
-  >
-    {t("settings.categories.dragHint")}
-  </p>
     <ul class="cat-list" class:hidden={categories.length === 0}>
       {#each categories as c, index (c.id)}
         <li
@@ -168,10 +162,6 @@
 </section>
 
 <style>
-  .drag-hint {
-    font-size: 0.8rem;
-  }
-
   .cat-list {
     list-style: none;
     margin: 0;

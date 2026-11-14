@@ -32,7 +32,6 @@
         <input type="checkbox" bind:checked={feedNotifyNew} />
         {t("settings.feed.notifyNew")}
       </label>
-      <p class="subtle desc">{t("settings.feed.notifyNew.desc")}</p>
       <label class="setting-row">
         <input type="checkbox" bind:checked={feedAutoReadPlayed} />
         {t("settings.feed.autoReadPlayed")}

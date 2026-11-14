@@ -79,7 +79,7 @@
     const path = await open({ multiple: false, filters: [JSON_FILTER] });
     if (typeof path !== "string") return;
     const yes = await ask(t("settings.ops.importConfirm"), {
-      title: t("settings.ops.import"),
+      title: t("settings.ops.import.label"),
       kind: "warning",
     });
     if (!yes) return;
@@ -138,34 +138,48 @@
 
 <section class="panel panel--filled">
   <h2>{t("settings.ops.title")}</h2>
-  <p class="subtle desc">{t("settings.ops.desc")}</p>
 
   <div class="ops-group">
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.export")}</div>
+        <div id="ops-export-label">{t("settings.ops.export.label")}</div>
         <div class="subtle">{t("settings.ops.export.desc")}</div>
       </div>
-      <button onclick={() => void exportData()} disabled={busy}>
+      <button
+        id="ops-export-btn"
+        aria-labelledby="ops-export-label ops-export-btn"
+        onclick={() => void exportData()}
+        disabled={busy}
+      >
         {t("settings.ops.export")}
       </button>
     </div>
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.import")}</div>
+        <div id="ops-import-label">{t("settings.ops.import.label")}</div>
         <div class="subtle">{t("settings.ops.import.desc")}</div>
       </div>
-      <button onclick={() => void importData()} disabled={busy}>
+      <button
+        id="ops-import-btn"
+        aria-labelledby="ops-import-label ops-import-btn"
+        onclick={() => void importData()}
+        disabled={busy}
+      >
         {t("settings.ops.import")}
       </button>
     </div>
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.diag")}</div>
+        <div id="ops-diag-label">{t("settings.ops.diag")}</div>
         <div class="subtle">{t("settings.ops.diag.desc")}</div>
       </div>
-      <button onclick={() => void exportDiag()} disabled={busy}>
-        {t("settings.ops.diag")}
+      <button
+        id="ops-diag-btn"
+        aria-labelledby="ops-diag-label ops-diag-btn"
+        onclick={() => void exportDiag()}
+        disabled={busy}
+      >
+        {t("settings.ops.export")}
       </button>
     </div>
   </div>
@@ -182,19 +196,30 @@
     </div>
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.vacuum")}</div>
+        <div id="ops-vacuum-label">{t("settings.ops.vacuum.label")}</div>
         <div class="subtle">{t("settings.ops.vacuum.desc")}</div>
       </div>
-      <button onclick={() => void vacuum()} disabled={busy}>
+      <button
+        id="ops-vacuum-btn"
+        aria-labelledby="ops-vacuum-label ops-vacuum-btn"
+        onclick={() => void vacuum()}
+        disabled={busy}
+      >
         {busy ? t("settings.ops.busy") : t("settings.ops.vacuum")}
       </button>
     </div>
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.cleanup")}</div>
+        <div id="ops-cleanup-label">{t("settings.ops.cleanup.label")}</div>
         <div class="subtle">{t("settings.ops.cleanup.desc")}</div>
       </div>
-      <button class="danger" onclick={() => void cleanupOrphans()} disabled={busy}>
+      <button
+        id="ops-cleanup-btn"
+        class="danger"
+        aria-labelledby="ops-cleanup-label ops-cleanup-btn"
+        onclick={() => void cleanupOrphans()}
+        disabled={busy}
+      >
         {busy ? t("settings.ops.busy") : t("settings.ops.cleanup")}
       </button>
     </div>

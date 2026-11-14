@@ -4,8 +4,6 @@ import type { MessageKey } from "./i18n-ja";
 // ja の全キーを網羅する。satisfies で網羅をコンパイル時に検査し、
 // 実行時も未登録キーは t() が ja へフォールバックする（MESSAGES は Partial 型）。
 export const en = {
-  "home.lead":
-    "A dedicated YouTube browser combining lightweight mpv playback with fully local data management.",
   "home.db.checking": "Checking DB connection…",
   "home.db.ok": "DB connection: OK (schema v{version})",
   "home.db.ng": "DB connection: failed — {error}",
@@ -34,8 +32,7 @@ export const en = {
   // Phase 47: シークバー自前化＋SponsorBlock 区間表示（FR-36、仕様決定 BI）
   "player.seekbar": "Seek position (Left/Right: 5s steps, Home/End: start/end)",
   "player.quality": "Quality",
-  "player.quality.hint":
-    "Change the quality format for this instance only (this session only; the next playback reverts to the default quality)",
+  "player.quality.hint": "This session only (next playback uses the default)",
   "player.ended": "Playback ended ({reason})",
   "player.failed":
     "Could not start playback ({videoId}). Stream resolution via yt-dlp may have failed (YouTube blocking, format mismatch, or an outdated yt-dlp)",
@@ -51,13 +48,12 @@ export const en = {
   "player.unpip": "Exit PiP",
   "player.subscribe": "Subscribe to channel",
   "player.subscribed": "Subscribed",
-  "player.pip.hint":
-    "Plays in a small always-on-top frameless window. mpv shortcuts (q to quit, m to mute) work on the PiP window too",
+  "player.pip.hint": "mpv shortcuts: q to quit, m to mute",
 
   // Phase 53: PiP 窓の一括整列（FR-41、仕様決定 BQ）
   "player.pipTile": "Tile PiP windows",
   "player.pipTile.hint":
-    "Arranges all PiP windows in a grid on the target monitor (the startup display in settings; primary when set to auto)",
+    "Tile on the configured startup display (primary when auto)",
   "player.pipTile.count": "PiP windows: {count}",
   "player.pipTile.done": "Tiled {count} PiP windows",
   "player.pipTile.partial": "Tiled {ok}/{total} windows (failed: {message})",
@@ -68,26 +64,23 @@ export const en = {
 
   // Phase 25: 再生の既定表示を PiP 化（FR-18、仕様決定 AJ）
   "player.playWindow": "Play in window",
-  "player.window.hint":
-    "Since PiP is the default, this button plays in a normal window (the default display setting is unchanged)",
+  "player.window.hint": "Does not change the default setting",
 
   // Phase 42: 再生中動画のタイトルとリンクのコピー（FR-34、仕様決定 BC）
   "player.copyLink": "Copy link",
-  "player.copyLink.hint":
-    "Copies the playing video's title and YouTube watch URL to the clipboard",
+  "player.copyLink.hint": "Copy title and URL",
   "player.linkCopied": "Copied title and link",
   "player.copyLinkFailed": "Failed to copy link: {message}",
 
   // Phase 40: ウインドウごとの音声出力先（FR-32、仕様決定 BA）
   "player.audio": "Audio output",
-  "player.audio.hint":
-    "Changes the audio output for this window only (this session only; the next playback reverts to auto)",
-  "player.audio.placeholder": "Enter a device name",
+  "player.audio.hint": "This session only (next playback reverts to auto)",
+  "player.audio.placeholder": "Device name",
 
   // Phase 52: 字幕トラックの選択（FR-40、仕様決定 BP）
   "player.subtitle": "Subtitles",
   "player.subtitle.hint":
-    "Selects the subtitle track for this window (this session only; the next video in continuous playback reverts to auto)",
+    "This session only (next video in queue reverts to auto)",
   "player.subtitle.none": "None",
   "player.subtitle.auto": "Auto",
 
@@ -95,26 +88,20 @@ export const en = {
   "player.loop.none": "Loop: off",
   "player.loop.all": "Loop: all",
   "player.loop.one": "Loop: one",
-  "player.loop.hint":
-    "Toggles loop playback. Each press cycles off → all → one",
 
   // Phase 51: A-B リピート（FR-37、仕様決定 BM）
   "player.ab.off": "A-B: off",
   "player.ab.a": "A-B: point A",
   "player.ab.loop": "A-B: looping",
-  "player.ab.hint":
-    "A-B repeat. Each press cycles set A → set B (loop starts) → clear",
 
   // Phase 51: スクリーンショット（FR-38、仕様決定 BN）
   "player.screenshot": "Screenshot",
-  "player.screenshot.hint":
-    "Saves the current frame as a PNG including subtitles",
+  "player.screenshot.hint": "Save current frame as PNG with subtitles",
   "player.screenshot.saved": "Screenshot saved: {path}",
   "player.screenshot.failed": "Failed to save screenshot: {message}",
   "player.screenshot.openFolder": "Open folder",
   // mpv 窓の前面化（FR-42、仕様決定 BR）
   "player.focus": "Bring to front",
-  "player.focus.hint": "Brings the mpv playback window to the front",
   "player.focus.wayland":
     "Raising the mpv window is not supported on Wayland (protocol limitation)",
   "player.focus.other":
@@ -124,7 +111,7 @@ export const en = {
   "ytdlp.checking": "Checking yt-dlp…",
   "ytdlp.ok": "yt-dlp {version} ({path})",
   "ytdlp.missing":
-    "yt-dlp was not found. Install it or set its path with the ytdlp.path setting",
+    "yt-dlp not found (install it or set \"yt-dlp path\" in Settings)",
   "ytdlp.update": "Update yt-dlp",
   "ytdlp.updating": "Updating…",
   "ytdlp.updated": "yt-dlp updated: {output}",
@@ -133,8 +120,7 @@ export const en = {
   // Phase 2: 設定画面（画質プリセット）
   "settings.title": "Settings",
   "settings.quality.title": "Quality (ytdl-format)",
-  "settings.quality.desc":
-    "Choose the yt-dlp format expression passed to mpv via preset or free text. Saving also applies it immediately to currently playing videos.",
+  "settings.quality.desc": "Saving applies immediately to playing videos",
   "settings.quality.preset.1080": "Up to 1080p",
   "settings.quality.preset.1080p60": "Prefer 1080p60",
   "settings.quality.preset.av1": "Prefer AV1",
@@ -167,7 +153,7 @@ export const en = {
   "deeplink.queueFailed": "Failed to add to queue: {message}",
   "feed.category.label": "Category",
   "feed.category.none": "Uncategorized",
-  "feed.category.placeholder": "New category name",
+  "feed.category.placeholder": "Category name",
   "feed.category.add": "Add category",
   "feed.categoryAdded": "Added category \"{name}\"",
   "feed.channels.title": "Subscribed channels",
@@ -234,8 +220,7 @@ export const en = {
   "desc.failed": "Failed to fetch the description: {message}",
 
   "blocked.title": "Blocked channels",
-  "blocked.desc":
-    "Videos from blocked channels are hidden from feeds, search, and related videos.",
+  "blocked.desc": "Hidden from feed, search, and related videos",
   "blocked.empty": "No blocked channels",
   "blocked.added": "Blocked {title}",
   "blocked.addFailed": "Failed to block: {message}",
@@ -246,7 +231,7 @@ export const en = {
   // Phase 15: HDR・mpv 引数（仕様決定 Y、INV-1 調査結果の設定化）
   "settings.hdr.title": "HDR & mpv args",
   "settings.hdr.desc":
-    "How HDR videos are converted and extra args for mpv. Applied from the next playback (effective for HDR→SDR conversion on SDR screens)",
+    "Takes effect from the next playback (applies to HDR→SDR on SDR screens)",
   "settings.hdr.toneMapping": "Tone mapping",
   "settings.hdr.computePeak": "Peak brightness detection",
   "settings.hdr.auto": "Auto (mpv default)",
@@ -254,20 +239,19 @@ export const en = {
   "settings.hdr.no": "Do not detect",
   "settings.hdr.extraArgs": "Extra mpv args",
   "settings.hdr.extraArgs.desc":
-    "Appended to the end of launch args, separated by spaces (e.g. --target-colorspace-hint=yes --gpu-api=d3d11). Values containing spaces can be quoted (e.g. --icc-profile=\"C:\\dir\\a.icc\"). Invalid args cause mpv launch failure",
+    "Space-separated (quote values with spaces). Invalid args prevent mpv from starting",
   "settings.hdr.networkTimeout": "Stream read timeout (ms)",
   "settings.hdr.networkTimeout.desc":
-    "Read wait time on unresponsive connections. Empty or invalid values fall back to the default 30000ms; 0 disables it. A countermeasure for mpv becoming unresponsive during live playback",
+    "0 to disable (empty or invalid defaults to 30000ms)",
   "settings.hdr.hwdec": "HW decode mode",
   "settings.hdr.hwdec.desc":
-    "Value passed to mpv's --hwdec. The default auto-safe is the same as mpv's default. In environments where mpv becomes unresponsive during playback (e.g. GPU driver deadlocks), setting no disables hardware decoding as a workaround at the cost of CPU load",
+    "Set to no to disable hardware decoding (increases CPU load)",
   "settings.hdr.unsaved":
-    "HDR & mpv args values were changed while saving. The previous values were stored in the DB; please save again",
+    "HDR & mpv args changed while saving; previous values were saved (save again)",
 
   // Phase 18: アプリの自動更新（FR-15、仕様決定 AB）
   "update.title": "App update",
-  "update.body":
-    "Version {version} is available. Download, apply, and restart?",
+  "update.body": "Download and apply version {version}, then restart.",
   "update.apply": "Update",
   "update.later": "Later",
   "update.installing": "Applying the update…",
@@ -277,14 +261,13 @@ export const en = {
   "update.installFailed": "Failed to apply the update: {message}",
   "settings.update.title": "App update",
   "settings.update.desc":
-    "AppImage / NSIS builds support auto-update. It also checks automatically at startup (deb / rpm builds are not covered)",
+    "Checks automatically at startup (auto-update supported on AppImage / NSIS only)",
   "settings.update.check": "Check now",
   "settings.update.checking": "Checking…",
 
   // Phase 3: SponsorBlock のカテゴリ設定
   "settings.sponsor.title": "SponsorBlock",
-  "settings.sponsor.desc":
-    "Choose the action when entering a segment of each category. Changes take effect from the next playback",
+  "settings.sponsor.desc": "Takes effect from the next playback",
   "settings.sponsor.action.skip": "Skip",
   "settings.sponsor.action.notify": "Notify only",
   "settings.sponsor.action.off": "Off",
@@ -308,10 +291,8 @@ export const en = {
   "chat.show": "Show chat",
   "chat.hide": "Close chat",
   "chat.popup": "Popup",
-  "chat.popup.hint":
-    "Opens the chat in a separate window (this panel closes)",
+  "chat.popup.hint": "Open in a separate window (closes this panel)",
   "chat.pin": "Always on top",
-  "chat.pin.hint": "Pins the popup on top",
   "chat.toPanel": "Back to panel",
   "chat.title": "Live chat",
   "chat.empty": "No messages",
@@ -322,7 +303,7 @@ export const en = {
 
   "settings.filters.title": "NG filters",
   "settings.filters.desc":
-    "In addition to chat text and authors, video titles, channel names, and channel IDs can be targeted (excluded from feed, search, and related lists). The \"highlight\" kind does not remove chat messages but displays them in an accent color. Additions and removals take effect immediately.",
+    "\"Highlight\" emphasizes chat messages without hiding them. Changes apply immediately",
   "settings.filters.target": "Target",
   "settings.filters.kind": "Kind",
   "settings.filters.pattern.placeholder": "Pattern (NG word / regex)",
@@ -336,7 +317,7 @@ export const en = {
   // Phase 68: NG ユーザー節（FR-70、仕様決定 CU）。chat_author フィルタの専用管理
   "settings.ngusers.title": "NG users",
   "settings.ngusers.desc":
-    "Hides chat messages whose author name or channel ID matches the registered entries. Additions and removals take effect immediately (registers a substring chat_author filter; regex filters can be registered in the NG filters section)",
+    "Registers a substring filter and applies immediately (use \"NG filters\" for regex)",
   "settings.ngusers.placeholder": "Author name or channel ID",
   "settings.ngusers.add": "Add",
   "settings.ngusers.added": "NG user added",
@@ -370,7 +351,7 @@ export const en = {
   "library.history.lastWatched": "Last watched {at}",
   // Phase 61: 履歴一覧のページングと検索（FR-52・FR-61、仕様決定 CC・CL）
   "library.history.loadMore": "Load more",
-  "library.history.searchPlaceholder": "Filter by title or channel name",
+  "library.history.searchPlaceholder": "Title or channel name",
   "library.history.searchEmpty": "No matching history",
   "library.favorite.add": "Add to favorites",
   "library.favorite.remove": "Remove from favorites",
@@ -382,7 +363,7 @@ export const en = {
   "library.playlist.added": "Added to \"{name}\"",
   "library.playlist.addFailed": "Failed to add to playlist: {message}",
   "library.playlist.none": "No playlists",
-  "library.playlist.newPlaceholder": "New playlist name",
+  "library.playlist.newPlaceholder": "Playlist name",
   "library.playlist.createAdd": "Create & add",
   "library.playlist.create": "Create",
   "library.playlist.created": "Created playlist \"{name}\"",
@@ -395,9 +376,9 @@ export const en = {
   "library.playlist.items": "{count} items",
   "library.playlist.loadMore": "Load more",
   "library.playlist.empty": "No videos registered",
-  "library.playlist.selectHint": "Select a playlist on the left",
+  "library.playlist.selectHint": "No playlist selected",
   "library.playlists.empty": "No playlists",
-  "library.playlist.importUrl": "YouTube playlist URL",
+  "library.playlist.importUrl": "e.g. https://www.youtube.com/playlist?list=...",
   "library.playlist.importName": "Playlist name (optional)",
   "library.playlist.import": "Import",
   "library.playlist.importing": "Importing…",
@@ -410,7 +391,6 @@ export const en = {
   "library.playlist.moveUp": "Up",
   "library.playlist.moveDown": "Down",
   "library.playlist.reorderFailed": "Failed to reorder: {message}",
-  "library.playlist.dragHint": "Drag to reorder",
   "library.playlist.queue": "Play continuously from here",
   "library.playlist.queueFailed":
     "Failed to start continuous playback: {message}",
@@ -452,10 +432,7 @@ export const en = {
   "library.watchLater.removed": "Removed from watch later",
   "library.watchLater.failed": "Watch later operation failed: {message}",
   "library.watchLater.empty": "No watch later items",
-  "library.search.placeholder":
-    "Search history, favorites, playlists, and watch later",
-  "library.search.hint":
-    "Search the whole library by title or channel name",
+  "library.search.placeholder": "Title or channel name",
   "library.search.empty": "No matching items",
   "library.search.source.history": "History",
   "library.search.source.favorites": "Favorites",
@@ -465,48 +442,39 @@ export const en = {
   // Phase 7: ホイール割り当て（決定記録: script-opts 注入のため次回再生から有効）
   "settings.wheel.title": "Wheel bindings",
   "settings.wheel.desc":
-    "mpv's wheel actions are \"frame step while paused, volume while playing\". This sets the volume change per notch while playing. Passed as an mpv launch option, so changes take effect from the next playback",
+    "Frame step while paused, volume while playing. Takes effect from the next playback",
   "settings.wheel.volumeDelta": "Volume change (per notch)",
 
   // Phase 52: 再生の初期速度と初期音量（FR-39、仕様決定 BO）
   "settings.player.title": "Playback",
-  "settings.player.desc":
-    "Initial values for newly started instances. Passed as mpv launch args, so changes take effect from the next playback (speed and volume of running instances can be changed on their cards, but only for the session)",
+  "settings.player.desc": "Takes effect from the next playback",
   "settings.player.initialSpeed": "Initial speed",
-  "settings.player.initialSpeed.desc":
-    "Value passed to mpv's --speed (0.25-4.0, default 1.0). Empty restores the default",
+  "settings.player.initialSpeed.desc": "0.25-4.0 (empty for default 1.0)",
   "settings.player.initialVolume": "Initial volume (%)",
-  "settings.player.initialVolume.desc":
-    "Value passed to mpv's --volume (0-130, default 100). Empty restores the default",
+  "settings.player.initialVolume.desc": "0-130 (empty for default 100)",
   "settings.player.unsaved":
-    "Playback settings were changed while saving. Please save again",
+    "Playback settings changed while saving (save again)",
 
   // Phase 8: PiP 小窓の位置（次回の PiP 化から有効）
   "settings.pip.title": "PiP",
-  "settings.pip.desc":
-    "Position and size of the PiP window (always-on-top, frameless). mpv --geometry format (e.g. 480x270-40-40 means width 480, height 270, 40px inside from the bottom-right). Effective from the next PiP activation",
+  "settings.pip.desc": "Takes effect from the next PiP activation",
   "settings.pip.default": "Play in PiP by default",
-  "settings.pip.default.desc":
-    "When on, all playback (including the start of continuous playback and external launches) starts in a PiP window. It can be toggled on the player card after startup",
   "settings.pip.fitAspect": "Fit the window size to the video aspect ratio",
   "settings.pip.fitAspect.desc":
-    "When on, the window width/height are treated as a bounding box and the size is auto-adjusted to fit the video's aspect (e.g. in a 480x270 box a landscape video becomes ~480x201 and a portrait video ~152x270). Off always uses the specified size",
+    "Uses the geometry width and height as a bounding box for the video's aspect ratio",
   "settings.pip.geometry":
     "Window position and size (WxH+±x±y; bounding box when fitting)",
   "settings.pip.quality": "Default PiP quality (ytdl-format expression)",
-  "settings.pip.quality.desc":
-    "Follows the global quality setting when empty. Specifying a lower quality for the small window makes startup lighter",
+  "settings.pip.quality.desc": "Uses the global quality setting when empty",
   "settings.pip.unsaved":
-    "PiP values were changed while saving. Default values were stored in the DB; please save again",
+    "PiP changed while saving; defaults were saved (save again)",
 
   // Phase 39: 再生窓の起動ディスプレイ（FR-31、仕様決定 AZ）
   "settings.window.title": "Playback window",
-  "settings.window.desc":
-    "Selects the display on which mpv playback windows open. Effective from the next playback (PiP window position and size are set in the PiP section)",
+  "settings.window.desc": "Takes effect from the next playback",
   "settings.window.screen": "Startup display",
   "settings.window.screen.auto": "Auto (mpv default)",
-  "settings.window.screen.desc":
-    "Opens the playback window on the selected monitor. Falls back to auto when the selected monitor is disconnected",
+  "settings.window.screen.desc": "Falls back to auto when disconnected",
   "settings.window.screen.none": "Could not enumerate connected monitors",
   "settings.window.screen.missing": "{name} (currently disconnected)",
   "settings.window.monitor": "{name} ({dims})",
@@ -515,30 +483,27 @@ export const en = {
   "settings.window.closeOnEof":
     "Close window automatically when playback completes",
   "settings.window.closeOnEof.desc":
-    "When on, playback to the end (eof) without continuous playback closes the mpv window and player card automatically. Off (default) keeps them as before. Early or error termination always closes them regardless of this setting",
+    "Does not close during continuous playback (early/error exits always close)",
   "settings.window.unsaved":
-    "Playback window values were changed while saving. Please save again",
+    "Playback window changed while saving (save again)",
 
   // Phase 29: フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
   "settings.feed.title": "Feed",
   "settings.feed.desc":
-    "Feed list display, new-item notifications, and auto-read settings. List display applies from the next list fetch; notifications and auto-read apply from the next feed refresh",
+    "List display applies on next fetch; notifications and auto-read apply on next refresh",
   "settings.feed.showShorts": "Show Shorts in the feed",
   "settings.feed.showShorts.desc":
-    "When off, the \"All\" and \"Videos\" selections in the feed list exclude Shorts. Selecting \"Shorts\" in the type filter always shows them",
+    "When off, excluded from \"All\" and \"Videos\" (shown when type is \"Shorts\")",
   // Phase 65: 新着のデスクトップ通知と自動既読（FR-58・FR-64、仕様決定 CI・CO）
   "settings.feed.notifyNew": "Desktop-notify new items",
-  "settings.feed.notifyNew.desc":
-    "When on, an OS desktop notification is posted when new items are detected on feed refresh (off by default)",
   "settings.feed.autoReadPlayed": "Auto-mark played items as read",
   "settings.feed.autoReadPlayed.desc":
-    "When on, feed items with watch history are automatically marked as read (off by default). Applied at startup and after each feed refresh",
+    "Applied at startup and on each feed refresh",
   "settings.feed.autoReadDays":
     "Mark items read after this many days since posting",
   "settings.feed.autoReadDays.desc":
-    "Automatically marks feed items older than the specified number of days as read. 0 (default) disables it. Applied at startup and after each feed refresh",
-  "settings.feed.unsaved":
-    "Feed values were changed while saving. Please save again",
+    "0 to disable (applied at startup and on each feed refresh)",
+  "settings.feed.unsaved": "Feed changed while saving (save again)",
 
   // Phase 56: ライブ配信の待機（FR-44、仕様決定 BT）
   "livewait.add": "Wait for stream",
@@ -546,11 +511,10 @@ export const en = {
   "livewait.remove": "Stop waiting",
   "livewait.added": "Waiting for stream: {title}",
   "livewait.duplicate": "This video is already being waited on",
-  "livewait.live": "This video is already live (not registered)",
+  "livewait.live": "Already live (not registered)",
   "livewait.playNow": "Play now",
-  "livewait.ended": "This stream has ended (not registered)",
-  "livewait.notBroadcast":
-    "Not a scheduled live or premiere (not registered)",
+  "livewait.ended": "Stream ended (not registered)",
+  "livewait.notBroadcast": "Not a scheduled live or premiere (not registered)",
   "livewait.addFailed": "Failed to register live wait: {message}",
   "livewait.removed": "Stopped waiting",
   "livewait.removeFailed": "Failed to stop waiting: {message}",
@@ -562,34 +526,26 @@ export const en = {
 
   // Phase 56: 設定画面のライブ待機セクション（live_wait.action）
   "settings.livewait.title": "Live wait",
-  "settings.livewait.desc":
-    "Action when a waited-on stream starts. Applied from the next start detection",
+  "settings.livewait.desc": "Takes effect on the next stream start detection",
   "settings.livewait.action": "Action on stream start",
   "settings.livewait.action.play": "Auto-play in a new instance",
   "settings.livewait.action.notify": "Toast notification only",
-  "settings.livewait.unsaved":
-    "Live wait values were changed while saving. Please save again",
+  "settings.livewait.unsaved": "Live wait changed while saving (save again)",
 
   // Phase 67: チャットポップアップの表示カスタマイズ（FR-68、仕様決定 CS）
   "settings.chatpopup.title": "Chat popup",
-  "settings.chatpopup.desc":
-    "Appearance of the chat opened in a separate window (popup). Applied immediately to open popups too",
+  "settings.chatpopup.desc": "Applies immediately to open popups",
   "settings.chatpopup.showAuthor": "Show author name",
   "settings.chatpopup.showAuthor.desc":
-    "Off (default) shows only the timestamp and text. superchat / membership badges are not shown even with author names on",
+    "superchat / membership badges remain hidden",
   "settings.chatpopup.fontSize": "Font size (px)",
-  "settings.chatpopup.fontSize.desc":
-    "A number between 10 and 32. Empty restores the default 14",
+  "settings.chatpopup.fontSize.desc": "10-32 (empty for default 14)",
   "settings.chatpopup.opacity": "Opacity",
-  "settings.chatpopup.opacity.desc":
-    "A number between 0.2 and 1.0 (smaller is more transparent). Empty restores the default 1.0",
-  "settings.chatpopup.unsaved":
-    "Chat popup values were changed while saving. Please save again",
+  "settings.chatpopup.opacity.desc": "0.2-1.0 (empty for default 1.0)",
+  "settings.chatpopup.unsaved": "Chat popup changed while saving (save again)",
 
   // Phase 71: テーマと表示密度（FR-76・FR-77、仕様決定 DA・DB）
   "settings.ui.title": "Appearance",
-  "settings.ui.desc":
-    "Color theme, list density, and UI language. Applied to the display immediately when saved",
   "settings.ui.theme": "Color theme",
   "settings.ui.theme.dark": "Dark",
   "settings.ui.theme.light": "Light",
@@ -601,22 +557,18 @@ export const en = {
   "settings.ui.language": "UI language",
   "settings.ui.language.ja": "日本語",
   "settings.ui.language.en": "English",
-  "settings.ui.unsaved":
-    "Appearance settings were changed while saving. Please save again",
+  "settings.ui.unsaved": "Appearance changed while saving (save again)",
 
   // Phase 72: キーボードショートカットの有効化（FR-79、仕様決定 DD）
   "settings.shortcuts.title": "Shortcuts",
-  "settings.shortcuts.desc":
-    "Default key map for operating lists and the queue by keyboard. Saving toggles it on/off (off by default)",
   "settings.shortcuts.enabled": "Enable keyboard shortcuts",
   "settings.shortcuts.enabled.desc":
-    "On video rows in lists you can use j / Down (next row), k / Up (previous row), Enter (play selection), a (add selection to queue), and q (toggle queue panel). Disabled while editing inputs or while the context menu is open",
-  "settings.shortcuts.unsaved":
-    "Shortcut values were changed while saving. Please save again",
+    "j/Down: next, k/Up: previous, Enter: play, a: queue, q: toggle queue (disabled in inputs/menus)",
+  "settings.shortcuts.unsaved": "Shortcuts changed while saving (save again)",
 
   // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）
   "bookmark.add": "Bookmark",
-  "bookmark.add.hint": "Save the current position to bookmarks",
+  "bookmark.add.hint": "Save current position",
   "bookmark.tab": "Bookmarks",
   "bookmark.empty": "No bookmarks",
   "bookmark.saved": "Bookmark saved: {position}",
@@ -647,48 +599,47 @@ export const en = {
 
   // Phase 66: 設定画面のカテゴリ並べ替え（FR-63、仕様決定 CN）
   "settings.categories.title": "Categories",
-  "settings.categories.desc":
-    "Display order of categories in the feed. Reorder with the up/down buttons or drag & drop (same operation as playlists; changes are saved immediately)",
+  "settings.categories.desc": "Changes are saved immediately",
   "settings.categories.empty": "No categories",
   "settings.categories.moveUp": "Up",
   "settings.categories.moveDown": "Down",
-  "settings.categories.dragHint": "Drag to reorder",
   "settings.categories.reorderFailed": "Failed to reorder: {message}",
 
   // Phase 66: 設定画面の運用節（FR-62・FR-66、仕様決定 CM・CQ）
   "settings.ops.title": "Operations",
-  "settings.ops.desc":
-    "Data export/import and database maintenance",
-  "settings.ops.export": "Export data",
+  "settings.ops.export": "Export",
+  "settings.ops.export.label": "Data export",
   "settings.ops.export.desc":
-    "Writes subscribed channels, categories, settings, and playlists to a JSON file",
+    "Exports subscriptions, categories, settings, and playlists as JSON",
   "settings.ops.exported": "Exported: {path}",
   "settings.ops.exportFailed": "Export failed: {message}",
-  "settings.ops.import": "Import data",
+  "settings.ops.import": "Import",
+  "settings.ops.import.label": "Data import",
   "settings.ops.import.desc":
-    "Reads an exported JSON file. Subscriptions, categories, settings, and playlists are replaced by the file contents",
+    "Overwrites current subscriptions, categories, settings, and playlists",
   "settings.ops.importConfirm":
-    "Current subscriptions, categories, settings, and playlists will be replaced by the file contents. Continue?",
+    "This will overwrite current subscriptions, categories, settings, and playlists. This cannot be undone.",
   "settings.ops.imported": "Imported: {path}",
   "settings.ops.importFailed": "Import failed: {message}",
   "settings.ops.dbSize": "Database size",
-  "settings.ops.dbSize.desc":
-    "Total of the DB file and WAL files (maintenance guide)",
+  "settings.ops.dbSize.desc": "Total of DB and WAL files",
   "settings.ops.dbSize.failed": "Failed to get size: {message}",
   "settings.ops.vacuum": "VACUUM",
-  "settings.ops.vacuum.desc":
-    "Rebuilds the database to shrink free space",
+  "settings.ops.vacuum.label": "Shrink free space",
+  "settings.ops.vacuum.desc": "Rebuild database",
   "settings.ops.vacuumDone": "VACUUM done ({before} → {after})",
   "settings.ops.vacuumFailed": "VACUUM failed: {message}",
   "settings.ops.cleanup": "Clean orphan rows",
+  "settings.ops.cleanup.label": "Orphan row cleanup",
   "settings.ops.cleanup.desc":
-    "Deletes videos left after unsubscribing and item rows with no referents (history is not removed)",
-  "settings.ops.cleanupConfirm": "Delete orphan rows. Continue?",
+    "Delete unreferenced videos and items (history is kept)",
+  "settings.ops.cleanupConfirm":
+    "Unreferenced videos and items will be deleted (history is kept). This cannot be undone.",
   "settings.ops.cleanupDone": "Deleted {count} orphan rows",
   "settings.ops.cleanupFailed": "Cleanup failed: {message}",
-  "settings.ops.diag": "Export diagnostics",
+  "settings.ops.diag": "Diagnostics",
   "settings.ops.diag.desc":
-    "Writes app logs, settings, and environment info into a single zip. Signed URLs, tokens, and user names in paths are masked (FR-82)",
+    "Exports logs, settings, and environment info as zip (signed URLs, tokens, and usernames masked)",
   "settings.ops.diagExported": "Diagnostics exported: {path}",
   "settings.ops.diagFailed": "Failed to export diagnostics: {message}",
   "settings.ops.busy": "Running…",
@@ -697,22 +648,18 @@ export const en = {
   "settings.filter.placeholder": "Filter sections (e.g. quality, mpv, feed)",
   "settings.filter.noMatch": "No matching sections",
   "settings.deps.title": "Dependent commands",
-  "settings.deps.desc":
-    "Settings for external commands such as mpv, yt-dlp, and deno. See the \"Diagnostics\" section for detection status",
   "settings.deps.ytdlpPath": "yt-dlp path",
   "settings.deps.ytdlpPath.placeholder": "Auto-detect (empty)",
   "settings.deps.ytdlpPath.desc":
-    "Specify the yt-dlp executable directly. Empty means auto-detect (bundled resource → PATH, in that order). Changes take effect from the next yt-dlp invocation after saving",
+    "Empty for auto-detect (bundled → PATH). Takes effect on the next call after saving",
   // Phase 77: PO Token の伝達（FR-86、仕様決定 DK）
   "settings.deps.poToken": "PO Token",
   "settings.deps.poToken.placeholder": "Not set (empty)",
   "settings.deps.poToken.desc":
-    "For environments where YouTube requires a PO Token. When set, --extractor-args \"youtube:po_token=<value>\" is automatically configured and passed to yt-dlp invocations (including stream resolution via mpv). The value format follows the yt-dlp PO Token Guide (e.g. mweb.gvs+<token>). Empty means unset; changes take effect from the next yt-dlp invocation after saving",
+    "Format: e.g. mweb.gvs+<token> (per yt-dlp PO Token Guide). Takes effect on the next call after saving",
   "settings.deps.unsaved":
-    "Dependent command values were changed while saving. Please save again",
+    "Dependent commands changed while saving (save again)",
   "settings.diag.title": "Diagnostics",
-  "settings.diag.desc":
-    "Detection status, versions, and resolved paths of external commands. The same list is shown on first launch",
   "deps.detected": "Detected",
   "deps.missing": "Not found",
   "deps.refresh": "Re-detect",
@@ -720,14 +667,13 @@ export const en = {
   "deps.failed": "Failed to detect dependent commands: {message}",
   "setup.title": "Initial setup",
   "setup.desc":
-    "Detection status of external commands required by yt-browser. Install any missing commands or set their paths in the \"Dependent commands\" section of settings. This list can be re-checked anytime in the \"Diagnostics\" section of settings",
+    "Install any missing commands or set their paths in Settings > Dependent commands.",
   "setup.ok": "Get started",
 
   // Phase 75: 通知履歴（FR-83、仕様決定 DH）
   "settings.notices.title": "Notification history",
-  "settings.notices.desc":
-    "Notifications issued during this session. Up to {max} most recent entries are kept and cleared when the app restarts",
-  "settings.notices.empty": "No notifications have been issued in this session",
+  "settings.notices.desc": "Up to {max} newest entries (cleared on restart)",
+  "settings.notices.empty": "No notifications",
   "settings.notices.action": "Action: {label}",
   "settings.notices.clear": "Clear history",
 

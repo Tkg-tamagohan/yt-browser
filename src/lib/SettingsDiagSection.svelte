@@ -13,6 +13,5 @@
 
   <section class="panel panel--filled">
     <h2>{t("settings.diag.title")}</h2>
-    <p class="subtle desc">{t("settings.diag.desc")}</p>
     <DepsDiagList {notify} />
   </section>

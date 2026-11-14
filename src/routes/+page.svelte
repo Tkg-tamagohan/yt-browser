@@ -142,7 +142,6 @@
 
 <main class="container">
   <h1>yt-browser</h1>
-  <p class="lead">{t("home.lead")}</p>
 
   <div class="play-form">
     <input
@@ -217,12 +216,7 @@
 <style>
   h1 {
     font-size: 2rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .lead {
-    color: var(--fg-muted);
-    margin-bottom: 2rem;
+    margin-bottom: 1.25rem;
   }
 
   .play-form {
