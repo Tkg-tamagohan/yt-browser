@@ -11,6 +11,7 @@
   import VideoRow from "$lib/VideoRow.svelte";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import { asErrorMessage } from "$lib/players.svelte";
@@ -639,6 +640,8 @@
                 dimmed={it.isRead}
                 actionsPlacement="side"
                 onplay={() => playItem(it)}
+                oncontextmenu={(e) =>
+                  openVideoContextMenu(e, videoRefOf(it), va)}
               >
                 {#snippet sub()}
                   <span class="feed-meta">
@@ -686,6 +689,8 @@
             dimmed={it.isRead}
             actionsPlacement="side"
             onplay={() => playItem(it)}
+            oncontextmenu={(e) =>
+              openVideoContextMenu(e, videoRefOf(it), va)}
           >
             {#snippet sub()}
               <span class="feed-meta">

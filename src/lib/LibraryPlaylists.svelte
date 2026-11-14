@@ -7,7 +7,10 @@
   import type { createLibraryPageState } from "$lib/library-page.svelte";
   import QueueButtons from "$lib/QueueButtons.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
-  import { videoRefOf } from "$lib/video-actions.svelte";
+  import {
+    openVideoContextMenu,
+    videoRefOf,
+  } from "$lib/video-actions.svelte";
   import { queueAt, queuePlayingAt, queueStop } from "$lib/queue.svelte";
 
   type Props = {
@@ -160,6 +163,13 @@
                 title={it.title}
                 thumbnailUrl={it.thumbnailUrl}
                 onplay={() => play(it.videoId, true)}
+                oncontextmenu={(e) =>
+                  openVideoContextMenu(
+                    e,
+                    videoRefOf(it),
+                    lib.va,
+                    lib.onPlaylistAdd,
+                  )}
                 draggable={!lib.sortBusy}
                 dropTarget={lib.dragOver === index && lib.dragFrom !== index}
                 ondragstart={(e) => lib.itemDragStart(index, e)}

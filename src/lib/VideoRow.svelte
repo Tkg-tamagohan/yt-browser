@@ -30,7 +30,12 @@
     /// アクション群の位置: below=メタ内下段 / side=行右端（縦中央揃え）。
     actionsPlacement?: "below" | "side";
     /// 指定時タイトルを再生ボタンとして描画する。
+    /// キーボードショートカット（FR-79）の Enter 再生もこのボタン
+    /// （data-act="play"）を押す扱いにする
     onplay?: () => void;
+    /// 行の右クリック。VideoActions のコンテキストメニュー（FR-78、
+    /// 仕様決定 DC）を開くときに呼び出し側から渡す
+    oncontextmenu?: (e: MouseEvent) => void;
     /// 行頭の追加要素（プレイリストの順位番号など）。
     leading?: Snippet;
     /// サブ行（チャンネル名や日時など）。中身は各ページの現行マークアップを受ける。
@@ -57,6 +62,7 @@
     dense = false,
     actionsPlacement = "below",
     onplay,
+    oncontextmenu,
     leading,
     sub,
     actions,
@@ -96,7 +102,9 @@
   class:dense
   class:dimmed
   class:drop-target={dropTarget}
+  data-video-id={videoId}
   {draggable}
+  {oncontextmenu}
   {ondragstart}
   {ondragover}
   {ondragleave}
@@ -117,7 +125,7 @@
   {/if}
   <div class="meta">
     {#if onplay}
-      <button class="title" onclick={onplay}>{title}</button>
+      <button class="title" data-act="play" onclick={onplay}>{title}</button>
     {:else}
       <div class="title">{title}</div>
     {/if}

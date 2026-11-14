@@ -2,6 +2,7 @@
 // FR-59: あとで見る）の配線。
 // feed・search・library・RelatedPanel に重複していた、favIds/playlists/
 // watchLaterIds の取得とコールバック受け渡しをここに集約する。
+// 動画行のコンテキストメニュー（FR-78、仕様決定 DC）の共有状態もここに置く
 
 import { loadLibrary } from "$lib/library";
 import type { Playlist, VideoRef } from "$lib/players.svelte";
@@ -109,4 +110,47 @@ export function createVideoActionState(opts: Options = {}) {
     onPlaylistCreated,
     onWatchLaterChange,
   };
+}
+
+/// `createVideoActionState` が返す行アクション状態の型。
+/// コンテキストメニューは開いた側ページの 1 インスタンスを借用する
+export type VideoActionState = ReturnType<typeof createVideoActionState>;
+
+/// コンテキストメニュー（FR-78、仕様決定 DC）の開く対象。
+/// video は対象行の VideoRef、va は開いた側の行アクション状態
+/// （プレイリスト一覧と作成コールバックをそのまま使う）。
+/// onplaylistadd はページ固有の追加通知（ライブラリは件数・項目の
+/// 読み直しに使う）で、無いページでは省略する
+export type VideoContextMenuTarget = {
+  video: VideoRef;
+  /// メニューを出すクリック位置（clientX/clientY）
+  x: number;
+  y: number;
+  va: VideoActionState;
+  onplaylistadd?: (playlistId: number) => void;
+};
+
+/// 開いているコンテキストメニューの対象。レイアウトに 1 つだけ
+/// マウントされた VideoContextMenu がここを読んで表示する。
+/// 同時に開けるメニューは 1 つで、別行での右クリックは開き直しになる
+export const videoContextMenu = $state<{
+  current: VideoContextMenuTarget | null;
+}>({ current: null });
+
+/// 動画行の右クリックでコンテキストメニューを開く。
+/// OS 既定のコンテキストメニューは抑止し、行アクションと同じ
+/// プレイリスト追加メニューをクリック位置に出す
+export function openVideoContextMenu(
+  e: MouseEvent,
+  video: VideoRef,
+  va: VideoActionState,
+  onplaylistadd?: (playlistId: number) => void,
+): void {
+  e.preventDefault();
+  videoContextMenu.current = { video, va, onplaylistadd, x: e.clientX, y: e.clientY };
+}
+
+/// コンテキストメニューを閉じる。メニュー外の操作・Escape・画面遷移で畳む
+export function closeVideoContextMenu(): void {
+  videoContextMenu.current = null;
 }

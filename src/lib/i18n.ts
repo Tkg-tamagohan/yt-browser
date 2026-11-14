@@ -571,6 +571,16 @@ const ja = {
   "settings.chatpopup.unsaved":
     "保存中にチャットポップアップの値が変更されました。もう一度保存してください",
 
+  // Phase 72: キーボードショートカットの有効化（FR-79、仕様決定 DD）
+  "settings.shortcuts.title": "ショートカット",
+  "settings.shortcuts.desc":
+    "一覧とキューをキーボードで操作する既定キーマップ。保存で有効・無効が切り替わる（既定はオフ）",
+  "settings.shortcuts.enabled": "キーボードショートカットを有効にする",
+  "settings.shortcuts.enabled.desc":
+    "一覧の動画行で j / ↓（次の行）・k / ↑（前の行）・Enter（選択行を再生）・a（選択行をキューに追加）・q（キューパネルの開閉）が使えます。入力欄の編集中やコンテキストメニュー表示中は無効です",
+  "settings.shortcuts.unsaved":
+    "保存中にショートカットの値が変更されました。もう一度保存してください",
+
   // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）
   "bookmark.add": "ブックマーク",
   "bookmark.add.hint": "現在位置をブックマークへ保存",

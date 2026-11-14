@@ -293,6 +293,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player.close_on_eof` | `on` / `off` | 再生完了時の自動クローズ（§4.15、FR-43、仕様決定 BS）。`on` のとき継続再生を伴わない `reason=eof` の終端でインスタンスを畳む。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（残す）。終端時点の値で都度判定する |
 | `live_wait.action` | `play` / `notify` | ライブ待機の開始検出時の動作（§4.16、FR-44、仕様決定 BT）。`play` は新規インスタンスで自動再生、`notify` はトースト通知のみ。未設定・その他の値は `play` |
 | `setup.deps_shown` | `on` / `off` | 初回起動の依存検出画面の既出フラグ（§5、FR-75、仕様決定 CZ）。on 系のみ表示済み＝次回以降は出さない。未設定・その他の値は未表示（初回起動で表示する）。受理集合は `feed.show_shorts` と同一 |
+| `ui.shortcuts` | `on` / `off` | アプリ側キーボードショートカットの有効化（§4.20、FR-79、仕様決定 DD）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（暫定解釈の既定）。値の解釈と既定キーマップの適用はフロント側が持つ |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -1043,6 +1044,51 @@ RSS・バックフィルの推定に留まる種別（`kind`）、説明文（`d
 `ingested=1` の行に限る（`ingested=0` のプレースホルダは一覧に
 出ないため対象外）。
 
+### 4.20 動画行のコンテキストメニューとキーボードショートカット（FR-78・FR-79、仕様決定 DC・DD）
+
+一覧の使い勝手を上げる 2 つの UI 補助。どちらもフロント側に集約し、
+バックエンドは汎用の `settings_get` / `settings_set` の受け渡しのみ。
+
+**コンテキストメニュー（FR-78、仕様決定 DC）**: `VideoRow` の
+`oncontextmenu` で行の右クリックを受け、共有状態 `videoContextMenu`
+（`video-actions.svelte.ts`）へ対象動画・開いた側の行アクション状態・
+クリック位置を積む。OS 既定のコンテキストメニューは抑止する。
+メニュー本体はレイアウトに 1 つだけマウントした `VideoContextMenu`
+が出し、中身は行アクション「＋」が開くのと同じプレイリスト追加
+メニュー（`VideoActions` から抽出した `VideoActionsMenu` 部品）を
+そのまま使う。表示位置はクリック位置を左上とし、ビューポートの
+右端・下端をはみ出すときは内側へ折り返す（開く前は未計測のため
+概算寸法で決める暫定解釈。`context-menu-logic.ts`、VC-NN 系テスト）。
+メニュー外のポインタ操作・Escape・画面遷移で閉じ、別行の右クリックは
+開き直しになる。開く中身はプレイリスト追加メニューだけとし、
+お気に入り・あとで見る・キューの各行アクションはコンテキスト
+メニューに含めない（暫定解釈。仕様は「VideoActions のメニュー」と
+のみ定めるため、既存メニューと同じ中身に限定する）
+
+**キーボードショートカット（FR-79、仕様決定 DD）**: レイアウトで
+`initShortcuts()`（`shortcuts.svelte.ts`）がウィンドウ レベルの
+keydown を購読し、`ui.shortcuts` が on のときだけ既定キーマップを
+効かせる。キーマップ・設定解釈・対象ガード・選択遷移は
+`shortcuts-logic.ts` の純粋関数に集約する（KS-NN 系テスト）。
+設定の変更は `settings://changed` で追従するため設定画面での保存から
+即時に切り替わる。
+
+- 既定キーマップ（暫定解釈）: `j` / `↓` は次の行、`k` / `↑` は前の行、
+  `Enter` は選択行の再生（行のタイトルボタンを押す扱い）、`a` は
+  選択行をキューに追加（行アクションの「キューに追加」と同じ、
+  パネル選択中のキュー）、`q` はキューパネルの開閉
+- 対象の「一覧」は画面に出ている動画行（`li.vr[data-video-id]`）の
+  DOM 順。選択は行位置のインデックスだけを持ち、未選択から下へは
+  先頭・上へは末尾へ入り、端で止まる（折り返さない）。選択行は
+  `data-shortcut-selected` 属性の枠線で示す（暫定解釈）
+- 「キューの操作」の範囲は選択行のキュー追加とパネル開閉までとし、
+  パネル内の項目編集（並べ替え・削除・再生開始）は対象外（暫定解釈）
+- 対象外ガード: 入力欄（input / textarea / select / contenteditable）
+  のフォーカス中、Ctrl / Alt / Meta 付きの打鍵、コンテキストメニュー
+  表示中はショートカットを効かせない。Enter はボタン・リンク上では
+  その要素本来の起動を優先する
+- 設定値の読み取りに失敗したときは既定（off）のまま動く
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1422,7 +1468,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsDepsSection・SettingsDiagSection・SettingsShortcutsSection・DepsDiagList・SetupWizard の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter・context-menu-logic・shortcuts-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

@@ -10,6 +10,8 @@
   import PlayerCards from "$lib/PlayerCards.svelte";
   import QueuePanel from "$lib/QueuePanel.svelte";
   import SetupWizard from "$lib/SetupWizard.svelte";
+  import VideoContextMenu from "$lib/VideoContextMenu.svelte";
+  import { initShortcuts } from "$lib/shortcuts.svelte";
   import { queuePanel, tempQueue } from "$lib/queue.svelte";
   import {
     appUpdate,
@@ -58,6 +60,14 @@
     if (isChatPopup) return;
     void initBookmarks();
   });
+
+  // キーボードショートカット（FR-79、仕様決定 DD）。ui.shortcuts が
+  // 有効なときだけ一覧行の j/k・Enter・a・q を拾う。有効化設定の
+  // 読み込み・変更追従とキーハンドラの張り外しは initShortcuts に集約
+  $effect(() => {
+    if (isChatPopup) return;
+    return initShortcuts();
+  });
 </script>
 
 {#if isChatPopup}
@@ -96,6 +106,9 @@
 <!-- 初回起動の依存検出画面（FR-75、仕様決定 CZ）。表示済みフラグが
      無い起動時だけ SetupWizard 側でオーバーレイを出す -->
 <SetupWizard />
+<!-- 動画行のコンテキストメニュー（FR-78、仕様決定 DC）。
+     右クリックされた行のアクション状態を共有状態から読んで出す -->
+<VideoContextMenu />
 
 <div class="toasts" aria-live="polite">
   {#each appNotices as n (n.id)}
