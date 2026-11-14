@@ -1,4 +1,51 @@
 :root {
+  /* ---- 色テーマ変数（ui.theme、FR-76、仕様決定 DA） ----
+     既定は dark（従来のハードコード値をそのまま変数へ移したもの）。
+     light 側の配色は暫定解釈: dark と同じ色相の明色版を機械的に
+     割り当てたもので、実機確認は未実施 */
+  --bg: #1a1b1e; /* ページ背景 */
+  --bg-panel: #202124; /* ナビ・パネル・メニュー・入力欄の面 */
+  --bg-deep: #161719; /* 最も沈んだ面（ブックマークラベルなど） */
+  --bg-inset: #26282c; /* サムネイル下地・カード面 */
+  --bg-raise: #303134; /* 一段浮いた入力面（キュー保存名入力） */
+  --bg-button: #2d2f33; /* ボタン面 */
+  --bg-hover: #3a3d42; /* ボタン hover・シークバーのトラック */
+  --bg-subtle: #3c4043; /* バッジ面・メニュー項目 hover */
+  --bg-notice: #263040; /* 通知バナー */
+  --bg-superchat: #3d2b1f; /* スパチャ行の面 */
+  --bg-highlight: #4d4419; /* NG ハイライト行の面 */
+  --fg: #e8e8e8; /* 本文 */
+  --fg-strong: #e8eaed; /* やや強い本文（チップ・入力値） */
+  --fg-dim: #c8c9cc; /* 控えめ本文（操作ラベル・時刻） */
+  --fg-muted: #9aa0a6; /* さらに弱い本文（補足・購読情報） */
+  --border: #3c4043; /* 罫線 */
+  --border-row: #2d2f33; /* 行区切り・節区切り */
+  --accent: #8ab4f8; /* リンク・選択中 */
+  --accent-strong: #7aa2f7; /* シークバーの充填部 */
+  --accent-bright: #d5e0ff; /* シークバーのつまみ */
+  --warn: #f9ab00; /* 警告・状態表示（バッファ中・配信予定） */
+  --warn-soft: #fdd663; /* 強調アイコン（ブックマーク等） */
+  --warn-band: rgb(249 171 0 / 45%); /* SponsorBlock の区間帯 */
+  --on-warn: #202124; /* warn 色の面の上に置く文字 */
+  --danger: #ff7b72; /* 危険操作の文字 */
+  --danger-border: #7c3a3a; /* 危険操作の罫線 */
+  --danger-soft: #e0a0a0; /* 弱い危険表示の文字（運用節） */
+  --danger-soft-border: #b06060; /* 弱い危険表示の罫線（運用節） */
+  --success: #7ee787; /* 成功表示（DB 接続 OK など） */
+  --overlay: rgb(0 0 0 / 50%); /* モーダル背後の暗転 */
+  --shadow: rgb(0 0 0 / 50%); /* パネル・メニューの影 */
+
+  /* ---- 表示密度変数（ui.density、FR-77、仕様決定 DB） ----
+     既定は comfortable（従来の行高・サムネイル幅）。
+     compact では行の上下余白とサムネイルを約 0.75 倍へ縮める。
+     対象は VideoRow を使う動画一覧（暫定解釈） */
+  --row-gap: 12px;
+  --row-pad-y: 10px;
+  --row-sub-margin: 4px 0 8px;
+  --thumb-sm: 96px;
+  --thumb-md: 120px;
+  --thumb-lg: 160px;
+
   font-family:
     Inter,
     "Hiragino Kaku Gothic ProN",
@@ -7,11 +54,55 @@
     sans-serif;
   font-size: 16px;
   line-height: 1.6;
-  color: #e8e8e8;
-  background-color: #1a1b1e;
+  color: var(--fg);
+  background-color: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+/* light テーマ（ui.theme=light、または system で OS が明色系）。
+   配色は暫定解釈（PR 本文に記録） */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-panel: #f8f9fa;
+  --bg-deep: #e8eaed;
+  --bg-inset: #e8eaed;
+  --bg-raise: #ffffff;
+  --bg-button: #f1f3f4;
+  --bg-hover: #e8eaed;
+  --bg-subtle: #e8eaed;
+  --bg-notice: #e8f0fe;
+  --bg-superchat: #fce8e6;
+  --bg-highlight: #fef7e0;
+  --fg: #202124;
+  --fg-strong: #202124;
+  --fg-dim: #3c4043;
+  --fg-muted: #5f6368;
+  --border: #dadce0;
+  --border-row: #e8eaed;
+  --accent: #1a73e8;
+  --accent-strong: #1a73e8;
+  --accent-bright: #185abc;
+  --warn: #e37400;
+  --warn-soft: #e37400;
+  --on-warn: #202124;
+  --danger: #d93025;
+  --danger-border: #d93025;
+  --danger-soft: #d93025;
+  --danger-soft-border: #d93025;
+  --success: #188038;
+  --shadow: rgb(0 0 0 / 30%);
+}
+
+/* compact 密度（ui.density=compact）。行の上下余白とサムネイルを縮める */
+:root[data-density="compact"] {
+  --row-gap: 8px;
+  --row-pad-y: 5px;
+  --row-sub-margin: 2px 0 4px;
+  --thumb-sm: 72px;
+  --thumb-md: 90px;
+  --thumb-lg: 120px;
 }
 
 .container {
@@ -26,36 +117,36 @@
   display: flex;
   gap: 16px;
   padding: 12px 24px;
-  border-bottom: 1px solid #3c4043;
-  background: #202124;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
   font-size: 0.9rem;
 }
 
 .app-nav a {
-  color: #9aa0a6;
+  color: var(--fg-muted);
   text-decoration: none;
 }
 
 .app-nav a.active {
-  color: #e8e8e8;
+  color: var(--fg);
   font-weight: 600;
 }
 
 .app-nav a:hover {
-  color: #e8e8e8;
+  color: var(--fg);
 }
 
 button {
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #3c4043;
-  background: #2d2f33;
-  color: #e8e8e8;
+  border: 1px solid var(--border);
+  background: var(--bg-button);
+  color: var(--fg);
   cursor: pointer;
 }
 
 button:hover:not(:disabled) {
-  background: #3a3d42;
+  background: var(--bg-hover);
 }
 
 button:disabled {
@@ -64,8 +155,8 @@ button:disabled {
 }
 
 button.danger {
-  border-color: #7c3a3a;
-  color: #ff7b72;
+  border-color: var(--danger-border);
+  color: var(--danger);
 }
 
 button.link {
@@ -77,20 +168,20 @@ input[type="text"],
 select {
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid #3c4043;
-  background: #202124;
-  color: #e8e8e8;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--fg);
 }
 
 .subtle {
-  color: #9aa0a6;
+  color: var(--fg-muted);
 }
 
 .notice {
   margin-top: 12px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: #263040;
+  background: var(--bg-notice);
   font-size: 0.9rem;
 }
 
@@ -109,7 +200,7 @@ select {
    上部罫線 + 間隔。各コンポーネントのルート要素に併記する */
 .sub-panel {
   margin-top: 12px;
-  border-top: 1px solid #3c4043;
+  border-top: 1px solid var(--border);
   padding-top: 8px;
 }
 
@@ -136,12 +227,12 @@ select {
    背景が要る用途は .panel--filled を併記する */
 .panel {
   padding: 16px;
-  border: 1px solid #3c4043;
+  border: 1px solid var(--border);
   border-radius: 12px;
 }
 
 .panel--filled {
-  background: #202124;
+  background: var(--bg-panel);
 }
 
 /* settings の各節が子コンポーネント化され scoped 兄弟マッチが

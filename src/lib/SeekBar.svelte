@@ -143,7 +143,7 @@
     width: 100%;
     height: 14px;
     border-radius: 7px;
-    background: #3a3d42;
+    background: var(--bg-hover);
     cursor: pointer;
     touch-action: none;
     user-select: none;
@@ -156,7 +156,7 @@
   }
 
   .seekbar:focus-visible {
-    outline: 2px solid #7aa2f7;
+    outline: 2px solid var(--accent-strong);
     outline-offset: 2px;
   }
 
@@ -166,7 +166,7 @@
     left: 0;
     height: 100%;
     border-radius: 7px 0 0 7px;
-    background: #7aa2f7;
+    background: var(--accent-strong);
     pointer-events: none;
   }
 
@@ -176,7 +176,7 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: #d5e0ff;
+    background: var(--accent-bright);
     transform: translate(-50%, -50%);
     pointer-events: none;
   }
@@ -187,7 +187,7 @@
     position: absolute;
     top: 0;
     height: 100%;
-    background: rgba(249, 171, 0, 0.45);
+    background: var(--warn-band);
     pointer-events: auto;
   }
 </style>

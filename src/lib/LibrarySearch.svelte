@@ -95,9 +95,9 @@
     display: inline-block;
     margin-right: 4px;
     padding: 0 6px;
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    color: #8ab4f8;
+    color: var(--accent);
     font-size: 0.75rem;
   }
 </style>

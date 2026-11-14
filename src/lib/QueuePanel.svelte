@@ -392,10 +392,10 @@
     display: flex;
     flex-direction: column;
     padding: 12px;
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     border-radius: 12px;
-    background: #202124;
-    box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
+    background: var(--bg-panel);
+    box-shadow: 0 8px 24px var(--shadow);
   }
 
   .qp-tabs {
@@ -410,10 +410,10 @@
 
   .qp-tab {
     padding: 4px 10px;
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     border-radius: 999px;
     background: none;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.8rem;
     cursor: pointer;
     white-space: nowrap;
@@ -423,8 +423,8 @@
   }
 
   .qp-tab.active {
-    color: #8ab4f8;
-    border-color: #8ab4f8;
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   .qp-head {
@@ -441,7 +441,7 @@
   }
 
   .qp-count {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-weight: 400;
     font-size: 0.85rem;
     margin-left: 6px;
@@ -459,10 +459,10 @@
     flex: 1;
     min-width: 0;
     padding: 4px 8px;
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #303134;
-    color: #e8eaed;
+    background: var(--bg-raise);
+    color: var(--fg-strong);
     font-size: 0.85rem;
   }
 
@@ -478,21 +478,21 @@
     align-items: center;
     gap: 8px;
     padding: 4px 0;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
     font-size: 0.85rem;
   }
 
   .qp-list li.playing .pos,
   .qp-list li.playing .qp-title {
-    color: #8ab4f8;
+    color: var(--accent);
   }
 
   .qp-list li.drop-target {
-    border-top-color: #8ab4f8;
+    border-top-color: var(--accent);
   }
 
   .pos {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     min-width: 1.6em;
     text-align: right;
   }
@@ -511,7 +511,7 @@
   }
 
   .qp-ch {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.8rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -527,8 +527,8 @@
   }
 
   .bm-label {
-    background: #161719;
-    border: 1px solid #3c4043;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
     border-radius: 4px;
     color: inherit;
     font-size: 0.8rem;

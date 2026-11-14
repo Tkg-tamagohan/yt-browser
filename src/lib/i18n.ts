@@ -571,6 +571,20 @@ const ja = {
   "settings.chatpopup.unsaved":
     "保存中にチャットポップアップの値が変更されました。もう一度保存してください",
 
+  // Phase 71: テーマと表示密度（FR-76・FR-77、仕様決定 DA・DB）
+  "settings.ui.title": "表示",
+  "settings.ui.desc":
+    "画面の配色テーマと一覧の表示密度。保存すると直ちに表示へ反映されます",
+  "settings.ui.theme": "配色テーマ",
+  "settings.ui.theme.dark": "ダーク",
+  "settings.ui.theme.light": "ライト",
+  "settings.ui.theme.system": "システムに合わせる",
+  "settings.ui.density": "一覧の表示密度",
+  "settings.ui.density.comfortable": "標準",
+  "settings.ui.density.compact": "コンパクト",
+  "settings.ui.unsaved":
+    "保存中に表示設定の値が変更されました。もう一度保存してください",
+
   // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）
   "bookmark.add": "ブックマーク",
   "bookmark.add.hint": "現在位置をブックマークへ保存",

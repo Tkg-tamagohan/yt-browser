@@ -70,7 +70,7 @@
     gap: 10px;
     align-items: baseline;
     padding: 6px 0;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
     font-size: 0.9rem;
   }
 
@@ -79,15 +79,15 @@
   }
 
   .dep-status.ok {
-    color: #7ee787;
+    color: var(--success);
   }
 
   .dep-status.ng {
-    color: #ff7b72;
+    color: var(--danger);
   }
 
   .dep-version {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -96,14 +96,14 @@
   .dep-path {
     font-family: monospace;
     font-size: 0.8rem;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .ng {
-    color: #ff7b72;
+    color: var(--danger);
   }
 
   .refresh {

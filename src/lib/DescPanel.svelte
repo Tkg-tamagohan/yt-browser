@@ -128,7 +128,7 @@
     padding: 0;
     border: none;
     background: none;
-    color: #8ab4f8;
+    color: var(--accent);
     font: inherit;
     text-align: left;
     cursor: pointer;

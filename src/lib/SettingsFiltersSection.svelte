@@ -153,18 +153,18 @@
   }
 
   .f-target {
-    color: #8ab4f8;
+    color: var(--accent);
     white-space: nowrap;
   }
 
   .f-kind {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.8rem;
     white-space: nowrap;
   }
 
   .f-pattern {
-    color: #e8eaed;
+    color: var(--fg-strong);
     overflow-wrap: anywhere;
     flex: 1;
   }

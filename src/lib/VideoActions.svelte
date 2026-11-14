@@ -202,7 +202,7 @@
     padding: 2px 6px;
     border: none;
     background: none;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 1rem;
     line-height: 1;
     cursor: pointer;
@@ -210,7 +210,7 @@
 
   .icon:hover,
   .icon.active {
-    color: #fdd663;
+    color: var(--warn-soft);
   }
 
   .vact-menu {
@@ -223,10 +223,10 @@
     gap: 2px;
     min-width: 220px;
     padding: 6px;
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #202124;
-    box-shadow: 0 4px 16px rgb(0 0 0 / 50%);
+    background: var(--bg-panel);
+    box-shadow: 0 4px 16px var(--shadow);
   }
 
   .vact-item {
@@ -234,7 +234,7 @@
     border: none;
     border-radius: 6px;
     background: none;
-    color: #e8e8e8;
+    color: var(--fg);
     text-align: left;
     font-size: 0.85rem;
     cursor: pointer;
@@ -244,18 +244,18 @@
   }
 
   .vact-item:hover {
-    background: #3c4043;
+    background: var(--bg-subtle);
   }
 
   .vact-item:disabled {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     cursor: default;
     background: none;
   }
 
   .vact-empty {
     padding: 6px 8px;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.85rem;
   }
 
@@ -263,7 +263,7 @@
     display: flex;
     gap: 4px;
     padding-top: 6px;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
   }
 
   .vact-new input {
