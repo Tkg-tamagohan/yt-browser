@@ -68,6 +68,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `settings_get` | `key` | `Result<Option<String>>` |
 | `settings_set` | `key`, `value` | `Result<()>` |
 | `monitor_list` | なし | `Vec<MonitorInfo>`（接続中モニターの列挙。FR-31、仕様決定 AZ） |
+| `windowing_system` | なし | `String`（mpv 窓の移動・前面化が動作する表示環境の分類。"windows" / "x11" / "wayland" / "other"。FR-41・FR-42、仕様決定 BQ・BR、§4.12） |
 | `play_video` | `video_id`, `resume`, `pip?`, `format?`, `start_sec?` | `Result<instance_id>` |
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
@@ -135,7 +136,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
 表の引数名は Rust 側の受け取り名（snake_case）で記し、JS 側は camelCase のキーで渡す（`video_id` → `videoId`）。
 戻り値とイベントのペイロードは camelCase に直列化される。
-`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）、`sub_track{sid}`（字幕選択、§4.12）を取る。
+`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）、`pip_tile{geometry}`（PiP 窓の一括整列、§4.12）、`sub_track{sid}`（字幕選択、§4.13）を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する項目の順序列で、各項目は `uid`＋`video_id` の対（`QueueArmItem`、空列は武装の解除）。`uid` はフロント側のキュー項目のユニーク ID で、継続時に `player://ended` の `continuedUid` としてそのまま返す（BG-10、仕様決定 BK）。`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
@@ -208,7 +209,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `mpv.hwdec` | mpv `--hwdec` の値 | mpv のハードウェアデコード方式（§4.9、仕様決定 BE）。受理集合は `auto-safe` / `auto` / `auto-copy` / `d3d11va` / `d3d11va-copy` / `dxva2` / `dxva2-copy` / `nvdec` / `nvdec-copy` / `vulkan` / `no`。未設定・空・集合外は既定 `auto-safe`。`no` はドライバ内デッドロック環境での回避策 |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
-| `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定） |
+| `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定）。PiP 窓の一括整列の対象ディスプレイ解決でも同じ保存値を使う（§4.12） |
 | `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
 | `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
 
@@ -336,7 +337,7 @@ mpv のリスト型オプションは同じ指定を重ねると後が前を上�
 {"command": ["observe_property", 4, "video-params"]}
 ```
 
-監視するプロパティは `time-pos`、`duration`、`pause`、`eof-reached`、`media-title`、`paused-for-cache`、`video-params`（fps 表示用）、`volume`、`speed`、`audio-device`（§4.8）、`track-list`・`sid`（字幕選択、§4.12）。
+監視するプロパティは `time-pos`、`duration`、`pause`、`eof-reached`、`media-title`、`paused-for-cache`、`video-params`（fps 表示用）、`volume`、`speed`、`audio-device`（§4.8）、`track-list`・`sid`（字幕選択、§4.13）。
 
 `--speed` と `--volume` は初期速度・初期音量の設定値（FR-39、仕様決定 BO）をそのまま渡す。起動引数で適用するため変更は次回の再生開始から有効で、稼働中インスタンスへの速度・音量の変更は `player_control` 経由のセッション限りの変更として従来どおり扱う。
 受信側は 1 ソケットにつき 1 読み取りタスクを持ち、`event` 行を購読者に振り分ける。
@@ -450,7 +451,7 @@ PiP 小窓のサイズは動画の表示アスペクト比へ追従する（FR-1
 
 再生の既定表示は PiP とする（FR-18、仕様決定 AJ）。`play_video` の `pip` 引数は省略時に設定 `pip.default`（`on`/`off`、未設定・その他の値は `on`）で解決し、明示の `true`/`false` は強制 PiP・強制通常窓として既定に優先する。PiP が既定のため `pip.quality.format` はほぼ全再生の起動画質式として機能する（解決順自体は変更しない）。連続再生・ループの遷移は同一 mpv プロセスで行われ、`ontop`・`border`・`geometry` は遷移を跨いで維持される。
 
-再生窓を開くディスプレイは設定 `window.screen` で選ぶ（FR-31、仕様決定 AZ）。設定画面の「再生窓」節は `monitor_list` コマンドが返す接続中モニターの列挙からモニター名を選ばせ、空・未設定は自動（mpv 既定）とする。保存値のモニター名は `PlayerManager::play` が spawn のたびに `available_monitors()` の列挙順インデックスへ解決し、`--screen=<番号>` として mpv 起動引数に渡す。保存名が現在の列挙に無いときは `--screen` を渡さず mpv 既定にフォールバックする。`--screen` は起動時引数のため稼働中インスタンスには影響せず、実行時のディスプレイ移動は対象外。`--geometry` の位置座標は指定ディスプレイ上の相対座標として mpv が解釈する。
+再生窓を開くディスプレイは設定 `window.screen` で選ぶ（FR-31、仕様決定 AZ）。設定画面の「再生窓」節は `monitor_list` コマンドが返す接続中モニターの列挙からモニター名を選ばせ、空・未設定は自動（mpv 既定）とする。保存値のモニター名は `PlayerManager::play` が spawn のたびに `available_monitors()` の列挙順インデックスへ解決し、`--screen=<番号>` として mpv 起動引数に渡す。保存名が現在の列挙に無いときは `--screen` を渡さず mpv 既定にフォールバックする。`--screen` は起動時引数のため稼働中インスタンスの単独移動には使わないが、PiP 窓の一括整列（§4.12、FR-41）は同じ保存値を整列先の解決に使う。`--geometry` の位置座標は指定ディスプレイ上の相対座標として mpv が解釈する。
 
 ### 4.6 連続再生キュー（FR-10、仕様決定 S）
 
@@ -666,7 +667,29 @@ mpv 窓上のキー操作（既定の `l` キー）で設定したループは�
 成功時は保存先パスを本文とするトーストに「フォルダを開く」アクション（`tauri-plugin-opener` の `revealItemInDir`。capabilities の `opener:default` に含まれる）を添え、失敗は既存の通知経路で知らせる。
 保存先の変更設定は初版では持たない。
 
-### 4.12 字幕トラックの選択（FR-40、仕様決定 BP）
+### 4.12 PiP 窓の一括整列（FR-41、仕様決定 BQ）
+
+プレイヤーカード群の上部にある「PiP を整列」ボタンで、PiP 表示中の全インスタンスの窓を対象ディスプレイ上に格子状へタイリングする（窓ごとの位置プリセットは持たない、FR-41）。
+対象ディスプレイは `monitor_list` の列挙から `window.screen` の保存名で解決し、未設定・保存名が現在の列挙に無いときはプライマリ、それも取れない環境では列挙先頭を使う（仕様決定 BQ の「未設定・自動は主モニター」）。
+格子は `src/lib/pip-tile-logic.ts` の純粋関数が計算する（PT-NN 系テスト）。列数は `ceil(√n)`、行数は `ceil(n/cols)` とし、マス目はディスプレイ寸法を整数境界で分割した `WxH+x+y`（対象ディスプレイ左上原点の相対座標）として各窓へ割り当てる。
+mpv は `geometry` の位置座標を窓のあるディスプレイ上の相対位置として解釈するため（仕様決定 AZ(4)）、座標は仮想デスクトップ絶対値ではなくモニター内相対値とする。
+窓の並び順は instance_id 昇順・マス目の消費は行優先とする暫定仕様。
+
+各窓への適用は `player_control` の `pip_tile{geometry}` アクションで行う。
+受け取った geometry は `is_valid_pip_geometry` で検証し、対象が PiP 表示中でなければ拒否する。
+適用時は PiP 中の基底 geometry（`pip_base`）を差し替えてから `pip_target_geometry` を送るため、`pip.fit_aspect` の追従（§4.5）はマス目を上限枠として継続する（縦長動画はマス目に内接する細い窓でマス目左上へ寄る）。
+実行時の `set_property geometry` で位置オフセット（`±x±y`）が効くのは mpv 0.38 以降（win32・x11、仕様決定 BU）。
+このため適用前に `get_property mpv-version` で版を確かめ、解釈できた値が 0.38 未満なら拒否する（サイズだけ変わる半端な整列を避ける）。
+バージョン文字列を解釈できない構成（mpv-git 等）は判定を保留して適用を続ける暫定仕様。
+旧 mpv 環境へのフォールバックとしての OS 窓操作経路（`window-id` → `XMoveWindow` / `SetWindowPos`）は、仕様決定 BU の選択肢のうち依存を増やさない側として採用せず、バージョン拒否とした。
+
+表示環境の分類は `windowing_system` コマンドが返す。
+Wayland はプロトコル上クライアント・第三者とも窓の絶対位置を決められない恒久制限（仕様決定 BU）のため、ボタンを無効化する。
+`windowing_system` は `XDG_SESSION_TYPE` を優先し、未設定では `WAYLAND_DISPLAY` / `DISPLAY` の有無で推す。
+整列対象はフロント側で PiP 表示中のインスタンスだけに限るため、通常窓のインスタンスは触れない。
+失敗はトーストで通知し、一部のインスタンスだけ失敗した場合は成功件数と最初のエラーを表示する。
+
+### 4.13 字幕トラックの選択（FR-40、仕様決定 BP）
 
 プレイヤーカードの「字幕」ドロップダウンから、再生中動画の字幕トラックを選ぶ。
 選択肢は「なし」（`no`）・「自動」（`auto`）・取得済みの各字幕トラックで、
@@ -995,7 +1018,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```

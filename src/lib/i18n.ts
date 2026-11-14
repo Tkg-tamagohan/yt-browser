@@ -55,6 +55,19 @@ const ja = {
   "player.pip.hint":
     "最前面・枠なしの小窓で再生。mpv のショートカット（q で終了、m でミュート）は小窓上でも使えます",
 
+  // Phase 53: PiP 窓の一括整列（FR-41、仕様決定 BQ）
+  "player.pipTile": "PiP を整列",
+  "player.pipTile.hint":
+    "すべての PiP 窓を対象モニターへ格子状に並べます（対象は設定の起動ディスプレイ。自動ならプライマリ）",
+  "player.pipTile.count": "PiP 窓: {count} 台",
+  "player.pipTile.done": "{count} 台の PiP 窓を整列しました",
+  "player.pipTile.partial":
+    "{ok}/{total} 台を整列しました（失敗: {message}）",
+  "player.pipTile.failed": "PiP 窓の整列に失敗: {message}",
+  "player.pipTile.noMonitor": "整列先のモニターが見つかりません",
+  "player.pipTile.wayland":
+    "Wayland では窓の整列に対応していません（mpv の恒久制限）",
+
   // Phase 25: 再生の既定表示を PiP 化（FR-18、仕様決定 AJ）
   "player.playWindow": "通常窓で再生",
   "player.window.hint":

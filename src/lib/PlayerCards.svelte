@@ -16,6 +16,12 @@
   import { linkCopyText } from "$lib/copy-link-logic";
   import { subTrackLabel } from "$lib/subtitle-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
+  import {
+    pipTileGeometry,
+    pipTileGrid,
+    pipTileMonitor,
+  } from "$lib/pip-tile-logic";
+  import type { MonitorInfo } from "$lib/monitors";
   import { notify } from "$lib/notices.svelte";
   import ChatPanel from "$lib/ChatPanel.svelte";
   import DescPanel from "$lib/DescPanel.svelte";
@@ -237,6 +243,76 @@
   // 応答後も次の状態イベントが届く猶予を置いてから再有効化する
   let pipBusy = $state<Set<number>>(new Set());
 
+  // PiP 窓の一括整列（FR-41、仕様決定 BQ）。対象ディスプレイは
+  // `window.screen` の保存名で解決し、未設定・未接続はプライマリ。
+  // 実行時の窓位置変更には mpv 0.38 以降と Win32/X11 の環境が要る
+  // （仕様決定 BU）。Wayland は恒久制限のためボタンを無効化する
+  let windowing = $state("other");
+  let pipTileBusy = $state(false);
+  const pipCount = $derived(
+    [...players.values()].filter((p) => p.pip).length,
+  );
+
+  async function tilePips(): Promise<void> {
+    const pips = [...players.values()]
+      .filter((p) => p.pip)
+      .map((p) => p.instanceId)
+      .sort((a, b) => a - b);
+    if (pipTileBusy || pips.length === 0) return;
+    pipTileBusy = true;
+    try {
+      const [monitors, saved] = await Promise.all([
+        invoke<MonitorInfo[]>("monitor_list"),
+        invoke<string | null>("settings_get", { key: "window.screen" }),
+      ]);
+      const target = pipTileMonitor(monitors, saved);
+      if (!target) {
+        notify(t("player.pipTile.noMonitor"));
+        return;
+      }
+      const { cols, rows } = pipTileGrid(pips.length);
+      let ok = 0;
+      let firstErr = "";
+      for (let i = 0; i < pips.length; i++) {
+        try {
+          await invoke("player_control", {
+            instanceId: pips[i],
+            action: {
+              type: "pip_tile",
+              geometry: pipTileGeometry(
+                i,
+                cols,
+                rows,
+                target.width,
+                target.height,
+              ),
+            },
+          });
+          ok += 1;
+        } catch (e) {
+          if (firstErr === "") firstErr = asErrorMessage(e);
+        }
+      }
+      if (firstErr === "") {
+        notify(t("player.pipTile.done", { count: ok }));
+      } else if (ok > 0) {
+        notify(
+          t("player.pipTile.partial", {
+            ok,
+            total: pips.length,
+            message: firstErr,
+          }),
+        );
+      } else {
+        notify(t("player.pipTile.failed", { message: firstErr }));
+      }
+    } catch (e) {
+      notify(t("player.pipTile.failed", { message: asErrorMessage(e) }));
+    } finally {
+      pipTileBusy = false;
+    }
+  }
+
   // インスタンス別画質の変更中セット。応答までの連続操作を防ぎ、
   // 失敗時は select の表示を現在の適用値へ戻す
   let qualityBusy = $state<Set<number>>(new Set());
@@ -408,6 +484,13 @@
     } catch {
       audioListFailed = true;
     }
+    // mpv 窓の移動可否（整列ボタンの有効化判定、FR-41・FR-42）。
+    // 取得失敗は "other" のままにし、操作時のエラーに任せる
+    try {
+      windowing = await invoke<string>("windowing_system");
+    } catch {
+      // 判定不能の環境ではボタンを無効側へ倒さない
+    }
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
     unlistenFns.push(
@@ -473,6 +556,22 @@
   class="player-cards container"
   class:hidden={page.url.pathname !== "/"}
 >
+  <!-- PiP 窓の一括整列（FR-41、仕様決定 BQ）。全 PiP インスタンスの
+       窓を window.screen の対象ディスプレイへ格子状に並べる -->
+  {#if players.size > 0}
+    <div class="pip-tile-bar">
+      <button
+        title={windowing === "wayland"
+          ? t("player.pipTile.wayland")
+          : t("player.pipTile.hint")}
+        disabled={pipTileBusy || pipCount === 0 || windowing === "wayland"}
+        onclick={() => void tilePips()}
+      >
+        {t("player.pipTile")}
+      </button>
+      <span class="subtle">{t("player.pipTile.count", { count: pipCount })}</span>
+    </div>
+  {/if}
   {#each [...players.values()] as p (p.instanceId)}
     {@const info = channelInfos.get(p.videoId)}
     <section class="player panel panel--filled">
@@ -727,6 +826,13 @@
 <style>
   .player-cards.hidden {
     display: none;
+  }
+
+  .pip-tile-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
   }
 
   /* カード骨格はグローバル .panel + .panel--filled。ここでは間隔だけ */

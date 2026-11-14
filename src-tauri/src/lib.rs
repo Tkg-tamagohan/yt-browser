@@ -180,6 +180,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::monitor_list,
+            commands::windowing_system,
             commands::play_video,
             commands::player_list,
             commands::player_control,

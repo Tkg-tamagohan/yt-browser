@@ -215,6 +215,54 @@ pub(crate) fn initial_volume(value: Option<String>) -> f64 {
         .unwrap_or(DEFAULT_INITIAL_VOLUME)
 }
 
+/// 実行時の `set_property geometry` で窓の位置オフセット（`±x±y`）が
+/// 効く最低 mpv バージョン（仕様決定 BU）。win32 は 0.38 で実行時
+/// geometry 更新、x11 は 0.38 で位置修正・0.40 で xy 指定時の移動整理
+/// が入っている。それ未満ではサイズだけが適用され位置が残るため、
+/// 整列は適用前に拒否する（FR-41、仕様決定 BQ）。
+pub(crate) const MIN_TILE_MPV_VERSION: (u32, u32) = (0, 38);
+
+/// `mpv-version` プロパティの文字列（`mpv 0.41.0-...` 形式）から
+/// (major, minor) を取り出す。git ビルドなど解釈できない形式は None
+/// （その場合は適用可否を判定せず処理を続ける）。
+pub(crate) fn mpv_version_tuple(version: &str) -> Option<(u32, u32)> {
+    let rest = version.trim().strip_prefix("mpv")?.trim_start();
+    let mut it = rest.split('.');
+    let major = leading_digits(it.next()?)?.parse().ok()?;
+    let minor = leading_digits(it.next()?)?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// 先頭の連続する ASCII 数字を取り出す。先頭が数字でなければ None。
+fn leading_digits(s: &str) -> Option<&str> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    (end > 0).then(|| &s[..end])
+}
+
+/// mpv 窓の移動・前面化が関わる操作の可否判定に使う表示環境の分類
+/// （FR-41・FR-42、仕様決定 BQ・BR）。値は `windows` / `x11` / `wayland`
+/// / `other`。Wayland はプロトコル上クライアント・第三者とも窓の
+/// 絶対位置と前面化を決められない恒久制限（仕様決定 BU）。
+/// `XDG_SESSION_TYPE` を優先し、未設定では `WAYLAND_DISPLAY` /
+/// `DISPLAY` の有無で推す。
+pub fn windowing_system() -> &'static str {
+    if cfg!(windows) {
+        return "windows";
+    }
+    match std::env::var("XDG_SESSION_TYPE").ok().as_deref() {
+        Some("wayland") => return "wayland",
+        Some("x11") => return "x11",
+        _ => {}
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
+        return "wayland";
+    }
+    if std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()) {
+        return "x11";
+    }
+    "other"
+}
+
 /// `window.screen` に保存したモニター名を、現在接続中のモニター列の
 /// インデックスへ解決する（FR-31、仕様決定 AZ）。`--screen` の番号は
 /// `available_monitors()` の列挙順と同じ並びを前提とする。
@@ -240,14 +288,20 @@ pub enum MpvError {
     Ipc(#[from] ipc::IpcError),
     #[error("インスタンス {0} は存在しない（既に終了した可能性がある）")]
     NoSuchInstance(u32),
+    #[error("geometry 値が不正です: {0}")]
+    InvalidGeometry(String),
+    #[error("インスタンス {0} は PiP 表示ではありません")]
+    NotPip(u32),
+    #[error("PiP 窓の整列には mpv 0.38 以降が必要です（検出: {0}）")]
+    MpvTooOld(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         fit_pip_geometry, hwdec_mode, initial_speed, initial_volume, is_valid_hdr_compute_peak,
-        is_valid_hwdec, is_valid_pip_geometry, is_valid_tone_mapping, network_timeout_ms,
-        pip_default_enabled, pip_fit_aspect_enabled,
+        is_valid_hwdec, is_valid_pip_geometry, is_valid_tone_mapping, mpv_version_tuple,
+        network_timeout_ms, pip_default_enabled, pip_fit_aspect_enabled,
         player::{prune_mpv_logs, split_extra_args, video_aspect_of},
         screen_index_of, DEFAULT_HWDEC, DEFAULT_INITIAL_SPEED, DEFAULT_INITIAL_VOLUME,
         DEFAULT_NETWORK_TIMEOUT_MS,
@@ -632,5 +686,23 @@ mod tests {
         // 同名モニターは先頭側を返す
         let dup = vec![Some("M".to_string()), Some("M".to_string())];
         assert_eq!(screen_index_of(&dup, "M"), Some(0));
+    }
+
+    /// DB-PT-01: `mpv-version` 文字列の (major, minor) 抽出（FR-41、
+    /// 仕様決定 BU の 0.38 判定に使う）。ビルド接尾辞や空白を許容し、
+    /// git ビルドなど解釈不能な形式は None。
+    #[test]
+    fn mpv_version_tuple_parse() {
+        assert_eq!(mpv_version_tuple("mpv 0.41.0"), Some((0, 41)));
+        assert_eq!(
+            mpv_version_tuple("mpv 0.38.0-UNKNOWN-gabcdef"),
+            Some((0, 38))
+        );
+        assert_eq!(mpv_version_tuple("mpv 0.34.1"), Some((0, 34)));
+        assert_eq!(mpv_version_tuple("  mpv 0.38+beta  "), Some((0, 38)));
+        assert_eq!(mpv_version_tuple("mpv 0.9"), Some((0, 9)));
+        for bad in ["mpv", "mpv ", "mpv-git-abcdef", "0.38.0", "mpv x.y"] {
+            assert_eq!(mpv_version_tuple(bad), None, "{bad} は None になるべき");
+        }
     }
 }
