@@ -101,6 +101,9 @@ pub fn run() {
         // クリップボードへの書き込み（FR-34、仕様決定 BC）。
         // capabilities では write-text のみ許可し読み取りは付けない
         .plugin(tauri_plugin_clipboard_manager::init())
+        // エクスポート/インポートのファイル選択（FR-62、仕様決定 CM）。
+        // capabilities では open/save/message（確認ダイアログ）のみ許可する
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -214,6 +217,7 @@ pub fn run() {
             commands::history_list,
             commands::history_remove,
             commands::history_restore,
+            commands::history_stats,
             commands::favorite_add,
             commands::favorite_remove,
             commands::favorite_restore,
@@ -253,6 +257,7 @@ pub fn run() {
             commands::set_channel_category,
             commands::list_categories,
             commands::create_category,
+            commands::category_reorder,
             commands::list_feed,
             commands::mark_read,
             commands::feed_refresh,
@@ -277,6 +282,11 @@ pub fn run() {
             commands::bookmark_list,
             commands::bookmark_remove,
             commands::bookmark_set_label,
+            commands::data_export,
+            commands::data_import,
+            commands::db_size,
+            commands::db_vacuum,
+            commands::db_cleanup_orphans,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

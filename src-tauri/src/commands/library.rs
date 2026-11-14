@@ -4,8 +4,8 @@ use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{
-    FavoriteEntry, HistoryCursor, HistoryPage, LibrarySearchItem, Playlist, PlaylistEntry,
-    VideoRef, WatchHistory, WatchLaterEntry,
+    FavoriteEntry, HistoryCursor, HistoryPage, HistoryStats, LibrarySearchItem, Playlist,
+    PlaylistEntry, VideoRef, WatchHistory, WatchLaterEntry,
 };
 use crate::yt::{self, YtDlpResolver};
 use tauri::{AppHandle, Emitter, State};
@@ -61,6 +61,14 @@ pub fn history_restore(entry: WatchHistory, db: State<'_, Db>) -> Result<(), UiE
     let mut e = entry;
     e.video_id = id;
     Ok(db.history_restore(&e)?)
+}
+
+/// `history_stats`（FR-65、仕様決定 CP）。`watch_history` を集計した
+/// 累計視聴時間とチャンネル別・日別の内訳を返す
+/// （ライブラリの統計タブが表示用にそのまま使う）。
+#[tauri::command]
+pub fn history_stats(db: State<'_, Db>) -> Result<HistoryStats, UiError> {
+    Ok(db.history_stats()?)
 }
 
 /// `VideoRef` の入力検証と動画 ID 正規化。

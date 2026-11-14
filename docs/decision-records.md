@@ -302,3 +302,19 @@
 | 外部取り込みの通知方式 | `playlist_import` のコミット成功時に `library://playlists_changed`（ペイロードは取り込んだ `Playlist`）を発火し、マウント中の `/library` が購読して一覧を再取得する。通知点を DB コミットの一点に集約し、呼び出し側が通知を忘れても一覧が古いまま残る形を防ぐ。他のプレイリスト操作コマンドは画面外からの変更経路が現状ないため発火対象外とする |
 | 外部取り込み時の画面反映 | 一覧の再取得に加えて、プレイリストタブへの切替と取り込みプレイリストの選択まで行う（画面内取り込みの `importPlaylist` → `selectPlaylist` と同等）。操作中のリネーム入力や選択状態は上書きされる。取り込み自体がユーザーの明示操作起点であるため、結果を見せることを優先する |
 
+## Phase 66 で確定した事項
+
+仕様決定 CM・CN・CP・CQ の実装で、決定記録に書かれていなかった細目を暫定解釈として定めた。
+
+| 項目 | 決定内容 |
+|------|----------|
+| ダンプ形式 | `{ version, exportedAt, channels, categories, settings, playlists }` の JSON（`version` = 1）。channels は `channels` テーブルの全列、playlists は `id`/`name`/`sort_order`/`items`（`position`＋`videos` 台帳の表示メタ）を持つ |
+| インポートの意味 | 「ダンプした時点の状態へ戻す」リストア扱いで、対象テーブル（channels/categories/settings/playlists/playlist_items）をダンプ内容で置き換える。マージではないため、ダンプに無い行は消える（実行前にダイアログで確認する）。`categories.id`・`playlists.id` はダンプの値をそのまま使い、項目の表示メタは `video_upsert` と同じ規則で `videos` 台帳へ補完登録する。対象外のユーザーデータ（watch_history 等）は保持する（回帰テスト DB-LD-23・DB-LD-24） |
+| インポートの検証 | 書き込み前に全内容を検証する（形式版の一致・ID の一意性・`category_id` 参照の有効性・項目の `video_id` 重複）。受理できないダンプは `DbError::Import` で拒否して DB を変更しない。書き込みは 1 トランザクション |
+| ファイルダイアログ | `tauri-plugin-dialog`（2.8.4）を導入し、設定画面から保存/開くダイアログでパスを取得してコマンドへ渡す。ライセンスは Apache-2.0 OR MIT を crates.io / npm メタデータで確認済み |
+| カテゴリ並べ替えの UI 配置 | 並べ替え UI はフィードの購読パネルではなく設定画面のカテゴリ節に置く（フィード側はチャンネル割り当ての select に留める）。操作体系・永続化（`category_reorder` で同一集合検証＋0..n-1 正規化）・保存直列化・失敗時の取り直しは FR-35 と同じ構造（回帰テスト DB-LD-26） |
+| 視聴時間の見積もり | 1 行の視聴量は「`completed` なら `COALESCE(duration_sec, position_sec)`、それ以外は `position_sec`」で見積もる。完了行は位置が 0 へ戻るため動画長で見積もり、再視聴の上乗せはしない（回帰テスト DB-LD-25） |
+| 統計の内訳 | チャンネル別は `channel_id` 単位の視聴時間降順（未設定は 1 つのまとまり、`channel_title` 併記、上位 50 件までの暫定上限）。日別は `last_watched_at` の `date()` の降順（履歴は UTC 保存のため UTC 基準の暦日） |
+| DB サイズの定義 | `main` DB ファイル＋WAL/SHM サイドファイルの合計バイト数。ファイルを持たない接続では `page_count × page_size` の近似値（回帰テスト DB-LD-28） |
+| 孤児行の対象 | (1) `channels` に無いチャンネルの `videos` 行のうち favorites/playlist_items/watch_later/watch_history/queue_items/live_waits/video_bookmarks のどれにも参照されないもの。(2) `videos` 台帳に無い `video_id` を持つ playlist_items/favorites/watch_later の参照切れ行。`watch_history` は表示メタを自列に持つユーザーデータのため消さない。実行前にダイアログで確認する（回帰テスト DB-LD-27） |
+

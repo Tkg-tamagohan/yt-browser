@@ -186,6 +186,15 @@ pub fn create_category(name: String, db: State<'_, Db>) -> Result<Category, UiEr
     Ok(db.category_create(name)?)
 }
 
+/// `category_reorder`（FR-63、仕様決定 CN）。カテゴリの並べ替え。
+/// `category_ids` が現在のカテゴリ全件と同一集合でなければ変更しない
+/// （`playlist_reorder_lists` と同じ検証規則）。
+#[tauri::command]
+pub fn category_reorder(category_ids: Vec<i64>, db: State<'_, Db>) -> Result<(), UiError> {
+    db.category_reorder(&category_ids)?;
+    Ok(())
+}
+
 /// `list_feed`（設計書 §3.1）。NG フィルタの動画系 target もここで適用する（FR-9）。
 #[tauri::command]
 pub fn list_feed(

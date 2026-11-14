@@ -113,6 +113,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
+| `category_reorder` | `category_ids`（カテゴリ全件の新しい表示順） | `Result<()>`（FR-63、仕様決定 CN） |
 | `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、`cursor`（`published_at`+`video_id`）、`channel_id`（チャンネル別フィード、仕様決定 AN）、全項目省略可。shorts 既定除外は `feed.show_shorts` で制御（仕様決定 AP）） | `Result<Vec<FeedItem>>` |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
@@ -146,6 +147,12 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `bookmark_list` | なし | `Result<Vec<VideoBookmark>>`（保存の新しい順。`title` は `videos` 台帳 → `watch_history` の順に解決した表示用の値で、未解決は None） |
 | `bookmark_remove` | `id` | `Result<()>`（未登録でも正常終了） |
 | `bookmark_set_label` | `id`, `label` | `Result<VideoBookmark>`（更新後の行。空・空白のみは位置表記へ戻す。未登録は NotFound） |
+| `history_stats` | なし | `Result<HistoryStats>`（FR-65、仕様決定 CP。`watch_history` 集計の累計視聴時間・チャンネル別・日別） |
+| `data_export` | `path`（保存先ファイルパス。保存ダイアログで選択） | `Result<()>`（FR-62、仕様決定 CM） |
+| `data_import` | `path`（読込元ファイルパス。開くダイアログで選択） | `Result<()>`（FR-62、仕様決定 CM） |
+| `db_size` | なし | `Result<DbSize>`（`bytes`。FR-66、仕様決定 CQ） |
+| `db_vacuum` | なし | `Result<()>`（FR-66、仕様決定 CQ） |
+| `db_cleanup_orphans` | なし | `Result<u64>`（削除した行数。FR-66、仕様決定 CQ） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -172,6 +179,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `playlist_reorder_lists` はプレイリスト一覧の表示順の一括書き換え（FR-35、仕様決定 BF）。`playlist_reorder` と同じ方針で、渡した `playlist_ids` が現在のプレイリスト全件と同一集合でない場合（欠落・余剰・重複）は変更せずエラーとし、検証と `playlists.sort_order` の 0..n-1 への書き換えを同じ書き込みトランザクションで行う。
 `playlist_list` は `ORDER BY sort_order, id` で返し、`playlist_create`（`playlist_import` も同じ経路）は `sort_order` に既存の `MAX(sort_order)+1` を付けて末尾に置く。並べ替え前の全行 0 のデータも id 順のまま崩れず、初回の並べ替え保存で 0..n-1 に正規化される。
 フロントは一覧の並べ替え保存を直列化し、飛行中の保存があれば完了を待って最新順で追い送りする。一覧の再取得（`playlist_list`）も飛行中の保存の確定を待ってから行い、保存前の DB 順でローカルの並べ替え結果を巻き戻さない。保存に失敗したら `playlist_list` を取り直して確定済みの DB 順で表示し直す。行アクションの「プレイリストに追加」メニューは同じ `playlist_list` の順序を使い、キューパネルの切替タブ（FR-26）はキュー作成順のまま据え置く。
+`category_reorder` はカテゴリ一覧の表示順の一括書き換え（FR-63、仕様決定 CN）。`playlist_reorder_lists` と同じ方針で、渡した `category_ids` が現在のカテゴリ全件と同一集合でない場合（欠落・余剰・重複・未登録）は `MismatchedItems` で変更せず、検証と `categories.sort_order` の 0..n-1 への書き換えを同じ書き込みトランザクションで行う。`category_list` は `ORDER BY sort_order, id` で返し、`category_create` も `MAX(sort_order)+1` で末尾に置く（並べ替え前の全行 0 のデータも id 順のまま崩れない）。UI は設定画面のカテゴリ節にプレイリストと同じ上下ボタン＋ドラッグ＆ドロップの並べ替えを置く（暫定解釈: 並べ替え UI はフィードの購読パネルではなく設定画面に置く。フィード側はチャンネル割り当ての select に留める）。保存の直列化と失敗時の取り直しもプレイリスト一覧と同じ構造で行う。
 `playlist_sort` は `published_at` 昇順の一括ソート（one-shot）。`published_at` の無い項目は末尾に寄せ、同キー内は現在順を保つ。
 `playlist_reverse` は項目順の一括反転（one-shot、FR-11、仕様決定 Z）。読み出しと書き込みを同一トランザクションで行い、YouTube が新しい順で返すプレイリストを古い順へ変える用途に使う。
 フロント側では一括操作（`playlist_sort`・`playlist_reverse`）の実行中に行の並べ替え保存を開始せず、開始前に飛行中の `playlist_reorder` の確定を待つ。一括操作と個別並べ替えの適用順を「確定した並べ替え → 一括操作」に固定し、結果の反映は項目取得の世代管理で行う（操作後は必ず確定済みの DB 順を再取得して表示する）。
@@ -198,6 +206,27 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 他項目に埋まっていれば末尾（`MAX(position)+1`）へ挿す（暫定: 削除と復元の間に
 並べ替えや末尾への追加が走った場合の収束先）。同一動画が既に登録済みなら既存行を返す冪等とする。
 お気に入りトグル（`VideoActions`）経由の解除も同じトーストで取り消せる。
+
+`history_stats` は `watch_history` を集計して累計視聴時間・チャンネル別内訳・日別内訳を返す（FR-65、仕様決定 CP）。ライブラリの統計タブがそのまま表示する。
+1 行の視聴量は「`completed` なら `COALESCE(duration_sec, position_sec)`、それ以外は `position_sec`」で見積もる（暫定解釈: 完了行は位置が 0 へ戻るため動画長で見積もり、再視聴の上乗せはしない）。
+チャンネル別は `channel_id` 単位で視聴時間の降順（未設定は 1 つのまとまりとして扱い、`channel_title` を併記する。上位 50 件までの暫定上限）。
+日別は `last_watched_at` の `date()`（UTC 基準の暦日。履歴の日時は `datetime('now')` で UTC 保存のため）の降順。
+
+`data_export` / `data_import` は `channels`・`categories`・`settings`・`playlists`（＋項目）のダンプと復元（FR-62、仕様決定 CM）。
+ファイル選択は設定画面から `tauri-plugin-dialog` の保存/開くダイアログで行い、選んだパスをそのままコマンドへ渡す。
+ダンプ形式は `{ version, exportedAt, channels, categories, settings, playlists }` の JSON で、`version` は `EXPORT_FORMAT_VERSION = 1`。
+チャンネル行は `channels` の全列（バックフィル位置・条件付き取得メタを含む）、プレイリスト項目は `position` と `videos` 台帳の表示メタを持つ。
+インポートは「ダンプした時点の状態へ戻す」リストア扱いで、対象テーブルの内容をダンプで置き換える（暫定解釈: マージではなく置き換え。ダンプに無い行は消える）。
+書き込みは 1 トランザクションで行い、先に全内容を検証する（形式版の一致・ID の一意性・`category_id` 参照の有効性・項目の `video_id` 重複）。
+受理できないダンプは `DbError::Import` で拒否して DB を変更しない。
+`categories.id` / `playlists.id` はダンプの値をそのまま使い（参照の整合だけ取る。AUTOINCREMENT 採番は最大 ID 以降へ進む）、プレイリスト項目の表示メタは `video_upsert` と同じ規則で `videos` 台帳へ補完登録する（既存メタは壊さない）。
+`watch_history` など対象外のユーザーデータは保持する。
+
+`db_size` / `db_vacuum` / `db_cleanup_orphans` は設定画面の運用節が使う DB メンテナンス（FR-66、仕様決定 CQ）。
+`db_size` は `PRAGMA database_list` の `main` ファイルと WAL/SHM サイドファイルの合計バイト数を返す（暫定解釈。ファイルを持たない接続では `page_count × page_size` の近似値）。
+`db_vacuum` は接続を 1 本しか持たないため、そのロック内で `VACUUM` をそのまま実行できる。
+`db_cleanup_orphans` は孤児行を削除して件数を返す（暫定解釈の対象: `channels` に無いチャンネルの `videos` 行のうち favorites/playlist_items/watch_later/watch_history/queue_items/live_waits/video_bookmarks のどれにも参照されないもの、および `videos` 台帳に無い `video_id` を持つ playlist_items/favorites/watch_later の参照切れ行。`watch_history` は表示メタを自列に持つユーザーデータのため消さない）。
+フロントは「インポート」「孤児行整理」の実行前にダイアログで確認し、「VACUUM」はデータを壊さないため確認なしで実行する。
 
 ### 3.2 イベント（Rust → フロント）
 
@@ -1284,6 +1313,7 @@ GPU なし環境（ソフトウェアレンダリング）の webkit2gtk で、D
 - アカウント連携を持たないため Cookie やトークンの保存は発生しない（仕様決定 H）
 - アプリの自動更新は tauri-plugin-updater で `latest.json`（GitHub Releases の `releases/latest/download/latest.json`）を確認する。起動時の自動確認と設定画面の手動確認を併用し、検知時は確認ダイアログ→承認でダウンロード・インストール・再起動する（FR-15、仕様決定 AB）。対象は AppImage と NSIS。更新成果物は minisign で署名し、公開鍵を `tauri.conf.json` の `plugins.updater.pubkey`、秘密鍵を GitHub Secrets（`TAURI_SIGNING_PRIVATE_KEY`）に置く。確認・ダウンロードはネイティブ側で行うため WebView の CSP には影響しない
 - クリップボードへの書き込みは tauri-plugin-clipboard-manager 経由に限定し、capabilities では `clipboard-manager:allow-write-text` のみを許可する。読み取り権限は付けない（FR-34、仕様決定 BC）
+- ファイル選択は tauri-plugin-dialog 経由に限定し、capabilities では `dialog:allow-open`・`dialog:allow-save`・`dialog:allow-message`（確認ダイアログ）のみを許可する（FR-62・FR-66、仕様決定 CM・CQ）
 
 ## 11. リポジトリ構成
 
@@ -1318,7 +1348,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

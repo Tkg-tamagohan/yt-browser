@@ -196,6 +196,44 @@ export type LibrarySearchItem = {
   sources: LibrarySource[];
 };
 
+/// `list_categories` の 1 行（`categories` テーブル、設計書 §8）。
+/// カテゴリ並べ替え（FR-63）の表示と `category_reorder` の ID 列に使う。
+export type Category = {
+  id: number;
+  name: string;
+  sortOrder: number;
+};
+
+/// `history_stats` のチャンネル別 1 行（FR-65、仕様決定 CP）。
+export type HistoryChannelStat = {
+  channelId: string | null;
+  channelTitle: string | null;
+  totalSec: number;
+  entryCount: number;
+};
+
+/// `history_stats` の日別 1 行（FR-65）。day は UTC 基準の暦日。
+export type HistoryDayStat = {
+  day: string;
+  totalSec: number;
+  entryCount: number;
+};
+
+/// `history_stats` の戻り値（FR-65、仕様決定 CP）。
+/// ライブラリの統計タブがそのまま表示する。
+export type HistoryStats = {
+  totalSec: number;
+  entryCount: number;
+  byChannel: HistoryChannelStat[];
+  byDay: HistoryDayStat[];
+};
+
+/// `db_size` の戻り値（FR-66、仕様決定 CQ）。
+/// DB 本体と WAL/SHM サイドファイルの合計バイト数。
+export type DbSize = {
+  bytes: number;
+};
+
 export type UiError = { code: string; message: string };
 
 /// invoke の失敗を通知表示用の文字列にする。UiError は message を持つので

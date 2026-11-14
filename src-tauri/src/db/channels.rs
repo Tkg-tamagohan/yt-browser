@@ -162,15 +162,57 @@ impl Db {
         Ok(out)
     }
 
+    /// カテゴリ作成。一覧の末尾に置くため `sort_order` は既存の最大値 + 1
+    /// （FR-63、仕様決定 CN。`playlist_create` と同じ方針）。
+    /// 並べ替え前の全行 0 のデータでも `ORDER BY sort_order, id` の
+    /// 作成順を崩さない。
     pub fn category_create(&self, name: &str) -> Result<Category, DbError> {
         let conn = self.lock()?;
-        conn.execute("INSERT INTO categories (name) VALUES (?1)", [name])?;
-        let id = conn.last_insert_rowid();
+        let sort_order: i64 = conn.query_row(
+            "INSERT INTO categories (name, sort_order)
+             VALUES (?1, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM categories))
+             RETURNING sort_order",
+            [name],
+            |r| r.get(0),
+        )?;
         Ok(Category {
-            id,
+            id: conn.last_insert_rowid(),
             name: name.to_string(),
-            sort_order: 0,
+            sort_order,
         })
+    }
+
+    /// カテゴリ一覧の並べ替え（FR-63、仕様決定 CN）。`category_ids` が
+    /// 現在のカテゴリ全件と同一集合（順不同・重複なし）であることを
+    /// このトランザクション内で検証し、一致しない場合は
+    /// `DbError::MismatchedItems` で変更しない。一致すれば `sort_order` を
+    /// 渡した順に 0..n-1 へ振り直す（`playlist_reorder_lists` と同じ方針）。
+    pub fn category_reorder(&self, category_ids: &[i64]) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let mut current: Vec<i64> = Vec::new();
+        {
+            let mut stmt = tx.prepare("SELECT id FROM categories")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                current.push(row.get(0)?);
+            }
+        }
+        let incoming: std::collections::HashSet<i64> = category_ids.iter().copied().collect();
+        let same = category_ids.len() == current.len()
+            && incoming.len() == category_ids.len()
+            && current.iter().all(|id| incoming.contains(id));
+        if !same {
+            return Err(DbError::MismatchedItems);
+        }
+        for (pos, id) in category_ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE categories SET sort_order = ?2 WHERE id = ?1",
+                rusqlite::params![id, pos as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn category_list(&self) -> Result<Vec<Category>, DbError> {
