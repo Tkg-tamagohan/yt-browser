@@ -1428,6 +1428,11 @@ const en = {
   "settings.deps.ytdlpPath.placeholder": "Auto-detect (empty)",
   "settings.deps.ytdlpPath.desc":
     "Specify the yt-dlp executable directly. Empty means auto-detect (bundled resource → PATH, in that order). Changes take effect from the next yt-dlp invocation after saving",
+  // Phase 77: PO Token の伝達（FR-86、仕様決定 DK）
+  "settings.deps.poToken": "PO Token",
+  "settings.deps.poToken.placeholder": "Not set (empty)",
+  "settings.deps.poToken.desc":
+    "For environments where YouTube requires a PO Token. When set, --extractor-args \"youtube:po_token=<value>\" is automatically configured and passed to yt-dlp invocations (including stream resolution via mpv). The value format follows the yt-dlp PO Token Guide (e.g. mweb.gvs+<token>). Empty means unset; changes take effect from the next yt-dlp invocation after saving",
   "settings.deps.unsaved":
     "Dependent command values were changed while saving. Please save again",
   "settings.diag.title": "Diagnostics",
