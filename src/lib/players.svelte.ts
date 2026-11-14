@@ -25,6 +25,20 @@ export type PlayerState = {
   /// 現在の音声出力デバイス（mpv `audio-device`、FR-32、仕様決定 BA）。
   /// 既定・自動選択は "auto"。
   audioDevice: string;
+  /// mpv `track-list` のうち字幕（`type=sub`）トラックの一覧
+  /// （FR-40、仕様決定 BP）。未取得時は空。
+  subTracks: SubTrack[];
+  /// 現在の字幕選択（mpv `sid`、FR-40）。"no" / "auto" / トラック ID の文字列。
+  sid: string;
+};
+
+/// 字幕トラック 1 件分（FR-40、仕様決定 BP）。
+/// mpv `track-list` の `type=sub` エントリ由来の id・title・lang。
+export type SubTrack = {
+  /// mpv トラック ID（`sid` へ渡す値）。
+  id: number;
+  title: string | null;
+  lang: string | null;
 };
 
 /// `audio_device_list` コマンドの 1 要素（FR-32、仕様決定 BA）。
@@ -212,12 +226,18 @@ export type PlayerAction =
   | { type: "frame_step" }
   | { type: "frame_back_step" }
   | { type: "pip"; enabled: boolean }
+  // PiP 窓の一括整列（FR-41、仕様決定 BQ）。geometry は格子計算済みの
+  // `WxH+x+y`（対象ディスプレイ左上原点の相対座標）
+  | { type: "pip_tile"; geometry: string }
   // 音声出力先の切替（FR-32、仕様決定 BA）。値は audio_device_list の name
   | { type: "audio_device"; device: string }
   // A-B リピートの 3 状態巡回に対応する mpv 操作（FR-37、仕様決定 BM）
   | { type: "ab_loop_set_a" }
   | { type: "ab_loop_set_b" }
   | { type: "ab_loop_clear" }
+  // 字幕トラックの選択（FR-40、仕様決定 BP）。
+  // sid は "no" / "auto" / トラック ID の文字列。セッション内のみ有効
+  | { type: "sub_track"; sid: string }
   // mpv 窓の前面化（FR-42、仕様決定 BR）。Wayland は恒久制限で非対応
   | { type: "focus_window" };
 

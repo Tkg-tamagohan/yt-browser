@@ -2,8 +2,11 @@
 //! SponsorBlock 判定を `MpvPlayer` にまとめる。
 use super::spawn::{ipc_endpoint, launch, loadfile_replace};
 use super::terminal::TerminalTracker;
-use super::{fit_pip_geometry, IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
-use crate::model::{PlayStatus, PlayerAction, PlayerState, QueueArmItem};
+use super::{
+    fit_pip_geometry, is_valid_pip_geometry, mpv_version_tuple, IpcClient, IpcEvent, MpvError,
+    DEFAULT_PIP_GEOMETRY, MIN_TILE_MPV_VERSION,
+};
+use crate::model::{PlayStatus, PlayerAction, PlayerState, QueueArmItem, SubTrack};
 use crate::util::lock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -36,6 +39,10 @@ const OBSERVED_PROPERTIES: &[(u64, &str)] = &[
     (9, "speed"),
     // 音声出力先（FR-32、仕様決定 BA）。カードの選択表示に現在値が要る
     (10, "audio-device"),
+    // 字幕選択（FR-40、仕様決定 BP）。track-list の sub エントリで
+    // ドロップダウンの選択肢を作り、sid で現在値を追従する
+    (11, "track-list"),
+    (12, "sid"),
 ];
 
 /// `loadfile` 処理中としてウォッチドッグ判定を猶予する上限（仕様決定 BE）。
@@ -264,6 +271,12 @@ pub(crate) struct SpawnOptions {
     /// `--log-file` の出力先ディレクトリ（アプリログと同じ場所、仕様決定 BE）。
     /// None なら引数を付けない。
     pub(crate) log_dir: Option<PathBuf>,
+    /// `--speed` に渡す初期再生速度（設定 `player.initial_speed`、
+    /// FR-39・仕様決定 BO）。呼び出し側で受理範囲へ解決済み。
+    pub(crate) initial_speed: f64,
+    /// `--volume` に渡す初期音量（設定 `player.initial_volume`、
+    /// FR-39・仕様決定 BO）。呼び出し側で受理範囲へ解決済み。
+    pub(crate) initial_volume: f64,
 }
 
 /// SpawnOptions から mpv の起動引数を組み立てる。初回 spawn と自動再起動
@@ -280,6 +293,10 @@ fn mpv_args(opts: &SpawnOptions, socket_path: &Path, log_file: Option<PathBuf>) 
         // d3d11va がドライバ内で wedge する環境では `no` で回避できる
         format!("--hwdec={}", opts.hwdec),
         "--keep-open=yes".into(),
+        // 初期速度・初期音量（FR-39、仕様決定 BO）。稼働中インスタンスへの
+        // 速度・音量変更は従来どおりセッション限り（DB へ保存しない）
+        format!("--speed={}", opts.initial_speed),
+        format!("--volume={}", opts.initial_volume),
         // アプリ識別のためタイトルに動画 ID を入れる
         format!("--title={}-yt-browser", opts.video_id),
     ];
@@ -428,13 +445,17 @@ impl MpvPlayer {
                 duration: 0.0,
                 fps: 0.0,
                 state: PlayStatus::Idle,
-                volume: 100.0,
-                speed: 1.0,
+                // 起動引数で指定した初期値（FR-39）。監視経由で実値へ追従する
+                volume: opts.initial_volume,
+                speed: opts.initial_speed,
                 media_title: String::new(),
                 pip: opts.pip_geometry.is_some(),
                 format: opts.ytdl_format.clone(),
                 // 起動直後は mpv 既定。監視経由で実値へ追従する
                 audio_device: "auto".to_string(),
+                // 字幕は track-list 未到着の間は空・自動選択として扱う（FR-40）
+                sub_tracks: Vec::new(),
+                sid: "auto".to_string(),
             }),
             ended_tx,
             terminal: TerminalTracker::default(),
@@ -780,6 +801,10 @@ impl MpvPlayer {
             st.fps = 0.0;
             st.state = PlayStatus::Idle;
             st.pause = false;
+            // 字幕選択は動画ごとに mpv の自動選択へ戻る（FR-40、仕様決定 BP）。
+            // 一覧は次の track-list 通知で再構成される
+            st.sub_tracks.clear();
+            st.sid = "auto".to_string();
         }
         *lock(&self.sponsor) = SponsorState::default();
         Ok(())
@@ -868,6 +893,9 @@ impl MpvPlayer {
                 // 保持中の値（spawn 時の解決値＋set_pip_fit の反映分）を使う
                 self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY).await?;
             }
+            PlayerAction::PipTile { geometry } => {
+                self.set_pip_tile_geometry(geometry).await?;
+            }
             PlayerAction::AudioDevice { device } => {
                 // 実行時変更可（mpv 0.41 で実機確認）。未知のデバイス名も
                 // プロパティ自体は受理され、AO の初期化時に mpv 側が
@@ -890,6 +918,18 @@ impl MpvPlayer {
             }
             PlayerAction::AbLoopClear => {
                 self.clear_ab_points().await?;
+            }
+            PlayerAction::SubTrack { sid } => {
+                // 字幕選択（FR-40、仕様決定 BP）。mpv の sid プロパティへ
+                // "no"/"auto"/トラック ID を渡す。セッション内のみ有効。
+                // 状態への反映は監視プロパティ経由で行う
+                if let Some(v) = parse_sid(sid) {
+                    self.ipc
+                        .read()
+                        .await
+                        .command(vec![json!("set_property"), json!("sid"), v])
+                        .await?;
+                }
             }
             PlayerAction::FocusWindow => {
                 self.focus_window().await?;
@@ -1017,6 +1057,44 @@ impl MpvPlayer {
         if !lock(&self.state).pip {
             return Ok(());
         }
+        self.apply_geometry(&self.pip_target_geometry()).await
+    }
+
+    /// PiP 窓の一括整列（FR-41、仕様決定 BQ）。フロントが格子計算した
+    /// 目標 geometry（`WxH+x+y`、対象ディスプレイ左上原点の相対座標）を
+    /// PiP 中の窓へ適用する。`pip_base` を差し替えるためアスペクト追従
+    /// （FR-19、仕様決定 AL）は割り当てられたマス目を上限枠として継続する。
+    /// 実行時の geometry で位置オフセットが効くのは mpv 0.38 以降
+    /// （仕様決定 BU）。それ未満ではサイズだけ変わる半端な結果になるため、
+    /// バージョンを確認してから適用する。set_pip と同じく `pip_op` で
+    /// 直列化し、PiP 解除との競合を防ぐ。
+    async fn set_pip_tile_geometry(&self, geometry: &str) -> Result<(), MpvError> {
+        let _op = self.pip_op.lock().await;
+        if !is_valid_pip_geometry(geometry) {
+            return Err(MpvError::InvalidGeometry(geometry.to_string()));
+        }
+        if !lock(&self.state).pip {
+            return Err(MpvError::NotPip(self.instance_id));
+        }
+        // バージョン文字列を解釈できない構成（mpv-git 等）は判定を保留して
+        // 適用を続ける。get_property 自体が失敗する状態では後続の geometry
+        // 送信も失敗するため、ここでは成否を見ない
+        let version = self
+            .ipc
+            .read()
+            .await
+            .command(vec![json!("get_property"), json!("mpv-version")])
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string));
+        if let Some(v) = version.as_deref() {
+            if let Some((major, minor)) = mpv_version_tuple(v) {
+                if (major, minor) < MIN_TILE_MPV_VERSION {
+                    return Err(MpvError::MpvTooOld(v.to_string()));
+                }
+            }
+        }
+        *lock(&self.pip_base) = Some(geometry.to_string());
         self.apply_geometry(&self.pip_target_geometry()).await
     }
 
@@ -1153,6 +1231,15 @@ impl MpvPlayer {
             "speed" => st.speed = data.as_f64().unwrap_or(st.speed),
             // 出力先の現在値（FR-32）。文字列プロパティ
             "audio-device" => st.audio_device = data.as_str().unwrap_or_default().to_string(),
+            // 字幕選択（FR-40）。track-list から sub トラックを抽出し、
+            // sid の現在値を "no"/"auto"/ID 文字列で保持する
+            "track-list" => st.sub_tracks = sub_tracks_of(&data),
+            "sid" => {
+                let s = sid_of(&data);
+                if !s.is_empty() {
+                    st.sid = s;
+                }
+            }
             "paused-for-cache" => {
                 if data.as_bool().unwrap_or(false) {
                     st.state = PlayStatus::Buffering;
@@ -1259,6 +1346,58 @@ pub(crate) fn video_aspect_of(data: &serde_json::Value) -> Option<f64> {
     valid(f("aspect"))
         .or_else(|| dim_ratio(f("dw"), f("dh")))
         .or_else(|| dim_ratio(f("w"), f("h")))
+}
+
+/// `track-list` プロパティ値から字幕（`type=sub`）トラックを抽出する
+/// （FR-40、仕様決定 BP）。id が整数として取れないエントリは落とす。
+/// mpv のエントリ形にない入力（配列以外・欠損フィールド）は空を返す。
+pub(crate) fn sub_tracks_of(data: &serde_json::Value) -> Vec<SubTrack> {
+    data.as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("sub"))
+                .filter_map(|t| {
+                    let id = t.get("id").and_then(|v| v.as_i64())?;
+                    Some(SubTrack {
+                        id,
+                        title: t
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string),
+                        lang: t
+                            .get("lang")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `sid` プロパティ値を表示用の文字列へ正規化する（FR-40）。
+/// false（無効）は "no"、文字列（"auto" 等）はそのまま、数値はトラック ID の
+/// 文字列へ。取れない入力は空文字を返す（呼び出し側で無視する）。
+pub(crate) fn sid_of(data: &serde_json::Value) -> String {
+    match data {
+        serde_json::Value::Bool(false) | serde_json::Value::Null => "no".to_string(),
+        serde_json::Value::Bool(true) => "auto".to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// `sub_track` アクションの `sid` 文字列を mpv へ渡す値へ変換する（FR-40）。
+/// "no"/"auto" は文字列、数字はトラック ID の数値として送る。
+/// 受理できない文字列は None（呼び出し側で送信を見送る）。
+fn parse_sid(sid: &str) -> Option<serde_json::Value> {
+    match sid {
+        "no" | "auto" => Some(json!(sid)),
+        _ => sid.parse::<u64>().ok().map(|n| json!(n)),
+    }
 }
 
 /// IPC イベントを状態スナップショットと終了通知へ変換するループ。
@@ -1513,5 +1652,63 @@ mod tests {
             super::screenshot_file_name("dQw4w9WgXcQ", "20260115143022"),
             "ytb-dQw4w9WgXcQ-20260115143022.png"
         );
+    }
+
+    /// 字幕トラックの抽出（FR-40、仕様決定 BP）。
+    /// `type=sub` だけを残し、id の取れないエントリは落とす。
+    #[test]
+    fn sub_tracks_filters_sub_only() {
+        let list = json!([
+            {"id": 1, "type": "video", "title": "v", "lang": null},
+            {"id": 2, "type": "audio", "lang": "ja"},
+            {"id": 3, "type": "sub", "title": "English", "lang": "en"},
+            {"id": 4, "type": "sub", "lang": "ja"},
+            {"id": 5, "type": "sub"},
+            {"type": "sub", "title": "no id"}
+        ]);
+        let subs = super::sub_tracks_of(&list);
+        assert_eq!(subs.len(), 3);
+        assert_eq!(subs[0].id, 3);
+        assert_eq!(subs[0].title.as_deref(), Some("English"));
+        assert_eq!(subs[0].lang.as_deref(), Some("en"));
+        assert_eq!(subs[1].id, 4);
+        assert_eq!(subs[1].title, None);
+        assert_eq!(subs[1].lang.as_deref(), Some("ja"));
+        assert_eq!(subs[2].id, 5);
+        assert_eq!(subs[2].title, None);
+        assert_eq!(subs[2].lang, None);
+    }
+
+    /// 字幕トラックの抽出: 配列でない・空の入力は空を返す（FR-40）。
+    #[test]
+    fn sub_tracks_of_handles_bad_input() {
+        assert!(super::sub_tracks_of(&json!(null)).is_empty());
+        assert!(super::sub_tracks_of(&json!([])).is_empty());
+        assert!(super::sub_tracks_of(&json!("x")).is_empty());
+    }
+
+    /// `sid` プロパティ値の正規化（FR-40）。
+    /// false→"no"、文字列はそのまま、数値は ID 文字列、取れない入力は空。
+    #[test]
+    fn sid_normalizes_values() {
+        assert_eq!(super::sid_of(&json!(false)), "no");
+        assert_eq!(super::sid_of(&json!(null)), "no");
+        assert_eq!(super::sid_of(&json!("auto")), "auto");
+        assert_eq!(super::sid_of(&json!("no")), "no");
+        assert_eq!(super::sid_of(&json!(3)), "3");
+        assert_eq!(super::sid_of(&json!({})), "");
+    }
+
+    /// `sub_track` アクションの sid 文字列の解釈（FR-40）。
+    /// "no"/"auto" は文字列、数字は ID 数値、その他は None。
+    #[test]
+    fn parse_sid_values() {
+        assert_eq!(super::parse_sid("no"), Some(json!("no")));
+        assert_eq!(super::parse_sid("auto"), Some(json!("auto")));
+        assert_eq!(super::parse_sid("3"), Some(json!(3)));
+        assert_eq!(super::parse_sid("abc"), None);
+        assert_eq!(super::parse_sid("-1"), None);
+        assert_eq!(super::parse_sid(""), None);
+        assert_eq!(super::parse_sid("1.5"), None);
     }
 }
