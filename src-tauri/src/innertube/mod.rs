@@ -140,6 +140,16 @@ impl InnerTube {
         Ok(parse_broadcast_status(&v))
     }
 
+    /// `player` エンドポイントで遅延解決用のメタ一式を取る
+    /// （FR-53・FR-56、仕様決定 CD・CG）。投稿日時・放送状態・再生状態を
+    /// 1 応答からまとめて切り出す（`video_meta` と同じ `player` 経路）。
+    pub async fn meta_snapshot(&self, video_id: &str) -> Result<MetaSnapshot, InnerTubeError> {
+        let v = self
+            .post_json("player", json!({ "videoId": video_id }))
+            .await?;
+        Ok(parse_meta_snapshot(&v))
+    }
+
     /// 指定動画の watch ページ HTML を取得する（チャットの初期継続トークン用）。
     pub async fn watch_html(&self, video_id: &str) -> Result<String, InnerTubeError> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
@@ -318,6 +328,75 @@ fn parse_broadcast_status(v: &Value) -> BroadcastStatus {
             .and_then(|b| b.as_bool())
             .unwrap_or(false),
     }
+}
+
+/// 遅延解決用に `player` 応答 1 件から切り出したメタ一式
+/// （FR-53・FR-56、仕様決定 CD・CG）。kind 判定は `metaresolve` モジュールが行い、
+/// ここでは生の値と正規化済みの投稿日時だけを持つ。
+#[derive(Debug, Clone, Default)]
+pub struct MetaSnapshot {
+    /// 投稿日時（UTC へ正規化した `"YYYY-MM-DDTHH:MM:SS+00:00"`）。
+    /// `playerMicroformatRenderer.publishDate` を優先し、無ければ `uploadDate`。
+    /// 欠落・解釈不能は None（呼び出し側は published_at を維持する）。
+    pub published_at: Option<String>,
+    /// `liveBroadcastDetails` 系の放送状態（parse_broadcast_status と同じ切り出し）。
+    pub broadcast: BroadcastStatus,
+    /// `videoDetails.isLiveContent`。実放送系かどうかの補助材料。
+    /// プレミア公開は通常動画資産の放送形で false が出る（2026-11 実応答で確認）。
+    pub is_live_content: Option<bool>,
+    /// `playabilityStatus.status`（"OK" / "LIVE_STREAM_OFFLINE" / "UNPLAYABLE" 等）。
+    /// 再生状態は kind 判定の補助にだけ使う（単独では判定しない暫定解釈）。
+    pub playability: Option<String>,
+}
+
+/// `player` 応答から遅延解決用のメタ一式を取る。
+/// 投稿日時は RSS の `<published>`（"+00:00" 付き ISO）と形式を揃えるため
+/// UTC の ISO 表記へ正規化する（文字列 ORDER BY のずれ防止）。
+fn parse_meta_snapshot(v: &Value) -> MetaSnapshot {
+    let micro = find_key(v, "playerMicroformatRenderer");
+    let published_at = micro
+        .and_then(|m| m.get("publishDate"))
+        .and_then(|t| t.as_str())
+        .or_else(|| {
+            micro
+                .and_then(|m| m.get("uploadDate"))
+                .and_then(|t| t.as_str())
+        })
+        .and_then(iso8601_ms)
+        .map(iso_utc);
+    let video = find_key(v, "videoDetails");
+    MetaSnapshot {
+        published_at,
+        broadcast: parse_broadcast_status(v),
+        is_live_content: video
+            .and_then(|d| d.get("isLiveContent"))
+            .and_then(|b| b.as_bool()),
+        playability: v
+            .get("playabilityStatus")
+            .and_then(|p| p.get("status"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
+    }
+}
+
+/// epoch ミリ秒を `"YYYY-MM-DDTHH:MM:SS+00:00"`（UTC の ISO 表記）へ戻す。
+/// `iso8601_ms` の逆変換。civil-from-days（Howard Hinnant）で曜日を
+/// 使わず日付を復元する。
+fn iso_utc(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
+    let rem = ms.rem_euclid(86_400_000);
+    let (h, mi, s) = (rem / 3_600_000, (rem / 60_000) % 60, (rem / 1_000) % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}+00:00")
 }
 
 /// `"YYYY-MM-DDTHH:MM:SS(.sss)?(Z|±HH:MM)"` を epoch ミリ秒へ変換する最小パーサ。
@@ -1112,5 +1191,83 @@ mod tests {
         let vod = serde_json::json!({"videoDetails": {"videoId": "dQw4w9WgXcQ"}});
         let s = parse_broadcast_status(&vod);
         assert!(!s.has_details && !s.is_upcoming && s.is_live_now.is_none());
+    }
+
+    /// FR-53/CD・FR-56/CG: epoch ミリ秒 → UTC の ISO 表記。
+    /// `iso8601_ms` の逆変換として往復で確認する。
+    #[test]
+    fn iso_utc_roundtrip() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00+00:00");
+        assert_eq!(iso_utc(1_777_636_800_000), "2026-05-01T12:00:00+00:00");
+        // 負側も div_euclid で日付へ落ちる（epoch 未満）
+        assert_eq!(iso_utc(-86_400_000), "1969-12-31T00:00:00+00:00");
+        // ミリ秒未満は切り捨て（表記精度は秒まで）
+        assert_eq!(iso_utc(999), "1970-01-01T00:00:00+00:00");
+        for s in [
+            "1970-01-01T00:00:00Z",
+            "2026-05-01T12:00:00Z",
+            "2019-12-08T14:02:06-08:00",
+        ] {
+            let ms = iso8601_ms(s).unwrap();
+            assert_eq!(iso8601_ms(&iso_utc(ms)), Some(ms));
+        }
+    }
+
+    /// FR-53/CD・FR-56/CG: golden fixture（実取得のプレミア応答）から
+    /// メタ一式を切り出す。publishDate は -08:00 付きなので
+    /// 保存形式の "+00:00" へ正規化される。isLiveContent=false +
+    /// liveBroadcastDetails の組み合わせはプレミア判定の材料になる。
+    #[test]
+    fn parse_meta_snapshot_golden_fixture() {
+        let v: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/youtube_player.json")).unwrap();
+        let s = parse_meta_snapshot(&v);
+        assert_eq!(s.published_at.as_deref(), Some("2019-12-08T22:02:06+00:00"));
+        assert_eq!(s.is_live_content, Some(false));
+        assert_eq!(s.playability.as_deref(), Some("UNPLAYABLE"));
+        assert!(s.broadcast.has_details);
+        assert_eq!(s.broadcast.is_live_now, Some(false));
+        assert!(s.broadcast.start_ms.is_some() && s.broadcast.end_ms.is_some());
+    }
+
+    /// FR-53/CD: publishDate 優先・uploadDate フォールバック・欠落は None。
+    /// 解釈不能な文字列は保持せず None へ倒す。
+    #[test]
+    fn parse_meta_snapshot_published_at_variants() {
+        let wrap = |micro: serde_json::Value| serde_json::json!({"microformat": {"playerMicroformatRenderer": micro}});
+        // publishDate 優先
+        let s = parse_meta_snapshot(&wrap(serde_json::json!({
+            "publishDate": "2026-01-02T03:04:05+00:00",
+            "uploadDate": "2020-01-01T00:00:00+00:00"
+        })));
+        assert_eq!(s.published_at.as_deref(), Some("2026-01-02T03:04:05+00:00"));
+        // publishDate 欠落は uploadDate
+        let s = parse_meta_snapshot(&wrap(serde_json::json!({
+            "uploadDate": "2020-01-01T00:00:00+00:00"
+        })));
+        assert_eq!(s.published_at.as_deref(), Some("2020-01-01T00:00:00+00:00"));
+        // 解釈不能・欠落は None
+        assert!(parse_meta_snapshot(&wrap(serde_json::json!({
+            "publishDate": "not a date"
+        })))
+        .published_at
+        .is_none());
+        assert!(parse_meta_snapshot(&serde_json::json!({}))
+            .published_at
+            .is_none());
+    }
+
+    /// FR-56/CG: 再生状態と isLiveContent の切り出し。
+    /// 欠落時は None のまま（判定側で欠落扱いにする）。
+    #[test]
+    fn parse_meta_snapshot_state_fields() {
+        let s = parse_meta_snapshot(&serde_json::json!({
+            "playabilityStatus": {"status": "LIVE_STREAM_OFFLINE"},
+            "videoDetails": {"videoId": "a", "isLiveContent": true}
+        }));
+        assert_eq!(s.playability.as_deref(), Some("LIVE_STREAM_OFFLINE"));
+        assert_eq!(s.is_live_content, Some(true));
+        let s = parse_meta_snapshot(&serde_json::json!({"videoDetails": {"videoId": "b"}}));
+        assert!(s.playability.is_none() && s.is_live_content.is_none());
     }
 }

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -303,9 +303,17 @@ impl FeedPoller {
 
     /// 新規投入アイテムの shorts 判定をバックグラウンドで起こす（仕様決定 V）。
     /// 購読の初回投入・ポーリング投入の両方から呼び、非同期で `videos.kind` を更新する。
+    /// 併せてメタの遅延解決ワーカーを起こし、新規行の投稿日時・放送系 kind を
+    /// InnerTube で即座に解決させる（仕様決定 CD・CG）。
     pub fn spawn_kind_detection(&self, video_ids: Vec<String>) {
         if video_ids.is_empty() {
             return;
+        }
+        if let Some(r) = self
+            .app
+            .try_state::<Arc<crate::metaresolve::MetaResolver>>()
+        {
+            r.wake_now();
         }
         let db = self.db.clone();
         let client = self.detect_client.clone();

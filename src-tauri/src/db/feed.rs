@@ -17,8 +17,25 @@ pub struct NewVideo<'a> {
     pub title: &'a str,
     pub thumbnail_url: Option<&'a str>,
     pub published_at: Option<&'a str>,
-    /// 'video' | 'short' | 'live' | 'upcoming'（videos.kind の CHECK 制約）。
+    /// 'video' | 'short' | 'live' | 'upcoming' | 'premiere'
+    /// （videos.kind の CHECK 制約、仕様決定 CG）。
     pub kind: &'a str,
+}
+
+/// メタの遅延解決の対象行（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）。
+/// `meta_resolve_targets` が返す。needs_* は「その時点で DB が欠いている情報」で、
+/// 解決側は必要な部分だけを埋めればよい（両方立つ行では 1 回の
+/// InnerTube 応答で同時に埋まる）。
+#[derive(Debug, Clone)]
+pub struct MetaResolveTarget {
+    pub video_id: String,
+    /// 現在の kind（暫定値・推定値を含む）。'short' は確定済みとして
+    /// 選出対象外なので実質 'video' / 'live' / 'upcoming' / 'premiere'。
+    pub kind: String,
+    /// published_at が NULL（InnerTube メタ応答の publishDate を書き込む余地あり）。
+    pub needs_published: bool,
+    /// kind_state が 0（未確定）または 2（失敗）（kind 判定を試す対象）。
+    pub needs_kind: bool,
 }
 
 /// `feed_ingest` / `feed_subscribe` の戻り値。
@@ -146,7 +163,9 @@ impl Db {
                     OR c.category_id = ?2)
                AND (?3 IS NULL
                     OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
-               AND (?4 IS NULL OR v.kind = ?4)
+               AND (?4 IS NULL
+                    OR v.kind = ?4
+                    OR (?4 = 'live' AND v.kind IN ('live','upcoming','premiere')))
                AND (?5 = 1 OR v.kind <> 'short')
                AND (?8 IS NULL OR v.channel_id = ?8)
                AND (
@@ -223,7 +242,8 @@ impl Db {
                                 ELSE videos.title END,
                    thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
                    published_at = COALESCE(excluded.published_at, videos.published_at),
-                   kind = excluded.kind,
+                   kind = CASE WHEN videos.kind_state = 1 THEN videos.kind
+                               ELSE excluded.kind END,
                    ingested = 1
                  WHERE videos.ingested = 0",
                 rusqlite::params![
@@ -274,17 +294,116 @@ impl Db {
 
     /// `videos.kind` の事後更新（shorts 判定結果の書き戻し、仕様決定 V）。
     /// 'video' の行だけを更新し、既に別種別へ判定済みの行は上書きしない。
+    /// 書き込んだ行は kind 判定済み（kind_state=1）とする（仕様決定 CG・CH。
+    /// 'short' への判定は確定扱いで遅延解決の再試行対象から外れる）。
     pub fn videos_set_kind(&self, video_ids: &[String], kind: &str) -> Result<(), DbError> {
         if video_ids.is_empty() {
             return Ok(());
         }
         let conn = self.lock()?;
-        let mut stmt =
-            conn.prepare("UPDATE videos SET kind = ?2 WHERE video_id = ?1 AND kind = 'video'")?;
+        let mut stmt = conn.prepare(
+            "UPDATE videos SET kind = ?2, kind_state = 1
+               WHERE video_id = ?1 AND kind = 'video'",
+        )?;
         for id in video_ids {
             stmt.execute(rusqlite::params![id, kind])?;
         }
         Ok(())
+    }
+
+    /// メタの遅延解決の対象選出（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）。
+    /// 対象は次の和集合で、新しい行から `limit` 件まで取る:
+    ///   - kind 未確定（kind_state=0）または前回失敗（kind_state=2）の行
+    ///   - published_at が NULL で InnerTube メタ応答を未試行（meta_checked=0）の行
+    ///
+    /// 'short' は shorts 判定で確定済み（kind_state=1）なのでここには出ない。
+    pub fn meta_resolve_targets(&self, limit: usize) -> Result<Vec<MetaResolveTarget>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT video_id, kind,
+                    (published_at IS NULL) AS needs_published,
+                    (kind_state <> 1)      AS needs_kind
+               FROM videos
+              WHERE kind_state <> 1
+                 OR (published_at IS NULL AND meta_checked = 0)
+              ORDER BY first_seen_at DESC, video_id
+              LIMIT ?1",
+        )?;
+        let mut rows = stmt.query([limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(MetaResolveTarget {
+                video_id: row.get(0)?,
+                kind: row.get(1)?,
+                needs_published: row.get::<_, i64>(2)? != 0,
+                needs_kind: row.get::<_, i64>(3)? != 0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 投稿日時の遅延書き戻し（FR-53、仕様決定 CD）。published_at が NULL の
+    /// 行だけを埋め、既存値は上書きしない（RSS・ローカル由来の値を守る）。
+    /// 実際に書き込めたら true（UI 更新イベントの要否判定用）。
+    pub fn videos_set_published_at(&self, video_id: &str, at: &str) -> Result<bool, DbError> {
+        let conn = self.lock()?;
+        Ok(conn.execute(
+            "UPDATE videos SET published_at = ?2
+               WHERE video_id = ?1 AND published_at IS NULL",
+            rusqlite::params![video_id, at],
+        )? > 0)
+    }
+
+    /// InnerTube メタ応答の試行済み印（FR-53、仕様決定 CD）。
+    /// publishDate を持たない応答でも立て、投稿日時だけが欠けた行を
+    /// 「もう一度問う」対象から外す（kind の再試行選出には影響しない）。
+    pub fn videos_mark_meta_checked(&self, video_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE videos SET meta_checked = 1 WHERE video_id = ?1",
+            [video_id],
+        )?;
+        Ok(())
+    }
+
+    /// kind の遅延確定の書き戻し（FR-56、仕様決定 CG）。
+    /// `resolved_kind` には 'video' 以外の確定値（'live' / 'upcoming' /
+    /// 'premiere' / 'short'）だけを渡す。'short' の行は shorts 判定が立てた
+    /// 事実として kind を維持し、判定済み印だけ立てる。
+    /// kind の値が変わったとき true を返す（UI 更新イベントの要否判定用）。
+    pub fn videos_resolve_kind(
+        &self,
+        video_id: &str,
+        resolved_kind: &str,
+    ) -> Result<bool, DbError> {
+        debug_assert!(resolved_kind != "video");
+        let conn = self.lock()?;
+        // 値が違う行は確定値へ置き換えて判定済みにする
+        let changed = conn.execute(
+            "UPDATE videos SET kind = ?2, kind_state = 1
+               WHERE video_id = ?1 AND kind <> 'short' AND kind <> ?2",
+            rusqlite::params![video_id, resolved_kind],
+        )? > 0;
+        // 'short' または同値だった行も「この video_id の判定は済んだ」ものとする
+        conn.execute(
+            "UPDATE videos SET kind_state = 1
+               WHERE video_id = ?1 AND (kind = 'short' OR kind = ?2)",
+            rusqlite::params![video_id, resolved_kind],
+        )?;
+        Ok(changed)
+    }
+
+    /// kind 判定状態の明示的な遷移（FR-56・FR-57、仕様決定 CG・CH）。
+    /// 「放送系でないと確定（1）」「今回の試行が失敗（2）」の書き込みに使う。
+    /// 既に確定済み（kind_state=1）の行は書き換えない（別経路の確定結果を守る）。
+    /// 実際に状態が変わったら true。
+    pub fn videos_set_kind_state(&self, video_id: &str, state: i64) -> Result<bool, DbError> {
+        let conn = self.lock()?;
+        Ok(conn.execute(
+            "UPDATE videos SET kind_state = ?2
+               WHERE video_id = ?1 AND kind_state <> 1",
+            rusqlite::params![video_id, state],
+        )? > 0)
     }
 
     /// 再生中チャンネル解決の第 1 段（FR-12、仕様決定 U）。
@@ -356,7 +475,8 @@ fn ingest_rows(
                             ELSE videos.title END,
                thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
                published_at = excluded.published_at,
-               kind = excluded.kind,
+               kind = CASE WHEN videos.kind_state = 1 THEN videos.kind
+                           ELSE excluded.kind END,
                is_read = 0,
                ingested = 1
              WHERE videos.ingested = 0",

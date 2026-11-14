@@ -10,6 +10,7 @@ mod feed;
 mod filter;
 mod innertube;
 mod livewait;
+mod metaresolve;
 mod model;
 mod mpv;
 pub mod native_host;
@@ -168,6 +169,15 @@ pub fn run() {
             let poller = feed::FeedPoller::new(db.clone(), app.handle().clone());
             app.manage(poller.clone());
             tauri::async_runtime::spawn(poller.run());
+
+            // メタの遅延解決ワーカー（Phase 62、FR-53・FR-56・FR-57、
+            // 仕様決定 CD・CG・CH）。投稿日時・kind の欠けた videos 行を
+            // InnerTube `player` 応答で後から埋める。フィードの新規投入時に
+            // 即時起こされる。
+            let meta_resolver =
+                metaresolve::MetaResolver::new(db.clone(), app.handle().clone(), innertube.clone());
+            app.manage(meta_resolver.clone());
+            tauri::async_runtime::spawn(meta_resolver.run());
 
             // ライブ配信待機のポーラー（FR-44、仕様決定 BT）。
             // DB の待機リストを復元し、予定時刻に応じた間隔で InnerTube

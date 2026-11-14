@@ -28,7 +28,7 @@ pub use channels::PollTarget;
 // IngestOutcome は戻り値型としてのみ使われ外部から名前参照されないが、
 // 公開面（crate::db::IngestOutcome）を維持するため re-export する。
 #[allow(unused_imports)]
-pub use feed::{IngestOutcome, NewVideo, SubscribeArgs, FEED_LIST_LIMIT};
+pub use feed::{IngestOutcome, MetaResolveTarget, NewVideo, SubscribeArgs, FEED_LIST_LIMIT};
 
 #[derive(Debug, Error)]
 pub enum DbError {
