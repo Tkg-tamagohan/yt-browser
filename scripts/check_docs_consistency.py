@@ -51,6 +51,9 @@ DECISIONS_MD = ROOT / "docs" / "decision-records.md"
 USER_GUIDE_MD = ROOT / "docs" / "user-guide.md"
 LIB_RS = ROOT / "src-tauri" / "src" / "lib.rs"
 I18N_TS = ROOT / "src" / "lib" / "i18n.ts"
+I18N_JA_TS = ROOT / "src" / "lib" / "i18n-ja.ts"
+I18N_EN_TS = ROOT / "src" / "lib" / "i18n-en.ts"
+I18N_FILES = {I18N_TS, I18N_JA_TS, I18N_EN_TS}
 SRC_TAURI = ROOT / "src-tauri" / "src"
 SRC_FRONTEND = ROOT / "src"
 EXTENSION_DIR = ROOT / "extension"
@@ -448,14 +451,14 @@ def extract_const_elements(path: Path, name: str) -> list[str] | None:
 
 def check_i18n(setting_keys: set[str]) -> Findings:
     f = Findings([])
-    i18n_text = read_text(I18N_TS)
+    i18n_text = read_text(I18N_JA_TS)
     m = re.search(r"const\s+ja\s*=\s*\{(.*?)\}\s*as\s+const", i18n_text, re.S)
     if not m:
-        f.error("i18n.ts に `const ja` リソースが見つからない")
+        f.error("i18n-ja.ts に `const ja` リソースが見つからない")
         return f
     keys = set(re.findall(r"^\s*\"([^\"]+)\"\s*:", m.group(1), re.M))
     if not keys:
-        f.error("i18n.ts の ja リソースからキーを抽出できない")
+        f.error("i18n-ja.ts の ja リソースからキーを抽出できない")
         return f
 
     # 静的参照: t("key") / t('key') に限らず、ドット区切りの文字列リテラル
@@ -467,7 +470,7 @@ def check_i18n(setting_keys: set[str]) -> Findings:
     # 末尾セグメントが TLD の文字列は参照から除く。i18n キーは TLD で終わらない
     KNOWN_TLDS = {"com", "net", "org", "be", "io", "dev", "jp", "app"}
     for path in iter_files(SRC_FRONTEND, (".ts", ".svelte")):
-        if path == I18N_TS:
+        if path in I18N_FILES:
             continue
         text = strip_comments(read_text(path), path.suffix)
         for m2 in DOTTED_KEY_RE.finditer(text):
