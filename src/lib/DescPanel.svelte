@@ -1,20 +1,30 @@
 <script lang="ts">
-  // 概要欄パネル（FR-33、仕様決定 BB）。開いている間だけマウントされ、
-  // 開くたびと再生中動画の切替（連続再生・ループ遷移）で get_description を
-  // 取り直す（結果はキャッシュしない）。
+  // 概要欄パネル（FR-33、仕様決定 BB）。開くたびと再生中動画の切替
+  // （連続再生・ループ遷移）で get_description を取り直す
+  // （結果はキャッシュしない）。
   // 本文は改行を保持して表示し、http(s) URL は既定ブラウザで開き、
   // mm:ss / h:mm:ss の時刻表記はそのインスタンスへシークする。
+  //
+  // リマウント回避（webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE）で
+  // 常時マウントされ、表示はカード側がラッパの hidden で切り替える。
+  // そのため「開くとマウントされる」に乗っていた初回取得は、open prop の
+  // 立ち上がりを見る $effect（panelFetchKey 駆動）へ移した
   import { onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
   import { parseDescription } from "$lib/desc-logic";
+  import { panelFetchKey } from "$lib/remount-logic";
   import { asErrorMessage } from "$lib/players.svelte";
 
-  // instanceId はカード側がパネルをインスタンスへ対応づけるためのキー
-  let { instanceId, videoId }: { instanceId: number; videoId: string } =
-    $props();
+  // instanceId はカード側がパネルをインスタンスへ対応づけるためのキー。
+  // open はカード側の開閉状態（hidden 切替と同じ値）
+  let {
+    instanceId,
+    videoId,
+    open,
+  }: { instanceId: number; videoId: string; open: boolean } = $props();
 
   let loading = $state(true);
   let text = $state("");
@@ -33,9 +43,9 @@
       if (disposed || gen !== generation) return;
       text = d;
     } catch (e) {
-      // パネルが閉じられてアンマウントされたあとも invoke の応答は届くため、
+      // パネルが閉じられたあとも invoke の応答は届くため、
       // 見えていない結果に対して失敗通知を出さない
-      if (disposed || gen !== generation) return;
+      if (disposed || gen !== generation || !open) return;
       const message = asErrorMessage(e);
       text = "";
       failed = message;
@@ -45,17 +55,21 @@
     }
   }
 
-  // パネルを開くたび（マウント）と、連続再生・ループで再生中動画が
-  // 変わるたびに取り直す。
+  // パネルを開くたびと、開いている間に連続再生・ループで再生中動画が
+  // 変わるたびに取り直す。常時マウントなので「開くとマウントされる」に
+  // 乗っていた初回取得は、open が立ち上がったときを含めた
+  // 「取得キーの変化」として扱う（remount-logic.ts、FR-80）。
   // videoId はカードの状態ポーリングで値が同じでも prop の再評価が走り
   // $effect が繰り返し発火するため、前回値と比較して変化時だけ取り直す
   // （取り直しループで読み込み表示と本文が往復する振動の防止）
-  let lastVideoId: string | null = null;
+  let lastKey: string | null = null;
   $effect(() => {
-    if (videoId === lastVideoId) return;
-    lastVideoId = videoId;
+    const key = panelFetchKey(open, videoId);
+    if (key === lastKey) return;
+    lastKey = key;
+    if (key === null) return;
     const gen = ++generation;
-    void loadDescription(videoId, gen);
+    void loadDescription(key, gen);
   });
 
   async function seek(seconds: number): Promise<void> {
@@ -69,7 +83,8 @@
     }
   }
 
-  async function open(url: string): Promise<void> {
+  // open prop と名前が衝突するため openLink とする
+  async function openLink(url: string): Promise<void> {
     try {
       await openUrl(url);
     } catch (e) {
@@ -84,27 +99,34 @@
 
 <div class="desc sub-panel">
   <h3>{t("desc.title")}</h3>
-  {#if loading}
-    <p class="subtle">{t("desc.loading")}</p>
-  {:else if failed !== null}
-    <p class="subtle">{t("desc.failed", { message: failed })}</p>
-  {:else if text.trim() === ""}
-    <p class="subtle">{t("desc.empty")}</p>
-  {:else}
-    <p class="desc-body">
-      {#each parseDescription(text) as seg}
-        {#if seg.kind === "url"}
-          <button class="link" onclick={() => void open(seg.url)}>
-            {seg.text}
-          </button>
-        {:else if seg.kind === "seek"}
-          <button class="link" onclick={() => void seek(seg.seconds)}>
-            {seg.text}
-          </button>
-        {:else}{seg.text}{/if}
-      {/each}
-    </p>
-  {/if}
+  <!-- 読み込み中・失敗・空・本文の出し分けはリマウントを避けるため
+       hidden 切替とする（ヒットずれ対策、FR-80） -->
+  <p class="subtle" class:hidden={!loading}>{t("desc.loading")}</p>
+  <p class="subtle" class:hidden={loading || failed === null}>
+    {t("desc.failed", { message: failed ?? "" })}
+  </p>
+  <p
+    class="subtle"
+    class:hidden={loading || failed !== null || text.trim() !== ""}
+  >
+    {t("desc.empty")}
+  </p>
+  <p
+    class="desc-body"
+    class:hidden={loading || failed !== null || text.trim() === ""}
+  >
+    {#each parseDescription(text) as seg}
+      {#if seg.kind === "url"}
+        <button class="link" onclick={() => void openLink(seg.url)}>
+          {seg.text}
+        </button>
+      {:else if seg.kind === "seek"}
+        <button class="link" onclick={() => void seek(seg.seconds)}>
+          {seg.text}
+        </button>
+      {:else}{seg.text}{/if}
+    {/each}
+  </p>
 </div>
 
 <style>

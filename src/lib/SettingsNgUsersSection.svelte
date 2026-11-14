@@ -79,10 +79,12 @@
         {t("settings.ngusers.add")}
       </button>
     </div>
-    {#if rows.length === 0}
-      <p class="subtle">{t("settings.ngusers.empty")}</p>
-    {:else}
-      <ul class="nguser-list">
+    <!-- 空表示と一覧の出し分けはリマウントを避けるため hidden 切替
+         （ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={rows.length > 0}>
+      {t("settings.ngusers.empty")}
+    </p>
+      <ul class="nguser-list" class:hidden={rows.length === 0}>
         {#each rows as f (f.id)}
           <li>
             <code class="f-pattern">{f.pattern}</code>
@@ -93,7 +95,6 @@
           </li>
         {/each}
       </ul>
-    {/if}
   </section>
 
 <style>

@@ -162,33 +162,34 @@
   {#if livewait}
     <LiveWaitButton {video} />
   {/if}
-  {#if menuOpen}
-    <div class="vact-menu">
-      {#each playlists as pl (pl.id)}
-        <button class="vact-item" onclick={() => void addTo(pl)}>
-          {pl.name}（{pl.itemCount}）
-        </button>
-      {/each}
-      {#if playlists.length === 0}
-        <span class="vact-empty">{t("library.playlist.none")}</span>
-      {/if}
-      <div class="vact-new">
-        <input
-          type="text"
-          bind:value={newName}
-          placeholder={t("library.playlist.newPlaceholder")}
-          onkeydown={(e) => e.key === "Enter" && void createAndAdd()}
-        />
-        <button
-          class="vact-item"
-          onclick={() => void createAndAdd()}
-          disabled={!newName.trim()}
-        >
-          {t("library.playlist.createAdd")}
-        </button>
-      </div>
+  <!-- プレイリスト追加メニュー。開閉ごとのリマウントを避けるため
+       常時マウントし hidden で切り替える（webkit2gtk のヒットずれ
+       対策、FR-80・仕様決定 DE） -->
+  <div class="vact-menu" class:hidden={!menuOpen}>
+    {#each playlists as pl (pl.id)}
+      <button class="vact-item" onclick={() => void addTo(pl)}>
+        {pl.name}（{pl.itemCount}）
+      </button>
+    {/each}
+    <span class="vact-empty" class:hidden={playlists.length > 0}
+      >{t("library.playlist.none")}</span
+    >
+    <div class="vact-new">
+      <input
+        type="text"
+        bind:value={newName}
+        placeholder={t("library.playlist.newPlaceholder")}
+        onkeydown={(e) => e.key === "Enter" && void createAndAdd()}
+      />
+      <button
+        class="vact-item"
+        onclick={() => void createAndAdd()}
+        disabled={!newName.trim()}
+      >
+        {t("library.playlist.createAdd")}
+      </button>
     </div>
-  {/if}
+  </div>
 </span>
 
 <style>

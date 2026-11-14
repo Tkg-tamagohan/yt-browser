@@ -1,13 +1,19 @@
 <script lang="ts">
-  // 関連動画パネル。開いている間だけマウントされ、開くたびに get_related を
-  // 取り直す（ブロック状態の変化と前回失敗の再試行に対応するためキャッシュしない）。
+  // 関連動画パネル。開くたびに get_related を取り直す
+  // （ブロック状態の変化と前回失敗の再試行に対応するためキャッシュしない）。
+  //
+  // リマウント回避（webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE）で
+  // 常時マウントされ、表示はカード側がラッパの hidden で切り替える。
+  // 「開くとマウントされる」に乗っていた初回取得は、open prop の
+  // 立ち上がりを見る $effect（panelFetchKey 駆動）へ移した
   import { page } from "$app/state";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
+  import { panelFetchKey } from "$lib/remount-logic";
   import {
     createVideoActionState,
     videoRefOf,
@@ -17,14 +23,21 @@
     type SearchResult,
   } from "$lib/players.svelte";
 
-  // instanceId はカード側がパネルをインスタンスへ対応づけるためのキー
-  let { instanceId, videoId }: { instanceId: number; videoId: string } =
-    $props();
+  // instanceId はカード側がパネルをインスタンスへ対応づけるためのキー。
+  // open はカード側の開閉状態（hidden 切替と同じ値）
+  let {
+    instanceId,
+    videoId,
+    open,
+  }: { instanceId: number; videoId: string; open: boolean } = $props();
 
   let loading = $state(true);
   let items = $state<SearchResult[]>([]);
   // アンマウント後に届く非同期応答を識別するためのフラグ
   let disposed = false;
+  // 閉じ→開き直しで取り直しが並走するため、発行した世代の応答だけを
+  // 反映する（DescPanel と同じ方式）
+  let generation = 0;
 
   // お気に入り・プレイリスト行アクション用（FR-7）。
   // 他ページ（ライブラリ等）でも編集されるため、パネルを開くたびに再取得する
@@ -33,19 +46,22 @@
   // （コールバックは書き込みコミット後に発火するため、再取得は編集済みの値を含む）。
   const va = createVideoActionState({ resyncOnChange: true });
 
-  async function loadRelated(): Promise<void> {
+  async function loadRelated(gen: number): Promise<void> {
     loading = true;
     try {
-      items = await invoke<SearchResult[]>("get_related", { videoId });
+      const res = await invoke<SearchResult[]>("get_related", { videoId });
+      if (disposed || gen !== generation) return;
+      items = res;
     } catch (e) {
+      if (disposed || gen !== generation) return;
       items = [];
-      // パネルが閉じられてアンマウントされたあとも invoke の応答は届くため、
+      // パネルが閉じられたあとも invoke の応答は届くため、
       // 見えていない結果に対して失敗通知を出さない
-      if (!disposed) {
+      if (open) {
         notify(t("related.failed", { message: asErrorMessage(e) }));
       }
     } finally {
-      loading = false;
+      if (!disposed && gen === generation) loading = false;
     }
   }
 
@@ -71,14 +87,26 @@
     }
   }
 
-  onMount(() => {
-    void loadRelated();
+  // 「開くたびに取り直す」は、常時マウント化で onMount が使えなくなった
+  // ため open の立ち上がり（取得キーの変化）で再現する（FR-80）。
+  // 固定キーなので、開いている間に再生中動画が切り替わっても取り直さない
+  // （従来はマウント時の videoId でしか取らなかった挙動を維持する）
+  let lastKey: string | null = null;
+  $effect(() => {
+    const key = panelFetchKey(open, "open");
+    if (key === lastKey) return;
+    lastKey = key;
+    if (key === null) return;
+    const gen = ++generation;
+    void loadRelated(gen);
   });
 
   // 開いている間も他ページ（ライブラリ等）での編集を取り込めるよう、
-  // 「/」へ戻るたびに再取得する（分割前の暗黙リフレッシュ契機を維持）
+  // 「/」へ戻るたびに再取得する（分割前の暗黙リフレッシュ契機を維持）。
+  // 常時マウントなので open で絞り、閉じているカードでは走らせない
+  // （開いたときの初回取得もこのエフェクトが担う）
   $effect(() => {
-    if (page.url.pathname === "/") void va.refresh();
+    if (open && page.url.pathname === "/") void va.refresh();
   });
 
   onDestroy(() => {
@@ -88,12 +116,13 @@
 
 <div class="related sub-panel">
   <h3>{t("related.title")}</h3>
-  {#if loading}
-    <p class="subtle">{t("related.loading")}</p>
-  {:else if items.length === 0}
-    <p class="subtle">{t("related.empty")}</p>
-  {:else}
-    <ul class="related-list">
+  <!-- 読み込み中・空・一覧の出し分けはリマウントを避けるため
+       hidden 切替とする（ヒットずれ対策、FR-80） -->
+  <p class="subtle" class:hidden={!loading}>{t("related.loading")}</p>
+  <p class="subtle" class:hidden={loading || items.length > 0}>
+    {t("related.empty")}
+  </p>
+  <ul class="related-list" class:hidden={loading || items.length === 0}>
       {#each items as r (r.videoId)}
         <VideoRow
           videoId={r.videoId}
@@ -105,14 +134,13 @@
           {#snippet sub()}{r.channelTitle ?? ""}{/snippet}
           {#snippet actions()}
             <button onclick={() => playRelated(r)}>{t("search.play")}</button>
-            {#if r.channelId}
-              <button
-                class="danger"
-                onclick={() => blockRelated(r)}
-              >
-                {t("search.block")}
-              </button>
-            {/if}
+            <button
+              class="danger"
+              class:hidden={!r.channelId}
+              onclick={() => blockRelated(r)}
+            >
+              {t("search.block")}
+            </button>
             <VideoActions
               video={videoRefOf(r)}
               faved={va.favIds.has(r.videoId)}
@@ -126,8 +154,7 @@
           {/snippet}
         </VideoRow>
       {/each}
-    </ul>
-  {/if}
+  </ul>
 </div>
 
 <style>

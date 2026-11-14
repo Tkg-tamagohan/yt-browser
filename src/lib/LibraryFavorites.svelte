@@ -26,10 +26,12 @@
     $props();
 </script>
 
-    {#if favorites.length === 0}
-      <p class="subtle">{t("library.favorite.empty")}</p>
-    {:else}
-      <ul class="rows">
+    <!-- 空表示と一覧の出し分けはリマウントを避けるため hidden 切替
+         （ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={favorites.length > 0}>
+      {t("library.favorite.empty")}
+    </p>
+      <ul class="rows" class:hidden={favorites.length === 0}>
         {#each favorites as f (f.videoId)}
           <VideoRow
             videoId={f.videoId}
@@ -64,4 +66,3 @@
           </VideoRow>
         {/each}
       </ul>
-    {/if}

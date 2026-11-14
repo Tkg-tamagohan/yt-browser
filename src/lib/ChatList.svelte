@@ -49,27 +49,35 @@
         class:highlight={item.hl}
       >
         <span class="chat-time">{fmtChatTime(item.postedAtUsec)}</span>
-        {#if showAuthor}
-          <span class="chat-author">
-            {item.authorName ?? t("chat.anonymous")}
-          </span>
-          {#if showBadges}
-            {#if item.kind === "superchat" && item.amountDisplay}
-              <span class="chat-badge superchat-badge"
-                >{item.amountDisplay}</span
-              >
-            {:else if item.kind === "membership"}
-              <span class="chat-badge">{t("chat.membership")}</span>
-            {/if}
-          {/if}
-        {/if}
+        <!-- 投稿者名・バッジは showAuthor / showBadges の切替で全行が
+             再生成されないよう hidden で出し分ける（FR-80）。
+             superchat と membership は排他種別なので、各バッジを
+             「ある/なし」の出し入れとして個別に常時マウントする -->
+        <span class="chat-author" class:hidden={!showAuthor}>
+          {item.authorName ?? t("chat.anonymous")}
+        </span>
+        <span
+          class="chat-badge superchat-badge"
+          class:hidden={!showAuthor ||
+            !showBadges ||
+            item.kind !== "superchat" ||
+            !item.amountDisplay}
+          >{item.amountDisplay}</span
+        >
+        <span
+          class="chat-badge"
+          class:hidden={!showAuthor ||
+            !showBadges ||
+            item.kind !== "membership"}
+          >{t("chat.membership")}</span
+        >
         <span class="chat-msg">{item.message}</span>
       </p>
     {/if}
   {/each}
-  {#if items.length === 0}
-    <p class="subtle">{t("chat.empty")}</p>
-  {/if}
+  <!-- 空表示もリマウントを避けるため hidden で出し分ける（ヒットずれ
+       対策、FR-80） -->
+  <p class="subtle" class:hidden={items.length > 0}>{t("chat.empty")}</p>
 </div>
 
 <style>

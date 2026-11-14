@@ -136,9 +136,14 @@
     </button>
   </form>
 
-  {#if searchedOnce && results.length === 0 && !searching}
-    <p class="subtle">{t("search.empty")}</p>
-  {/if}
+  <!-- 空表示と「さらに読み込む」はリマウントを避けるため hidden で
+       出し分ける（ヒットずれ対策、FR-80） -->
+  <p
+    class="subtle"
+    class:hidden={!(searchedOnce && results.length === 0 && !searching)}
+  >
+    {t("search.empty")}
+  </p>
 
   <ul class="results">
     {#each results as r (r.videoId)}
@@ -156,14 +161,17 @@
         {/snippet}
         {#snippet actions()}
           <button onclick={() => playItem(r)}>{t("search.play")}</button>
-          {#if r.channelId || r.uploaderId}
-            <button onclick={() => subscribe(r)}>{t("search.subscribe")}</button>
-          {/if}
-          {#if r.channelId}
-            <button class="danger" onclick={() => blockChannel(r)}>
-              {t("search.block")}
-            </button>
-          {/if}
+          <button
+            class:hidden={!(r.channelId || r.uploaderId)}
+            onclick={() => subscribe(r)}>{t("search.subscribe")}</button
+          >
+          <button
+            class="danger"
+            class:hidden={!r.channelId}
+            onclick={() => blockChannel(r)}
+          >
+            {t("search.block")}
+          </button>
           <VideoActions
             video={videoRefOf(r)}
             faved={va.favIds.has(r.videoId)}
@@ -179,11 +187,14 @@
     {/each}
   </ul>
 
-  {#if hasMore}
-    <button class="load-more" onclick={loadMore} disabled={searching}>
-      {searching ? t("search.searching") : t("search.loadMore")}
-    </button>
-  {/if}
+  <button
+    class="load-more"
+    class:hidden={!hasMore}
+    onclick={loadMore}
+    disabled={searching}
+  >
+    {searching ? t("search.searching") : t("search.loadMore")}
+  </button>
 </main>
 
 <style>

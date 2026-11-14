@@ -106,29 +106,38 @@
   {/each}
 </div>
 
-{#if appUpdate.pending && !appUpdate.dismissed}
-  <!-- 更新確認ダイアログ（仕様決定 AB: 検知時は確認→承認で DL/適用/再起動） -->
-  <div class="update-overlay">
-    <div class="update-dialog" role="dialog" aria-label={t("update.title")}>
-      <h2>{t("update.title")}</h2>
-      <p>
-        {t("update.body", { version: appUpdate.pending.version })}
+<!-- 更新確認ダイアログ（仕様決定 AB: 検知時は確認→承認で DL/適用/再起動）。
+     リマウントを避けるため常時マウントし hidden で切り替える
+     （webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE） -->
+<div
+  class="update-overlay"
+  class:hidden={!(appUpdate.pending && !appUpdate.dismissed)}
+>
+  <div class="update-dialog" role="dialog" aria-label={t("update.title")}>
+    <h2>{t("update.title")}</h2>
+    <p>
+      {t("update.body", { version: appUpdate.pending?.version ?? "" })}
+    </p>
+    <div class="update-actions">
+      <p class="subtle" class:hidden={!appUpdate.installing}>
+        {t("update.installing")}
       </p>
-      <div class="update-actions">
-        {#if appUpdate.installing}
-          <p class="subtle">{t("update.installing")}</p>
-        {:else}
-          <button onclick={() => void dismissUpdate()}>
-            {t("update.later")}
-          </button>
-          <button class="primary" onclick={() => void applyUpdate()}>
-            {t("update.apply")}
-          </button>
-        {/if}
-      </div>
+      <button
+        class:hidden={appUpdate.installing}
+        onclick={() => void dismissUpdate()}
+      >
+        {t("update.later")}
+      </button>
+      <button
+        class="primary"
+        class:hidden={appUpdate.installing}
+        onclick={() => void applyUpdate()}
+      >
+        {t("update.apply")}
+      </button>
     </div>
   </div>
-{/if}
+</div>
 {/if}
 
 <style>

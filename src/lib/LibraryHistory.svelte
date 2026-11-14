@@ -66,14 +66,14 @@
         oninput={(e) => onSearchInput(e.currentTarget.value)}
       />
     </div>
-    {#if history.length === 0}
-      <p class="subtle">
-        {searchQuery.trim()
-          ? t("library.history.searchEmpty")
-          : t("library.history.empty")}
-      </p>
-    {:else}
-      <ul class="rows">
+    <!-- 空表示と一覧・「さらに読み込む」の出し分けはリマウントを
+         避けるため hidden 切替（ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={history.length > 0}>
+      {searchQuery.trim()
+        ? t("library.history.searchEmpty")
+        : t("library.history.empty")}
+    </p>
+      <ul class="rows" class:hidden={history.length === 0}>
         {#each history as h (h.videoId)}
           <VideoRow
             videoId={h.videoId}
@@ -91,11 +91,12 @@
               <button onclick={() => play(h.videoId, true)}
                 >{t("library.play")}</button
               >
-              {#if !h.completed && h.positionSec > 0}
-                <button class="link" onclick={() => play(h.videoId, false)}
-                  >{t("library.playFromStart")}</button
-                >
-              {/if}
+              <button
+                class="link"
+                class:hidden={h.completed || h.positionSec <= 0}
+                onclick={() => play(h.videoId, false)}
+                >{t("library.playFromStart")}</button
+              >
               <button
                 class="link danger"
                 onclick={() => removeHistory(h.videoId)}
@@ -115,18 +116,16 @@
           </VideoRow>
         {/each}
       </ul>
-      {#if hasMore}
-        <button
-          class="link load-more"
-          onclick={() => void loadMore()}
-          disabled={loadingMore}
-        >
-          {loadingMore
-            ? t("related.loading")
-            : t("library.history.loadMore")}
-        </button>
-      {/if}
-    {/if}
+      <button
+        class="link load-more"
+        class:hidden={!hasMore}
+        onclick={() => void loadMore()}
+        disabled={loadingMore}
+      >
+        {loadingMore
+          ? t("related.loading")
+          : t("library.history.loadMore")}
+      </button>
 
 <style>
   .history-search {

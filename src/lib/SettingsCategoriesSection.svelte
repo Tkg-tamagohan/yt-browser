@@ -127,11 +127,18 @@
 <section class="panel panel--filled">
   <h2>{t("settings.categories.title")}</h2>
   <p class="subtle desc">{t("settings.categories.desc")}</p>
-  {#if categories.length === 0}
-    <p class="subtle">{t("settings.categories.empty")}</p>
-  {:else}
-    <p class="subtle drag-hint">{t("settings.categories.dragHint")}</p>
-    <ul class="cat-list">
+  <!-- 空表示と一覧の出し分けはリマウントを避けるため hidden 切替
+       （ヒットずれ対策、FR-80） -->
+  <p class="subtle" class:hidden={categories.length > 0}>
+    {t("settings.categories.empty")}
+  </p>
+  <p
+    class="subtle drag-hint"
+    class:hidden={categories.length === 0}
+  >
+    {t("settings.categories.dragHint")}
+  </p>
+    <ul class="cat-list" class:hidden={categories.length === 0}>
       {#each categories as c, index (c.id)}
         <li
           class:drop-target={dragOver === index && dragFrom !== index}
@@ -158,7 +165,6 @@
         </li>
       {/each}
     </ul>
-  {/if}
 </section>
 
 <style>

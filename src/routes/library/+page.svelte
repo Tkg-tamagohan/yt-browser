@@ -86,7 +86,11 @@
     {/each}
   </nav>
 
-  {#if tab === "history"}
+  <!-- タブ切替ごとのリマウントを避けるため、6 タブとも常時マウントし
+       hidden で表示を切り替える（webkit2gtk のヒットずれ対策、
+       FR-80・仕様決定 DE）。LibraryStats には「開くたびに取り直す」を
+       維持するため active を渡す -->
+  <div class:hidden={tab !== "history"}>
     <LibraryHistory
       history={lib.history}
       searchQuery={lib.historyQuery}
@@ -99,7 +103,8 @@
       va={lib.va}
       onPlaylistAdd={lib.onPlaylistAdd}
     />
-  {:else if tab === "favorites"}
+  </div>
+  <div class:hidden={tab !== "favorites"}>
     <LibraryFavorites
       favorites={lib.favorites}
       play={lib.play}
@@ -107,9 +112,11 @@
       va={lib.va}
       onPlaylistAdd={lib.onPlaylistAdd}
     />
-  {:else if tab === "playlists"}
+  </div>
+  <div class:hidden={tab !== "playlists"}>
     <LibraryPlaylists {lib} play={lib.play} />
-  {:else if tab === "watchLater"}
+  </div>
+  <div class:hidden={tab !== "watchLater"}>
     <LibraryWatchLater
       watchLater={lib.watchLater}
       play={lib.play}
@@ -117,7 +124,8 @@
       va={lib.va}
       onPlaylistAdd={lib.onPlaylistAdd}
     />
-  {:else if tab === "search"}
+  </div>
+  <div class:hidden={tab !== "search"}>
     <LibrarySearch
       searchQuery={lib.searchQuery}
       onSearchInput={lib.setSearchQuery}
@@ -126,9 +134,10 @@
       va={lib.va}
       onPlaylistAdd={lib.onPlaylistAdd}
     />
-  {:else}
-    <LibraryStats />
-  {/if}
+  </div>
+  <div class:hidden={tab !== "stats"}>
+    <LibraryStats active={tab === "stats"} />
+  </div>
 </main>
 
 <style>

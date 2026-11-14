@@ -127,17 +127,15 @@
     >
       {t("queue.tab.temp")}
     </button>
-    {#each [...queues.list.entries()] as [key, q] (key)}
-      {#if key !== null}
-        <button
-          class="qp-tab"
-          class:active={queuePanel.sideTab === null && selKey === key}
-          title={q.playlistName}
-          onclick={() => selectQueue(key)}
-        >
-          {q.playlistName}
-        </button>
-      {/if}
+    {#each [...queues.list.entries()].filter(([k]) => k !== null) as [key, q] (key)}
+      <button
+        class="qp-tab"
+        class:active={queuePanel.sideTab === null && selKey === key}
+        title={q.playlistName}
+        onclick={() => selectQueue(key)}
+      >
+        {q.playlistName}
+      </button>
     {/each}
     <!-- ライブ待機タブ（FR-44、仕様決定 BT(2)）。キュータブの隣に置く -->
     <button
@@ -157,18 +155,28 @@
     </button>
   </div>
 
-  {#if queuePanel.sideTab === "bookmarks"}
-    <div class="qp-head">
-      <h3>
-        {t("bookmark.tab")}
-        <span class="qp-count">{bookmarks.list.length}</span>
-      </h3>
-      <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
-    </div>
-    {#if bookmarks.list.length === 0}
-      <p class="subtle">{t("bookmark.empty")}</p>
-    {:else}
-      <ul class="qp-list">
+  <!-- 3 面のタブ内容と各一覧の出し分けはリマウントを避けるため
+       hidden 切替とする（webkit2gtk のヒットずれ対策、FR-80・
+       仕様決定 DE） -->
+  <div class="qp-head" class:hidden={queuePanel.sideTab !== "bookmarks"}>
+    <h3>
+      {t("bookmark.tab")}
+      <span class="qp-count">{bookmarks.list.length}</span>
+    </h3>
+    <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
+  </div>
+  <p
+    class="subtle"
+    class:hidden={queuePanel.sideTab !== "bookmarks" ||
+      bookmarks.list.length > 0}
+  >
+    {t("bookmark.empty")}
+  </p>
+  <ul
+    class="qp-list"
+    class:hidden={queuePanel.sideTab !== "bookmarks" ||
+      bookmarks.list.length === 0}
+  >
         {#each bookmarks.list as b (b.id)}
           <li>
             <button
@@ -182,35 +190,39 @@
               <span class="qp-title" title={bookmarkTitle(b)}
                 >{bookmarkTitle(b)}</span
               >
-              {#if editingId === b.id}
-                <input
-                  class="bm-label"
-                  bind:value={draft}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") void saveLabel(b);
-                    if (e.key === "Escape") editingId = null;
-                  }}
-                />
-              {:else}
-                <span class="qp-ch">{b.label}</span>
-              {/if}
-            </span>
-            {#if editingId === b.id}
-              <button class="link" onclick={() => void saveLabel(b)}>
-                {t("bookmark.labelSave")}
-              </button>
-            {:else}
-              <button
-                class="link"
-                title={t("bookmark.edit.hint")}
-                onclick={() => {
-                  editingId = b.id;
-                  draft = b.label;
+              <!-- ラベル編集の入力欄⇔表示・保存⇔編集ボタンの切替は
+                   リマウントを避けるため hidden 切替（FR-80） -->
+              <input
+                class="bm-label"
+                class:hidden={editingId !== b.id}
+                bind:value={draft}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") void saveLabel(b);
+                  if (e.key === "Escape") editingId = null;
                 }}
+              />
+              <span class="qp-ch" class:hidden={editingId === b.id}
+                >{b.label}</span
               >
-                {t("bookmark.edit")}
-              </button>
-            {/if}
+            </span>
+            <button
+              class="link"
+              class:hidden={editingId !== b.id}
+              onclick={() => void saveLabel(b)}
+            >
+              {t("bookmark.labelSave")}
+            </button>
+            <button
+              class="link"
+              class:hidden={editingId === b.id}
+              title={t("bookmark.edit.hint")}
+              onclick={() => {
+                editingId = b.id;
+                draft = b.label;
+              }}
+            >
+              {t("bookmark.edit")}
+            </button>
             <button
               class="link danger"
               title={t("bookmark.remove")}
@@ -218,27 +230,34 @@
             >
           </li>
         {/each}
-      </ul>
-    {/if}
-  {:else if queuePanel.sideTab === "waits"}
-    <div class="qp-head">
-      <h3>
-        {t("livewait.tab")}
-        <span class="qp-count">{liveWaits.list.length}</span>
-      </h3>
-      <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
-    </div>
-    {#if liveWaits.list.length === 0}
-      <p class="subtle">{t("livewait.empty")}</p>
-    {:else}
-      <ul class="qp-list">
+  </ul>
+
+  <div class="qp-head" class:hidden={queuePanel.sideTab !== "waits"}>
+    <h3>
+      {t("livewait.tab")}
+      <span class="qp-count">{liveWaits.list.length}</span>
+    </h3>
+    <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
+  </div>
+  <p
+    class="subtle"
+    class:hidden={queuePanel.sideTab !== "waits" ||
+      liveWaits.list.length > 0}
+  >
+    {t("livewait.empty")}
+  </p>
+  <ul
+    class="qp-list"
+    class:hidden={queuePanel.sideTab !== "waits" ||
+      liveWaits.list.length === 0}
+  >
         {#each liveWaits.list as w (w.videoId)}
           <li>
             <span class="qp-text">
               <span class="qp-title" title={w.title}>{w.title}</span>
-              {#if w.channelTitle}
-                <span class="qp-ch">{w.channelTitle}</span>
-              {/if}
+              <span class="qp-ch" class:hidden={!w.channelTitle}
+                >{w.channelTitle}</span
+              >
               <span class="qp-ch">
                 {fmtWaitStart(w.scheduledStartMs) || t("livewait.scheduledUnknown")}
               </span>
@@ -250,27 +269,28 @@
             >
           </li>
         {/each}
-      </ul>
-    {/if}
-  {:else}
-  <div class="qp-head">
+  </ul>
+
+  <div class="qp-head" class:hidden={queuePanel.sideTab !== null}>
     <h3>
       {t("queue.panel.title")}
       <span class="qp-count">{sel?.items.length ?? 0}</span>
     </h3>
-    {#if sel !== undefined && sel.instanceId === null}
-      <button
-        class="link"
-        disabled={sel.items.length === 0}
-        onclick={() => void start()}
-      >
-        {t("queue.play")}
-      </button>
-    {:else if sel !== undefined}
-      <button class="link" onclick={() => queueStop(selKey)}>
-        {t("library.playlist.queueStop")}
-      </button>
-    {/if}
+    <button
+      class="link"
+      class:hidden={!(sel !== undefined && sel.instanceId === null)}
+      disabled={sel === undefined || sel.items.length === 0}
+      onclick={() => void start()}
+    >
+      {t("queue.play")}
+    </button>
+    <button
+      class="link"
+      class:hidden={!(sel !== undefined && sel.instanceId !== null)}
+      onclick={() => queueStop(selKey)}
+    >
+      {t("library.playlist.queueStop")}
+    </button>
     <!-- 残りをシャッフル（FR-46、仕様決定 BW）。現在位置より後の項目を
          ランダムに並べ替える。残りが 2 項目未満なら意味を持たないので無効化 -->
     <button
@@ -299,33 +319,46 @@
     <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
   </div>
 
-  {#if saving && sel !== undefined && sel.items.length > 0}
-    <div class="qp-save">
-      <input
-        bind:value={saveName}
-        placeholder={t("library.playlist.newPlaceholder")}
-        onkeydown={(e) => {
-          if (e.key === "Enter") void saveAsPlaylist();
-        }}
-      />
-      <button
-        class="link"
-        disabled={saveName.trim() === ""}
-        onclick={() => void saveAsPlaylist()}
-      >
-        {t("library.playlist.create")}
-      </button>
-    </div>
-  {/if}
+  <div
+    class="qp-save"
+    class:hidden={queuePanel.sideTab !== null ||
+      !(saving && sel !== undefined && sel.items.length > 0)}
+  >
+    <input
+      bind:value={saveName}
+      placeholder={t("library.playlist.newPlaceholder")}
+      onkeydown={(e) => {
+        if (e.key === "Enter") void saveAsPlaylist();
+      }}
+    />
+    <button
+      class="link"
+      disabled={saveName.trim() === ""}
+      onclick={() => void saveAsPlaylist()}
+    >
+      {t("library.playlist.create")}
+    </button>
+  </div>
 
-  {#if sel === undefined || sel.items.length === 0}
-    <p class="subtle">{t("queue.empty")}</p>
-  {:else}
-    <ul class="qp-list">
-      {#each sel.items as item, i (item.uid)}
+  <p
+    class="subtle"
+    class:hidden={queuePanel.sideTab !== null ||
+      (sel !== undefined && sel.items.length > 0)}
+  >
+    {t("queue.empty")}
+  </p>
+  <ul
+    class="qp-list"
+    class:hidden={queuePanel.sideTab !== null ||
+      sel === undefined ||
+      sel.items.length === 0}
+  >
+      {#each sel?.items ?? [] as item, i (item.uid)}
         {@const meta = queueMetaOf(item.videoId)}
         <li
-          class:playing={sel.instanceId !== null && i === sel.index}
+          class:playing={sel !== undefined &&
+            sel.instanceId !== null &&
+            i === sel.index}
           class:drop-target={dragOver === i && dragFrom !== i}
           draggable="true"
           ondragstart={(e) => {
@@ -353,9 +386,9 @@
           <span class="pos">{i + 1}</span>
           <span class="qp-text">
             <span class="qp-title" title={meta.title}>{meta.title}</span>
-            {#if meta.channelTitle}
-              <span class="qp-ch">{meta.channelTitle}</span>
-            {/if}
+            <span class="qp-ch" class:hidden={!meta.channelTitle}
+              >{meta.channelTitle}</span
+            >
           </span>
           <button
             class="link"
@@ -366,7 +399,7 @@
           <button
             class="link"
             title={t("library.playlist.moveDown")}
-            disabled={i === sel.items.length - 1}
+            disabled={i === (sel?.items.length ?? 0) - 1}
             onclick={() => queueMove(selKey, i, i + 1)}>↓</button
           >
           <button
@@ -376,9 +409,7 @@
           >
         </li>
       {/each}
-    </ul>
-  {/if}
-  {/if}
+  </ul>
 </aside>
 
 <style>

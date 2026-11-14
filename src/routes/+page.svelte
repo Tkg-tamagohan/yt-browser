@@ -166,35 +166,51 @@
       {pipDefault ? t("player.playWindow") : t("player.playPip")}
     </button>
   </div>
-  {#if resumeHint}
-    <p class="hint">
-      {t("player.history.hint", { position: fmtDuration(resumeHint.positionSec) })}
-      {#if resumeHint.title}（{resumeHint.title}）{/if}
-    </p>
-  {/if}
+  <!-- 再開ヒントは読み込み後の出現でリマウントされないよう
+       hidden 切替（ヒットずれ対策、FR-80） -->
+  <p class="hint" class:hidden={!resumeHint}>
+    {t("player.history.hint", {
+      position: fmtDuration(resumeHint?.positionSec ?? 0),
+    })}{resumeHint?.title ? `（${resumeHint.title}）` : ""}
+  </p>
 
   {#each notices as n}
     <p class="notice">{n}</p>
   {/each}
 
   <footer class="status-bar">
-    {#if dbStatus}
-      <span class="status ok">{t("home.db.ok", { version: dbStatus.schemaVersion })}</span>
-    {:else if dbError}
-      <span class="status ng">{t("home.db.ng", { error: dbError })}</span>
-    {:else}
-      <span class="status">{t("home.db.checking")}</span>
-    {/if}
-    {#if ytdlpChecking}
-      <span class="status">{t("ytdlp.checking")}</span>
-    {:else if ytdlp?.path}
-      <span class="status">{t("ytdlp.ok", { version: ytdlp.version ?? "?", path: ytdlp.path })}</span>
-      <button class="link" onclick={updateYtDlp} disabled={ytdlpUpdating}>
-        {ytdlpUpdating ? t("ytdlp.updating") : t("ytdlp.update")}
-      </button>
-    {:else}
-      <span class="status ng">{t("ytdlp.missing")}</span>
-    {/if}
+    <!-- DB 状態の 3 系統もリマウントを避ける hidden 切替（FR-80） -->
+    <span class="status ok" class:hidden={!dbStatus}
+      >{t("home.db.ok", { version: dbStatus?.schemaVersion ?? 0 })}</span
+    >
+    <span class="status ng" class:hidden={!!dbStatus || !dbError}
+      >{t("home.db.ng", { error: dbError ?? "" })}</span
+    >
+    <span class="status" class:hidden={!!dbStatus || !!dbError}
+      >{t("home.db.checking")}</span
+    >
+    <!-- 確認中・検出済み・未検出の 3 系統はリマウントを避けるため
+         hidden 切替とする（ヒットずれ対策、FR-80） -->
+    <span class="status" class:hidden={!ytdlpChecking}
+      >{t("ytdlp.checking")}</span
+    >
+    <span class="status" class:hidden={ytdlpChecking || !ytdlp?.path}>
+      {t("ytdlp.ok", {
+        version: ytdlp?.version ?? "?",
+        path: ytdlp?.path ?? "",
+      })}
+    </span>
+    <button
+      class="link"
+      class:hidden={ytdlpChecking || !ytdlp?.path}
+      onclick={updateYtDlp}
+      disabled={ytdlpUpdating}
+    >
+      {ytdlpUpdating ? t("ytdlp.updating") : t("ytdlp.update")}
+    </button>
+    <span class="status ng" class:hidden={ytdlpChecking || !!ytdlp?.path}
+      >{t("ytdlp.missing")}</span
+    >
   </footer>
 </main>
 

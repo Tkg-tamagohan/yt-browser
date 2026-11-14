@@ -3,6 +3,8 @@
   // webkit2gtk の GPU なし環境では、カードをリマウントすると入力ヒット領域が
   // 描画位置からずれる（実機計測で確認。DOM リレイアウト系のハックでは再同期しない）
   // ため、このコンポーネントは +layout で常時マウントし、表示だけパスで切り替える。
+  // カード内のチャット・概要欄・関連動画パネルと PiP 整列バーも同じ方針で
+  // 常時マウントし、開閉はラッパの hidden 切替にする（FR-80、仕様決定 DE）。
   // チャットと関連動画のパネルは ChatPanel / RelatedPanel に切り出し、
   // チャットの状態とイベント購読は chat.svelte.ts の共有ストアが持つ。
   import { page } from "$app/state";
@@ -330,6 +332,14 @@
   let audioDevices = $state<AudioDevice[] | null>(null);
   let audioListFailed = $state(false);
   let audioBusy = $state<Set<number>>(new Set());
+  // 音声出力欄の 3 系統（列挙済み select / 直接入力 input / 読込中 …）。
+  // hidden 切替のため排他条件をここで解決しておく（FR-80）
+  const showAudioSelect = $derived(
+    audioDevices !== null && audioDevices.length > 0,
+  );
+  const showAudioInput = $derived(
+    !showAudioSelect && (audioListFailed || audioDevices !== null),
+  );
 
   async function setAudioDevice(
     id: number,
@@ -584,21 +594,21 @@
   class:hidden={page.url.pathname !== "/"}
 >
   <!-- PiP 窓の一括整列（FR-41、仕様決定 BQ）。全 PiP インスタンスの
-       窓を window.screen の対象ディスプレイへ格子状に並べる -->
-  {#if players.size > 0}
-    <div class="pip-tile-bar">
-      <button
-        title={windowing === "wayland"
-          ? t("player.pipTile.wayland")
-          : t("player.pipTile.hint")}
-        disabled={pipTileBusy || pipCount === 0 || windowing === "wayland"}
-        onclick={() => void tilePips()}
-      >
-        {t("player.pipTile")}
-      </button>
-      <span class="subtle">{t("player.pipTile.count", { count: pipCount })}</span>
-    </div>
-  {/if}
+       窓を window.screen の対象ディスプレイへ格子状に並べる。
+       カードの有無で出入りするため、リマウントを避ける hidden 切替
+       （ヒットずれ対策、FR-80） -->
+  <div class="pip-tile-bar" class:hidden={players.size === 0}>
+    <button
+      title={windowing === "wayland"
+        ? t("player.pipTile.wayland")
+        : t("player.pipTile.hint")}
+      disabled={pipTileBusy || pipCount === 0 || windowing === "wayland"}
+      onclick={() => void tilePips()}
+    >
+      {t("player.pipTile")}
+    </button>
+    <span class="subtle">{t("player.pipTile.count", { count: pipCount })}</span>
+  </div>
   {#each [...players.values()] as p (p.instanceId)}
     {@const info = channelInfos.get(p.videoId)}
     <section class="player panel panel--filled">
@@ -625,8 +635,12 @@
       />
       <div class="times">
         <span>{fmtDuration(seekPreview.get(p.instanceId) ?? p.position)} / {p.duration > 0 ? fmtDuration(p.duration) : t("player.noDuration")}</span>
-        {#if p.fps > 0}<span class="subtle">{t("player.fps", { fps: p.fps.toFixed(2) })}</span>{/if}
-        {#if statusLabel(p)}<span class="buffering">{statusLabel(p)}</span>{/if}
+        <span class="subtle" class:hidden={p.fps <= 0}
+          >{t("player.fps", { fps: p.fps.toFixed(2) })}</span
+        >
+        <span class="buffering" class:hidden={statusLabel(p) === ""}
+          >{statusLabel(p)}</span
+        >
       </div>
 
       <div class="controls">
@@ -697,46 +711,48 @@
         </label>
         <label>
           {t("player.audio")}
-          {#if audioDevices !== null && audioDevices.length > 0}
-            <select
-              value={p.audioDevice}
-              title={t("player.audio.hint")}
-              disabled={audioBusy.has(p.instanceId)}
-              onchange={(e) =>
-                setAudioDevice(
-                  p.instanceId,
-                  e.currentTarget.value,
-                  e.currentTarget,
-                )}
-            >
-              {#each audioDevices as d}
-                <option value={d.name} selected={d.name === p.audioDevice}>
-                  {audioLabel(d)}
-                </option>
-              {/each}
-              <!-- 一覧に無い現在値（接続後に外れたデバイス等）も残す -->
-              {#if !audioDevices.some((d) => d.name === p.audioDevice)}
-                <option value={p.audioDevice} selected>{p.audioDevice}</option>
-              {/if}
-            </select>
-          {:else if audioListFailed || audioDevices !== null}
-            <input
-              type="text"
-              class="audio-input"
-              title={t("player.audio.hint")}
-              placeholder={t("player.audio.placeholder")}
-              value={p.audioDevice}
-              disabled={audioBusy.has(p.instanceId)}
-              onchange={(e) =>
-                setAudioDevice(
-                  p.instanceId,
-                  e.currentTarget.value.trim(),
-                  e.currentTarget,
-                )}
-            />
-          {:else}
-            <span class="subtle">…</span>
-          {/if}
+          <!-- 一覧読込中・列挙済み・列挙失敗の 3 系統はリマウントを避ける
+               ため hidden 切替とする（ヒットずれ対策、FR-80） -->
+          <select
+            class:hidden={!showAudioSelect}
+            value={p.audioDevice}
+            title={t("player.audio.hint")}
+            disabled={audioBusy.has(p.instanceId)}
+            onchange={(e) =>
+              setAudioDevice(
+                p.instanceId,
+                e.currentTarget.value,
+                e.currentTarget,
+              )}
+          >
+            {#each audioDevices ?? [] as d}
+              <option value={d.name} selected={d.name === p.audioDevice}>
+                {audioLabel(d)}
+              </option>
+            {/each}
+            <!-- 一覧に無い現在値（接続後に外れたデバイス等）も残す -->
+            {#if !(audioDevices ?? []).some((d) => d.name === p.audioDevice)}
+              <option value={p.audioDevice} selected>{p.audioDevice}</option>
+            {/if}
+          </select>
+          <input
+            type="text"
+            class="audio-input"
+            class:hidden={!showAudioInput}
+            title={t("player.audio.hint")}
+            placeholder={t("player.audio.placeholder")}
+            value={p.audioDevice}
+            disabled={audioBusy.has(p.instanceId)}
+            onchange={(e) =>
+              setAudioDevice(
+                p.instanceId,
+                e.currentTarget.value.trim(),
+                e.currentTarget,
+              )}
+          />
+          <span class="subtle" class:hidden={showAudioSelect || showAudioInput}
+            >…</span
+          >
         </label>
         <label>
           {t("player.subtitle")}
@@ -823,44 +839,58 @@
           {t("player.copyLink")}
         </button>
         <!-- キューを背負うカードから自分のキューを選択状態でパネルを開く
-             （FR-20・FR-26、仕様決定 AM・AS） -->
-        {#if queueKeyOfInstance(p.instanceId) !== undefined}
-          <button
-            class="link"
-            onclick={() => {
-              queuePanel.selected = queueKeyOfInstance(p.instanceId) ?? null;
-              queuePanel.sideTab = null;
-              queuePanel.open = true;
-            }}
-          >
-            {t("queue.show")}
-          </button>
-        {/if}
-        {#if info?.subscribed}
-          <button class="link" disabled>{t("player.subscribed")}</button>
-        {:else}
-          <button
-            class="link"
-            title={info?.title ?? undefined}
-            disabled={!info?.input || subscribing.has(p.videoId)}
-            onclick={() => subscribePlaying(p.videoId)}
-          >
-            {t("player.subscribe")}
-          </button>
-        {/if}
+             （FR-20・FR-26、仕様決定 AM・AS）。キュー紐付けの着脱で
+             出入りするためリマウントを避ける hidden 切替（FR-80） -->
+        <button
+          class="link"
+          class:hidden={queueKeyOfInstance(p.instanceId) === undefined}
+          onclick={() => {
+            queuePanel.selected = queueKeyOfInstance(p.instanceId) ?? null;
+            queuePanel.sideTab = null;
+            queuePanel.open = true;
+          }}
+        >
+          {t("queue.show")}
+        </button>
+        <!-- 購読状態でのボタン出し分けもリマウントを避ける hidden 切替
+             （ヒットずれ対策、FR-80） -->
+        <button class="link" class:hidden={info?.subscribed !== true} disabled>
+          {t("player.subscribed")}
+        </button>
+        <button
+          class="link"
+          class:hidden={info?.subscribed === true}
+          title={info?.title ?? undefined}
+          disabled={!info?.input || subscribing.has(p.videoId)}
+          onclick={() => subscribePlaying(p.videoId)}
+        >
+          {t("player.subscribe")}
+        </button>
       </div>
 
-      {#if chatPanel(p.instanceId)?.open}
+      <!-- カード内の 3 パネルはリマウントを避けるため常時マウントし、
+           開閉はラッパの hidden 切替とする（ヒットずれ対策、FR-80・
+           仕様決定 DE）。DescPanel / RelatedPanel は open で「開くたびの
+           取り直し」を駆動する -->
+      <div class:hidden={!chatPanel(p.instanceId)?.open}>
         <ChatPanel instanceId={p.instanceId} videoId={p.videoId} />
-      {/if}
+      </div>
 
-      {#if descOpen.has(p.instanceId)}
-        <DescPanel instanceId={p.instanceId} videoId={p.videoId} />
-      {/if}
+      <div class:hidden={!descOpen.has(p.instanceId)}>
+        <DescPanel
+          instanceId={p.instanceId}
+          videoId={p.videoId}
+          open={descOpen.has(p.instanceId)}
+        />
+      </div>
 
-      {#if relatedOpen.has(p.instanceId)}
-        <RelatedPanel instanceId={p.instanceId} videoId={p.videoId} />
-      {/if}
+      <div class:hidden={!relatedOpen.has(p.instanceId)}>
+        <RelatedPanel
+          instanceId={p.instanceId}
+          videoId={p.videoId}
+          open={relatedOpen.has(p.instanceId)}
+        />
+      </div>
     </section>
   {/each}
 </div>

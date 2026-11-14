@@ -147,12 +147,10 @@
       </button>
     </div>
   </div>
-  {#if panel?.status}
-    <p class="chat-status">{panel.status}</p>
-  {/if}
-  {#if error}
-    <p class="chat-status">{error}</p>
-  {/if}
+  <!-- 状態行・エラー行は出現・消失でリマウントされないよう
+       hidden 切替（ヒットずれ対策、FR-80） -->
+  <p class="chat-status" class:hidden={!panel?.status}>{panel?.status}</p>
+  <p class="chat-status" class:hidden={!error}>{error}</p>
   <!-- 投稿者名は chat.popup_show_author で切替（FR-68、仕様決定 CS）。
        superchat / membership のバッジは設定化の対象外のため出さない -->
   <ChatList

@@ -86,6 +86,14 @@ select {
   color: #9aa0a6;
 }
 
+/* リマウント回避（webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE）で
+   パネル開閉や一覧の出し分けに使う常時マウント＋表示切替のユーティリティ。
+   切替対象の scoped style（display:flex/grid など）より必ず優先させる
+   ため !important を付ける（詳細度負けで hidden が効かなくなるのを防ぐ） */
+.hidden {
+  display: none !important;
+}
+
 .notice {
   margin-top: 12px;
   padding: 8px 12px;

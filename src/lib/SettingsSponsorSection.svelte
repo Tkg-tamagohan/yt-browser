@@ -20,9 +20,10 @@
   <section class="panel panel--filled">
     <h2>{t("settings.sponsor.title")}</h2>
     <p class="subtle desc">{t("settings.sponsor.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
+    <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
+         hidden 切替（ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={!loading}>…</p>
+    <div class:hidden={loading}>
       <label class="show-segments">
         <input type="checkbox" bind:checked={sponsorShowSegments} />
         <span>{t("settings.sponsor.showSegments")}</span>
@@ -41,7 +42,7 @@
           </label>
         {/each}
       </div>
-    {/if}
+    </div>
   </section>
 
 <style>
