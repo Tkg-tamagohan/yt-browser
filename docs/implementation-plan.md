@@ -469,31 +469,31 @@ BG-6 は設定 1 か所の変更で 3 か所の並べ替えに効く見込みの
 
 ### Phase 52：初期速度と初期音量、字幕選択（FR-39・FR-40、仕様決定 BO・BP）
 
-- [ ] 設定 `player.initial_speed`・`player.initial_volume` を新設し、mpv 起動引数へ反映する
-- [ ] プレイヤーカードに字幕ドロップダウンを追加し、`track-list` の sub トラックを `sid` で選択できるようにする
-- [ ] 設定値の検証ロジックを Rust 単体テストで検証する
-- [ ] `docs/design.md`（設定キー表、起動引数）、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：初期値が新規インスタンスへ反映されることと、字幕の切替を実機で確認する
+- [x] 設定 `player.initial_speed`・`player.initial_volume` を新設し、mpv 起動引数へ反映する
+- [x] プレイヤーカードに字幕ドロップダウンを追加し、`track-list` の sub トラックを `sid` で選択できるようにする
+- [x] 設定値の検証ロジックを Rust 単体テストで検証する
+- [x] `docs/design.md`（設定キー表、起動引数）、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：初期値が新規インスタンスへ反映されることと、字幕の切替を実機で確認する（実機検証は未実施）
 
 ### Phase 53：PiP 窓の一括整列（FR-41、仕様決定 BQ）
 
-- [ ] 「PiP を整列」操作で全 PiP インスタンスの窓を `window.screen` または主モニターへ格子状にタイリングする
-- [ ] タイリング配置の計算は純粋関数として Vitest で検証する
-- [ ] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：複数の PiP 窓が重ならず並ぶことを実機で確認する
+- [x] 「PiP を整列」操作で全 PiP インスタンスの窓を `window.screen` または主モニターへ格子状にタイリングする
+- [x] タイリング配置の計算は純粋関数として Vitest で検証する
+- [x] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：複数の PiP 窓が重ならず並ぶことを実機で確認する（実機検証は未実施）
 
 ### Phase 54：mpv 窓の前面化（FR-42、仕様決定 BR）
 
-- [ ] mpv の `window-id` プロパティの取得可否を確認し、OS 別の前面化を実装する（Windows はプロセスからの窓ハンドル特定、Linux X11 は `window-id` による前面化）
-- [ ] Wayland ではボタンを無効化する
-- [ ] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：Windows 実機と X11 環境で窓が前面に出ることを確認する（環境の無い系は未検証として記録する）
+- [x] mpv の `window-id` プロパティの取得可否を確認し、OS 別の前面化を実装する（Windows はプロセスからの窓ハンドル特定、Linux X11 は `window-id` による前面化）
+- [x] Wayland ではボタンを無効化する
+- [x] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：Windows 実機と X11 環境で窓が前面に出ることを確認する（X11 系は環境が無いため未検証として記録、Windows 実機も未実施）
 
 ### Phase 55：再生完了時の自動クローズ（FR-43、仕様決定 BS）
 
-- [ ] 設定 `player.close_on_eof`（既定 `off`）を新設し、`on` で継続なし eof 終端のインスタンスを自動クローズする
-- [ ] `docs/design.md`（設定キー表、終了処理）、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：`on`/`off` で終端時の挙動が変わることを実機で確認する
+- [x] 設定 `player.close_on_eof`（既定 `off`）を新設し、`on` で継続なし eof 終端のインスタンスを自動クローズする
+- [x] `docs/design.md`（設定キー表、終了処理）、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：`on`/`off` で終端時の挙動が変わることを実機で確認する（実機検証は未実施）
 
 ### Phase 56：ライブ配信の待機（FR-44、仕様決定 BT）
 
