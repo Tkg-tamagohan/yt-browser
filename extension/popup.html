@@ -1,14 +1,15 @@
 <!doctype html>
-<!-- yt-browser opener ポップアップ（Phase 38、仕様決定 AX）。
-     「yt-browser で開く」と「キューに追加」の 2 択。対象判定は
-     popup.js が background.js の classify へ問い合わせて行う -->
+<!-- yt-browser opener ポップアップ（Phase 38・60、仕様決定 AX・CA・CB）。
+     「yt-browser で開く」「再生位置を引き継いで開く」「キューに追加」
+     「プレイリストへ追加」。対象判定は popup.js が background.js の
+     classify へ、プレイリスト選択肢は list_playlists へ問い合わせる -->
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
     <title>yt-browser</title>
     <style>
       body {
-        width: 200px;
+        width: 220px;
         margin: 0;
         padding: 8px;
         font-family: sans-serif;
@@ -35,11 +36,31 @@
         opacity: 0.45;
         cursor: default;
       }
+      select {
+        display: block;
+        width: 100%;
+        margin: 8px 0 4px;
+        padding: 6px 8px;
+        border: 1px solid #3a3b42;
+        border-radius: 6px;
+        background: #2a2b31;
+        color: inherit;
+      }
+      select:disabled {
+        opacity: 0.45;
+      }
     </style>
   </head>
   <body>
     <button id="open" type="button" disabled>yt-browser で開く</button>
+    <button id="openWithTime" type="button" disabled>
+      再生位置を引き継いで開く
+    </button>
     <button id="queue" type="button" disabled>キューに追加</button>
-    <script src="popup.js"></script>
+    <select id="plSelect" disabled>
+      <option value="">プレイリストを取得中…</option>
+    </select>
+    <button id="plAdd" type="button" disabled>プレイリストへ追加</button>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

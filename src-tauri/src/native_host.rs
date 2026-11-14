@@ -5,12 +5,18 @@
 //! Tauri を組まずに [`run_host`] へ分岐する。
 //!
 //! - 通信：4 バイトのネイティブエンディアン長と UTF-8 JSON の組を 1 往復だけ行う。
-//!   要求は `{"url": "<対象 URL>", "action": "open" | "queue"}`
-//!   （`action` 省略は `open`、仕様決定 AX）、応答は `{"ok": true}` か
-//!   `{"ok": false, "error": "<コード>"}`
+//!   要求は `{"url": "<対象 URL>", "action": "open" | "queue" | "playlist_add",
+//!   "playlist_id": <数値>}`（`action` 省略は `open`、仕様決定 AX。
+//!   `playlist_id` は `playlist_add` で必須、FR-50、仕様決定 CA）と、
+//!   URL を取らない `{"action": "list_playlists"}`（拡張側の選択肢表示用）。
+//!   応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` で、
+//!   `list_playlists` だけは `{"ok": true, "playlists": [{"id","name"}]}` を返す
 //! - 起動：`yt-browser://<action>?url=<encoded>` を OS の既定ハンドラで開く。
 //!   以降は既存の deep link 受信経路（未起動なら起動、起動中なら
 //!   single-instance で転送）に乗る
+//! - `list_playlists`：本体の DB を読み取り専用で開き、`playlists` 表を
+//!   `playlist_list` と同じ順（`ORDER BY sort_order, id`）で読む。
+//!   DB への書き込み経路は持たない（仕様決定 AX の方針を維持）
 //! - 登録：本体の setup で [`register`] を呼び、ホスト定義を冪等に書く
 //!
 //! 標準出力はプロトコル専用なので、ホストモードではログを標準出力へ出さない。
@@ -33,11 +39,15 @@ pub const EXTENSION_ID: &str = "hmfhiknpeefgjdmkjoofahdpkflfnkdl";
 const MAX_MESSAGE_LEN: u32 = 64 * 1024;
 
 /// スキームアクション（FR-29、仕様決定 AX）。`open` は再生・取り込み、
-/// `queue` は一時キューへの追加（再生しない）。
+/// `queue` は一時キューへの追加（再生しない）、`playlist_add` はプレイリスト
+/// への追加（FR-50、仕様決定 CA）。`list_playlists` はスキームを組まない
+/// 直接応答の要求で、一覧を返した時点で処理が終わる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Open,
     Queue,
+    PlaylistAdd,
+    ListPlaylists,
 }
 
 impl Action {
@@ -46,6 +56,8 @@ impl Action {
         match raw.unwrap_or("open") {
             "open" => Ok(Self::Open),
             "queue" => Ok(Self::Queue),
+            "playlist_add" => Ok(Self::PlaylistAdd),
+            "list_playlists" => Ok(Self::ListPlaylists),
             _ => Err(ErrorCode::InvalidAction),
         }
     }
@@ -55,6 +67,9 @@ impl Action {
         match self {
             Self::Open => "yt-browser://open?url=",
             Self::Queue => "yt-browser://queue?url=",
+            Self::PlaylistAdd => "yt-browser://playlist_add?url=",
+            // `handle_request` で一覧応答へ先回りするため、ここへは来ない
+            Self::ListPlaylists => unreachable!("list_playlists はスキームを組まない"),
         }
     }
 }
@@ -75,16 +90,20 @@ pub fn run_host() -> i32 {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let response = match read_message(&mut stdin.lock()) {
-        Ok(body) => handle_request(&body, |url| open::that_detached(url)),
+        Ok(body) => handle_request(
+            &body,
+            |url| open::that_detached(url),
+            read_playlists_default,
+        ),
         Err(e) => {
             eprintln!("yt-browser native host: 要求を読めません: {e}");
             Response::Error(ErrorCode::InvalidMessage)
         }
     };
-    let code = if matches!(response, Response::Ok) {
-        0
-    } else {
+    let code = if matches!(response, Response::Error(_)) {
         1
+    } else {
+        0
     };
     if let Err(e) = write_message(&mut stdout.lock(), &response.to_json()) {
         eprintln!("yt-browser native host: 応答を書けません: {e}");
@@ -96,14 +115,17 @@ pub fn run_host() -> i32 {
 /// 応答のエラーコード。拡張はコードをツールチップの理由表示に使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
-    /// 長さ付き JSON として読めない、または `url` が文字列でない
+    /// 長さ付き JSON として読めない、`url` が文字列でない、
+    /// 必須フィールド（`url` / `playlist_id`）が欠けた・形が不正
     InvalidMessage,
     /// `url` が http(s) の URL として解析できない
     InvalidUrl,
-    /// `action` が受理集合（`open` / `queue`）外
+    /// `action` が受理集合（`open` / `queue` / `playlist_add` / `list_playlists`）外
     InvalidAction,
     /// OS の既定ハンドラで開けなかった
     OpenFailed,
+    /// `list_playlists` で本体の DB を開けない・読めない
+    DbUnavailable,
 }
 
 impl ErrorCode {
@@ -113,13 +135,23 @@ impl ErrorCode {
             Self::InvalidUrl => "invalid_url",
             Self::InvalidAction => "invalid_action",
             Self::OpenFailed => "open_failed",
+            Self::DbUnavailable => "db_unavailable",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `list_playlists` が応答へ載せるプレイリストの要約。
+/// 拡張の選択肢表示に必要な ID と名前だけを持つ（FR-50、仕様決定 CA）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistSummary {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
     Ok,
+    Playlists(Vec<PlaylistSummary>),
     Error(ErrorCode),
 }
 
@@ -127,6 +159,13 @@ impl Response {
     pub fn to_json(self) -> serde_json::Value {
         match self {
             Self::Ok => json!({ "ok": true }),
+            Self::Playlists(list) => json!({
+                "ok": true,
+                "playlists": list
+                    .iter()
+                    .map(|p| json!({ "id": p.id, "name": p.name }))
+                    .collect::<Vec<_>>()
+            }),
             Self::Error(code) => json!({ "ok": false, "error": code.as_str() }),
         }
     }
@@ -160,8 +199,11 @@ pub fn write_message<W: Write>(writer: &mut W, value: &serde_json::Value) -> io:
 
 #[derive(Deserialize)]
 struct Request {
-    url: String,
+    /// 対象 URL。`list_playlists` だけは URL を取らず省略される
+    url: Option<String>,
     action: Option<String>,
+    /// `playlist_add` で必須のプレイリスト ID（`playlists.id`）
+    playlist_id: Option<i64>,
 }
 
 /// `url` が http(s) の URL として解析できるかだけを確かめる。
@@ -174,18 +216,25 @@ pub fn validate_url(raw: &str) -> bool {
 }
 
 /// 対象 URL をアプリのスキーム URL へ包む。
-pub fn scheme_url(target: &str, action: Action) -> String {
-    format!(
+/// `playlist_add` だけ `playlist_id` をクエリへ追加する（FR-50、仕様決定 CA）。
+pub fn scheme_url(target: &str, action: Action, playlist_id: Option<i64>) -> String {
+    let mut url = format!(
         "{}{}",
         action.scheme_prefix(),
         utf8_percent_encode(target, NON_ALPHANUMERIC)
-    )
+    );
+    if let Some(id) = playlist_id {
+        url.push_str(&format!("&playlist_id={id}"));
+    }
+    url
 }
 
-/// 要求本文を解釈し、検証を通れば `opener` でスキーム URL を開く。
-pub fn handle_request<F>(body: &[u8], opener: F) -> Response
+/// 要求本文を解釈する。`list_playlists` は `lister` の結果を直接応答へ、
+/// それ以外は検証を通れば `opener` でスキーム URL を開く。
+pub fn handle_request<F, L>(body: &[u8], opener: F, lister: L) -> Response
 where
     F: FnOnce(&str) -> io::Result<()>,
+    L: FnOnce() -> io::Result<Vec<PlaylistSummary>>,
 {
     let req: Request = match serde_json::from_slice(body) {
         Ok(r) => r,
@@ -195,16 +244,99 @@ where
         Ok(a) => a,
         Err(code) => return Response::Error(code),
     };
-    if !validate_url(&req.url) {
+    // list_playlists は URL を取らない一覧要求で、DB から読んだ結果をそのまま返す。
+    // DB が開けない・読めないときは db_unavailable で失敗を知らせる
+    if action == Action::ListPlaylists {
+        return match lister() {
+            Ok(list) => Response::Playlists(list),
+            Err(e) => {
+                eprintln!("yt-browser native host: プレイリスト一覧を読めません: {e}");
+                Response::Error(ErrorCode::DbUnavailable)
+            }
+        };
+    }
+    let url = match req.url {
+        Some(u) => u,
+        // open / queue / playlist_add では url が必須。欠落は
+        // 「url が文字列でない」と同じ invalid_message に揃える
+        None => return Response::Error(ErrorCode::InvalidMessage),
+    };
+    if !validate_url(&url) {
         return Response::Error(ErrorCode::InvalidUrl);
     }
-    match opener(&scheme_url(&req.url, action)) {
+    // playlist_add は playlist_id が必須。0 以下や欠落は本体の
+    // `deeplink.svelte.ts` が弾く値と同じく、ここで invalid_message にする
+    let playlist_id = match action {
+        Action::PlaylistAdd => match req.playlist_id {
+            Some(id) if id > 0 => Some(id),
+            _ => return Response::Error(ErrorCode::InvalidMessage),
+        },
+        _ => None,
+    };
+    match opener(&scheme_url(&url, action, playlist_id)) {
         Ok(()) => Response::Ok,
         Err(e) => {
             eprintln!("yt-browser native host: スキーム URL を開けません: {e}");
             Response::Error(ErrorCode::OpenFailed)
         }
     }
+}
+
+/// アプリのデータディレクトリ。Tauri の `app_data_dir` と同じ規則で解決する
+/// （Windows は `%APPDATA%\<identifier>`、Linux は
+/// `$XDG_DATA_HOME` または `~/.local/share` 配下）。
+/// ホストモードでは PathResolver を組めないため OS ごとに自前で解決する。
+/// macOS も Linux と同じ解決になるが、対象環境は Windows / Linux のみなので実害はない。
+fn app_data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|d| d.join("io.github.tkg-tamagohan.yt-browser"))
+    }
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+        base.map(|d| d.join("io.github.tkg-tamagohan.yt-browser"))
+    }
+}
+
+/// 本体 DB（`<app_data_dir>/yt-browser.db`）の `playlists` 表を読み取り専用で開き、
+/// `playlist_list` と同じ `ORDER BY sort_order, id` で ID と名前を返す。
+/// 本体未インストール・DB 不在・読めない場合は Err で、`db_unavailable` に写像する。
+fn read_playlists_default() -> io::Result<Vec<PlaylistSummary>> {
+    let db = app_data_dir()
+        .map(|d| d.join("yt-browser.db"))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "データディレクトリを解決できない")
+        })?;
+    read_playlists(&db)
+}
+
+/// `path` の DB を読み取り専用で開いて `playlists` 表を読む。
+/// 本体が起動中でも WAL モードなら読み取りは並行して成功する。
+fn read_playlists(path: &Path) -> io::Result<Vec<PlaylistSummary>> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(io::Error::other)?;
+    let mut stmt = conn
+        .prepare("SELECT id, name FROM playlists ORDER BY sort_order, id")
+        .map_err(io::Error::other)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(PlaylistSummary {
+                id: r.get(0)?,
+                name: r.get(1)?,
+            })
+        })
+        .map_err(io::Error::other)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(io::Error::other)?);
+    }
+    Ok(out)
 }
 
 /// ホスト定義 JSON の本文。`path` はホストとして起動されるバイナリの絶対パス。
@@ -324,6 +456,12 @@ mod tests {
         v
     }
 
+    /// スキーム系テストで `list_playlists` 用に渡すスタブ。
+    /// 一覧要求でない限り呼ばれない前提の空リストを返す。
+    fn empty_playlists() -> io::Result<Vec<PlaylistSummary>> {
+        Ok(Vec::new())
+    }
+
     /// DB-NM-01: 長さ付き JSON の読み書き（設計書 §3.4.1 の通信形式）。
     /// 書いた応答は 4 バイトのネイティブエンディアン長と本文の組で、同じ形で読み戻せる。
     #[test]
@@ -379,10 +517,14 @@ mod tests {
         let target = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1";
         let body = serde_json::to_vec(&json!({ "url": target })).unwrap();
         let mut opened = Vec::new();
-        let res = handle_request(&body, |u| {
-            opened.push(u.to_string());
-            Ok(())
-        });
+        let res = handle_request(
+            &body,
+            |u| {
+                opened.push(u.to_string());
+                Ok(())
+            },
+            empty_playlists,
+        );
         assert_eq!(res, Response::Ok);
         assert_eq!(opened.len(), 1);
         let scheme = url::Url::parse(&opened[0]).unwrap();
@@ -398,24 +540,28 @@ mod tests {
     fn handle_request_error_codes() {
         let never = |_: &str| -> io::Result<()> { panic!("開いてはいけない") };
         assert_eq!(
-            handle_request(b"not json", never),
+            handle_request(b"not json", never, empty_playlists),
             Response::Error(ErrorCode::InvalidMessage)
         );
         assert_eq!(
-            handle_request(br#"{"href":"https://youtu.be/x"}"#, never),
+            handle_request(br#"{"href":"https://youtu.be/x"}"#, never, empty_playlists),
             Response::Error(ErrorCode::InvalidMessage)
         );
         assert_eq!(
-            handle_request(br#"{"url":42}"#, never),
+            handle_request(br#"{"url":42}"#, never, empty_playlists),
             Response::Error(ErrorCode::InvalidMessage)
         );
         assert_eq!(
-            handle_request(br#"{"url":"ftp://example.com/"}"#, never),
+            handle_request(br#"{"url":"ftp://example.com/"}"#, never, empty_playlists),
             Response::Error(ErrorCode::InvalidUrl)
         );
         let fail = |_: &str| -> io::Result<()> { Err(io::Error::other("no handler")) };
         assert_eq!(
-            handle_request(br#"{"url":"https://youtu.be/dQw4w9WgXcQ"}"#, fail),
+            handle_request(
+                br#"{"url":"https://youtu.be/dQw4w9WgXcQ"}"#,
+                fail,
+                empty_playlists
+            ),
             Response::Error(ErrorCode::OpenFailed)
         );
     }
@@ -489,10 +635,14 @@ mod tests {
         // handle_request は FnOnce を受け取るため、呼び出しごとに
         // 記録用の内部クロージャを新しく作る
         let call = |body: &[u8]| -> Response {
-            handle_request(body, |u| {
-                opened.borrow_mut().push(u.to_string());
-                Ok(())
-            })
+            handle_request(
+                body,
+                |u| {
+                    opened.borrow_mut().push(u.to_string());
+                    Ok(())
+                },
+                empty_playlists,
+            )
         };
         // action 省略は従来どおり open スキーム
         let body = serde_json::to_vec(&json!({ "url": "https://youtu.be/dQw4w9WgXcQ" })).unwrap();
@@ -519,14 +669,14 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                handle_request(&body, never),
+                handle_request(&body, never, empty_playlists),
                 Response::Error(ErrorCode::InvalidAction),
                 "action={action:?}"
             );
         }
         let body = serde_json::to_vec(&json!({ "url": "not a url", "action": "play" })).unwrap();
         assert_eq!(
-            handle_request(&body, never),
+            handle_request(&body, never, empty_playlists),
             Response::Error(ErrorCode::InvalidAction)
         );
         // action が文字列でない要求は invalid_message
@@ -534,9 +684,149 @@ mod tests {
             serde_json::to_vec(&json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": 5 }))
                 .unwrap();
         assert_eq!(
-            handle_request(&body, never),
+            handle_request(&body, never, empty_playlists),
             Response::Error(ErrorCode::InvalidMessage)
         );
+    }
+
+    /// DB-NM-12: `playlist_add` アクション（FR-50、仕様決定 CA）。
+    /// `yt-browser://playlist_add?url=<enc>&playlist_id=<id>` を開き、
+    /// `playlist_id` が欠けた・0 以下・数値でない要求は `invalid_message` にする。
+    #[test]
+    fn handle_request_playlist_add() {
+        let opened = std::cell::RefCell::new(Vec::<String>::new());
+        let call = |body: &[u8]| -> Response {
+            handle_request(
+                body,
+                |u| {
+                    opened.borrow_mut().push(u.to_string());
+                    Ok(())
+                },
+                empty_playlists,
+            )
+        };
+        let body = serde_json::to_vec(
+            &json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": "playlist_add",
+                      "playlist_id": 7 }),
+        )
+        .unwrap();
+        assert_eq!(call(&body), Response::Ok);
+        let scheme = url::Url::parse(&opened.borrow()[0]).unwrap();
+        let decoded: Vec<(String, String)> = scheme.query_pairs().into_owned().collect();
+        assert_eq!(
+            decoded,
+            vec![
+                (
+                    "url".to_string(),
+                    "https://youtu.be/dQw4w9WgXcQ".to_string()
+                ),
+                ("playlist_id".to_string(), "7".to_string())
+            ]
+        );
+        // playlist_id の欠落・非整数・0・負数は invalid_message で開かない
+        let never = |_: &str| -> io::Result<()> { panic!("開いてはいけない") };
+        for extra in [
+            json!({}),
+            json!({ "playlist_id": 0 }),
+            json!({ "playlist_id": -1 }),
+            json!({ "playlist_id": "7" }),
+            json!({ "playlist_id": 1.5 }),
+        ] {
+            let mut req =
+                json!({ "url": "https://youtu.be/dQw4w9WgXcQ", "action": "playlist_add" });
+            req.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let body = serde_json::to_vec(&req).unwrap();
+            assert_eq!(
+                handle_request(&body, never, empty_playlists),
+                Response::Error(ErrorCode::InvalidMessage),
+                "extra={extra}"
+            );
+        }
+    }
+
+    /// DB-NM-13: `list_playlists` アクション（FR-50、仕様決定 CA）。
+    /// URL を取らず、`{"ok": true, "playlists": [{"id","name"}]}` を直接返す。
+    /// DB が読めないときは `db_unavailable` にする。
+    #[test]
+    fn handle_request_list_playlists() {
+        let list = vec![
+            PlaylistSummary {
+                id: 1,
+                name: "あとで見る".to_string(),
+            },
+            PlaylistSummary {
+                id: 9,
+                name: "music".to_string(),
+            },
+        ];
+        let res = handle_request(
+            br#"{"action":"list_playlists"}"#,
+            |_| panic!("開いてはいけない"),
+            move || Ok(list.clone()),
+        );
+        assert_eq!(
+            res.to_json(),
+            json!({
+                "ok": true,
+                "playlists": [
+                    { "id": 1, "name": "あとで見る" },
+                    { "id": 9, "name": "music" }
+                ]
+            })
+        );
+        // DB が開けない・読めない失敗は db_unavailable に写像する
+        let res = handle_request(
+            br#"{"action":"list_playlists"}"#,
+            |_| panic!("開いてはいけない"),
+            || Err(io::Error::other("no db")),
+        );
+        assert_eq!(
+            res.to_json(),
+            json!({ "ok": false, "error": "db_unavailable" })
+        );
+        // url を伴わない通常要求は invalid_message のまま（既存挙動の維持）
+        let res = handle_request(
+            br#"{"action":"queue"}"#,
+            |_| panic!("開いてはいけない"),
+            empty_playlists,
+        );
+        assert_eq!(res, Response::Error(ErrorCode::InvalidMessage));
+    }
+
+    /// DB-NM-14: 本体 DB の `playlists` 表の読み取り。
+    /// `playlist_list` と同じ `ORDER BY sort_order, id` で ID と名前を返す。
+    /// DB が無い・表が無い場合は `db_unavailable` へ写像される Err を返す。
+    #[test]
+    fn read_playlists_reads_playlists_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("yt-browser.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE playlists (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playlists (name, sort_order) VALUES ('b', 2), ('a', 1), ('c', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let got = read_playlists(&path).unwrap();
+        // sort_order→id 順： a(1), c(1 の後), b(2)
+        assert_eq!(
+            got.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            vec!["a", "c", "b"]
+        );
+        // 存在しないパスと、表の無い DB は Err
+        assert!(read_playlists(&dir.path().join("none.db")).is_err());
+        let empty_db = dir.path().join("empty.db");
+        rusqlite::Connection::open(&empty_db).unwrap();
+        assert!(read_playlists(&empty_db).is_err());
     }
 
     /// DB-NM-10: 実際の標準入出力と同じ形の 1 往復。
@@ -545,7 +835,7 @@ mod tests {
     fn framed_request_to_framed_response() {
         let input = framed(br#"{"url":"https://www.youtube.com/playlist?list=PL1"}"#);
         let body = read_message(&mut input.as_slice()).unwrap();
-        let res = handle_request(&body, |_| Ok(()));
+        let res = handle_request(&body, |_| Ok(()), empty_playlists);
         let mut out = Vec::new();
         write_message(&mut out, &res.to_json()).unwrap();
         let back = read_message(&mut out.as_slice()).unwrap();

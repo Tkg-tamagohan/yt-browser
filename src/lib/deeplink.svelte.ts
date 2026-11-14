@@ -1,5 +1,5 @@
 /// カスタムスキーム `yt-browser://open?url=<encoded>` で受け取った URL の
-/// 解析と振り分け（FR-17・FR-29、仕様決定 AC・AX）。
+/// 解析と振り分け（FR-17・FR-29・FR-50、仕様決定 AC・AX・CA）。
 ///
 /// 受信は Rust 側（src-tauri/src/deep_link.rs）が `app://open_url`
 /// イベントと `take_open_urls` の保留バッファで担う。ここではアプリ起動中の
@@ -7,6 +7,7 @@
 /// 振り分けは: `open` では動画 URL → その場で再生、プレイリスト URL →
 /// ローカル取り込み、`watch`+`list` 複合は動画として扱う。
 /// `queue` では動画 URL のみ一時キューの末尾へ追加する（再生しない）。
+/// `playlist_add` では動画 URL のみ `playlist_id` 指定のプレイリストへ追加する。
 /// 対象外の URL は通知だけ出す。
 
 import { invoke } from "@tauri-apps/api/core";
@@ -14,7 +15,11 @@ import { listen } from "@tauri-apps/api/event";
 import { goto } from "$app/navigation";
 import { t } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
-import { asErrorMessage, type VideoRef } from "$lib/players.svelte";
+import {
+  asErrorMessage,
+  type Playlist,
+  type VideoRef,
+} from "$lib/players.svelte";
 import { initQueue, queueAdd, rememberMeta } from "$lib/queue.svelte";
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
@@ -22,7 +27,8 @@ const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 export type OpenTarget =
   | { kind: "video"; videoId: string; startSec: number | null }
   | { kind: "playlist"; url: string }
-  | { kind: "queue"; videoId: string };
+  | { kind: "queue"; videoId: string }
+  | { kind: "playlist_add"; videoId: string; playlistId: number };
 
 /// `yt-browser:` スキーム URL を受け取り対象へ分解する。対象外なら null。
 /// 受理する形は `yt-browser://open?url=...`（拡張が発行する形）と、
@@ -39,7 +45,9 @@ export function parseOpenUrl(raw: string): OpenTarget | null {
   const host = parsed.hostname;
   const path = parsed.pathname.replace(/^\/+/, "");
   const action = host === "" ? path.split("/")[0] : host;
-  if (action !== "open" && action !== "queue") return null;
+  if (action !== "open" && action !== "queue" && action !== "playlist_add") {
+    return null;
+  }
   const target = parsed.searchParams.get("url");
   if (!target) return null;
   const classified = classifyTarget(target);
@@ -48,6 +56,14 @@ export function parseOpenUrl(raw: string): OpenTarget | null {
   if (action === "queue") {
     return classified.kind === "video"
       ? { kind: "queue", videoId: classified.videoId }
+      : null;
+  }
+  // プレイリスト追加も動画 URL のみで、正の整数の playlist_id が必須
+  // （FR-50、仕様決定 CA）
+  if (action === "playlist_add") {
+    const id = Number(parsed.searchParams.get("playlist_id"));
+    return classified.kind === "video" && Number.isInteger(id) && id > 0
+      ? { kind: "playlist_add", videoId: classified.videoId, playlistId: id }
       : null;
   }
   return classified;
@@ -148,6 +164,59 @@ async function dispatch(target: OpenTarget): Promise<void> {
       }
     } catch (e) {
       notify(t("deeplink.queueFailed", { message: asErrorMessage(e) }));
+    }
+    return;
+  }
+  if (target.kind === "playlist_add") {
+    // 表示メタの補完はキュー追加と同じ規則に従う（FR-50、仕様決定 CA・AX）。
+    // 台帳・履歴から video_meta_lookup で引き、外れた・タイトル空の項目は
+    // videoId をタイトルへ倒して先に追加し、InnerTube の video_meta_resolve で
+    // 遅延解決して実タイトルで再登録する（BD の遅延解決と同じ規則。
+    // playlist_add の video_upsert が非空タイトルで台帳を更新する）
+    let meta: VideoRef | null = null;
+    try {
+      meta = await invoke<VideoRef | null>("video_meta_lookup", {
+        videoId: target.videoId,
+      });
+    } catch {
+      // 補完失敗は videoId 表示へ倒して追加を続ける
+    }
+    try {
+      // 補完が外れた・タイトル空の項目は動画 ID をタイトル表示へ倒す
+      // （キュー項目と同じ AX(4) のフォールバック。遅延解決の実タイトルで
+      // 上書きされるまでの仮値）
+      const video: VideoRef = {
+        videoId: target.videoId,
+        title: meta?.title || target.videoId,
+        channelId: meta?.channelId ?? null,
+        channelTitle: meta?.channelTitle ?? null,
+        thumbnailUrl: meta?.thumbnailUrl ?? null,
+      };
+      await invoke("playlist_add", { playlistId: target.playlistId, video });
+      // 通知に出すプレイリスト名は追加成功後に playlist_list から引く。
+      // 取れない環境では ID 表示に倒す（追加自体は成功している）
+      const name = await invoke<Playlist[]>("playlist_list")
+        .then((list) => list.find((p) => p.id === target.playlistId)?.name)
+        .catch(() => undefined);
+      notify(t("library.playlist.added", { name: name ?? `#${target.playlistId}` }));
+      if (meta === null || meta.title === "") {
+        void invoke<VideoRef | null>("video_meta_resolve", {
+          videoId: target.videoId,
+        })
+          .then((v) => {
+            // 実タイトルが届いたら再登録して台帳メタを更新する。
+            // playlist_items の行は INSERT OR IGNORE のため位置は保たれる
+            if (v !== null && v.title !== "") {
+              return invoke("playlist_add", {
+                playlistId: target.playlistId,
+                video: v,
+              });
+            }
+          })
+          .catch(() => {});
+      }
+    } catch (e) {
+      notify(t("library.playlist.addFailed", { message: asErrorMessage(e) }));
     }
     return;
   }

@@ -1,16 +1,21 @@
 // yt-browser opener — YouTube の動画・プレイリストを yt-browser で開く／
-// 動画を一時キューへ追加する（yt-browser Phase 19・23・38、
-// 仕様決定 AC・AH・AX）
+// 動画を一時キューやプレイリストへ追加する（yt-browser Phase 19・23・38・60、
+// 仕様決定 AC・AH・AX・CA・CB）
 //
 // - アクション（ツールバーボタン）: 動画画面・プレイリスト画面で有効。
-//   ポップアップで「yt-browser で開く」と「キューに追加」を選ぶ。
+//   ポップアップで「yt-browser で開く」「再生位置を引き継いで開く」
+//   「キューに追加」「プレイリストへ追加」を選ぶ。
 //   対象外ページでは無効化して押せないようにする
 // - 右クリックメニュー: 「yt-browser で開く」は動画・プレイリストへの
 //   リンク上で、「yt-browser のキューに追加」は動画リンク上でのみ表示
 // - 起動は Native Messaging で yt-browser 本体のホストモードへ URL と
-//   action（open / queue）を渡す。ホストが OS 経由で
+//   action（open / queue / playlist_add）を渡す。playlist_add は
+//   playlist_id も渡す。ホストが OS 経由で
 //   yt-browser://<action>?url=<encoded> を開くので、Chrome の外部アプリ
 //   確認も新規タブも出ない（起動中なら起動中インスタンスへ URL が渡る）
+// - ポップアップのプレイリスト選択肢はホストへの `list_playlists`
+//   要求で取得する（応答は { ok: true, playlists: [{id,name}] }。
+//   取れないときは選択肢を「取得できません」にして追加ボタンを無効にする）
 // - ホストが使えない（アプリ未起動で未登録など）か失敗を返したときは、
 //   同じ action のスキーム方式でタブをアクティブで開き、バッジ「!」と
 //   ツールチップで理由を示す
@@ -20,7 +25,7 @@ const HOST_NAME = "io.github.tkg_tamagohan.yt_browser";
 const DEFAULT_TITLE = "yt-browser で開く";
 
 // アクション別のスキームプレフィックス（native_host.rs の
-// scheme_url_for と揃える）
+// scheme_prefix と揃える）
 function schemePrefix(action) {
   return `yt-browser://${action}?url=`;
 }
@@ -63,33 +68,38 @@ function classify(url) {
 }
 
 // Native Messaging で本体のホストへ URL と action を渡す。応答が ok
-// でなければ同じ action のスキーム方式へフォールバックする
-function sendToApp(targetUrl, action) {
-  chrome.runtime.sendNativeMessage(
-    HOST_NAME,
-    { url: targetUrl, action },
-    (response) => {
-      const err = chrome.runtime.lastError;
-      if (!err && response && response.ok === true) {
-        void setIndicator(null);
-        return;
-      }
-      const reason = err
-        ? `アプリに接続できません（${err.message}）。yt-browser を一度起動すると登録されます`
-        : `アプリが失敗を返しました（${response?.error ?? "unknown"}）`;
-      void setIndicator(reason);
-      openViaScheme(targetUrl, action);
-    },
-  );
+// でなければ同じ action のスキーム方式へフォールバックする。
+// `extra.playlistId` は playlist_add のときだけ要求へ載せる
+function sendToApp(targetUrl, action, extra = {}) {
+  const message = { url: targetUrl, action };
+  if (Number.isInteger(extra.playlistId)) {
+    message.playlist_id = extra.playlistId;
+  }
+  chrome.runtime.sendNativeMessage(HOST_NAME, message, (response) => {
+    const err = chrome.runtime.lastError;
+    if (!err && response && response.ok === true) {
+      void setIndicator(null);
+      return;
+    }
+    const reason = err
+      ? `アプリに接続できません（${err.message}）。yt-browser を一度起動すると登録されます`
+      : `アプリが失敗を返しました（${response?.error ?? "unknown"}）`;
+    void setIndicator(reason);
+    openViaScheme(targetUrl, action, extra);
+  });
 }
 
 // 従来方式: スキームを踏ませて OS 経由でアプリを起動する。フォールバック
 // でも要求された action をそのまま使う（キュー追加が開く動作に化けない）。
+// playlist_add のスキームは playlist_id をクエリへ付ける（FR-50、仕様決定 CA）
 // 現タブを書き換えるとページが失われるので専用タブをアクティブで開き、
 // Chrome の確認ダイアログをその場で承認できるようにする。
 // 承認後に残るタブは少し待って閉じる（承認/拒否どちらでも閉じてよい）
-function openViaScheme(targetUrl, action) {
-  const scheme = schemePrefix(action) + encodeURIComponent(targetUrl);
+function openViaScheme(targetUrl, action, extra = {}) {
+  let scheme = schemePrefix(action) + encodeURIComponent(targetUrl);
+  if (Number.isInteger(extra.playlistId)) {
+    scheme += `&playlist_id=${extra.playlistId}`;
+  }
   chrome.tabs.create({ url: scheme, active: true }, (tab) => {
     if (tab.id !== undefined) {
       setTimeout(() => chrome.tabs.remove(tab.id), 5000);
@@ -142,18 +152,49 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   void updateActionState(tabId, tab.url);
 });
 
-// --- ポップアップからの要求。種別判定を返し、起動はここへ委譲させる ---
+// --- ポップアップからの要求。種別判定とプレイリスト一覧の中継を返し、
+// 起動はここへ委譲させる ---
 // 判定ロジックを popup.js へ複製しないよう、分類はすべてこのリスナが担う
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "classify" && typeof msg.url === "string") {
     sendResponse({ kind: classifyKind(msg.url) });
     return;
   }
+  // ポップアップのプレイリスト選択肢。ホストへそのまま中継し、
+  // 応答の { playlists: [{id,name}] } を返す。失敗は null を返して
+  // ポップアップ側で選択肢を無効化する（FR-50、仕様決定 CA）
+  if (msg?.type === "list_playlists") {
+    chrome.runtime.sendNativeMessage(
+      HOST_NAME,
+      { action: "list_playlists" },
+      (response) => {
+        const err = chrome.runtime.lastError;
+        if (!err && response && response.ok === true) {
+          sendResponse({
+            playlists: Array.isArray(response.playlists)
+              ? response.playlists
+              : [],
+          });
+        } else {
+          sendResponse({ playlists: null });
+        }
+      },
+    );
+    // 非同期応答を使うので true を返してポートを開いたままにする
+    return true;
+  }
   if (msg?.type === "invoke" && typeof msg.url === "string") {
     if (msg.action === "open" && classify(msg.url)) {
       sendToApp(msg.url, "open");
     } else if (msg.action === "queue" && classifyKind(msg.url) === "video") {
       sendToApp(msg.url, "queue");
+    } else if (
+      msg.action === "playlist_add" &&
+      classifyKind(msg.url) === "video" &&
+      Number.isInteger(msg.playlistId) &&
+      msg.playlistId > 0
+    ) {
+      sendToApp(msg.url, "playlist_add", { playlistId: msg.playlistId });
     }
   }
 });

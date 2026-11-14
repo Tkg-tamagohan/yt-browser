@@ -86,9 +86,9 @@
 
 ## 外部連携
 
-- **Chrome 拡張**：同梱の MV3 拡張から YouTube の動画とプレイリストを yt-browser で開くか一時キューへ追加できる（FR-17、FR-29。Phase 19、23、38）。
-- **カスタム URL スキーム**：`yt-browser://` で動画は再生、プレイリストは取り込み、`yt-browser://queue` で一時キューへ追加する（FR-17、FR-29。Phase 19、38）。
-- **Native Messaging**：拡張はホストモード経由でアプリへ URL を渡し、確認ダイアログなしで開ける（仕様決定 AH。Phase 23）。
+- **Chrome 拡張**：同梱の MV3 拡張から YouTube の動画とプレイリストを yt-browser で開くか一時キューへ追加できる。再生位置を引き継いでの再生や、ローカルプレイリストへの追加もできる（FR-17、FR-29、FR-50、FR-51。Phase 19、23、38、60）。
+- **カスタム URL スキーム**：`yt-browser://` で動画は再生、プレイリストは取り込み、`yt-browser://queue` で一時キューへ、`yt-browser://playlist_add` でプレイリストへ追加する（FR-17、FR-29、FR-50。Phase 19、38、60）。
+- **Native Messaging**：拡張はホストモード経由でアプリへ URL を渡し、確認ダイアログなしで開ける。プレイリスト一覧もホスト経由で取得する（仕様決定 AH、CA。Phase 23、60）。
 - **ホスト定義の自己登録**：アプリ起動時に Chrome の Native Messaging ホスト定義を自動登録する（仕様決定 AH。Phase 23）。
 
 ## アプリの更新と基盤

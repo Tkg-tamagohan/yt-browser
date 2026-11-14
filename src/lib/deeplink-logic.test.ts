@@ -2,6 +2,7 @@
 // DL-01: `yt-browser://open?url=` のスキーム解析（受理形のバリエーション）
 // DL-02: 対象 URL の振り分け（動画・プレイリスト・watch+list 複合・対象外）
 // DL-03: `yt-browser://queue?url=` のキュー追加解析（動画のみ受理、FR-29）
+// DL-04: `yt-browser://playlist_add` のプレイリスト追加解析（FR-50、仕様決定 CA）
 import { describe, expect, test } from "vitest";
 import { classifyTarget, parseOpenUrl } from "./deeplink.svelte";
 
@@ -130,5 +131,45 @@ describe("DL-03 queue アクション（FR-29、仕様決定 AX）", () => {
       kind: "queue",
       videoId: "dQw4w9WgXcQ",
     });
+  });
+});
+
+describe("DL-04 playlist_add アクション（FR-50、仕様決定 CA）", () => {
+  const q = (u: string, extra = "") =>
+    `yt-browser://playlist_add?url=${encodeURIComponent(u)}${extra}`;
+
+  test("動画 URL と playlist_id をプレイリスト追加対象として返す", () => {
+    expect(parseOpenUrl(q(WATCH, "&playlist_id=7"))).toEqual({
+      kind: "playlist_add",
+      videoId: "dQw4w9WgXcQ",
+      playlistId: 7,
+    });
+    // watch+list 複合も動画扱い（対象動画をプレイリストへ入れる）
+    expect(
+      parseOpenUrl(q(`${WATCH}&list=PLtest12345`, "&playlist_id=3")),
+    ).toEqual({ kind: "playlist_add", videoId: "dQw4w9WgXcQ", playlistId: 3 });
+    expect(parseOpenUrl(q("https://youtu.be/dQw4w9WgXcQ", "&playlist_id=1"))).toEqual(
+      { kind: "playlist_add", videoId: "dQw4w9WgXcQ", playlistId: 1 },
+    );
+  });
+
+  test("playlist_id が無い・非整数・0 以下なら null（unsupported 通知へ）", () => {
+    for (const extra of [
+      "",
+      "&playlist_id=",
+      "&playlist_id=abc",
+      "&playlist_id=0",
+      "&playlist_id=-2",
+      "&playlist_id=1.5",
+    ]) {
+      expect(parseOpenUrl(q(WATCH, extra)), `extra=${extra}`).toBeNull();
+    }
+  });
+
+  test("プレイリスト単体と対象外 URL は null（動画のみ受理）", () => {
+    expect(parseOpenUrl(q(LIST, "&playlist_id=7"))).toBeNull();
+    expect(
+      parseOpenUrl(q("https://example.com/watch?v=dQw4w9WgXcQ", "&playlist_id=7")),
+    ).toBeNull();
   });
 });
