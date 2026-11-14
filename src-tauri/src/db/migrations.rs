@@ -343,4 +343,21 @@ pub const MIGRATIONS: &[Migration] = &[
                 registered_ms INTEGER NOT NULL
               );",
     },
+    // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）。
+    // 同一動画の同一位置の重複保存は UNIQUE (video_id, position_sec) で抑止する
+    // （暫定解釈: 位置表記が既定ラベルのため同位置の重複は実質同一行になる）。
+    // 表示用タイトルはテーブルに持たず、一覧取得時に videos → watch_history
+    // の順で解決する（video_meta_lookup と同じ規則）。
+    Migration {
+        version: 16,
+        name: "video_bookmarks",
+        sql: "CREATE TABLE video_bookmarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT NOT NULL,
+                position_sec INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (video_id, position_sec)
+              );",
+    },
 ];

@@ -141,16 +141,17 @@ export const queueMeta = $state<{ list: Map<string, QueueItemMeta> }>({
 /// キューパネルの開閉と表示対象キュー（FR-26）。ナビ入口とキューを
 /// 背負うカードの両方から共有する。`selected` は表示対象キューのキーで、
 /// 選択中のキューが消滅したら一時キューへ戻すのはパネル側の責務。
-/// `waitsTab` が立つ間はキューではなくライブ待機タブ（FR-44、
-/// 仕様決定 BT(2)）を表示する
+/// `sideTab` はキュー以外の固定タブの選択で、"waits" はライブ待機
+/// （FR-44、仕様決定 BT(2)）、"bookmarks" は動画内ブックマーク
+/// （FR-49、仕様決定 BZ）、null はキュータブを表示する
 export const queuePanel = $state<{
   open: boolean;
   selected: QueueKey;
-  waitsTab: boolean;
+  sideTab: "waits" | "bookmarks" | null;
 }>({
   open: false,
   selected: null,
-  waitsTab: false,
+  sideTab: null,
 });
 
 /// メタを記憶する。キューへの投入経路（キューに追加・次に再生・

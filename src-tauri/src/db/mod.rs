@@ -3,6 +3,7 @@
 //! rusqlite は同期 API のため、接続は `Mutex<Connection>` 1 本に集約する（設計書 §1.2）。
 //! 書き込みは短いトランザクションに収め、接続プールは持たない。
 
+mod bookmark;
 mod channels;
 mod feed;
 mod filters;
