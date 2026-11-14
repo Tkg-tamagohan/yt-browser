@@ -15,6 +15,7 @@
     feedNotifyNewEnabled,
     feedShowShortsEnabled,
   } from "$lib/feed-settings";
+  import { popupShowAuthorEnabled } from "$lib/chat-popup-logic";
   import { closeOnEofEnabled } from "$lib/eof-logic";
   import {
     asErrorMessage,
@@ -32,6 +33,7 @@
   } from "$lib/settings-consts";
   import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
   import SettingsCategoriesSection from "$lib/SettingsCategoriesSection.svelte";
+  import SettingsChatPopupSection from "$lib/SettingsChatPopupSection.svelte";
   import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
@@ -95,6 +97,13 @@
   // 待機中の配信が始まったときの動作（live_wait.action、FR-44・仕様決定 BT(3)）。
   // play=新規インスタンスで自動再生 / notify=トースト通知のみ。既定は play
   let liveWaitAction = $state("play");
+  // チャットポップアップの表示カスタマイズ（chat.popup_show_author /
+  // chat.popup_font_size / chat.popup_opacity、FR-68・仕様決定 CS）。
+  // showAuthor の既定は off（従来どおり非表示）。文字サイズ・不透明度は
+  // 文字列で保持し、空欄は「既定値へ戻す」操作として扱う
+  let chatShowAuthor = $state(false);
+  let chatFontSize = $state("");
+  let chatOpacity = $state("");
   // 新規インスタンスの初期速度・初期音量（player.initial_speed /
   // player.initial_volume、FR-39・仕様決定 BO）。mpv 起動引数へ渡すため
   // 次回の再生開始から有効。入力は文字列で保持し、保存時に範囲検証する。
@@ -289,6 +298,72 @@
       if (liveWaitAction !== lwSnapshot) {
         invalid = true;
         notify(t("settings.livewait.unsaved"));
+      }
+      // chat.popup_show_author / chat.popup_font_size / chat.popup_opacity
+      // （FR-68、仕様決定 CS）。開いているポップアップへは
+      // settings://changed 経由で即時に反映される
+      const sa = chatShowAuthor;
+      await invoke("settings_set", {
+        key: "chat.popup_show_author",
+        value: sa ? "on" : "off",
+      });
+      if (chatShowAuthor !== sa) {
+        invalid = true;
+        notify(t("settings.chatpopup.unsaved"));
+      }
+      // 空欄は既定値へ戻す操作（空文字を保存し、読み取り側の既定解釈に任せる）。
+      // 範囲外・非数は失敗通知のみで保存しない
+      const fsInput = chatFontSize.trim();
+      if (fsInput === "") {
+        await invoke("settings_set", {
+          key: "chat.popup_font_size",
+          value: "",
+        });
+      } else {
+        const n = Number(fsInput);
+        if (Number.isFinite(n) && n >= 10 && n <= 32) {
+          await invoke("settings_set", {
+            key: "chat.popup_font_size",
+            value: fsInput,
+          });
+        } else {
+          invalid = true;
+          notify(
+            t("settings.failed", {
+              message: `chat.popup_font_size: ${fsInput}`,
+            }),
+          );
+        }
+      }
+      if (chatFontSize.trim() !== fsInput) {
+        invalid = true;
+        notify(t("settings.chatpopup.unsaved"));
+      }
+      const opInput = chatOpacity.trim();
+      if (opInput === "") {
+        await invoke("settings_set", {
+          key: "chat.popup_opacity",
+          value: "",
+        });
+      } else {
+        const n = Number(opInput);
+        if (Number.isFinite(n) && n >= 0.2 && n <= 1.0) {
+          await invoke("settings_set", {
+            key: "chat.popup_opacity",
+            value: opInput,
+          });
+        } else {
+          invalid = true;
+          notify(
+            t("settings.failed", {
+              message: `chat.popup_opacity: ${opInput}`,
+            }),
+          );
+        }
+      }
+      if (chatOpacity.trim() !== opInput) {
+        invalid = true;
+        notify(t("settings.chatpopup.unsaved"));
       }
       // player.initial_speed / player.initial_volume（FR-39、仕様決定 BO）。
       // 空欄は既定値へ戻す操作。範囲外・非数は失敗通知のみで保存しない
@@ -525,6 +600,24 @@
       });
       // 未設定・その他の値は play（仕様決定 BT(3) の既定）
       liveWaitAction = liveWaitRaw?.trim() === "notify" ? "notify" : "play";
+      // chat.popup_*（FR-68、仕様決定 CS）。投稿者名は on 系のみ表示、
+      // 文字サイズ・不透明度は保存文字列をそのまま欄に戻す
+      const chatAuthorRaw = await invoke<string | null>("settings_get", {
+        key: "chat.popup_show_author",
+      });
+      chatShowAuthor = popupShowAuthorEnabled(chatAuthorRaw);
+      const chatFontRaw = await invoke<string | null>("settings_get", {
+        key: "chat.popup_font_size",
+      });
+      if (chatFontRaw !== null) {
+        chatFontSize = chatFontRaw.trim();
+      }
+      const chatOpacityRaw = await invoke<string | null>("settings_get", {
+        key: "chat.popup_opacity",
+      });
+      if (chatOpacityRaw !== null) {
+        chatOpacity = chatOpacityRaw.trim();
+      }
       const initialSpeedRaw = await invoke<string | null>("settings_get", {
         key: "player.initial_speed",
       });
@@ -680,6 +773,13 @@
   <SettingsCategoriesSection {notify} />
 
   <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
+
+  <SettingsChatPopupSection
+    {loading}
+    bind:showAuthor={chatShowAuthor}
+    bind:fontSize={chatFontSize}
+    bind:opacity={chatOpacity}
+  />
 
   <SettingsBlockedSection {notify} />
 
