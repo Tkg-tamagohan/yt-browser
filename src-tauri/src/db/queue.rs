@@ -27,12 +27,13 @@ impl Db {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO queue_items
-                   (position, video_id, title, channel_title, thumbnail_url)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                   (position, uid, video_id, title, channel_title, thumbnail_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (i, item) in items.iter().enumerate() {
                 stmt.execute(rusqlite::params![
                     i as i64,
+                    item.uid,
                     item.video_id,
                     item.title,
                     item.channel_title,
@@ -62,17 +63,18 @@ impl Db {
             .optional()?
             .unwrap_or(0);
         let mut stmt = conn.prepare(
-            "SELECT video_id, title, channel_title, thumbnail_url
+            "SELECT uid, video_id, title, channel_title, thumbnail_url
              FROM queue_items ORDER BY position",
         )?;
         let mut rows = stmt.query([])?;
         let mut items = Vec::new();
         while let Some(row) = rows.next()? {
             items.push(QueueItem {
-                video_id: row.get(0)?,
-                title: row.get(1)?,
-                channel_title: row.get(2)?,
-                thumbnail_url: row.get(3)?,
+                uid: row.get(0)?,
+                video_id: row.get(1)?,
+                title: row.get(2)?,
+                channel_title: row.get(3)?,
+                thumbnail_url: row.get(4)?,
             });
         }
         // 保存位置が項目数を超えていてはいけない（手編集等への防御）

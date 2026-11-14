@@ -74,6 +74,10 @@ pub struct PlayerEnded {
     /// 終了した `video_id` と同一なら現在項目の繰り返し（ループ）、
     /// 別項目なら次項目への進行。`continued` が false のとき None。
     pub continued_video_id: Option<String>,
+    /// 継続先項目のユニーク ID（BG-10、仕様決定 BK）。フロントはこの値で
+    /// キュー位置を照合するため、同一動画の連続登録でも位置がずれない。
+    /// `continued` が false のとき None。
+    pub continued_uid: Option<i64>,
     /// このイベント時点の武装取り出し世代（仕様決定 AD）。
     /// フロントはこの値を `player_set_queue` の `base_seq` へ載せて、
     /// その後に別項目を取り出していた置換を拒否させる。
@@ -436,13 +440,27 @@ pub struct PlaylistEntry {
 
 /// `queue_save` / `queue_load` のキュー項目（FR-30、仕様決定 AY）。
 /// 表示メタを項目ごとに持ち、`videos` 台帳には載せない自己完結型。
+/// `uid` はキュー内で一意の連番 ID（BG-10、仕様決定 BK）。v14 未満で
+/// 保存された行は 0 で読み出され、復元側で新規払い出しへ振り替える。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueItem {
+    pub uid: i64,
     pub video_id: String,
     pub title: String,
     pub channel_title: Option<String>,
     pub thumbnail_url: Option<String>,
+}
+
+/// `player_set_queue` で武装するキュー項目（BG-10、仕様決定 BK）。
+/// `uid` はフロント側のキュー項目 ID で、`player://ended` の
+/// `continued_uid` としてそのまま返す。照合に使うだけで
+/// バックエンド側は値の意味を持たない。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueArmItem {
+    pub uid: i64,
+    pub video_id: String,
 }
 
 /// `queue_load` の復元スナップショット（一時キュー）。

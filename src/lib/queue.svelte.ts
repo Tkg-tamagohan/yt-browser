@@ -1,18 +1,20 @@
-//! 連続再生キューとループ（FR-10・FR-20・FR-26、仕様決定 S・AA・AD・AM・AS）。
+//! 連続再生キューとループ（FR-10・FR-20・FR-26、仕様決定 S・AA・AD・AM・AS・BK）。
 //! キューはフロント側のセッション状態として持つ。一時キュー 1 個
 //! （`playlistId` なし）とプレイリストごとのキュー（最大 1 個）を
 //! 同時に保持でき、各キューは項目列・現在位置・実行インスタンスを
 //! 独立に持つ（FR-26、仕様決定 AS）。複数のキューが別々の mpv
 //! インスタンスを背負って同時に連続再生できる。
+//! キュー項目は `uid`＋`videoId` の対（QueueEntry）で、uid はセッション内
+//! 連番のユニーク ID（BG-10、仕様決定 BK）。継続先の照合を uid で行うため、
+//! 同一動画の連続登録・削除・並べ替えでキュー位置がずれない。
 //! 今後の項目は `player_set_queue` で順序列入れてバックエンドへ事前登録
 //! （武装）し、mpv の終端イベントで同一インスタンスが読み替える。
 //! 遷移のたびにフロントへ再登録を要求しない（再登録が終端に間に合わず
-//! 途切れる競合への対策、仕様決定 AD）。登録済みプレイリストと実際に流れた
-//! 項目がずれる（queue drift）のは仕様上の制約として許容する。
+//! 途切れる競合への対策、仕様決定 AD）。
 //! ループ状態もインスタンス別にフロントが持ち、武装対象の選択で実現する
 //! （1 項目は現在項目のみ、全体は末尾到達で先頭へ戻る回転順、キュー無しは
 //! 現在項目を巡回登録）。
-//! 一時キューだけは項目列・表示メタ・現在位置を DB へ永続化し
+//! 一時キューだけは項目列（uid 込み）・表示メタ・現在位置を DB へ永続化し
 //! （FR-30、仕様決定 AY）、起動時に停止状態として復元する。
 
 import { invoke } from "@tauri-apps/api/core";
@@ -35,6 +37,7 @@ import {
   queueEndOutcome,
   reconcileIndex,
   restoredIndex,
+  type QueueEntry,
   type QueuePersistItem,
 } from "./queue-logic";
 import { t } from "$lib/i18n";
@@ -45,7 +48,8 @@ import { asErrorMessage } from "$lib/players.svelte";
 /// 数値はそのプレイリストのキュー（FR-26、仕様決定 AS）
 export type QueueKey = number | null;
 
-/// キュー 1 個の状態。`items` は動画 ID 列、`index` は現在の再生位置。
+/// キュー 1 個の状態。`items` は QueueEntry（uid＋videoId）列、
+/// `index` は現在の再生位置。
 /// `instanceId` はキューを背負うプレイヤーインスタンスで、未実行で
 /// 積んでいるだけのときと「連続再生を止める」で外したあとは null。
 /// `playingCurrent` は実行中に `items[index]` が実際に再生中かどうか。
@@ -54,7 +58,7 @@ export type QueueKey = number | null;
 export type QueueState = {
   playlistId: number | null;
   playlistName: string;
-  items: string[];
+  items: QueueEntry[];
   index: number;
   instanceId: number | null;
   playingCurrent: boolean;
@@ -72,6 +76,23 @@ function newQueue(playlistId: number | null, playlistName: string): QueueState {
     playingCurrent: true,
   });
   return q;
+}
+
+// キュー項目のユニーク ID 払い出し（BG-10、仕様決定 BK）。
+// セッション内で単調増加する連番で、一意性はキュー内で十分
+// （武装キューはプロセス内にしか生きない）。一時キューの
+// uid は DB へ永続化され、復元時に最大値＋1 から再開する
+let uidCounter = 0;
+
+function nextUid(): number {
+  uidCounter += 1;
+  return uidCounter;
+}
+
+/// 新しいキュー項目を採番して作る。キューへの投入経路
+/// （追加・挿入・キュー作成・キュー外ループの武装項目）で使う
+export function newQueueEntry(videoId: string): QueueEntry {
+  return { uid: nextUid(), videoId };
 }
 
 /// 保持中のキュー群（FR-26、仕様決定 AS）。キーは QueueKey。
@@ -148,7 +169,10 @@ export function rememberMeta(v: VideoRef): void {
     thumbnailUrl: v.thumbnailUrl ?? cur?.thumbnailUrl ?? null,
   });
   queueMeta.list = next;
-  if (cur !== undefined && tempQueue().items.includes(v.videoId)) {
+  if (
+    cur !== undefined &&
+    tempQueue().items.some((i) => i.videoId === v.videoId)
+  ) {
     persistTempQueue();
   }
 }
@@ -169,7 +193,7 @@ export function queueMetaOf(videoId: string): QueueItemMeta {
 function pruneMeta(): void {
   const used = new Set<string>();
   for (const q of queues.list.values()) {
-    for (const id of q.items) used.add(id);
+    for (const e of q.items) used.add(e.videoId);
   }
   let next: Map<string, QueueItemMeta> | null = null;
   for (const id of queueMeta.list.keys()) {
@@ -223,7 +247,18 @@ async function restoreTempQueue(): Promise<void> {
     }
   }
   queueMeta.list = next;
-  q.items = snap.items.map((i) => i.videoId);
+  // uid は保存値を引き継ぐ（BG-10、仕様決定 BK）。uid=0 の旧形式行は
+  // 新規払い出しへ振り替える。払い出しカウンタは先に保存値の最大値へ
+  // 合わせてから採番し、0 行への払い出しが保存済み uid と衝突しない
+  // ようにする
+  uidCounter = Math.max(
+    uidCounter,
+    snap.items.reduce((m, i) => Math.max(m, i.uid), 0),
+  );
+  q.items = snap.items.map((i) => ({
+    uid: i.uid > 0 ? i.uid : nextUid(),
+    videoId: i.videoId,
+  }));
   q.index = restoredIndex(snap.items.length, snap.currentIndex);
   q.playingCurrent = true;
   // フォールバック（タイトル＝動画 ID）で保存された項目は、保存以降に
@@ -231,7 +266,9 @@ async function restoreTempQueue(): Promise<void> {
   // フォールバック表示のまま残し、復元自体は妨げない
   const fallbackIds = [
     ...new Set(
-      q.items.filter((id) => isFallbackTitle(queueMetaOf(id).title, id)),
+      q.items
+        .map((i) => i.videoId)
+        .filter((id) => isFallbackTitle(queueMetaOf(id).title, id)),
     ),
   ];
   await Promise.all(
@@ -315,14 +352,15 @@ const rearmPending = new Set<number>();
 /// `plan` は実行時点で評価し、送信順序をチェーンで固定する。
 function enqueueArm(
   instanceId: number,
-  plan: () => { items: string[]; loop: boolean },
+  plan: () => { items: QueueEntry[]; loop: boolean },
 ): Promise<void> {
   const prev = armRuns.get(instanceId) ?? Promise.resolve();
   const run = prev.then(() => {
     const p = plan();
     // コマンド引数は items / loopAll / baseSeq（snake_case の camelCase）。
     // 計画側のキー名（loop）と混ざらないよう明示的に渡す。
-    // baseSeq は計画を評価した時点の観測世代に束ねる
+    // items は QueueEntry（uid＋videoId）の対で、backend の QueueArmItem と
+    // 同じ形のためそのまま送る。baseSeq は計画を評価した時点の観測世代に束ねる
     const sentSeq = armedSeqs.get(instanceId) ?? 0;
     return invoke<boolean>("player_set_queue", {
       instanceId,
@@ -360,7 +398,10 @@ function enqueueArm(
 
 /// 実行時点の最新意図から武装計画を作る（世代ずれ拒否後の即時再適用用）。
 /// キュー中は armPlanFor、キュー外はループモードに応じた単独項目または解除
-function latestPlan(instanceId: number): { items: string[]; loop: boolean } {
+function latestPlan(instanceId: number): {
+  items: QueueEntry[];
+  loop: boolean;
+} {
   const key = queueKeyOfInstance(instanceId);
   const q = key !== undefined ? queues.list.get(key) : undefined;
   if (q !== undefined) {
@@ -373,7 +414,7 @@ function latestPlan(instanceId: number): { items: string[]; loop: boolean } {
   }
   if (loopMode(instanceId) === "none") return { items: [], loop: false };
   const vid = playerStates.list.get(instanceId)?.videoId;
-  return { items: vid ? [vid] : [], loop: true };
+  return { items: vid ? [newQueueEntry(vid)] : [], loop: true };
 }
 
 /// ループ状態を なし → 全体 → 1 項目 の順に切り替える（仕様決定 AA）。
@@ -403,16 +444,11 @@ export async function cycleLoop(instanceId: number): Promise<void> {
       return;
     }
     // キュー外インスタンス: none 以外は現在項目のみの巡回（繰り返し）。none は解除
-    await enqueueArm(instanceId, () =>
-      loopMode(instanceId) === "none"
-        ? { items: [], loop: false }
-        : {
-            items: [playerStates.list.get(instanceId)?.videoId ?? ""].filter(
-              (v) => v !== "",
-            ),
-            loop: true,
-          },
-    );
+    await enqueueArm(instanceId, () => {
+      if (loopMode(instanceId) === "none") return { items: [], loop: false };
+      const vid = playerStates.list.get(instanceId)?.videoId;
+      return { items: vid ? [newQueueEntry(vid)] : [], loop: true };
+    });
   } catch {
     // インスタンスが既に無い場合はキュー・ループ状態を畳む。
     // reject 時点でキューが別インスタンスへ張り替わっている世代は
@@ -458,11 +494,13 @@ async function armQueue(q: QueueState): Promise<void> {
 /// 同じキーの既存キューは捨てて新しいスナップショットで上書きする
 /// （「ここから連続再生」による置き換え、FR-26）。実行中キューへの
 /// 再開始では呼び出し側が同じインスタンスへ読み替えたうえで同じ
-/// instanceId を渡す（セッション引き継ぎ）
+/// instanceId を渡す（セッション引き継ぎ）。
+/// `items` は QueueEntry 列（uid＋videoId）。新規スナップショットの
+/// 作成は newQueueEntry で採番する
 export async function startQueue(
   playlistId: number | null,
   playlistName: string,
-  items: string[],
+  items: QueueEntry[],
   index: number,
   instanceId: number,
 ): Promise<void> {
@@ -504,12 +542,13 @@ function detachInstance(q: QueueState): void {
   // 実際に再生中の項目は player state を優先し、無ければキュー位置。
   // 進行済みの遷移が未着の場合は、到着する ended イベントの再武装が
   // この武装をチェーン上で上書きする（直列化で後着が必ず勝つ）
-  const vid = playerStates.list.get(id)?.videoId ?? q.items[q.index] ?? null;
+  const vid =
+    playerStates.list.get(id)?.videoId ?? q.items[q.index]?.videoId ?? null;
   q.instanceId = null;
   void enqueueArm(id, () =>
-    loopMode(id) === "none"
+    loopMode(id) === "none" || vid === null
       ? { items: [], loop: false }
-      : { items: vid === null ? [] : [vid], loop: true },
+      : { items: [newQueueEntry(vid)], loop: true },
   ).catch(() => {});
 }
 
@@ -557,7 +596,7 @@ export function queueStop(key: QueueKey): void {
 export function queueAdd(v: VideoRef): void {
   const q = tempQueue();
   rememberMeta(v);
-  q.items = [...q.items, v.videoId];
+  q.items = [...q.items, newQueueEntry(v.videoId)];
   persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
 }
@@ -569,7 +608,7 @@ export function queuePlayNext(v: VideoRef): void {
   rememberMeta(v);
   const at = q.instanceId === null ? 0 : q.index + 1;
   const items = [...q.items];
-  items.splice(at, 0, v.videoId);
+  items.splice(at, 0, newQueueEntry(v.videoId));
   q.items = items;
   persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
@@ -630,7 +669,7 @@ export function queueClear(key: QueueKey): void {
 export async function queuePlayStart(key: QueueKey): Promise<void> {
   const q = queues.list.get(key);
   if (q === undefined || q.instanceId !== null) return;
-  const vid = q.items[q.index];
+  const vid = q.items[q.index]?.videoId;
   if (vid === undefined) return;
   const instanceId = await invoke<number>("play_video", {
     videoId: vid,
@@ -649,7 +688,7 @@ export function queuePlayingAt(
   return (
     q !== undefined &&
     q.instanceId !== null &&
-    q.items[q.index] === videoId
+    q.items[q.index]?.videoId === videoId
   );
 }
 
@@ -718,16 +757,17 @@ export function initQueueEvents(): Promise<void> {
           return;
         }
         if (q !== undefined) {
-          // 実際に読み込みが始まった項目で位置を照合する
-          q.index = reconcileIndex(q.items, q.index, p.continuedVideoId);
+          // 実際に読み込みが始まった項目の uid で位置を照合する
+          // （BG-10、仕様決定 BK）
+          q.index = reconcileIndex(q.items, q.index, p.continuedUid);
           // 読み込まれた項目が index 位置と一致すれば再生中扱いに戻す。
-          // drift（照合失敗）では現状を維持する: この時点で index の
-          // 項目は消費済みかもしれず、一律 false にすると再武装で
-          // 再生済みの項目を意図せず再登録してしまうため。未再生扱い
-          // への遷移は queueRemoveAt（削除経路）だけが行う
+          // 照合失敗（編集で消えた武装項目など）では現状を維持する:
+          // この時点で index の項目は消費済みかもしれず、一律 false に
+          // すると再武装で再生済みの項目を意図せず再登録してしまうため。
+          // 未再生扱いへの遷移は queueRemoveAt（削除経路）だけが行う
           if (
-            p.continuedVideoId !== null &&
-            q.items[q.index] === p.continuedVideoId
+            p.continuedUid !== null &&
+            q.items[q.index]?.uid === p.continuedUid
           ) {
             q.playingCurrent = true;
           }
@@ -746,7 +786,7 @@ export function initQueueEvents(): Promise<void> {
           void enqueueArm(p.instanceId, () =>
             loopMode(p.instanceId) === "none"
               ? { items: [], loop: false }
-              : { items: [vid], loop: true },
+              : { items: [newQueueEntry(vid)], loop: true },
           ).catch(() => clearLoop(p.instanceId));
         }
       });

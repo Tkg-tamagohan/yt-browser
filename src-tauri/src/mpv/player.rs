@@ -3,7 +3,7 @@
 use super::spawn::{ipc_endpoint, launch, loadfile_replace};
 use super::terminal::TerminalTracker;
 use super::{fit_pip_geometry, IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
-use crate::model::{PlayStatus, PlayerAction, PlayerState};
+use crate::model::{PlayStatus, PlayerAction, PlayerState, QueueArmItem};
 use crate::util::lock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -171,15 +171,44 @@ pub(crate) struct MpvPlayer {
 /// 連続再生の武装キュー。終端ごとに先頭を消費し、`loop_all` なら
 /// 消費分を末尾へ戻して循環させる。フロントの再武装を待たずに
 /// 複数項目先まで継続できる（仕様決定 AD）。
+/// 項目は `QueueArmItem`（uid＋video_id の対）で、取り出した uid は
+/// `player://ended` の `continued_uid` としてフロントへ返す
+/// （BG-10、仕様決定 BK）。
 /// `seq` は取り出しの世代番号（取り出しのたびに +1）。set_queue の
 /// 置き換え時に世代を比較し、古いイベントに基づく置換を拒否する。
 /// set_queue ではリセットしない（置き換えは意図の更新であり、
 /// 消費済み項目を取り消さない）。
 #[derive(Default)]
 struct ArmedQueue {
-    items: VecDeque<String>,
+    items: VecDeque<QueueArmItem>,
     loop_all: bool,
     seq: u64,
+}
+
+impl ArmedQueue {
+    /// 武装の登録（`player_set_queue` 経路の本体）。
+    /// `base_seq` 指定時は現在世代と一致するときだけ置き換える。
+    /// 世代ずれは置き換えず false を返す。
+    fn set(&mut self, items: Vec<QueueArmItem>, loop_all: bool, base_seq: Option<u64>) -> bool {
+        if base_seq.is_some_and(|s| s != self.seq) {
+            return false;
+        }
+        self.items = items.into();
+        self.loop_all = loop_all;
+        true
+    }
+
+    /// 先頭を取り出す。`loop_all` のとき取り出した項目を末尾へ戻し、
+    /// キューが枯渇しない。取り出しのたびに世代番号を進める
+    /// （空なら世代も据え置き）。
+    fn take_next(&mut self) -> Option<QueueArmItem> {
+        let next = self.items.pop_front()?;
+        self.seq += 1;
+        if self.loop_all {
+            self.items.push_back(next.clone());
+        }
+        Some(next)
+    }
 }
 
 /// SponsorBlock の判定状態。区間は再生開始後のバックグラウンド取得で差し込まれる。
@@ -487,30 +516,18 @@ impl MpvPlayer {
     /// seq は置き換えでリセットしない。
     pub(crate) fn set_queue(
         &self,
-        items: Vec<String>,
+        items: Vec<QueueArmItem>,
         loop_all: bool,
         base_seq: Option<u64>,
     ) -> bool {
-        let mut g = lock(&self.armed);
-        if base_seq.is_some_and(|s| s != g.seq) {
-            return false;
-        }
-        g.items = items.into();
-        g.loop_all = loop_all;
-        true
+        lock(&self.armed).set(items, loop_all, base_seq)
     }
 
     /// 武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
     /// `loop_all` のとき取り出した項目を末尾へ戻し、キューが枯渇しない。
     /// 取り出しのたびに世代番号を進める（空なら世代も据え置き）。
-    pub(crate) fn take_next(&self) -> Option<String> {
-        let mut g = lock(&self.armed);
-        let next = g.items.pop_front()?;
-        g.seq += 1;
-        if g.loop_all {
-            g.items.push_back(next.clone());
-        }
-        Some(next)
+    pub(crate) fn take_next(&self) -> Option<QueueArmItem> {
+        lock(&self.armed).take_next()
     }
 
     /// 取り出し世代（`player://ended` に載せてフロントの置換基準に使う）。
@@ -1298,8 +1315,57 @@ async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::LoadRetryState;
+    use super::{ArmedQueue, LoadRetryState};
+    use crate::model::QueueArmItem;
     use serde_json::json;
+
+    fn arm(uid: i64, video_id: &str) -> QueueArmItem {
+        QueueArmItem {
+            uid,
+            video_id: video_id.to_string(),
+        }
+    }
+
+    /// 武装キュー: 取り出しは uid＋video_id の対をそのまま返す
+    /// （BG-10、仕様決定 BK。同一動画でも uid で区別できる）。
+    #[test]
+    fn armed_queue_take_next_returns_uid_pair() {
+        let mut q = ArmedQueue::default();
+        assert!(q.set(vec![arm(1, "a"), arm(2, "a")], false, None));
+        let first = q.take_next().unwrap();
+        assert_eq!((first.uid, first.video_id.as_str()), (1, "a"));
+        let second = q.take_next().unwrap();
+        assert_eq!((second.uid, second.video_id.as_str()), (2, "a"));
+        assert!(q.take_next().is_none());
+    }
+
+    /// 武装キュー: loop_all は取り出した項目を同一 uid のまま末尾へ戻す。
+    #[test]
+    fn armed_queue_loop_requeues_same_item() {
+        let mut q = ArmedQueue::default();
+        assert!(q.set(vec![arm(7, "x")], true, None));
+        for _ in 0..3 {
+            let item = q.take_next().unwrap();
+            assert_eq!((item.uid, item.video_id.as_str()), (7, "x"));
+        }
+        assert_eq!(q.items.len(), 1);
+    }
+
+    /// 武装キュー: base_seq が現在世代と食い違う置き換えは拒否され、
+    /// 一致すれば適用される（仕様決定 AD）。空からの取り出しは世代を進めない。
+    #[test]
+    fn armed_queue_set_respects_base_seq() {
+        let mut q = ArmedQueue::default();
+        assert!(q.set(vec![arm(1, "a"), arm(2, "b")], false, Some(0)));
+        q.take_next().unwrap();
+        // seq は 1 へ進み、古い世代に基づく置き換えは拒否
+        assert!(!q.set(vec![arm(9, "z")], false, Some(0)));
+        assert_eq!(q.items.len(), 1);
+        // 現在世代に基づく置き換えは適用（seq はリセットしない）
+        assert!(q.set(vec![arm(9, "z")], false, Some(1)));
+        assert_eq!(q.items.len(), 1);
+        assert_eq!(q.seq, 1);
+    }
 
     /// ロード失敗の自動再送: 1 ロードにつき 1 回だけ予約できる（BG-9、仕様決定 BJ）。
     #[test]
