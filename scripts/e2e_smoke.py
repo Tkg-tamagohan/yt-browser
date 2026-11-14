@@ -15,7 +15,8 @@
 - SMK-05: 検索 `/search` の `.search-form`
 - SMK-06: ライブラリ `/library` の `main.container.library` と `nav.tabs`
 - SMK-07: 設定 `/settings` の `.section-filter`
-- SMK-08: `.nav-queue` クリックで `aside.queue-panel` が表示・再クリックで非表示
+- SMK-08: `.nav-queue` クリックでキューパネルの包み div の `hidden` が外れ・再クリックで戻る
+  （`aside.queue-panel` 自体は常時マウントで display が変わらない）
 - SMK-09: 走査中に `Runtime.exceptionThrown` を拾わない（報告のみ・失敗扱いにしない）
 
 使い方:
@@ -145,14 +146,14 @@ def main() -> int:
             opened = bool(
                 session.wait_eval(
                     '(() => { const el = document.querySelector("aside.queue-panel");'
-                    ' return el !== null && getComputedStyle(el).display !== "none" })()',
+                    ' return el !== null && getComputedStyle(el.parentElement).display !== "none" })()',
                     timeout=t,
                 )
             )
             session.evaluate('document.querySelector(".nav-queue").click()')
             closed = session.wait_eval(
                 '(() => { const el = document.querySelector("aside.queue-panel");'
-                ' return el === null || getComputedStyle(el).display === "none" })()',
+                ' return el === null || getComputedStyle(el.parentElement).display === "none" })()',
                 timeout=t,
             )
             ok = opened and bool(closed)

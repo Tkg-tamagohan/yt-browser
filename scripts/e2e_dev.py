@@ -135,13 +135,35 @@ def pnpm_invocation(tail: list[str]) -> tuple[list[str] | str, bool]:
     return ["pnpm", *tail], False
 
 
-def write_override_config(identifier: str) -> Path:
-    """identifier 差し替え用の --config JSON を一時ファイルに書く。"""
+def write_override_config(identifier: str, port: int) -> Path:
+    """identifier 差し替えと CDP ポート開放用の --config JSON を一時ファイルに書く。
+
+    `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` はこの環境の WebView2（Evergreen
+    157）では WebView2 プロセスのコマンドラインへ反映されなかったため、
+    窓設定 `additionalBrowserArgs` で CDP ポートを開く。
+    """
     fd, name = tempfile.mkstemp(
         prefix="yt-browser-e2e-", suffix=".conf.json"
     )
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"identifier": identifier}, f)
+        json.dump(
+            {
+                "identifier": identifier,
+                "app": {
+                    "windows": [
+                        {
+                            # JSON Merge Patch は配列を丸ごと置き換えるため、
+                            # 本体の tauri.conf.json と同じ dragDropEnabled を残す
+                            "dragDropEnabled": False,
+                            "additionalBrowserArgs": (
+                                f"--remote-debugging-port={port}"
+                            )
+                        }
+                    ]
+                },
+            },
+            f,
+        )
     return Path(name)
 
 
@@ -225,7 +247,7 @@ def main() -> int:
     cfg: Path | None = None
     proc: subprocess.Popen | None = None
     try:
-        cfg = write_override_config(args.identifier)
+        cfg = write_override_config(args.identifier, args.port)
         cmd, use_shell = pnpm_invocation(
             ["tauri", "dev", "--config", str(cfg)]
         )
