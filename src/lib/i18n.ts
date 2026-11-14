@@ -679,6 +679,11 @@ const ja = {
   "settings.deps.ytdlpPath.placeholder": "自動検出（空欄）",
   "settings.deps.ytdlpPath.desc":
     "yt-dlp 実行ファイルを直接指定します。空欄は自動検出（同梱リソース → PATH の順）です。変更は保存後、次の yt-dlp 呼び出しから有効になります",
+  // Phase 77: PO Token の伝達（FR-86、仕様決定 DK）
+  "settings.deps.poToken": "PO Token",
+  "settings.deps.poToken.placeholder": "未設定（空欄）",
+  "settings.deps.poToken.desc":
+    "YouTube が PO Token を要求する環境向けの設定。設定すると yt-dlp 呼び出しへ --extractor-args \"youtube:po_token=<値>\" を自動構成して伝達します（mpv 経由のストリーム解決を含む）。値の形式は yt-dlp の PO Token Guide に従います（例: mweb.gvs+<トークン>）。空欄は未設定で、変更は保存後の次の yt-dlp 呼び出しから有効になります",
   "settings.deps.unsaved":
     "保存中に依存コマンドの値が変更されました。もう一度保存してください",
   "settings.diag.title": "診断",

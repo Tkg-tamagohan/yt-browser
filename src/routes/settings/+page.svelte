@@ -153,6 +153,8 @@
   // ユーザー指定の yt-dlp 実行ファイル（ytdlp.path、FR-72・仕様決定 CW）。
   // 空欄は自動検出（解決順は設計書 §5）
   let ytdlpPath = $state("");
+  // YouTube の PO Token（ytdlp.po_token、FR-86・仕様決定 DK）。空欄は未設定
+  let poToken = $state("");
   // 節フィルタの絞り込み入力（FR-73、仕様決定 CX）。節のラベル文字列への
   // 大小文字を区別しない部分一致で表示する節を絞る
   let sectionQuery = $state("");
@@ -539,6 +541,14 @@
         invalid = true;
         notify(t("settings.deps.unsaved"));
       }
+      // ytdlp.po_token: PO Token（FR-86、仕様決定 DK）。空欄は未設定へ戻す。
+      // 値は次の yt-dlp 呼び出し（mpv 経由のストリーム解決を含む）から有効
+      const pt = poToken.trim();
+      await invoke("settings_set", { key: "ytdlp.po_token", value: pt });
+      if (poToken.trim() !== pt) {
+        invalid = true;
+        notify(t("settings.deps.unsaved"));
+      }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
       // （invalid には未保存変更の検出も含む）
@@ -774,6 +784,13 @@
       if (ytdlpPathRaw !== null) {
         ytdlpPath = ytdlpPathRaw.trim();
       }
+      // ytdlp.po_token（FR-86、仕様決定 DK）。空・未設定は未設定
+      const poTokenRaw = await invoke<string | null>("settings_get", {
+        key: "ytdlp.po_token",
+      });
+      if (poTokenRaw !== null) {
+        poToken = poTokenRaw.trim();
+      }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
         if (Number.isFinite(n)) wheelDelta = n;
@@ -934,7 +951,11 @@
   </div>
 
   <div class:hidden={!visibleSectionIds.has("deps")}>
-    <SettingsDepsSection {loading} bind:ytdlpPath={ytdlpPath} />
+    <SettingsDepsSection
+      {loading}
+      bind:ytdlpPath={ytdlpPath}
+      bind:poToken={poToken}
+    />
   </div>
 
   <div class:hidden={!visibleSectionIds.has("diag")}>

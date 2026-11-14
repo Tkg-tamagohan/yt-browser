@@ -16,6 +16,12 @@ const PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 設定キー: yt-dlp のパスをユーザーが明示する場合の上書き設定。
 pub const SETTING_YTDLP_PATH: &str = "ytdlp.path";
+/// 設定キー: YouTube の PO Token（FR-86、仕様決定 DK）。空・未設定は未指定。
+/// 設定時は YouTube へ問い合わせる yt-dlp 呼び出しへ
+/// `--extractor-args "youtube:po_token=<値>"` を自動構成して伝達する。
+/// 値は yt-dlp の `po_token` 引数の形式そのまま（`web.gvs+<token>` 等の
+/// client.context 付き形式を含む）。汎用の extractor-args 設定キーは持たない。
+pub const SETTING_PO_TOKEN: &str = "ytdlp.po_token";
 /// 設定キー: 画質式（`ytdl-format`）のユーザー上書き。
 pub const SETTING_QUALITY_FORMAT: &str = "quality.format";
 /// 設定キー: PiP で起動するインスタンスの既定画質式（仕様決定 W）。
@@ -44,6 +50,38 @@ pub fn resolve_launch_format(
         }
     }
     global_format.and_then(|s| normalize(&s))
+}
+
+/// `ytdlp.po_token` の設定値を読む（FR-86、仕様決定 DK）。
+/// 未設定・空・空白のみは None。読み取り失敗も未設定と同じ None として扱い、
+/// 呼び出しを設定由来の引数なしで続行する（設定読み取り失敗で yt-dlp
+/// 呼び出し自体を止めない。他キーの解決と同じ扱い）。
+pub fn po_token_setting(db: &Db) -> Option<String> {
+    db.setting_get(SETTING_PO_TOKEN)
+        .ok()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// PO Token の設定値から yt-dlp `--extractor-args` に渡す値
+/// `youtube:po_token=<設定値>` を構成する（FR-86、仕様決定 DK）。
+/// 前後空白は削り、空は None とする。値はトリム後そのまま埋め込むため、
+/// `<client>.<context>+<token>` 形式や `;` 以降の併記の解釈は yt-dlp 側に委ねる
+/// （暫定解釈。visitor_data 等の併用が必要な場合は `T;visitor_data=V` の形の
+/// 設定値で yt-dlp の引数構文へ逃がせる）。
+pub fn po_token_extractor_arg(po_token: Option<&str>) -> Option<String> {
+    let t = po_token.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!("youtube:po_token={t}"))
+}
+
+/// yt-dlp 起動引数へ追加する `--extractor-args` の組（FR-86、仕様決定 DK）。
+/// PO Token 未設定なら空列を返し、既存の引数構成へそのまま `.args()` で併合できる。
+pub fn po_token_args(po_token: Option<&str>) -> Vec<String> {
+    match po_token_extractor_arg(po_token) {
+        Some(arg) => vec!["--extractor-args".to_string(), arg],
+        None => Vec::new(),
+    }
 }
 
 #[derive(Debug, Error)]
@@ -170,14 +208,16 @@ fn combined_output(out: &std::process::Output) -> String {
 /// チャンネル URL（@handle 等）からチャンネル ID を解決する。
 /// `--flat-playlist --playlist-end 1 --dump-single-json` で最小限の取得に留める。
 /// 返される JSON の `channel_id` を読む（プレイリスト型応答を想定）。
-pub async fn channel_id(path: &str, url: &str) -> Result<String, YtError> {
+/// `po_token` は設定 `ytdlp.po_token` の値（FR-86、仕様決定 DK）。
+pub async fn channel_id(path: &str, url: &str, po_token: Option<&str>) -> Result<String, YtError> {
     let out = run_with_timeout(
         Command::new(path)
             .arg(url)
             .arg("--flat-playlist")
             .arg("--playlist-end")
             .arg("1")
-            .arg("--dump-single-json"),
+            .arg("--dump-single-json")
+            .args(po_token_args(po_token)),
     )
     .await?;
     if !out.status.success() {
@@ -197,13 +237,19 @@ pub async fn channel_id(path: &str, url: &str) -> Result<String, YtError> {
 /// `channel_id` → `uploader_id` → `channel_url` の順に非空の値を
 /// `subscribe_channel` が受理できる形に正規化して返す。
 /// 動画視聴ページは単一項目のプレイリストとして `--flat-playlist` で軽く取る。
-pub async fn video_channel_ref(path: &str, video_id: &str) -> Result<Vec<String>, YtError> {
+/// `po_token` は設定 `ytdlp.po_token` の値（FR-86、仕様決定 DK）。
+pub async fn video_channel_ref(
+    path: &str,
+    video_id: &str,
+    po_token: Option<&str>,
+) -> Result<Vec<String>, YtError> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let out = run_with_timeout(
         Command::new(path)
             .arg(&url)
             .arg("--flat-playlist")
-            .arg("--dump-single-json"),
+            .arg("--dump-single-json")
+            .args(po_token_args(po_token)),
     )
     .await?;
     if !out.status.success() {
@@ -265,12 +311,14 @@ fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
 /// （1 始まり）の範囲取得する。戻り値は `(video_id, title, thumbnail_url)` の列。
 /// 投稿日はチャンネルタブの flat エントリに載らないため取らない
 /// （videos.published_at は NULL で投入され、フィード一覧では末尾側に並ぶ）。
+/// `po_token` は設定 `ytdlp.po_token` の値（FR-86、仕様決定 DK）。
 pub async fn channel_tab_entries(
     path: &str,
     channel_id: &str,
     tab: &str,
     start: u32,
     end: u32,
+    po_token: Option<&str>,
 ) -> Result<Vec<(String, String, Option<String>)>, YtError> {
     let url = format!("https://www.youtube.com/channel/{channel_id}/{tab}");
     let out = run_with_timeout(
@@ -281,7 +329,8 @@ pub async fn channel_tab_entries(
             .arg(start.to_string())
             .arg("--playlist-end")
             .arg(end.to_string())
-            .arg("--dump-single-json"),
+            .arg("--dump-single-json")
+            .args(po_token_args(po_token)),
     )
     .await?;
     if !out.status.success() {
@@ -329,15 +378,18 @@ fn parse_channel_tab(
 /// `--flat-playlist --dump-single-json` で取り、項目を `VideoRef` へ変換する。
 /// 戻り値は `(プレイリスト名, 登録順の VideoRef 列)`。
 /// 項目は動画 ID の取れたものだけを返し、ID の無いエントリは飛ばす。
+/// `po_token` は設定 `ytdlp.po_token` の値（FR-86、仕様決定 DK）。
 pub async fn playlist_meta(
     path: &str,
     url: &str,
+    po_token: Option<&str>,
 ) -> Result<(Option<String>, Vec<crate::model::VideoRef>), YtError> {
     let out = run_with_timeout(
         Command::new(path)
             .arg(url)
             .arg("--flat-playlist")
-            .arg("--dump-single-json"),
+            .arg("--dump-single-json")
+            .args(po_token_args(po_token)),
     )
     .await?;
     if !out.status.success() {
@@ -418,17 +470,20 @@ async fn run_with_timeout(cmd: &mut Command) -> Result<std::process::Output, YtE
 /// `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist` による検索（設計書 §5）。
 /// flat エントリはチャンネル一覧表示と同等の軽量メタだけを持つ。
 /// `limit` は取得する最大件数。
+/// `po_token` は設定 `ytdlp.po_token` の値（FR-86、仕様決定 DK）。
 pub async fn search(
     path: &str,
     query: &str,
     limit: u32,
+    po_token: Option<&str>,
 ) -> Result<Vec<crate::model::SearchResult>, YtError> {
     let out = run_with_timeout(
         Command::new(path)
             .arg(format!("ytsearch{limit}:{query}"))
             .arg("--dump-json")
             .arg("--flat-playlist")
-            .arg("--no-warnings"),
+            .arg("--no-warnings")
+            .args(po_token_args(po_token)),
     )
     .await?;
     if !out.status.success() {
@@ -715,5 +770,46 @@ mod tests {
             parse_channel_tab(&null_entries),
             Err(YtError::Malformed(_))
         ));
+    }
+
+    /// DB-PO-01: PO Token の `--extractor-args` 構成（FR-86、仕様決定 DK）。
+    /// 設定値はトリムして `youtube:po_token=<値>` の形で 1 組の
+    /// `--extractor-args` 引数に載せ、呼び出し側の既存引数と併存できる
+    /// 追加引数列として返す。トークン値は fixture ではなく仮値で検証する。
+    #[test]
+    fn po_token_args_builds_extractor_args() {
+        assert_eq!(
+            po_token_args(Some("TOKEN_VALUE")),
+            vec![
+                "--extractor-args".to_string(),
+                "youtube:po_token=TOKEN_VALUE".to_string()
+            ]
+        );
+        // 前後空白は削って構成する
+        assert_eq!(
+            po_token_args(Some("  mweb.gvs+TOKEN_VALUE  ")),
+            vec![
+                "--extractor-args".to_string(),
+                "youtube:po_token=mweb.gvs+TOKEN_VALUE".to_string()
+            ]
+        );
+        // client.context 付きや `;` 以降の併記は値をそのまま埋め込み、
+        // yt-dlp 側の引数構文の解釈に委ねる（暫定解釈）
+        assert_eq!(
+            po_token_extractor_arg(Some("T;visitor_data=V")).as_deref(),
+            Some("youtube:po_token=T;visitor_data=V")
+        );
+    }
+
+    /// DB-PO-02: PO Token 未設定・空・空白のみでは引数を追加しない
+    /// （FR-86、仕様決定 DK）。汎用 extractor-args キーを持たないため、
+    /// 未設定時は yt-dlp 既定の挙動へ委ねる。
+    #[test]
+    fn po_token_args_empty_when_unset() {
+        assert!(po_token_args(None).is_empty());
+        assert!(po_token_args(Some("")).is_empty());
+        assert!(po_token_args(Some("   ")).is_empty());
+        assert_eq!(po_token_extractor_arg(None), None);
+        assert_eq!(po_token_extractor_arg(Some("  ")), None);
     }
 }

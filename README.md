@@ -49,7 +49,7 @@ pnpm check        # svelte-check
 
 - yt-dlp の解決順は「設定 `ytdlp.path` → 同梱リソース → PATH の `yt-dlp`」。現在の運用はシステムインストール前提（配布物はアプリ本体のみで同梱しない。同梱は今後の選択肢として残す）
 - YouTube 解読のため yt-dlp が外部 JS ランタイムを要求する環境がある。`deno` を PATH に入れておく
-- PO Token を要求される環境では、yt-dlp 側の手順（`--cookies` や外部プロバイダ）に従う。アプリ側の設定項目はなく、yt-dlp の設定ファイルに記述する運用になる（bot 判定の回避手順は [docs/user-guide.md](docs/user-guide.md) の「bot 判定の回避（cookies.txt）」を参照）
+- PO Token を要求される環境では、設定 `ytdlp.po_token`（設定画面の「依存コマンド」節）で値を yt-dlp 呼び出しへ伝達できる（FR-86、仕様決定 DK）。yt-dlp 側の手順（`--cookies` や外部プロバイダ）の利用も引き続き可能（bot 判定の回避手順は [docs/user-guide.md](docs/user-guide.md) の「bot 判定の回避（cookies.txt）」を参照）
 - アプリ内の「yt-dlp 更新」ボタンは `yt-dlp -U` を呼ぶ。システム管理のパスでは権限不足で失敗し得る
 
 ## 文書

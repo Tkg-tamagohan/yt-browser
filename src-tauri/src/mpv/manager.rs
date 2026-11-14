@@ -134,6 +134,9 @@ impl PlayerManager {
             start_sec,
             ytdl_format: ytdl_format.unwrap_or_else(|| DEFAULT_YTDL_FORMAT.to_string()),
             ytdlp_path,
+            // PO Token（FR-86、仕様決定 DK）。起動引数へ載せるため
+            // 変更は次回の再生開始から有効（ytdlp.path と同じ有効化経路）
+            po_token: crate::yt::po_token_setting(&self.db),
             wheel_script: self.wheel_script.clone(),
             wheel_volume_delta,
             pip_geometry: pip.then(|| self.pip_geometry()),

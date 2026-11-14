@@ -322,7 +322,8 @@ pub async fn playlist_import(
         .resolve(&db)
         .await
         .ok_or_else(|| UiError::from(yt::YtError::NotFound))?;
-    let (fetched_title, items) = yt::playlist_meta(&path, &url).await?;
+    let (fetched_title, items) =
+        yt::playlist_meta(&path, &url, yt::po_token_setting(&db).as_deref()).await?;
     if items.is_empty() {
         return Err(UiError::invalid_input(
             "プレイリストから動画を取得できませんでした",
