@@ -106,6 +106,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `library_search` | `query`, `limit?`（既定 200、上限 1000） | `Result<Vec<LibrarySearchItem>>`（FR-60、仕様決定 CK。ライブラリ横断検索。同一動画は `sources` に区分を持つ 1 件へまとめる） |
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
+| `deps_status` | なし | `Result<Vec<DepStatus>>`（mpv・yt-dlp・deno の検出状況・バージョン・解決パス。FR-74、仕様決定 CY、§5） |
+| `setup_deps_pending` | なし | `Result<bool>`（初回起動の依存検出画面が未表示か。FR-75、仕様決定 CZ、§5） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
 | `playing_channel` | `video_id` | `Result<PlayingChannel>`（FR-12。videos → watch_history → yt-dlp メタの順に `subscribe_channel` へ渡せる入力と表示名を解決し、UC 確定時は購読済みかも返す） |
 | `unsubscribe_channel` | `channel_id` | `Result<()>` |
@@ -270,7 +272,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `pip.quality.format` | `ytdl-format` 式 | PiP インスタンスの既定画質（§4.5）。未設定・空文字は `quality.format` に従う（仕様決定 W） |
 | `pip.default` | `on` / `off` | 再生の既定表示を PiP 小窓にするか（§4.5、仕様決定 AJ）。未設定・その他の値は `on`（PiP が既定） |
 | `pip.fit_aspect` | `on` / `off` | PiP 小窓のサイズを動画の表示アスペクト比へ追従させるか（§4.5、仕様決定 AL）。未設定・その他の値は `on`（追従する）。受理集合は `pip.default` と同一 |
-| `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5） |
+| `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5）。設定画面の依存節の入力欄からも設定できる（FR-72、仕様決定 CW） |
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
@@ -290,6 +292,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
 | `player.close_on_eof` | `on` / `off` | 再生完了時の自動クローズ（§4.15、FR-43、仕様決定 BS）。`on` のとき継続再生を伴わない `reason=eof` の終端でインスタンスを畳む。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（残す）。終端時点の値で都度判定する |
 | `live_wait.action` | `play` / `notify` | ライブ待機の開始検出時の動作（§4.16、FR-44、仕様決定 BT）。`play` は新規インスタンスで自動再生、`notify` はトースト通知のみ。未設定・その他の値は `play` |
+| `setup.deps_shown` | `on` / `off` | 初回起動の依存検出画面の既出フラグ（§5、FR-75、仕様決定 CZ）。on 系のみ表示済み＝次回以降は出さない。未設定・その他の値は未表示（初回起動で表示する）。受理集合は `feed.show_shorts` と同一 |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -1052,6 +1055,13 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
   アプリからの伝達経路は後フェーズの課題とし、README に手順へのポインタを置く。
 - **失敗の扱い**：タイムアウト、非ゼロ終了、JSON パース失敗を区別して記録し、解析失敗は生の先頭部分をログに残す
 
+依存コマンドの設定画面公開と診断・初回誘導を次に置く（Phase 70、FR-72〜FR-75、仕様決定 CW・CX・CY・CZ）。
+
+- **依存節**：設定画面の「依存コマンド」節に `ytdlp.path` のパス入力欄を置く（FR-72、仕様決定 CW）。空欄は自動検出（上記の解決順）で、保存後の次の yt-dlp 呼び出しから有効
+- **診断節**：`deps_status` コマンドが mpv・yt-dlp・deno の検出状況・バージョン・解決パスをこの順で返し、設定画面の「診断」節が一覧する（FR-74、仕様決定 CY）。mpv・deno は PATH 上の `<cmd> --version` で検出する（spawn 成功かつ終了コード 0 を検出とみなし、応答停止対策のタイムアウトは `yt::which_exists` と同じ 10 秒）。解決パスは PATH 解決名としてコマンド名を返す。yt-dlp は `YtDlpResolver` の解決順の結果を使う。`--version` 出力は先頭の非空行をバージョン表示に使う（mpv は後続行にビルド情報、deno は v8 / typescript の行が続くため）。3 件の検出は並行して行う
+- **初回セットアップ**：設定 `setup.deps_shown` が on 系でない起動時に `setup_deps_pending` が true を返し、フロントは FR-74 の依存検出画面（診断節と同じ一覧部品）をオーバーレイで表示してセットアップを誘導する（FR-75、仕様決定 CZ）。「はじめる」で `setup.deps_shown` に `on` を保存して閉じ、次回以降は表示しない。判定の解釈は `feed.show_shorts` 系と同じ on 系受理集合（on/true/1/yes）
+- **節フィルタ**：設定画面上部の絞り込み入力で、節のラベル文字列（見出しと項目名の i18n 解決値とコマンド名）への大小文字を区別しない部分一致で表示する節を絞る（FR-73、仕様決定 CX）。空・空白のみの入力は全節を表示する。非表示は hidden 切替で再マウントしない（§9.4 の方針に揃える暫定解釈）。判定は `settings-filter.ts` の純粋関数に集約し、節とラベルの対応は同ファイルの `SETTINGS_SECTION_DEFS` に登録する
+
 ## 6. InnerTube クライアントとチャットパイプライン
 
 ### 6.1 共有の土台
@@ -1389,6 +1399,7 @@ yt-browser/
       db/             # rusqlite・マイグレーション
       model/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
+      deps.rs         # 依存コマンド（mpv・yt-dlp・deno）の検出と初回セットアップ判定（§5）
       native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
       util.rs
@@ -1396,7 +1407,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

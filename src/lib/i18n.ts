@@ -645,6 +645,31 @@ const ja = {
   "settings.ops.cleanupFailed": "孤児行整理に失敗: {message}",
   "settings.ops.busy": "実行中…",
 
+  // Phase 70: 設定と依存診断の拡充（FR-72・FR-73・FR-74・FR-75、仕様決定 CW・CX・CY・CZ）
+  "settings.filter.placeholder": "節を絞り込み（例: 画質、mpv、フィード）",
+  "settings.filter.noMatch": "一致する節がありません",
+  "settings.deps.title": "依存コマンド",
+  "settings.deps.desc":
+    "mpv・yt-dlp・deno など外部コマンドの設定。検出状況の一覧は「診断」節を参照",
+  "settings.deps.ytdlpPath": "yt-dlp のパス",
+  "settings.deps.ytdlpPath.placeholder": "自動検出（空欄）",
+  "settings.deps.ytdlpPath.desc":
+    "yt-dlp 実行ファイルを直接指定します。空欄は自動検出（同梱リソース → PATH の順）です。変更は保存後、次の yt-dlp 呼び出しから有効になります",
+  "settings.deps.unsaved":
+    "保存中に依存コマンドの値が変更されました。もう一度保存してください",
+  "settings.diag.title": "診断",
+  "settings.diag.desc":
+    "外部コマンドの検出状況・バージョン・解決パスの一覧。初回起動時にも同じ一覧が表示されます",
+  "deps.detected": "検出",
+  "deps.missing": "未検出",
+  "deps.refresh": "再検出",
+  "deps.refreshing": "検出中…",
+  "deps.failed": "依存コマンドの検出に失敗: {message}",
+  "setup.title": "初期セットアップ",
+  "setup.desc":
+    "yt-browser の動作に必要な外部コマンドの検出状況です。未検出のコマンドはインストールするか、設定画面の「依存コマンド」節でパスを指定してください。この一覧は設定画面の「診断」節でいつでも再確認できます",
+  "setup.ok": "はじめる",
+
 } as const;
 
 export type MessageKey = keyof typeof ja;

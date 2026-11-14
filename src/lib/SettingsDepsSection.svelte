@@ -1,0 +1,58 @@
+<script lang="ts">
+  // 依存コマンド節（FR-72、仕様決定 CW）。
+  // `ytdlp.path`（ユーザー指定の yt-dlp 実行ファイル）の入力欄を置く。
+  // 保存は設定画面の保存ボタン経由（値の解決順は設計書 §5）。
+  import { t } from "$lib/i18n";
+
+  let {
+    loading,
+    ytdlpPath = $bindable(),
+  }: {
+    loading: boolean;
+    ytdlpPath: string;
+  } = $props();
+</script>
+
+  <section class="panel panel--filled">
+    <h2>{t("settings.deps.title")}</h2>
+    <p class="subtle desc">{t("settings.deps.desc")}</p>
+    {#if loading}
+      <p class="subtle">…</p>
+    {:else}
+      <label class="dep-row">
+        {t("settings.deps.ytdlpPath")}
+        <input
+          type="text"
+          class="path-input"
+          bind:value={ytdlpPath}
+          placeholder={t("settings.deps.ytdlpPath.placeholder")}
+        />
+      </label>
+      <p class="subtle desc">{t("settings.deps.ytdlpPath.desc")}</p>
+    {/if}
+  </section>
+
+<style>
+  h2 {
+    font-size: 1.1rem;
+    margin: 0 0 4px;
+  }
+
+  .desc {
+    font-size: 0.9rem;
+    margin-top: 0;
+  }
+
+  .dep-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0;
+    font-size: 0.95rem;
+  }
+
+  .path-input {
+    flex: 1;
+    font-family: monospace;
+  }
+</style>
