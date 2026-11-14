@@ -430,4 +430,15 @@ pub const MIGRATIONS: &[Migration] = &[
               CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC);
               CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);",
     },
+    // Phase 64: 「あとで見る」（FR-59、仕様決定 CJ）。
+    // favorites と同じく video_id 主キーと登録日時だけを持ち、
+    // 表示メタは videos 台帳へ登録して一覧取得時に JOIN で取る。
+    Migration {
+        version: 19,
+        name: "watch_later",
+        sql: "CREATE TABLE watch_later (
+                video_id TEXT PRIMARY KEY,
+                added_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );",
+    },
 ];

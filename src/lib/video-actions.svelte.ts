@@ -1,6 +1,7 @@
-// VideoActions 行アクション（FR-7: お気に入り・プレイリスト）の配線。
-// feed・search・library・RelatedPanel に重複していた、favIds/playlists の
-// 取得とコールバック受け渡しをここに集約する。
+// VideoActions 行アクション（FR-7: お気に入り・プレイリスト、
+// FR-59: あとで見る）の配線。
+// feed・search・library・RelatedPanel に重複していた、favIds/playlists/
+// watchLaterIds の取得とコールバック受け渡しをここに集約する。
 
 import { loadLibrary } from "$lib/library";
 import type { Playlist, VideoRef } from "$lib/players.svelte";
@@ -30,18 +31,21 @@ type Options = {
   onFavChange?: (videoId: string, faved: boolean) => void;
   /// プレイリスト新規作成後の追加処理（ライブラリは世代番号の更新に使う）
   onPlaylistCreated?: (pl: Playlist) => void;
+  /// あとで見るトグル後の追加処理（ライブラリは新タブの一覧更新に使う）
+  onWatchLaterChange?: (videoId: string, watchLater: boolean) => void;
   /// 変更コールバックのあとに loadLibrary で DB と再同期する
   /// （関連パネルは他ページでの編集を取り込むため true にする）
   resyncOnChange?: boolean;
 };
 
-/// favIds/playlists の状態と VideoActions のコールバックをまとめて作る。
-/// refresh は発行順を守る loadLibrary のラッパで、より新しい取得が
-/// 走っていれば古い応答は捨てる。失敗は静かに握る
+/// favIds/playlists/watchLaterIds の状態と VideoActions のコールバックを
+/// まとめて作る。refresh は発行順を守る loadLibrary のラッパで、
+/// より新しい取得が走っていれば古い応答は捨てる。失敗は静かに握る
 /// （行アクションが出せなくても各行の操作は継続できる）。
 export function createVideoActionState(opts: Options = {}) {
   let favIds = $state<Set<string>>(new Set());
   let playlists = $state<Playlist[]>([]);
+  let watchLaterIds = $state<Set<string>>(new Set());
   let loadSeq = 0;
 
   async function refresh(): Promise<void> {
@@ -51,6 +55,7 @@ export function createVideoActionState(opts: Options = {}) {
       if (seq !== loadSeq) return;
       favIds = lib.favIds;
       playlists = lib.playlists;
+      watchLaterIds = lib.watchLaterIds;
     } catch {
       // 行アクションが出せなくても再生など各行の操作は使えるため静かに握る
     }
@@ -71,6 +76,15 @@ export function createVideoActionState(opts: Options = {}) {
     if (opts.resyncOnChange) void refresh();
   }
 
+  function onWatchLaterChange(videoId: string, watchLater: boolean): void {
+    const next = new Set(watchLaterIds);
+    if (watchLater) next.add(videoId);
+    else next.delete(videoId);
+    watchLaterIds = next;
+    opts.onWatchLaterChange?.(videoId, watchLater);
+    if (opts.resyncOnChange) void refresh();
+  }
+
   return {
     get favIds() {
       return favIds;
@@ -84,8 +98,15 @@ export function createVideoActionState(opts: Options = {}) {
     set playlists(v: Playlist[]) {
       playlists = v;
     },
+    get watchLaterIds() {
+      return watchLaterIds;
+    },
+    set watchLaterIds(v: Set<string>) {
+      watchLaterIds = v;
+    },
     refresh,
     onFavChange,
     onPlaylistCreated,
+    onWatchLaterChange,
   };
 }

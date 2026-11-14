@@ -164,3 +164,19 @@ impl Db {
         Ok(v)
     }
 }
+
+/// 検索語を `%...%` の部分一致 LIKE パターンにする（FR-60・FR-61、
+/// 仕様決定 CK・CL）。`%`・`_`・`\` を `\` で退避し、SQL 側の
+/// `ESCAPE '\'` 句と対にする（利用者入力のワイルドカードを無力化する）。
+pub(crate) fn like_pattern(raw: &str) -> String {
+    let mut p = String::with_capacity(raw.len() + 2);
+    p.push('%');
+    for c in raw.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            p.push('\\');
+        }
+        p.push(c);
+    }
+    p.push('%');
+    p
+}
