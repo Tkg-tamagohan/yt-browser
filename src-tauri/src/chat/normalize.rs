@@ -301,7 +301,10 @@ fn is_ng(matcher: &Matcher, e: &ChatEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::poller::{premiere_correction_ms, with_gen, PremiereCorrection};
+    use crate::chat::poller::{
+        first_replay_posted_ms, premiere_correction_decide, premiere_correction_ms, with_gen,
+        PremiereCorrection,
+    };
     use serde_json::json;
 
     fn text_action(id: &str, author: &str, ch: &str, usec: &str, msg: &str) -> Value {
@@ -526,6 +529,98 @@ mod tests {
             premiere_correction_ms(&BroadcastWindow::default()),
             PremiereCorrection::Unestimable
         ));
+    }
+
+    /// CH-09: プレミアずれ補正の実測推定（FR-71、仕様決定 CV）。
+    /// 先頭メッセージの投稿時刻と放送開始の差を実測値とし、
+    /// 従来値と暫定 60 秒以内の乖離なら実測値を採用する。
+    #[test]
+    fn premiere_correction_measured_estimate() {
+        use crate::innertube::BroadcastWindow;
+        let w = |start_ms: i64, end_ms: i64, len_secs: i64| BroadcastWindow {
+            start_ms: Some(start_ms),
+            end_ms: Some(end_ms),
+            length_secs: Some(len_secs),
+            is_live_now: Some(false),
+        };
+        // 前置き 5 分のプレミア（従来値 300 秒）。
+        // 先頭メッセージが放送開始 +310 秒 → 実測 310 秒を採用（乖離 10 秒）
+        assert!(matches!(
+            premiere_correction_decide(&w(0, 900_000, 600), Some(310_000)),
+            PremiereCorrection::Measured(310_000)
+        ));
+        // 乖離がちょうど 60 秒 → 実測値を採用（境界は含む）
+        assert!(matches!(
+            premiere_correction_decide(&w(0, 900_000, 600), Some(240_000)),
+            PremiereCorrection::Measured(240_000)
+        ));
+        // 実測値が 0 以下 → 前置きは負になりえないため補正なし
+        assert!(matches!(
+            premiere_correction_decide(&w(0, 645_000, 600), Some(-10_000)),
+            PremiereCorrection::None
+        ));
+    }
+
+    /// CH-10: 実測値が従来値から暫定 60 秒を超えて乖離する場合や、
+    /// 先頭メッセージの投稿時刻が取れない場合は従来方式へフォールバックする
+    /// （FR-71、仕様決定 CV）。従来方式の推定不能・補正不要は実測で覆さない。
+    #[test]
+    fn premiere_correction_measured_fallback() {
+        use crate::innertube::BroadcastWindow;
+        let w = |start_ms: i64, end_ms: i64, len_secs: i64| BroadcastWindow {
+            start_ms: Some(start_ms),
+            end_ms: Some(end_ms),
+            length_secs: Some(len_secs),
+            is_live_now: Some(false),
+        };
+        // 先頭メッセージが放送開始直後（ロビー中の発言が先頭に来る形）:
+        // 実測 ≈0 は従来値 300 秒と乖離 → 従来値を採用
+        assert!(matches!(
+            premiere_correction_decide(&w(0, 900_000, 600), Some(5_000)),
+            PremiereCorrection::Apply(300_000)
+        ));
+        // 先頭メッセージの投稿時刻が取れない → 従来値
+        assert!(matches!(
+            premiere_correction_decide(&w(0, 900_000, 600), None),
+            PremiereCorrection::Apply(300_000)
+        ));
+        // 従来方式が推定不能 → Unestimable のまま（暫定解釈）
+        assert!(matches!(
+            premiere_correction_decide(&BroadcastWindow::default(), Some(0)),
+            PremiereCorrection::Unestimable
+        ));
+        // 従来方式が補正不要 → None のまま（実測で覆さない暫定解釈）
+        assert!(matches!(
+            premiere_correction_decide(&w(0, 605_000, 600), Some(0)),
+            PremiereCorrection::None
+        ));
+    }
+
+    /// CH-11: 実測推定の先頭メッセージは削除以外の最初のイベントから
+    /// 投稿時刻（`timestampUsec`）を取る。削除イベントは実投稿時刻を
+    /// 持たないため除外する（FR-71、仕様決定 CV）。
+    #[test]
+    fn first_replay_posted_ms_picks_first_non_deleted() {
+        let del = deleted_to_event("v", "t1", Some(100));
+        let ev = ChatEvent {
+            item_id: "m1".to_string(),
+            video_id: "v".to_string(),
+            posted_at_usec: 123_456_789_000,
+            author_channel_id: None,
+            author_name: None,
+            kind: ChatKind::Text,
+            message: "m".to_string(),
+            amount_display: None,
+            ng: false,
+            video_offset_ms: Some(1_000),
+        };
+        // 先頭が削除イベントでも、その次のメッセージの投稿時刻（µs→ms）を取る
+        assert_eq!(
+            first_replay_posted_ms(&[del.clone(), ev]),
+            Some(123_456_789)
+        );
+        // 削除イベントだけなら取れない
+        assert_eq!(first_replay_posted_ms(&[del]), None);
     }
 
     /// CH-06: golden fixture — 実際の get_live_chat 応答（匿名化済み）を

@@ -181,30 +181,9 @@ impl ChatPoller {
                 // （watch の `reloadContinuationData` はライブ系キーだが、
                 // 終了済みでは `get_live_chat_replay` へ投げるとリプレイが
                 // 返る。実機確認 2026-10、仕様決定 AQ）
-                let correction = match premiere_correction_ms(&window) {
-                    PremiereCorrection::Apply(ms) => {
-                        self.status(
-                            Some(video_id),
-                            "info",
-                            &format!(
-                                "チャットリプレイを開始します（プレミアずれ {:.1} 秒を補正）",
-                                ms as f64 / 1000.0
-                            ),
-                        );
-                        ms
-                    }
-                    PremiereCorrection::Unestimable => {
-                        self.status(
-                            Some(video_id),
-                            "warn",
-                            "プレミアずれの補正量を推定できないため、未補正でリプレイします",
-                        );
-                        0
-                    }
-                    PremiereCorrection::None => 0,
-                };
-                self.run_replay(video_id, cont, correction, instance_id)
-                    .await;
+                // 補正量はリプレイ先頭メッセージが届いてから run_replay 内で
+                // 決める（実測推定の入力にするため。FR-71、仕様決定 CV）
+                self.run_replay(video_id, cont, window, instance_id).await;
             }
             None => {
                 self.status(
@@ -305,14 +284,20 @@ impl ChatPoller {
     /// （停止はパネル閉・プレイヤー終了時の `chat_stop` が担う）。
     /// `instance_id` 指定時はそのインスタンスの位置のみで同期する
     /// （同一動画の複数窓で位置がずれないよう固定。仕様決定 AQ）
+    /// `window` はプレミアずれ補正量の決定に使う放送窓。補正量は
+    /// リプレイ先頭メッセージが届いた時点で実測推定込みで決める
+    /// （FR-71、仕様決定 CV）
     async fn run_replay(
         self: &Arc<Self>,
         video_id: &str,
         cont: String,
-        correction_ms: i64,
+        window: crate::innertube::BroadcastWindow,
         instance_id: Option<u32>,
     ) {
         let mut cont = Some(cont);
+        // プレミアずれの補正量（ms）。先頭メッセージ到着時に一度だけ決める
+        let mut correction_ms = 0i64;
+        let mut correction_decided = false;
         // オフセット昇順のバッファ。`emit_idx` は未送出の先頭。
         let mut items: Vec<(i64, ChatEvent)> = Vec::new();
         let mut emit_idx = 0usize;
@@ -363,6 +348,47 @@ impl ChatPoller {
                             })
                             .unwrap_or_default();
                         commit_pending(&mut seen, &mut order, &mut pending);
+                        // 補正量はリプレイ先頭メッセージが届いた時点で決める。
+                        // 実測推定は先頭メッセージの投稿時刻を使い、従来値との
+                        // 乖離が大きい場合は従来ヒューリスティックへ
+                        // フォールバックする（FR-71、仕様決定 CV）
+                        if !correction_decided && !events.is_empty() {
+                            correction_decided = true;
+                            let first_ms = first_replay_posted_ms(&events);
+                            correction_ms = match premiere_correction_decide(&window, first_ms) {
+                                PremiereCorrection::Measured(ms) => {
+                                    self.status(
+                                        Some(video_id),
+                                        "info",
+                                        &format!(
+                                            "チャットリプレイを開始します（プレミアずれ {:.1} 秒を実測値で補正）",
+                                            ms as f64 / 1000.0
+                                        ),
+                                    );
+                                    ms
+                                }
+                                PremiereCorrection::Apply(ms) => {
+                                    self.status(
+                                        Some(video_id),
+                                        "info",
+                                        &format!(
+                                            "チャットリプレイを開始します（プレミアずれ {:.1} 秒を補正）",
+                                            ms as f64 / 1000.0
+                                        ),
+                                    );
+                                    ms
+                                }
+                                PremiereCorrection::Unestimable => {
+                                    self.status(
+                                        Some(video_id),
+                                        "warn",
+                                        "プレミアずれの補正量を推定できないため、未補正でリプレイします",
+                                    );
+                                    0
+                                }
+                                PremiereCorrection::None => 0,
+                            };
+                        }
                         let mut appended = false;
                         for e in events {
                             // 補正後の動画内時刻。オフセットを持たない項目は 0 扱い
@@ -496,10 +522,19 @@ pub(crate) fn with_gen(e: &ChatEvent, gen: u32) -> ChatEvent {
     out
 }
 
-/// プレミアずれの補正量の推定結果（仕様決定 AQ の暫定方式）。
+/// 実測推定値と従来ヒューリスティックの乖離を許容する上限（暫定 60 秒）。
+/// 先頭メッセージの投稿時刻は映像開始とずれうるため、これを超える乖離は
+/// 実測の前提が崩れたものとして従来値へフォールバックする
+/// （FR-71、仕様決定 CV。閾値は暫定解釈）。
+const PREMIERE_MEASURED_DEVIATION_MAX_MS: i64 = 60_000;
+
+/// プレミアずれの補正量の推定結果（仕様決定 AQ・CV）。
 pub(crate) enum PremiereCorrection {
-    /// この補正量（ms）を videoOffsetTimeMsec から引く。
+    /// この補正量（ms）を videoOffsetTimeMsec から引く（従来ヒューリスティック）。
     Apply(i64),
+    /// この補正量（ms）を videoOffsetTimeMsec から引く
+    /// （リプレイ先頭メッセージからの実測推定。FR-71、仕様決定 CV）。
+    Measured(i64),
     /// 補正不要（差が小さい、または放送が動画より短い）。
     None,
     /// 推定に必要な情報が無い、または差が大きすぎて前置きとは見做せない。
@@ -522,4 +557,47 @@ pub(crate) fn premiere_correction_ms(w: &crate::innertube::BroadcastWindow) -> P
     } else {
         PremiereCorrection::None
     }
+}
+
+/// プレミアずれ補正量の最終決定（FR-71、仕様決定 CV）。
+/// 従来ヒューリスティック（`premiere_correction_ms`）が前置きを検出した
+/// 場合に限り、リプレイ先頭メッセージの投稿時刻（`timestampUsec`）と
+/// 動画開始（`liveBroadcastDetails.startTimestamp`、暫定解釈では放送開始を
+/// 採用）の差を前置きの実測値として算出する。先頭メッセージの投稿時刻を
+/// 映像開始の実測とみなす前提に立つ（暫定解釈は設計書 §6.2）。
+/// 実測値と従来値の乖離が `PREMIERE_MEASURED_DEVIATION_MAX_MS` 以内なら
+/// 実測値を採用し、0 以下なら補正なしとする。乖離が大きい場合や
+/// 先頭メッセージの時刻が取れない場合は従来値へフォールバックする。
+/// 従来方式の補正不要・推定不能は実測推定で覆さない（暫定解釈）。
+pub(crate) fn premiere_correction_decide(
+    w: &crate::innertube::BroadcastWindow,
+    first_msg_posted_ms: Option<i64>,
+) -> PremiereCorrection {
+    let heuristic_ms = match premiere_correction_ms(w) {
+        PremiereCorrection::Apply(ms) => ms,
+        other => return other,
+    };
+    let (Some(first_ms), Some(start)) = (first_msg_posted_ms, w.start_ms) else {
+        return PremiereCorrection::Apply(heuristic_ms);
+    };
+    let measured = first_ms - start;
+    if (measured - heuristic_ms).abs() <= PREMIERE_MEASURED_DEVIATION_MAX_MS {
+        if measured > 0 {
+            PremiereCorrection::Measured(measured)
+        } else {
+            PremiereCorrection::None
+        }
+    } else {
+        PremiereCorrection::Apply(heuristic_ms)
+    }
+}
+
+/// リプレイ先頭メッセージの投稿時刻（ms）。前置きの実測推定に使う
+/// （FR-71、仕様決定 CV）。削除イベントは実投稿時刻を持たない
+/// （正規化時に現在時刻を入れる）ため先頭メッセージから除外する。
+pub(crate) fn first_replay_posted_ms(events: &[ChatEvent]) -> Option<i64> {
+    events
+        .iter()
+        .find(|e| e.kind != ChatKind::Deleted)
+        .map(|e| e.posted_at_usec / 1000)
 }
