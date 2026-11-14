@@ -23,6 +23,7 @@
 
 <button
   class="icon"
+  data-act="queue-add"
   title={t("queue.add")}
   aria-label={t("queue.add")}
   onclick={add}>Q＋</button

@@ -156,7 +156,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_size` | なし | `Result<DbSize>`（`bytes`。FR-66、仕様決定 CQ） |
 | `db_vacuum` | なし | `Result<()>`（FR-66、仕様決定 CQ） |
 | `db_cleanup_orphans` | なし | `Result<u64>`（削除した行数。FR-66、仕様決定 CQ） |
-| `diag_export` | `path`（保存先ファイルパス。保存ダイアログで選択） | `Result<()>`（FR-82、仕様決定 DG、§4.20） |
+| `diag_export` | `path`（保存先ファイルパス。保存ダイアログで選択） | `Result<()>`（FR-82、仕様決定 DG、§4.21） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -297,6 +297,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `setup.deps_shown` | `on` / `off` | 初回起動の依存検出画面の既出フラグ（§5、FR-75、仕様決定 CZ）。on 系のみ表示済み＝次回以降は出さない。未設定・その他の値は未表示（初回起動で表示する）。受理集合は `feed.show_shorts` と同一 |
 | `ui.theme` | `dark` / `light` / `system` | 配色テーマ（FR-76、仕様決定 DA）。色は `app.css` の CSS 変数で持ち、`<html>` の `data-theme` 属性で切り替える。`system` は OS の `prefers-color-scheme` に従う。未設定・その他の値は `dark`。解釈の正は Rust 側 `src-tauri/src/ui.rs` |
 | `ui.density` | `comfortable` / `compact` | 一覧の表示密度（FR-77、仕様決定 DB）。`compact` は動画行（VideoRow）の行高・サムネイルを CSS 変数で縮小する（暫定解釈: 対象は VideoRow のみ）。`<html>` の `data-density` 属性で切り替える。未設定・その他の値は `comfortable` |
+| `ui.shortcuts` | `on` / `off` | アプリ側キーボードショートカットの有効化（§4.20、FR-79、仕様決定 DD）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（暫定解釈の既定）。値の解釈と既定キーマップの適用はフロント側が持つ |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -1047,7 +1048,52 @@ RSS・バックフィルの推定に留まる種別（`kind`）、説明文（`d
 `ingested=1` の行に限る（`ingested=0` のプレースホルダは一覧に
 出ないため対象外）。
 
-### 4.20 診断情報のエクスポート（FR-82、仕様決定 DG）
+### 4.20 動画行のコンテキストメニューとキーボードショートカット（FR-78・FR-79、仕様決定 DC・DD）
+
+一覧の使い勝手を上げる 2 つの UI 補助。どちらもフロント側に集約し、
+バックエンドは汎用の `settings_get` / `settings_set` の受け渡しのみ。
+
+**コンテキストメニュー（FR-78、仕様決定 DC）**: `VideoRow` の
+`oncontextmenu` で行の右クリックを受け、共有状態 `videoContextMenu`
+（`video-actions.svelte.ts`）へ対象動画・開いた側の行アクション状態・
+クリック位置を積む。OS 既定のコンテキストメニューは抑止する。
+メニュー本体はレイアウトに 1 つだけマウントした `VideoContextMenu`
+が出し、中身は行アクション「＋」が開くのと同じプレイリスト追加
+メニュー（`VideoActions` から抽出した `VideoActionsMenu` 部品）を
+そのまま使う。表示位置はクリック位置を左上とし、ビューポートの
+右端・下端をはみ出すときは内側へ折り返す（開く前は未計測のため
+概算寸法で決める暫定解釈。`context-menu-logic.ts`、VC-NN 系テスト）。
+メニュー外のポインタ操作・Escape・画面遷移で閉じ、別行の右クリックは
+開き直しになる。開く中身はプレイリスト追加メニューだけとし、
+お気に入り・あとで見る・キューの各行アクションはコンテキスト
+メニューに含めない（暫定解釈。仕様は「VideoActions のメニュー」と
+のみ定めるため、既存メニューと同じ中身に限定する）
+
+**キーボードショートカット（FR-79、仕様決定 DD）**: レイアウトで
+`initShortcuts()`（`shortcuts.svelte.ts`）がウィンドウ レベルの
+keydown を購読し、`ui.shortcuts` が on のときだけ既定キーマップを
+効かせる。キーマップ・設定解釈・対象ガード・選択遷移は
+`shortcuts-logic.ts` の純粋関数に集約する（KS-NN 系テスト）。
+設定の変更は `settings://changed` で追従するため設定画面での保存から
+即時に切り替わる。
+
+- 既定キーマップ（暫定解釈）: `j` / `↓` は次の行、`k` / `↑` は前の行、
+  `Enter` は選択行の再生（行のタイトルボタンを押す扱い）、`a` は
+  選択行をキューに追加（行アクションの「キューに追加」と同じ、
+  パネル選択中のキュー）、`q` はキューパネルの開閉
+- 対象の「一覧」は画面に出ている動画行（`li.vr[data-video-id]`）の
+  DOM 順。選択は行位置のインデックスだけを持ち、未選択から下へは
+  先頭・上へは末尾へ入り、端で止まる（折り返さない）。選択行は
+  `data-shortcut-selected` 属性の枠線で示す（暫定解釈）
+- 「キューの操作」の範囲は選択行のキュー追加とパネル開閉までとし、
+  パネル内の項目編集（並べ替え・削除・再生開始）は対象外（暫定解釈）
+- 対象外ガード: 入力欄（input / textarea / select / contenteditable）
+  のフォーカス中、Ctrl / Alt / Meta 付きの打鍵、コンテキストメニュー
+  表示中はショートカットを効かせない。Enter はボタン・リンク上では
+  その要素本来の起動を優先する
+- 設定値の読み取りに失敗したときは既定（off）のまま動く
+
+### 4.21 診断情報のエクスポート（FR-82、仕様決定 DG）
 
 サポート目的で外部へ共有する診断情報を、設定画面の運用節から zip 1 本で
 書き出す。コマンドは `diag_export`（§3.1）で、保存先は
@@ -1103,7 +1149,7 @@ mpv 自身の出力として記録され得て内容を制御できないため�
 回帰テストは DB-DG-01 〜 DB-DG-09（マスク・設定出力・ログ収集・
 zip 生成の一通り）と DX-01（既定ファイル名の規則）。
 
-### 4.21 通知履歴（FR-83、仕様決定 DH）
+### 4.22 通知履歴（FR-83、仕様決定 DH）
 
 共有キュー（`notices.svelte.ts` の `notify()`）経由で発行した通知を、
 トースト表示とは別に履歴として保持し、設定画面の履歴一覧
@@ -1494,7 +1540,7 @@ yt-browser/
       model/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
       deps.rs         # 依存コマンド（mpv・yt-dlp・deno）の検出と初回セットアップ判定（§5）
-      diag.rs         # 診断情報の zip エクスポートと秘匿マスク（§4.20）
+      diag.rs         # 診断情報の zip エクスポートと秘匿マスク（§4.21）
       native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
       ui.rs           # ui.* 表示設定の解釈の正（FR-76・FR-77、§3.3）
@@ -1503,7 +1549,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter・ui-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

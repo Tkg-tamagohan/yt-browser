@@ -12,6 +12,17 @@ use crate::yt::{self, YtDlpResolver};
 const MAX_SETTING_KEY_LEN: usize = 128;
 const MAX_SETTING_VALUE_LEN: usize = 16 * 1024;
 
+/// `ui.shortcuts`（FR-79、仕様決定 DD）。アプリ側キーボード
+/// ショートカットの有効化。on 系のみ有効で、未設定・その他の値は
+/// off（既定）。値の解釈・既定キーマップ・対象操作はすべてフロント側
+/// （shortcuts-logic.ts / shortcuts.svelte.ts）が持ち、バックエンドは
+/// 汎用の settings_get / settings_set で受け渡すだけのため、ここには
+/// キー名の定数だけを置く（設計書の設定キー表との照合対象として
+/// scripts/check_docs_consistency.py が要求するため宣言し、
+/// Rust 側では参照しないので dead_code を抑止する）
+#[allow(dead_code)]
+pub const SETTING_UI_SHORTCUTS: &str = "ui.shortcuts";
+
 fn validate_setting_key(key: &str) -> Result<(), UiError> {
     if key.is_empty() {
         return Err(UiError::invalid_input("key が空です"));

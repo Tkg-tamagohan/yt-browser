@@ -56,7 +56,7 @@
     }
   }
 
-  /// 診断情報の zip エクスポート（FR-82、仕様決定 DG、設計書 §4.20）。
+  /// 診断情報の zip エクスポート（FR-82、仕様決定 DG、設計書 §4.21）。
   /// 保存ダイアログで選んだパスへ、ログ・設定・環境情報をマスク済みで書き出す
   async function exportDiag(): Promise<void> {
     const path = await save({

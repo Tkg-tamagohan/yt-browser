@@ -32,7 +32,7 @@ const MAX = 5;
 /// 画面下のトーストに一時通知を出す。約 6 秒で消える。
 /// action 指定時はラベルボタンを併記し、押下で run を実行して閉じる。
 /// 発行した通知は履歴へも記録する（FR-83。履歴にはコールバックを持たせず
-/// ラベルのみ残す。設計書 §4.21）
+/// ラベルのみ残す。設計書 §4.22）
 export function notify(msg: string, action?: AppNotice["action"]): void {
   const id = ++seq;
   appNotices.push({ id, msg, action });

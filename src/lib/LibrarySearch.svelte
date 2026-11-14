@@ -13,6 +13,7 @@
   } from "$lib/library-search-logic";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import type { LibrarySearchItem } from "$lib/players.svelte";
@@ -54,6 +55,13 @@
             title={it.title || it.videoId}
             thumbnailUrl={it.thumbnailUrl}
             onplay={() => play(it.videoId, true)}
+            oncontextmenu={(e) =>
+              openVideoContextMenu(
+                e,
+                videoRefOf({ ...it, title: it.title || it.videoId }),
+                va,
+                onPlaylistAdd,
+              )}
           >
             {#snippet sub()}
               {#each sortSources(it.sources) as src (src)}
