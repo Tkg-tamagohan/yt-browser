@@ -1,7 +1,10 @@
-//! videos 台帳への登録と、favorites / playlists / playlist_items テーブル。
+//! videos 台帳への登録と、favorites / playlists / playlist_items /
+//! watch_later テーブル、ライブラリ横断検索。
 
 use super::*;
-use crate::model::{FavoriteEntry, Playlist, PlaylistEntry};
+use crate::model::{
+    FavoriteEntry, LibrarySearchItem, LibrarySource, Playlist, PlaylistEntry, WatchLaterEntry,
+};
 
 impl Db {
     /// `videos` 台帳への登録（お気に入り・プレイリスト追加の前段）。
@@ -506,4 +509,163 @@ impl Db {
             None => Ok(None),
         }
     }
+
+    /// 「あとで見る」登録（FR-59、仕様決定 CJ）。`videos` 台帳への登録と
+    /// 同じトランザクションで行う。既登録の動画は追加日時を変えない
+    /// （INSERT OR IGNORE で冪等）。
+    pub fn watch_later_add(&self, v: &crate::model::VideoRef) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        Self::video_upsert(&tx, v)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO watch_later (video_id) VALUES (?1)",
+            [&v.video_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 「あとで見る」解除。未登録でも正常終了（冪等）。
+    pub fn watch_later_remove(&self, video_id: &str) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM watch_later WHERE video_id = ?1", [video_id])?;
+        Ok(())
+    }
+
+    /// 「あとで見る」一覧（FR-59）。追加が新しい順。
+    /// 動画メタは `videos` 台帳から JOIN で取る（favorites と同じ規則）。
+    pub fn watch_later_list(&self) -> Result<Vec<WatchLaterEntry>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT w.video_id, v.title, NULLIF(v.channel_id, ''), v.channel_title,
+                    v.thumbnail_url, w.added_at
+             FROM watch_later w JOIN videos v ON v.video_id = w.video_id
+             ORDER BY w.added_at DESC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(WatchLaterEntry {
+                video_id: row.get(0)?,
+                title: row.get(1)?,
+                channel_id: row.get(2)?,
+                channel_title: row.get(3)?,
+                thumbnail_url: row.get(4)?,
+                added_at: row.get(5)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// ライブラリ横断検索（FR-60、仕様決定 CK）。
+    /// 履歴・お気に入り・プレイリスト項目・あとで見るをタイトルと
+    /// チャンネル名の部分一致 LIKE で検索し、同一動画は 1 件にまとめて
+    /// ヒットした区分の列（`sources`）を返す。`query` の空・空白のみは
+    /// 0 件を返す（全件列挙の用途ではない。暫定解釈）。
+    /// 表示メタは区分をまたいだ先出の行を使い、空欄は後出の行で補完する。
+    /// 並びは「履歴の新しい順 → お気に入りの新しい順 → プレイリストの
+    /// 登録順 → あとで見るの新しい順」の先出順（暫定解釈）。
+    /// `limit` は統合後の件数上限。
+    pub fn library_search(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<LibrarySearchItem>, DbError> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = like_pattern(trimmed);
+        let conn = self.lock()?;
+        let mut items: Vec<LibrarySearchItem> = Vec::new();
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        {
+            // 履歴は自身の列に加えて videos 台帳のメタでも照合する
+            // （履歴行の channel 列が未入力でも台帳にあれば拾う。
+            // 照合は title・channel_title の部分一致で FR-61 と同じ規則）
+            let mut stmt = conn.prepare(
+                "SELECT w.video_id,
+                        COALESCE(NULLIF(w.title, ''), v.title),
+                        COALESCE(NULLIF(w.channel_id, ''), NULLIF(v.channel_id, '')),
+                        COALESCE(w.channel_title, v.channel_title),
+                        v.thumbnail_url
+                 FROM watch_history w
+                 LEFT JOIN videos v ON v.video_id = w.video_id
+                 WHERE w.title LIKE ?1 ESCAPE '\\'
+                    OR w.channel_title LIKE ?1 ESCAPE '\\'
+                    OR v.title LIKE ?1 ESCAPE '\\'
+                    OR v.channel_title LIKE ?1 ESCAPE '\\'
+                 ORDER BY w.last_watched_at DESC, w.rowid DESC",
+            )?;
+            let mut rows = stmt.query([&pattern])?;
+            while let Some(row) = rows.next()? {
+                merge_search_hit(&mut items, &mut index, LibrarySource::History, row)?;
+            }
+        }
+        for (source, table, order) in [
+            (LibrarySource::Favorites, "favorites", "added_at DESC"),
+            (
+                LibrarySource::Playlists,
+                "playlist_items",
+                "playlist_id, position",
+            ),
+            (LibrarySource::WatchLater, "watch_later", "added_at DESC"),
+        ] {
+            // 動画メタは videos 台帳から JOIN で取る（一覧取得と同じ規則）
+            let mut stmt = conn.prepare(&format!(
+                "SELECT i.video_id, v.title, NULLIF(v.channel_id, ''),
+                        v.channel_title, v.thumbnail_url
+                 FROM {table} i JOIN videos v ON v.video_id = i.video_id
+                 WHERE v.title LIKE ?1 ESCAPE '\\'
+                    OR v.channel_title LIKE ?1 ESCAPE '\\'
+                 ORDER BY i.{order}"
+            ))?;
+            let mut rows = stmt.query([&pattern])?;
+            while let Some(row) = rows.next()? {
+                merge_search_hit(&mut items, &mut index, source, row)?;
+            }
+        }
+        items.truncate(limit as usize);
+        Ok(items)
+    }
+}
+
+/// `library_search` の 1 行分の統合。同一動画の 2 件目以降は
+/// `sources` への区分追加と空欄メタの補完だけを行う。
+fn merge_search_hit(
+    items: &mut Vec<LibrarySearchItem>,
+    index: &mut std::collections::HashMap<String, usize>,
+    source: LibrarySource,
+    row: &rusqlite::Row<'_>,
+) -> Result<(), rusqlite::Error> {
+    let video_id: String = row.get(0)?;
+    if let Some(&i) = index.get(&video_id) {
+        let it = &mut items[i];
+        if it.title.is_empty() {
+            it.title = row.get(1)?;
+        }
+        if it.channel_id.is_none() {
+            it.channel_id = row.get(2)?;
+        }
+        if it.channel_title.is_none() {
+            it.channel_title = row.get(3)?;
+        }
+        if it.thumbnail_url.is_none() {
+            it.thumbnail_url = row.get(4)?;
+        }
+        if !it.sources.contains(&source) {
+            it.sources.push(source);
+        }
+    } else {
+        index.insert(video_id.clone(), items.len());
+        items.push(LibrarySearchItem {
+            video_id,
+            title: row.get(1)?,
+            channel_id: row.get(2)?,
+            channel_title: row.get(3)?,
+            thumbnail_url: row.get(4)?,
+            sources: vec![source],
+        });
+    }
+    Ok(())
 }

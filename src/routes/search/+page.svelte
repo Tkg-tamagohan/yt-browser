@@ -168,9 +168,11 @@
             video={videoRefOf(r)}
             faved={va.favIds.has(r.videoId)}
             playlists={va.playlists}
+            watchLater={va.watchLaterIds.has(r.videoId)}
             livewait
             onfavchange={va.onFavChange}
             onplaylistcreated={va.onPlaylistCreated}
+            onwatchlaterchange={va.onWatchLaterChange}
           />
         {/snippet}
       </VideoRow>

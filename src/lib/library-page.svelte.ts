@@ -1,4 +1,5 @@
-// library ページ（FR-7: 履歴・お気に入り・プレイリスト）の状態と操作。
+// library ページ（FR-7: 履歴・お気に入り・プレイリスト、FR-59: あとで見る、
+// FR-60: 横断検索）の状態と操作。
 // +page.svelte に同居していた script ロジックをここへ集約し、
 // ページ側はタブ状態とイベント購読のライフサイクルだけを持つ。
 
@@ -13,11 +14,14 @@ import {
   type FavoriteEntry,
   type HistoryCursor,
   type HistoryPage,
+  type LibrarySearchItem,
   type Playlist,
   type PlaylistEntry,
   type WatchHistory,
+  type WatchLaterEntry,
 } from "$lib/players.svelte";
 import { mergeHistoryPage } from "$lib/history-logic";
+import { normalizeSearchQuery } from "$lib/library-search-logic";
 import {
   discardQueue,
   newQueueEntry,
@@ -51,6 +55,19 @@ export function createLibraryPageState(opts: Options) {
   let historyReq = 0;
   const HISTORY_PAGE = 500;
   let favorites = $state<FavoriteEntry[]>([]);
+
+  // 「あとで見る」タブ（FR-59、仕様決定 CJ）。一覧はタブ側で
+  // 登録・解除のたびに取り直すのではなく、変更時に部分更新する
+  // （お気に入りと同じ初回ロード＋差分反映の構造）
+  let watchLater = $state<WatchLaterEntry[]>([]);
+
+  // ライブラリ横断検索タブ（FR-60、仕様決定 CK）。
+  // searchReq は入力ごとに進み、遅れて返る旧条件の応答が結果一覧を
+  // 上書きしないようにする世代番号（historyReq と同じ構造）
+  let searchQuery = $state("");
+  let searchItems = $state<LibrarySearchItem[]>([]);
+  let searchReq = 0;
+  const SEARCH_LIMIT = 200;
 
   // 選択中プレイリストとその中身。reqId は選択ごとに進み、
   // 遅れて返る旧リクエストが表示を上書きしないようにする世代番号
@@ -111,6 +128,22 @@ export function createLibraryPageState(opts: Options) {
     },
     onPlaylistCreated: () => {
       ++listsReq;
+    },
+    onWatchLaterChange: (videoId, added) => {
+      if (!added) {
+        // あとで見るタブの一覧から即座に外す
+        watchLater = watchLater.filter((w) => w.videoId !== videoId);
+      } else {
+        // 登録分を含めて一覧を取り直す（お気に入りと同じ即時反映。
+        // watchLater は初回ロードのみのため）
+        void invoke<WatchLaterEntry[]>("watch_later_list")
+          .then((list) => {
+            watchLater = list;
+          })
+          .catch(() => {
+            // 取り直しに失敗しても登録自体は済んでいるため静かに握る
+          });
+      }
     },
   });
 
@@ -174,7 +207,51 @@ export function createLibraryPageState(opts: Options) {
     const lib = await loadLibrary();
     va.favIds = lib.favIds;
     va.playlists = lib.playlists;
+    va.watchLaterIds = lib.watchLaterIds;
     favorites = await invoke<FavoriteEntry[]>("favorite_list");
+  }
+
+  /// 「あとで見る」一覧の初回ロード（FR-59）。追加が新しい順。
+  async function loadWatchLater(): Promise<void> {
+    watchLater = await invoke<WatchLaterEntry[]>("watch_later_list");
+  }
+
+  /// 「あとで見る」タブからの解除（FR-59）。
+  /// 行アクション側の登録状態（va.watchLaterIds）も同期する
+  async function removeWatchLater(videoId: string): Promise<void> {
+    try {
+      await invoke("watch_later_remove", { videoId });
+      va.onWatchLaterChange(videoId, false);
+      notify(t("library.watchLater.removed"));
+    } catch (e) {
+      notify(t("library.watchLater.failed", { message: asErrorMessage(e) }));
+    }
+  }
+
+  /// 横断検索ボックスの入力（FR-60、仕様決定 CK）。
+  /// 入力ごとに取り直し、遅れて返る旧条件の応答は世代違いで捨てる。
+  /// 空・空白のみは結果を空にする（バックエンドも 0 件を返す暫定解釈）
+  function setSearchQuery(value: string): void {
+    searchQuery = value;
+    const req = ++searchReq;
+    const q = normalizeSearchQuery(value);
+    if (!q) {
+      searchItems = [];
+      return;
+    }
+    void invoke<LibrarySearchItem[]>("library_search", {
+      query: q,
+      limit: SEARCH_LIMIT,
+    })
+      .then((items) => {
+        if (req !== searchReq) return;
+        searchItems = items;
+      })
+      .catch((e) => {
+        if (req !== searchReq) return;
+        searchItems = [];
+        notify(t("library.failed", { message: asErrorMessage(e) }));
+      });
   }
 
   async function play(videoId: string, resume: boolean): Promise<void> {
@@ -944,6 +1021,15 @@ export function createLibraryPageState(opts: Options) {
     set favorites(v: FavoriteEntry[]) {
       favorites = v;
     },
+    get watchLater() {
+      return watchLater;
+    },
+    get searchQuery() {
+      return searchQuery;
+    },
+    get searchItems() {
+      return searchItems;
+    },
     get selectedId() {
       return selectedId;
     },
@@ -1041,6 +1127,9 @@ export function createLibraryPageState(opts: Options) {
     loadMoreHistory,
     setHistoryQuery,
     loadFavorites,
+    loadWatchLater,
+    removeWatchLater,
+    setSearchQuery,
     play,
     removeHistory,
     removeFavorite,

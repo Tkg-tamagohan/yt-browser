@@ -105,9 +105,11 @@
                 video={videoRefOf({ ...h, title: h.title || h.videoId })}
                 faved={va.favIds.has(h.videoId)}
                 playlists={va.playlists}
+                watchLater={va.watchLaterIds.has(h.videoId)}
                 onfavchange={va.onFavChange}
                 onplaylistcreated={va.onPlaylistCreated}
                 onplaylistadd={onPlaylistAdd}
+                onwatchlaterchange={va.onWatchLaterChange}
               />
             {/snippet}
           </VideoRow>

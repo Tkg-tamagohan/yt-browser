@@ -1,6 +1,6 @@
 use super::vref;
 use crate::db::*;
-use crate::model::PlaylistEntry;
+use crate::model::{LibrarySource, PlaylistEntry};
 
 /// DB-LD-01: お気に入りの追加・一覧・削除（FR-7）。
 /// 動画メタは videos 台帳から JOIN で取り、重複登録は新しい日時に更新しない。
@@ -342,6 +342,198 @@ fn playlist_create_appends_after_legacy_zero_rows() {
             .collect::<Vec<_>>(),
         [0, 1, 2]
     );
+}
+
+/// DB-LD-19: 「あとで見る」の登録・一覧・解除（FR-59、仕様決定 CJ）。
+/// 動画メタは videos 台帳から JOIN で取り、一覧は追加が新しい順。
+/// 重複登録は追加日時を変えない冪等、解除も冪等。
+#[test]
+fn watch_later_roundtrip() {
+    let db = Db::connect_in_memory().unwrap();
+    db.watch_later_add(&vref("dQw4w9WgXcQ", "動画A")).unwrap();
+    db.watch_later_add(&vref("abcdefghijk", "動画B")).unwrap();
+    let list = db.watch_later_list().unwrap();
+    assert_eq!(list.len(), 2);
+    // 同一秒の登録は順序不定なので id で拾ってメタの JOIN を検証する
+    let a = list.iter().find(|w| w.video_id == "dQw4w9WgXcQ").unwrap();
+    assert_eq!(a.title, "動画A");
+    assert_eq!(a.channel_id.as_deref(), Some("UCchan000000000000001"));
+    // 一覧の並びを確定的に検証するため、追加日時だけ直接書き換える
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "UPDATE watch_later SET added_at = ?1 WHERE video_id = ?2",
+            rusqlite::params!["2026-01-01 00:00:00", "dQw4w9WgXcQ"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE watch_later SET added_at = ?1 WHERE video_id = ?2",
+            rusqlite::params!["2026-01-02 00:00:00", "abcdefghijk"],
+        )
+        .unwrap();
+    }
+    let list = db.watch_later_list().unwrap();
+    assert_eq!(list[0].video_id, "abcdefghijk");
+    assert_eq!(list[1].video_id, "dQw4w9WgXcQ");
+    // 重複登録は追加日時を維持して無視される
+    db.watch_later_add(&vref("dQw4w9WgXcQ", "動画A")).unwrap();
+    let list = db.watch_later_list().unwrap();
+    assert_eq!(list.len(), 2);
+    let a = list.iter().find(|w| w.video_id == "dQw4w9WgXcQ").unwrap();
+    assert_eq!(a.added_at, "2026-01-01 00:00:00");
+    // 解除は未登録でも正常終了（冪等）
+    db.watch_later_remove("dQw4w9WgXcQ").unwrap();
+    db.watch_later_remove("dQw4w9WgXcQ").unwrap();
+    assert_eq!(db.watch_later_list().unwrap().len(), 1);
+}
+
+/// DB-LD-20: watch_later の表示メタは videos 台帳の JOIN で取る。
+/// channel_id を持たない動画は NULLIF で None に見える。
+#[test]
+fn watch_later_list_uses_ledger_meta() {
+    let db = Db::connect_in_memory().unwrap();
+    let mut no_ch = vref("nochan12345", "無名");
+    no_ch.channel_id = None;
+    no_ch.channel_title = None;
+    db.watch_later_add(&no_ch).unwrap();
+    let e = db.watch_later_list().unwrap().remove(0);
+    assert_eq!(e.video_id, "nochan12345");
+    assert_eq!(e.channel_id, None);
+    assert_eq!(e.channel_title, None);
+}
+
+/// DB-LD-21: library_search は 4 区分を横断し、同一動画は 1 件へ
+/// まとめてヒット区分を正準順で返す（FR-60、仕様決定 CK）。
+/// タイトルとチャンネル名の部分一致で、履歴は台帳メタでも照合する。
+#[test]
+fn library_search_merges_sources() {
+    let db = Db::connect_in_memory().unwrap();
+    // 履歴行（台帳になくてもタイトルで拾う）
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO watch_history (video_id, title, last_watched_at)
+             VALUES ('histonly001', '対象タイトルの履歴', '2026-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+    }
+    // お気に入り
+    let mut fav = vref("favonly0001", "別物");
+    fav.channel_title = Some("対象チャンネル".to_string());
+    db.favorite_add(&fav).unwrap();
+    // プレイリスト項目
+    let pl = db.playlist_create("P").unwrap();
+    db.playlist_add(pl.id, &vref("plonly00001", "対象の中身"))
+        .unwrap();
+    // あとで見る
+    db.watch_later_add(&vref("wlonly00001", "対象のあとで見る"))
+        .unwrap();
+    // 4 区分すべてに属する動画（履歴は直接挿入）
+    let shared = "sharedvideo";
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO watch_history (video_id, title, last_watched_at)
+             VALUES (?1, '対象の共有動画', '2026-01-02 00:00:00')",
+            [shared],
+        )
+        .unwrap();
+    }
+    db.favorite_add(&vref(shared, "対象の共有動画")).unwrap();
+    db.playlist_add(pl.id, &vref(shared, "対象の共有動画"))
+        .unwrap();
+    db.watch_later_add(&vref(shared, "対象の共有動画")).unwrap();
+    // 台帳のチャンネル名で履歴行を拾う経路: 登録→解除で台帳行だけ残す
+    let mut led = vref("ledgeronly0", "台帳だけの動画");
+    led.channel_title = Some("特別CH".to_string());
+    db.favorite_add(&led).unwrap();
+    // Phase 63（FR-54）で解除はスナップショットを返すようになった
+    assert!(db.favorite_remove("ledgeronly0").unwrap().is_some());
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO watch_history (video_id, title, last_watched_at)
+             VALUES ('ledgeronly0', '台帳だけの動画', '2026-01-03 00:00:00')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let hits = db.library_search("対象", 100).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.video_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "sharedvideo",
+            "histonly001",
+            "favonly0001",
+            "plonly00001",
+            "wlonly00001"
+        ]
+    );
+    // 同一動画は 1 件にまとまり、sources は正準順（履歴→お気に入り→
+    // プレイリスト→あとで見る）で返る
+    let sh = hits.iter().find(|h| h.video_id == shared).unwrap();
+    assert_eq!(
+        sh.sources,
+        vec![
+            LibrarySource::History,
+            LibrarySource::Favorites,
+            LibrarySource::Playlists,
+            LibrarySource::WatchLater
+        ]
+    );
+    // 単一区分の動画も対応する sources だけを持つ
+    assert_eq!(
+        hits.iter()
+            .find(|h| h.video_id == "histonly001")
+            .unwrap()
+            .sources,
+        vec![LibrarySource::History]
+    );
+    // お気に入り動画はチャンネル名の一致で拾った（台帳 JOIN）
+    assert_eq!(
+        hits.iter()
+            .find(|h| h.video_id == "favonly0001")
+            .unwrap()
+            .sources,
+        vec![LibrarySource::Favorites]
+    );
+    // 履歴行の channel 列が空でも台帳メタで照合する
+    let led_hits = db.library_search("特別CH", 100).unwrap();
+    assert_eq!(led_hits.len(), 1);
+    assert_eq!(led_hits[0].video_id, "ledgeronly0");
+    assert_eq!(led_hits[0].sources, vec![LibrarySource::History]);
+    assert_eq!(led_hits[0].channel_title.as_deref(), Some("特別CH"));
+}
+
+/// DB-LD-22: library_search の検索語はワイルドカードとして効かず、
+/// 空・空白のみは 0 件。limit は統合後の件数上限（FR-60、仕様決定 CK）。
+#[test]
+fn library_search_escapes_wildcards() {
+    let db = Db::connect_in_memory().unwrap();
+    db.favorite_add(&vref("pct00000001", "100% 達成")).unwrap();
+    db.favorite_add(&vref("under000001", "アンダー_バー"))
+        .unwrap();
+    db.favorite_add(&vref("yen00000001", "円\\記号")).unwrap();
+    db.favorite_add(&vref("decoy000001", "100X 別物")).unwrap();
+    let ids = |q: &str| {
+        db.library_search(q, 100)
+            .unwrap()
+            .iter()
+            .map(|h| h.video_id.clone())
+            .collect::<Vec<_>>()
+    };
+    // `%`・`_`・`\` はワイルドカードではなく文字として探す
+    assert_eq!(ids("100%"), ["pct00000001"]);
+    assert_eq!(ids("アンダー_バー"), ["under000001"]);
+    assert_eq!(ids("円\\記号"), ["yen00000001"]);
+    // 空・空白のみは 0 件（全件列挙の用途ではない。暫定解釈）
+    assert!(ids("").is_empty());
+    assert!(ids("   ").is_empty());
+    // limit は統合後の件数上限
+    assert_eq!(db.library_search("100", 1).unwrap().len(), 1);
 }
 
 /// DB-LD-16: お気に入り解除のスナップショット復元（FR-54、仕様決定 CE）。

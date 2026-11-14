@@ -484,6 +484,47 @@ pub struct FavoriteEntry {
     pub added_at: String,
 }
 
+/// `watch_later` 一覧の 1 行（FR-59、仕様決定 CJ）。
+/// 動画メタは `videos` 台帳から JOIN で取る。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchLaterEntry {
+    pub video_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub added_at: String,
+}
+
+/// `library_search` の結果に付けるヒット区分（FR-60、仕様決定 CK）。
+/// ライブラリの対象タブに対応する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LibrarySource {
+    /// 視聴履歴（`watch_history`）。
+    History,
+    /// お気に入り（`favorites`）。
+    Favorites,
+    /// プレイリスト項目（`playlist_items`）。
+    Playlists,
+    /// あとで見る（`watch_later`）。直列化は "watchLater"。
+    WatchLater,
+}
+
+/// `library_search` の 1 件（FR-60）。同一動画は 1 行にまとめ、
+/// ヒットした区分を `sources` に持つ（並びは区分の正準順）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySearchItem {
+    pub video_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub sources: Vec<LibrarySource>,
+}
+
 /// `playlists` 一覧の 1 行（`item_count` は LEFT JOIN の集計）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

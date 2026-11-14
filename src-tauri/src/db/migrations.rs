@@ -439,4 +439,17 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "channels_backfill_shorts_pos",
         sql: "ALTER TABLE channels ADD COLUMN backfill_shorts_pos INTEGER NOT NULL DEFAULT 0;",
     },
+    // Phase 64: 「あとで見る」（FR-59、仕様決定 CJ）。
+    // favorites と同じく video_id 主キーと登録日時だけを持ち、
+    // 表示メタは videos 台帳へ登録して一覧取得時に JOIN で取る。
+    // （初版は v19 だったが、Phase 63 の v19 `channels_backfill_shorts_pos`
+    // との番号衝突を避けて v20 に繰り上げた）
+    Migration {
+        version: 20,
+        name: "watch_later",
+        sql: "CREATE TABLE watch_later (
+                video_id TEXT PRIMARY KEY,
+                added_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );",
+    },
 ];
