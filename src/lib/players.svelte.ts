@@ -114,6 +114,20 @@ export type WatchHistory = {
   completed: boolean;
 };
 
+/// `history_list` のページングカーソル（FR-52、仕様決定 CC）。
+/// 前ページの `nextCursor` をそのまま次回呼び出しの `cursor` へ渡す。
+export type HistoryCursor = {
+  lastWatchedAt: string;
+  rowid: number;
+};
+
+/// `history_list` の 1 ページ分（FR-52、仕様決定 CC）。
+/// 末尾まで達したら `nextCursor` は null。
+export type HistoryPage = {
+  items: WatchHistory[];
+  nextCursor: HistoryCursor | null;
+};
+
 /// `favorite_add` / `playlist_add` の入力（検索・関連・フィード行のメタを渡す）。
 export type VideoRef = {
   videoId: string;

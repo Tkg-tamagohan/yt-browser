@@ -1,7 +1,7 @@
 //! watch_history テーブルと、手動削除による保存抑止。
 
 use super::*;
-use crate::model::WatchHistory;
+use crate::model::{HistoryCursor, HistoryPage, WatchHistory};
 
 /// `watch_history` の保持上限（仕様決定 AV）。
 /// 超過分は起動時剪定で最古から消す。一覧表示の limit とは別枠。
@@ -86,19 +86,55 @@ impl Db {
         }
     }
 
-    /// 視聴履歴の一覧（FR-7）。新しく見た順で `limit` 件まで返す。
-    /// 同じ `last_watched_at`（秒精度）の行は rowid 降順で決定的にする。
-    pub fn history_list(&self, limit: u32) -> Result<Vec<WatchHistory>, DbError> {
+    /// 視聴履歴の一覧（FR-7）。新しく見た順（`last_watched_at` 降順、
+    /// 同時刻は rowid 降順）で、`cursor` の次から `limit` 件まで返す
+    /// （FR-52・仕様決定 CC のカーソルページング）。
+    /// `query` があればタイトル・チャンネル名の部分一致で絞る
+    /// （FR-61・仕様決定 CL。空・空白のみは絞り込みなし）。
+    /// 続きがあるとき `next_cursor` に表示済み末尾行のカーソルを返す。
+    pub fn history_list(
+        &self,
+        cursor: Option<&HistoryCursor>,
+        query: Option<&str>,
+        limit: u32,
+    ) -> Result<HistoryPage, DbError> {
+        let pattern = query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(like_pattern);
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT video_id, title, channel_id, channel_title,
-                    position_sec, duration_sec, last_watched_at, completed
-             FROM watch_history ORDER BY last_watched_at DESC, rowid DESC LIMIT ?1",
+                    position_sec, duration_sec, last_watched_at, completed, rowid
+             FROM watch_history
+             WHERE (?1 IS NULL
+                    OR last_watched_at < ?1
+                    OR (last_watched_at = ?1 AND rowid < ?2))
+               AND (?3 IS NULL
+                    OR title LIKE ?3 ESCAPE '\\'
+                    OR channel_title LIKE ?3 ESCAPE '\\')
+             ORDER BY last_watched_at DESC, rowid DESC
+             LIMIT ?4",
         )?;
-        let mut rows = stmt.query([limit])?;
-        let mut out = Vec::new();
+        // 続きの有無を確定するため 1 件多めに取り、はみ出た 1 件は捨てる。
+        // next_cursor は返す側の末尾行を指す（フィード一覧の
+        // 「末尾行の次から」の読み替えと同じ構造、FR-25・仕様決定 AR 系）
+        let mut rows = stmt.query(rusqlite::params![
+            cursor.map(|c| c.last_watched_at.as_str()),
+            cursor.map(|c| c.rowid),
+            pattern,
+            limit.saturating_add(1),
+        ])?;
+        let mut items = Vec::new();
+        let mut last_rowid = 0i64;
+        let mut has_more = false;
         while let Some(row) = rows.next()? {
-            out.push(WatchHistory {
+            if items.len() as u32 == limit {
+                has_more = true;
+                break;
+            }
+            last_rowid = row.get(8)?;
+            items.push(WatchHistory {
                 video_id: row.get(0)?,
                 title: row.get(1)?,
                 channel_id: row.get(2)?,
@@ -109,7 +145,14 @@ impl Db {
                 completed: row.get::<_, i64>(7)? != 0,
             });
         }
-        Ok(out)
+        let next_cursor = match (has_more, items.last()) {
+            (true, Some(it)) => Some(HistoryCursor {
+                last_watched_at: it.last_watched_at.clone(),
+                rowid: last_rowid,
+            }),
+            _ => None,
+        };
+        Ok(HistoryPage { items, next_cursor })
     }
 
     /// 視聴履歴の個別削除（手動削除のみ、仕様決定 I）。
@@ -140,4 +183,20 @@ impl Db {
         )?;
         Ok(())
     }
+}
+
+/// 検索語を `%...%` の部分一致 LIKE パターンにする（FR-61、仕様決定 CL）。
+/// `%`・`_`・`\` を `\` で退避し、SQL 側の `ESCAPE '\'` 句と対にする
+/// （利用者入力のワイルドカードを無力化する）。
+fn like_pattern(raw: &str) -> String {
+    let mut p = String::with_capacity(raw.len() + 2);
+    p.push('%');
+    for c in raw.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            p.push('\\');
+        }
+        p.push(c);
+    }
+    p.push('%');
+    p
 }

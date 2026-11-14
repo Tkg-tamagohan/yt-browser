@@ -346,6 +346,10 @@ const ja = {
   "library.history.progress": "{percent}% 視聴済み",
   "library.history.completed": "視聴済み",
   "library.history.lastWatched": "最終視聴 {at}",
+  // Phase 61: 履歴一覧のページングと検索（FR-52・FR-61、仕様決定 CC・CL）
+  "library.history.loadMore": "さらに読み込む",
+  "library.history.searchPlaceholder": "タイトルやチャンネル名で絞り込み",
+  "library.history.searchEmpty": "一致する履歴はありません",
   "library.favorite.add": "お気に入りに追加",
   "library.favorite.remove": "お気に入りを解除",
   "library.favorite.added": "お気に入りに追加しました",
