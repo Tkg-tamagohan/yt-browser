@@ -1120,16 +1120,24 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
 受信した `ChatEvent` は「NG 判定 → `chat://message` 送信」の順に流す。
 チャットメッセージはライブ・リプレイとも DB へ保存しない（仕様決定 AV）。
 NG メッセージも送信自体は行い、UI 側の表示だけをフィルタで制御する。
+ハイライト判定（FR-69、仕様決定 CT）も同じ場所で行い、結果は `ng` と
+独立した `hl` フラグとして `ChatEvent` に乗せて送る。UI は `hl` の行を
+除去せず強調色で表示し、`ng` と `hl` が両方立つ発言は `ng` 側の
+非表示を優先する。強調色は ChatList の `.highlight` クラスで付け、
+埋め込みパネルとポップアップ窓（同じ行構成）の双方へ効く。
 
 重複除去はセッション内の既処理 `item_id` 集合（上限 1 万件、超過分は古い順に破棄）が担い、応答内と処理済みの重複を除く。
 
 ## 7. NG フィルタエンジン（技術方針 M）
 
-フィルタのモデルは `target`（`video_title` / `video_desc` / `channel_title` / `channel_id` / `chat_text` / `chat_author`）× `kind`（`literal` / `regex`）の組み合わせで、評価対象から独立した判定器にする。
+フィルタのモデルは `target`（`video_title` / `video_desc` / `channel_title` / `channel_id` / `chat_text` / `chat_author`）× `kind`（`literal` / `regex` / `highlight`）の組み合わせで、評価対象から独立した判定器にする。
 
 - literal はパターン集合を Aho-Corasick で 1 回走査
 - regex は `RegexSet` でプリコンパイルし、ヒットした集合だけ個別 `Regex` で詳細を取る
+- highlight（FR-69、仕様決定 CT）は literal と同じ部分一致の照合を使うが、NG とは別の照合集合を持ち、マッチしたチャット発言を除去ではなく強調表示に使う。適用対象は `chat_text`（本文）と `chat_author`（投稿者名・チャンネル ID）で、NG と同じフィールド解決を踏襲する。動画系 target の highlight 行は登録できるが現行の評価経路では使わない（video_desc の「評価対象外」と同じ扱い。暫定解釈）
 - フィルタ変更時にマッチャ全体を再構築する単純な方式にし、増分更新は行わない
+
+`chat_author` フィルタは設定画面の「NG ユーザー」節（仕様決定 CU、FR-70）からも管理でき、そこでは NG 系種別（literal / regex）の `chat_author` 行だけを一覧・追加（部分一致で固定）・解除する。
 
 チャンネルブロックはこのエンジンとは別に `blocked_channels` テーブルで扱い、クエリの `NOT IN` と、検索や関連の結果に対する後段フィルタで適用する（仕様決定 E）。
 
@@ -1220,7 +1228,7 @@ CREATE TABLE filters (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   target TEXT NOT NULL CHECK (target IN
     ('video_title','video_desc','channel_title','channel_id','chat_text','chat_author')),
-  kind TEXT NOT NULL CHECK (kind IN ('literal','regex')),
+  kind TEXT NOT NULL CHECK (kind IN ('literal','regex','highlight')),
   pattern TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1379,7 +1387,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

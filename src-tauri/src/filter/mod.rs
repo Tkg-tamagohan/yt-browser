@@ -22,6 +22,10 @@ pub struct Matcher {
     literal: HashMap<String, AhoCorasick>,
     /// target -> regex パターン集合。
     regex: HashMap<String, RegexSet>,
+    /// target -> highlight パターン集合（FR-69、仕様決定 CT）。
+    /// `highlight` 種別は NG と別の目的（除去ではなく強調表示）で使うため、
+    /// 専用の照合集合を持つ。照合方式は literal（部分一致）と同じ。
+    highlight: HashMap<String, AhoCorasick>,
     /// コンパイルに失敗して除外したパターン（診断用）。
     /// `filter_add` は登録時に regex を検証するため、ここに入るのは
     /// ライブラリ差異などで既存行が再コンパイルに失敗した場合のみ。
@@ -37,6 +41,7 @@ impl Matcher {
     pub fn rebuild(filters: &[Filter]) -> Self {
         let mut literal_pats: HashMap<String, Vec<String>> = HashMap::new();
         let mut regex_pats: HashMap<String, Vec<String>> = HashMap::new();
+        let mut highlight_pats: HashMap<String, Vec<String>> = HashMap::new();
         for f in filters.iter().filter(|f| f.enabled) {
             match f.kind.as_str() {
                 "literal" => literal_pats
@@ -47,20 +52,31 @@ impl Matcher {
                     .entry(f.target.clone())
                     .or_default()
                     .push(f.pattern.clone()),
+                "highlight" => highlight_pats
+                    .entry(f.target.clone())
+                    .or_default()
+                    .push(f.pattern.clone()),
                 _ => {}
             }
         }
         let mut invalid = Vec::new();
-        let literal = literal_pats
-            .into_iter()
-            .filter_map(|(target, pats)| match AhoCorasick::new(&pats) {
-                Ok(ac) => Some((target, ac)),
-                Err(_) => {
-                    invalid.extend(pats);
-                    None
-                }
-            })
-            .collect();
+        // literal と highlight は同じ照合方式（Aho-Corasick の部分一致）
+        // を使うため、コンパイル手順を共有する
+        let build_ac = |pats: HashMap<String, Vec<String>>,
+                        invalid: &mut Vec<String>|
+         -> HashMap<String, AhoCorasick> {
+            pats.into_iter()
+                .filter_map(|(target, p)| match AhoCorasick::new(&p) {
+                    Ok(ac) => Some((target, ac)),
+                    Err(_) => {
+                        invalid.extend(p);
+                        None
+                    }
+                })
+                .collect()
+        };
+        let literal = build_ac(literal_pats, &mut invalid);
+        let highlight = build_ac(highlight_pats, &mut invalid);
         // RegexSet は集合全体で一括コンパイルするため、1 件の不正パターンで
         // target 内の全パターンが落ちてしまう。先に個別コンパイルで検証し、
         // 良いものだけを束ねる。
@@ -84,6 +100,7 @@ impl Matcher {
         Self {
             literal,
             regex,
+            highlight,
             invalid,
         }
     }
@@ -101,6 +118,22 @@ impl Matcher {
         }
         if let Some(set) = self.regex.get(target) {
             if set.is_match(text) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `target` に対する `text` がハイライト対象か（FR-69、仕様決定 CT）。
+    /// `is_blocked` と同じ部分一致で判定するが、結果は NG とは独立で、
+    /// 同一テキストが両方にマッチし得る（表示上は NG の非表示が優先）。
+    /// 空テキストは常にヒットしない。
+    pub fn is_highlighted(&self, target: &str, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        if let Some(ac) = self.highlight.get(target) {
+            if ac.is_match(text) {
                 return true;
             }
         }
@@ -269,5 +302,39 @@ mod tests {
         assert!(m.is_video_ng("通常タイトル", None, Some("UCbad123")));
         assert!(!m.is_video_ng("通常タイトル", Some("個人勢"), Some("UCgood")));
         assert!(!m.is_video_ng("通常タイトル", None, None));
+    }
+
+    /// FT-07: highlight 種別は NG とは別の照合集合で評価され、
+    /// `is_highlighted` が部分一致でヒットする。NG 判定（`is_blocked`）へは
+    /// 影響しない（FR-69、仕様決定 CT）。
+    #[test]
+    fn highlight_matches_independently_of_ng() {
+        let m = Matcher::rebuild(&[
+            f("chat_text", "highlight", "初見"),
+            f("chat_text", "literal", "売れ筋"),
+        ]);
+        // highlight パターンは is_highlighted のみヒット
+        assert!(m.is_highlighted("chat_text", "初見です"));
+        assert!(!m.is_blocked("chat_text", "初見です"));
+        // literal パターンは is_blocked のみヒット
+        assert!(m.is_blocked("chat_text", "売れ筋商品"));
+        assert!(!m.is_highlighted("chat_text", "売れ筋商品"));
+        // どちらにもマッチしない
+        assert!(!m.is_highlighted("chat_text", "普通の発言"));
+        // 別 target には掛からない
+        assert!(!m.is_highlighted("chat_author", "初見"));
+    }
+
+    /// FT-08: 無効化された highlight 行は評価対象から外れ、
+    /// 空テキスト・空集合はヒットしない（FR-69、仕様決定 CT）。
+    #[test]
+    fn highlight_disabled_and_empty_never_match() {
+        let mut row = f("chat_text", "highlight", "初見");
+        row.enabled = false;
+        let m = Matcher::rebuild(&[row]);
+        assert!(!m.is_highlighted("chat_text", "初見です"));
+        let m = Matcher::rebuild(&[f("chat_text", "highlight", "初見")]);
+        assert!(!m.is_highlighted("chat_text", ""));
+        assert!(!Matcher::empty().is_highlighted("chat_text", "初見です"));
     }
 }

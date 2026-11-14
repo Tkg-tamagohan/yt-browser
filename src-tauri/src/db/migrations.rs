@@ -452,4 +452,29 @@ pub const MIGRATIONS: &[Migration] = &[
                 added_at TEXT NOT NULL DEFAULT (datetime('now'))
               );",
     },
+    // Phase 68: チャットのハイライト（FR-69、仕様決定 CT）。
+    // filters.kind の値域に 'highlight' を追加する。CHECK 制約は ALTER で
+    // 変更できないため queue_state / videos と同じくテーブルの作り直しで
+    // 対応し、既存行はすべてそのまま引き継ぐ。
+    Migration {
+        version: 21,
+        name: "filters_highlight_kind",
+        sql: "CREATE TABLE filters_migr AS SELECT * FROM filters;
+              DROP TABLE filters;
+              CREATE TABLE filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target TEXT NOT NULL CHECK (target IN
+                  ('video_title','video_desc','channel_title','channel_id',
+                   'chat_text','chat_author')),
+                kind TEXT NOT NULL CHECK (kind IN ('literal','regex','highlight')),
+                pattern TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+              );
+              INSERT INTO filters
+                (id, target, kind, pattern, enabled, created_at)
+                SELECT id, target, kind, pattern, enabled, created_at
+                FROM filters_migr;
+              DROP TABLE filters_migr;",
+    },
 ];

@@ -37,7 +37,11 @@
         <span class="subtle">{t("chat.deleted")}</span>
       </p>
     {:else}
-      <p class="chat-item" class:superchat={item.kind === "superchat"}>
+      <p
+        class="chat-item"
+        class:superchat={item.kind === "superchat"}
+        class:highlight={item.hl}
+      >
         <span class="chat-time">{fmtChatTime(item.postedAtUsec)}</span>
         {#if showAuthor}
           <span class="chat-author">
@@ -91,6 +95,15 @@
 
   .chat-item.superchat {
     background: #3d2b1f;
+    border-radius: 6px;
+    padding: 2px 8px;
+  }
+
+  /* FR-69（仕様決定 CT）: highlight 種別フィルタにマッチした発言の強調色。
+     スパチャの茶系と区別しやすい黄土色系を暫定で使う。埋め込み・
+     ポップアップとも同じ行構成のため自動的に双方へ効く */
+  .chat-item.highlight {
+    background: #4d4419;
     border-radius: 6px;
     padding: 2px 8px;
   }

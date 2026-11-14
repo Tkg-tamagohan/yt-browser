@@ -54,7 +54,8 @@ export const HWDEC_MODES = [
   "no",
 ] as const;
 
-// NG フィルタ（FR-9）。対象・種別は DDL の CHECK と同じ値集合
+// NG フィルタ（FR-9・FR-69）。対象・種別は DDL の CHECK と同じ値集合。
+// highlight はチャット発言を除去せず強調表示する種別（仕様決定 CT）
 export const FILTER_TARGETS = [
   "video_title",
   "video_desc",
@@ -63,4 +64,4 @@ export const FILTER_TARGETS = [
   "chat_text",
   "chat_author",
 ] as const;
-export const FILTER_KINDS = ["literal", "regex"] as const;
+export const FILTER_KINDS = ["literal", "regex", "highlight"] as const;

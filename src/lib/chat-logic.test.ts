@@ -2,6 +2,7 @@
 // CM-01: 表示フィルタと dedup（ng / other の除外、item_id の重複除外）
 // CM-02: 削除イベントによる既表示行の打消し
 // CM-03: 表示件数の上限（直近 500 件）
+// CM-04: ハイライト行の保持と ng 優先（FR-69、仕様決定 CT）
 import { describe, expect, test } from "vitest";
 import { mergeChatItems, type ChatItem } from "./chat-logic";
 import type { ChatEvent } from "$lib/players.svelte";
@@ -16,6 +17,7 @@ function ev(partial: Partial<ChatEvent> & Pick<ChatEvent, "itemId">): ChatEvent 
     message: "msg",
     amountDisplay: null,
     ng: false,
+    hl: false,
     ...partial,
   };
 }
@@ -71,5 +73,31 @@ describe("CM-03 mergeChatItems の表示上限", () => {
     expect(merged).toHaveLength(500);
     expect(merged[0].itemId).toBe("old1");
     expect(merged[merged.length - 1].itemId).toBe("new");
+  });
+});
+
+describe("CM-04 mergeChatItems のハイライト行", () => {
+  test("hl フラグ付きの発言は除去せず行として残す", () => {
+    const merged = mergeChatItems(
+      [],
+      [
+        ev({ itemId: "a", message: "one" }),
+        ev({ itemId: "b", hl: true, message: "highlight" }),
+        ev({ itemId: "c", message: "two" }),
+      ],
+    );
+    expect(merged.map((i) => i.itemId)).toEqual(["a", "b", "c"]);
+    expect(merged[1].hl).toBe(true);
+  });
+
+  test("ng と hl が両方立つ発言は ng 側の非表示を優先する", () => {
+    const merged = mergeChatItems(
+      [],
+      [
+        ev({ itemId: "a", message: "one" }),
+        ev({ itemId: "b", ng: true, hl: true, message: "ng+hl" }),
+      ],
+    );
+    expect(merged.map((i) => i.itemId)).toEqual(["a"]);
   });
 });

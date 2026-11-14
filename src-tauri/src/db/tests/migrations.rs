@@ -407,3 +407,58 @@ fn migrate_v12_drops_chat_logs() {
         .unwrap();
     assert_eq!(n, 1);
 }
+
+/// v21 マイグレーション: filters.kind の CHECK に 'highlight' を追加する。
+/// v20 スキーマの既存行を保持したまま、新値域の行を受理し、
+/// 値域外の kind は従来どおり拒否する（FR-69、仕様決定 CT）。
+#[test]
+fn migrate_v21_extends_filters_kind_check() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 21) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+    // v20 時点の値域の行を仕込む
+    conn.execute(
+        "INSERT INTO filters (target, kind, pattern)
+         VALUES ('chat_text', 'literal', '売れ筋'),
+                ('chat_author', 'regex', 'spam')",
+        [],
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 21) {
+        conn.execute_batch(m.sql).unwrap();
+    }
+    // 既存行はそのまま残る
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM filters", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+    // 新値域 'highlight' を受理する
+    assert!(conn
+        .execute(
+            "INSERT INTO filters (target, kind, pattern)
+             VALUES ('chat_text', 'highlight', '初見')",
+            [],
+        )
+        .is_ok());
+    // 値域外の kind は従来どおり拒否する
+    assert!(conn
+        .execute(
+            "INSERT INTO filters (target, kind, pattern)
+             VALUES ('chat_text', 'bogus', 'x')",
+            [],
+        )
+        .is_err());
+}

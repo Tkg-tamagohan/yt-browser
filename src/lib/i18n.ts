@@ -313,7 +313,7 @@ const ja = {
 
   "settings.filters.title": "NG フィルタ",
   "settings.filters.desc":
-    "チャット本文・投稿者のほか、動画タイトル・チャンネル名・チャンネル ID も対象にできる（フィード・検索・関連動画の一覧から除外）。登録・削除は即時に反映される。",
+    "チャット本文・投稿者のほか、動画タイトル・チャンネル名・チャンネル ID も対象にできる（フィード・検索・関連動画の一覧から除外）。種別「ハイライト」はチャット発言を除去せず強調色で表示する。登録・削除は即時に反映される。",
   "settings.filters.target": "対象",
   "settings.filters.kind": "種別",
   "settings.filters.pattern.placeholder": "パターン（NG ワード / 正規表現）",
@@ -324,6 +324,18 @@ const ja = {
   "settings.filters.removed": "フィルタを削除しました",
   "settings.filters.removeFailed": "フィルタの削除に失敗: {message}",
   "settings.filters.empty": "フィルタはありません",
+  // Phase 68: NG ユーザー節（FR-70、仕様決定 CU）。chat_author フィルタの専用管理
+  "settings.ngusers.title": "NG ユーザー",
+  "settings.ngusers.desc":
+    "登録した投稿者名またはチャンネル ID にマッチするチャット発言を表示しません。追加・解除は即時に反映されます（chat_author フィルタの部分一致を登録。正規表現は NG フィルタ節で登録できます）",
+  "settings.ngusers.placeholder": "投稿者名またはチャンネル ID",
+  "settings.ngusers.add": "追加",
+  "settings.ngusers.added": "NG ユーザーを追加しました",
+  "settings.ngusers.addFailed": "NG ユーザーの追加に失敗: {message}",
+  "settings.ngusers.remove": "解除",
+  "settings.ngusers.removed": "NG ユーザーを解除しました",
+  "settings.ngusers.removeFailed": "NG ユーザーの解除に失敗: {message}",
+  "settings.ngusers.empty": "NG ユーザーはありません",
   "filter.target.video_title": "動画タイトル",
   "filter.target.video_desc": "動画説明文",
   "filter.target.channel_title": "チャンネル名",
@@ -332,6 +344,7 @@ const ja = {
   "filter.target.chat_author": "チャット投稿者",
   "filter.kind.literal": "部分一致",
   "filter.kind.regex": "正規表現",
+  "filter.kind.highlight": "ハイライト",
 
   // Phase 7: ローカルデータ（履歴・お気に入り・プレイリスト）
   "library.title": "ライブラリ",
