@@ -635,6 +635,7 @@ mod tests {
             message: "m".to_string(),
             amount_display: None,
             ng: false,
+            hl: false,
             video_offset_ms: Some(1_000),
         };
         // 先頭が削除イベントでも、その次のメッセージの投稿時刻（µs→ms）を取る
@@ -726,7 +727,7 @@ mod tests {
         assert_eq!(emoji_text(&bare), "[絵文字]");
     }
 
-    /// CH-09: highlight 種別の chat_text / chat_author フィルタが
+    /// CH-12: highlight 種別の chat_text / chat_author フィルタが
     /// hl フラグを立て、ng は立てない（FR-69、仕様決定 CT）。
     /// chat_author は投稿者名とチャンネル ID の双方にマッチする。
     #[test]
@@ -771,7 +772,7 @@ mod tests {
         assert!(!evs[0].ng);
     }
 
-    /// CH-10: NG と highlight の双方にマッチする発言は ng と hl の
+    /// CH-13: NG と highlight の双方にマッチする発言は ng と hl の
     /// 両方が立つ。表示上の優先（ng の非表示）は UI 側の責務
     /// （FR-69、仕様決定 CT）。
     #[test]
