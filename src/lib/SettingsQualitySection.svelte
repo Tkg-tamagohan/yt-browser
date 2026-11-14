@@ -38,6 +38,7 @@
           type="text"
           class="format-input"
           class:hidden={selected !== CUSTOM}
+          aria-label={t("settings.quality.format.label")}
           bind:value={customFormat}
           placeholder="bv*[height<=1080]+ba/b[height<=1080]"
         />
