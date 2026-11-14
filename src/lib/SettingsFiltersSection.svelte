@@ -92,10 +92,12 @@
         {t("settings.filters.add")}
       </button>
     </div>
-    {#if filters.length === 0}
-      <p class="subtle">{t("settings.filters.empty")}</p>
-    {:else}
-      <ul class="filter-list">
+    <!-- 空表示と一覧の出し分けはリマウントを避けるため hidden 切替
+         （ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={filters.length > 0}>
+      {t("settings.filters.empty")}
+    </p>
+      <ul class="filter-list" class:hidden={filters.length === 0}>
         {#each filters as f (f.id)}
           <li>
             <span class="f-target">{filterTargetLabel(f.target)}</span>
@@ -107,7 +109,6 @@
           </li>
         {/each}
       </ul>
-    {/if}
   </section>
 
 <style>

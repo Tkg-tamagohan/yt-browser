@@ -10,6 +10,7 @@
     closeVideoContextMenu,
     videoContextMenu,
   } from "$lib/video-actions.svelte";
+  import type { VideoRef } from "$lib/players.svelte";
   import VideoActionsMenu from "$lib/VideoActionsMenu.svelte";
 
   let menuEl = $state<HTMLElement | null>(null);
@@ -55,25 +56,35 @@
     void page.url.pathname;
     closeVideoContextMenu();
   });
+
+  // 常時マウント化で「閉じている間はコンポーネントごと無い」にできなく
+  // なったため、非表示時の props には空のフォールバックを渡す
+  const emptyVideo: VideoRef = {
+    videoId: "",
+    title: "",
+    channelId: null,
+    channelTitle: null,
+    thumbnailUrl: null,
+  };
 </script>
 
-{#if videoContextMenu.current}
-  {@const ctx = videoContextMenu.current}
-  <div
-    class="vctx"
-    style="left: {pos.x}px; top: {pos.y}px;"
-    bind:this={menuEl}
-  >
-    <VideoActionsMenu
-      video={ctx.video}
-      playlists={ctx.va.playlists}
-      floating
-      onplaylistcreated={ctx.va.onPlaylistCreated}
-      onplaylistadd={ctx.onplaylistadd}
-      onclose={closeVideoContextMenu}
-    />
-  </div>
-{/if}
+<!-- メニューの開閉でリマウントされないよう常時マウントし hidden で
+     切り替える（webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE） -->
+<div
+  class="vctx"
+  class:hidden={videoContextMenu.current === null}
+  style="left: {pos.x}px; top: {pos.y}px;"
+  bind:this={menuEl}
+>
+  <VideoActionsMenu
+    video={videoContextMenu.current?.video ?? emptyVideo}
+    playlists={videoContextMenu.current?.va.playlists ?? []}
+    floating
+    onplaylistcreated={videoContextMenu.current?.va.onPlaylistCreated}
+    onplaylistadd={videoContextMenu.current?.onplaylistadd}
+    onclose={closeVideoContextMenu}
+  />
+</div>
 
 <style>
   .vctx {

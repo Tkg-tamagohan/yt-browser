@@ -1,5 +1,7 @@
 <script lang="ts">
-  // チャットパネルの描画。開いている間だけマウントされる。
+  // チャットパネルの描画。リマウント回避（webkit2gtk のヒットずれ対策、
+  // FR-80・仕様決定 DE）で常時マウントされ、表示はカード側がラッパの
+  // hidden で切り替える。
   // 表示済みメッセージは chat.svelte.ts の共有ストアにあり、
   // 閉じている間も受信は蓄積され続ける。
   import { t } from "$lib/i18n";
@@ -24,9 +26,8 @@
       {t("chat.popup")}
     </button>
   </div>
-  {#if panel?.status}
-    <p class="chat-status">{panel?.status}</p>
-  {/if}
+  <!-- 状態行もリマウントを避けるため hidden で出し分ける（FR-80） -->
+  <p class="chat-status" class:hidden={!panel?.status}>{panel?.status}</p>
   <ChatList items={panel?.items ?? []} />
 </div>
 

@@ -499,8 +499,9 @@
         </div>
       </section>
 
-      {#if channels.length > 0}
-        <section class="panel">
+      <!-- 購読チャンネル一覧パネル。登録 0 件との出入りでリマウント
+           されないよう常時マウント＋hidden 切替（ヒットずれ対策、FR-80） -->
+      <section class="panel" class:hidden={channels.length === 0}>
           <div class="row feed-head">
             <h2>{t("feed.channels.title")}</h2>
             <select
@@ -515,10 +516,11 @@
               {/each}
             </select>
           </div>
-          {#if visibleChannels.length === 0}
-            <p class="subtle">{t("feed.channels.empty")}</p>
-          {:else}
-            <ul class="channel-list">
+          <!-- 空表示と一覧の出し分けも hidden 切替（FR-80） -->
+          <p class="subtle" class:hidden={visibleChannels.length > 0}>
+            {t("feed.channels.empty")}
+          </p>
+          <ul class="channel-list" class:hidden={visibleChannels.length === 0}>
               {#each visibleChannels as ch (ch.channelId)}
                 <li>
                   <button
@@ -551,9 +553,7 @@
                 </li>
               {/each}
             </ul>
-          {/if}
-        </section>
-      {/if}
+      </section>
     </div>
 
     <div class="feed-col">
@@ -598,10 +598,13 @@
           <button class="link" onclick={markAllRead}>{t("feed.items.markAllRead")}</button>
         </div>
 
-        {#if filterChannel}
-          <div class="row channel-filter">
+        <!-- チャンネル絞り込み行は出現・消失でリマウントされないよう
+             hidden 切替（FR-80） -->
+        <div class="row channel-filter" class:hidden={!filterChannel}>
             <span class="chip">
-              {t("feed.channelFilter.label", { title: filterChannel.title })}
+              {t("feed.channelFilter.label", {
+                title: filterChannel?.title ?? "",
+              })}
             </span>
             <button
               class="link"
@@ -618,12 +621,16 @@
             >
               ×
             </button>
-          </div>
-        {/if}
+        </div>
 
-    {#if items.length === 0}
-      <p class="subtle">{t("feed.items.empty")}</p>
-    {:else if groupByChannel}
+    <!-- 空表示と一覧の出し分けは hidden 切替（FR-80）。
+         チャンネル別グループ化の切替はレイアウト構造自体の再描画であり、
+         両レイアウトを常時マウントすると行コンポーネントが二重になるため
+         {#if} の条件分岐は維持する（暫定解釈、§9.4 参照） -->
+    <p class="subtle" class:hidden={items.length > 0}>
+      {t("feed.items.empty")}
+    </p>
+    {#if groupByChannel}
       {#each groupedItems as group (group.channelId)}
         <section class="chan-group">
           <h3 class="chan-name">
@@ -650,11 +657,13 @@
                   </span>
                 {/snippet}
                 {#snippet actions()}
-                  {#if !it.isRead}
-                    <button class="link" onclick={() => markRead(it.videoId)}>
-                      {t("feed.items.markRead")}
-                    </button>
-                  {/if}
+                  <button
+                    class="link"
+                    class:hidden={it.isRead}
+                    onclick={() => markRead(it.videoId)}
+                  >
+                    {t("feed.items.markRead")}
+                  </button>
                   <button
                     class="link danger"
                     title={t("feed.item.block")}
@@ -679,7 +688,7 @@
         </section>
       {/each}
     {:else}
-      <ul class="item-list">
+      <ul class="item-list" class:hidden={items.length === 0}>
         {#each items as it (it.videoId)}
           <VideoRow
             videoId={it.videoId}
@@ -699,11 +708,13 @@
               </span>
             {/snippet}
             {#snippet actions()}
-              {#if !it.isRead}
-                <button class="link" onclick={() => markRead(it.videoId)}>
-                  {t("feed.items.markRead")}
-                </button>
-              {/if}
+              <button
+                class="link"
+                class:hidden={it.isRead}
+                onclick={() => markRead(it.videoId)}
+              >
+                {t("feed.items.markRead")}
+              </button>
               <button
                 class="link danger"
                 title={t("feed.item.block")}
@@ -726,15 +737,14 @@
         {/each}
       </ul>
     {/if}
-    {#if feedHasMore}
-      <button
-        class="link load-more"
-        onclick={loadMoreItems}
-        disabled={loadingMore}
-      >
-        {loadingMore ? t("related.loading") : t("feed.items.loadMore")}
-      </button>
-    {/if}
+    <button
+      class="link load-more"
+      class:hidden={!feedHasMore}
+      onclick={loadMoreItems}
+      disabled={loadingMore}
+    >
+      {loadingMore ? t("related.loading") : t("feed.items.loadMore")}
+    </button>
       </section>
     </div>
   </div>

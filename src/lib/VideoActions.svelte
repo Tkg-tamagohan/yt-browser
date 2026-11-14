@@ -140,7 +140,10 @@
   {#if livewait}
     <LiveWaitButton {video} />
   {/if}
-  {#if menuOpen}
+  <!-- プレイリスト追加メニュー（部品は VideoContextMenu と共用の
+       VideoActionsMenu）。開閉ごとのリマウントを避けるため常時マウントし
+       hidden で切り替える（webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE） -->
+  <div class:hidden={!menuOpen}>
     <VideoActionsMenu
       {video}
       {playlists}
@@ -148,7 +151,7 @@
       {onplaylistadd}
       onclose={() => (menuOpen = false)}
     />
-  {/if}
+  </div>
 </span>
 
 <style>

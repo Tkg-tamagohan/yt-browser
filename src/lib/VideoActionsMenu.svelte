@@ -66,9 +66,9 @@
       {pl.name}（{pl.itemCount}）
     </button>
   {/each}
-  {#if playlists.length === 0}
-    <span class="vact-empty">{t("library.playlist.none")}</span>
-  {/if}
+  <span class="vact-empty" class:hidden={playlists.length > 0}
+    >{t("library.playlist.none")}</span
+  >
   <div class="vact-new">
     <input
       type="text"

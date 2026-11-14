@@ -141,11 +141,13 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
       "settings.ops.title",
       "settings.ops.export",
       "settings.ops.import",
+      "settings.ops.diag",
       "settings.ops.dbSize",
       "settings.ops.vacuum",
       "settings.ops.cleanup",
     ],
   },
+  { id: "notices", labelKeys: ["settings.notices.title"] },
   { id: "update", labelKeys: ["settings.update.title", "settings.update.check"] },
 ];
 

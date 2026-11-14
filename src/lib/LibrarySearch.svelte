@@ -43,12 +43,21 @@
         oninput={(e) => onSearchInput(e.currentTarget.value)}
       />
     </div>
-    {#if searchQuery.trim() === ""}
-      <p class="subtle">{t("library.search.hint")}</p>
-    {:else if items.length === 0}
-      <p class="subtle">{t("library.search.empty")}</p>
-    {:else}
-      <ul class="rows">
+    <!-- ヒント・空・一覧の 3 系統はリマウントを避けるため
+         hidden 切替（ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={searchQuery.trim() !== ""}>
+      {t("library.search.hint")}
+    </p>
+    <p
+      class="subtle"
+      class:hidden={searchQuery.trim() === "" || items.length > 0}
+    >
+      {t("library.search.empty")}
+    </p>
+      <ul
+        class="rows"
+        class:hidden={searchQuery.trim() === "" || items.length === 0}
+      >
         {#each items as it (it.videoId)}
           <VideoRow
             videoId={it.videoId}
@@ -87,7 +96,6 @@
           </VideoRow>
         {/each}
       </ul>
-    {/if}
 
 <style>
   .library-search {

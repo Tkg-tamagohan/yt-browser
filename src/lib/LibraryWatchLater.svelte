@@ -27,10 +27,12 @@
     $props();
 </script>
 
-    {#if watchLater.length === 0}
-      <p class="subtle">{t("library.watchLater.empty")}</p>
-    {:else}
-      <ul class="rows">
+    <!-- 空表示と一覧の出し分けはリマウントを避けるため hidden 切替
+         （ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={watchLater.length > 0}>
+      {t("library.watchLater.empty")}
+    </p>
+      <ul class="rows" class:hidden={watchLater.length === 0}>
         {#each watchLater as w (w.videoId)}
           <VideoRow
             videoId={w.videoId}
@@ -67,4 +69,3 @@
           </VideoRow>
         {/each}
       </ul>
-    {/if}

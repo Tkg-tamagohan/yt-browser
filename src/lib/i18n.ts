@@ -676,6 +676,11 @@ const ja = {
   "settings.ops.cleanupConfirm": "孤児行を削除します。実行しますか？",
   "settings.ops.cleanupDone": "{count} 件の孤児行を削除しました",
   "settings.ops.cleanupFailed": "孤児行整理に失敗: {message}",
+  "settings.ops.diag": "診断情報をエクスポート",
+  "settings.ops.diag.desc":
+    "アプリログ・設定・環境情報を 1 つの zip にまとめて書き出します。署名 URL やトークン、パス内のユーザー名はマスクされます（FR-82）",
+  "settings.ops.diagExported": "診断情報をエクスポートしました: {path}",
+  "settings.ops.diagFailed": "診断情報のエクスポートに失敗: {message}",
   "settings.ops.busy": "実行中…",
 
   // Phase 70: 設定と依存診断の拡充（FR-72・FR-73・FR-74・FR-75、仕様決定 CW・CX・CY・CZ）
@@ -702,6 +707,14 @@ const ja = {
   "setup.desc":
     "yt-browser の動作に必要な外部コマンドの検出状況です。未検出のコマンドはインストールするか、設定画面の「依存コマンド」節でパスを指定してください。この一覧は設定画面の「診断」節でいつでも再確認できます",
   "setup.ok": "はじめる",
+
+  // Phase 75: 通知履歴（FR-83、仕様決定 DH）
+  "settings.notices.title": "通知履歴",
+  "settings.notices.desc":
+    "このセッションで発行された通知の一覧です。新しい順に最大 {max} 件を保持し、アプリの再起動で消えます",
+  "settings.notices.empty": "このセッションではまだ通知は発行されていません",
+  "settings.notices.action": "アクション: {label}",
+  "settings.notices.clear": "履歴を消去",
 
 } as const;
 
@@ -1393,6 +1406,11 @@ const en = {
   "settings.ops.cleanupConfirm": "Delete orphan rows. Continue?",
   "settings.ops.cleanupDone": "Deleted {count} orphan rows",
   "settings.ops.cleanupFailed": "Cleanup failed: {message}",
+  "settings.ops.diag": "Export diagnostics",
+  "settings.ops.diag.desc":
+    "Writes app logs, settings, and environment info into a single zip. Signed URLs, tokens, and user names in paths are masked (FR-82)",
+  "settings.ops.diagExported": "Diagnostics exported: {path}",
+  "settings.ops.diagFailed": "Failed to export diagnostics: {message}",
   "settings.ops.busy": "Running…",
 
   // Phase 70: 設定と依存診断の拡充（FR-72・FR-73・FR-74・FR-75、仕様決定 CW・CX・CY・CZ）
@@ -1419,6 +1437,14 @@ const en = {
   "setup.desc":
     "Detection status of external commands required by yt-browser. Install any missing commands or set their paths in the \"Dependent commands\" section of settings. This list can be re-checked anytime in the \"Diagnostics\" section of settings",
   "setup.ok": "Get started",
+
+  // Phase 75: 通知履歴（FR-83、仕様決定 DH）
+  "settings.notices.title": "Notification history",
+  "settings.notices.desc":
+    "Notifications issued during this session. Up to {max} most recent entries are kept and cleared when the app restarts",
+  "settings.notices.empty": "No notifications have been issued in this session",
+  "settings.notices.action": "Action: {label}",
+  "settings.notices.clear": "Clear history",
 } satisfies Record<MessageKey, string>;
 
 const MESSAGES: Record<Locale, Partial<Record<MessageKey, string>>> = {

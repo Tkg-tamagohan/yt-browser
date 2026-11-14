@@ -30,20 +30,21 @@
   });
 </script>
 
-{#if visible}
-  <div class="setup-overlay">
-    <div class="setup-dialog" role="dialog" aria-label={t("setup.title")}>
-      <h2>{t("setup.title")}</h2>
-      <p>{t("setup.desc")}</p>
-      <DepsDiagList />
-      <div class="setup-actions">
-        <button class="primary" onclick={() => void dismiss()}>
-          {t("setup.ok")}
-        </button>
-      </div>
+<!-- 初回起動の判定で表示・非表示が切り替わるため、リマウントを避ける
+     常時マウント＋hidden 切替とする（webkit2gtk のヒットずれ対策、
+     FR-80・仕様決定 DE） -->
+<div class="setup-overlay" class:hidden={!visible}>
+  <div class="setup-dialog" role="dialog" aria-label={t("setup.title")}>
+    <h2>{t("setup.title")}</h2>
+    <p>{t("setup.desc")}</p>
+    <DepsDiagList />
+    <div class="setup-actions">
+      <button class="primary" onclick={() => void dismiss()}>
+        {t("setup.ok")}
+      </button>
     </div>
   </div>
-{/if}
+</div>
 
 <style>
   .setup-overlay {

@@ -5,6 +5,7 @@
 mod bookmark;
 mod chat;
 mod deep_link;
+mod diag;
 mod feed;
 mod filter;
 mod library;
@@ -17,6 +18,7 @@ mod system;
 pub use bookmark::*;
 pub use chat::*;
 pub use deep_link::*;
+pub use diag::*;
 pub use feed::*;
 pub use filter::*;
 pub use library::*;
