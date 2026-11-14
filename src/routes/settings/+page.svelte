@@ -46,6 +46,7 @@
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
   import SettingsLiveWaitSection from "$lib/SettingsLiveWaitSection.svelte";
   import SettingsNgUsersSection from "$lib/SettingsNgUsersSection.svelte";
+  import SettingsNoticesSection from "$lib/SettingsNoticesSection.svelte";
   import SettingsOpsSection from "$lib/SettingsOpsSection.svelte";
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
   import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
@@ -931,6 +932,10 @@
 
   <div class:hidden={!visibleSectionIds.has("ops")}>
     <SettingsOpsSection {notify} />
+  </div>
+
+  <div class:hidden={!visibleSectionIds.has("notices")}>
+    <SettingsNoticesSection />
   </div>
 
   <div class:hidden={!visibleSectionIds.has("deps")}>

@@ -6,6 +6,7 @@ mod commands;
 mod db;
 mod deep_link;
 mod deps;
+mod diag;
 mod error;
 mod feed;
 mod filter;
@@ -297,6 +298,7 @@ pub fn run() {
             commands::db_size,
             commands::db_vacuum,
             commands::db_cleanup_orphans,
+            commands::diag_export,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
