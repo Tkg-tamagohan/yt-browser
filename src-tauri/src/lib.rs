@@ -15,6 +15,7 @@ mod model;
 mod mpv;
 pub mod native_host;
 mod sponsor;
+mod ui;
 mod util;
 mod yt;
 

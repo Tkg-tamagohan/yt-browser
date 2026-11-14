@@ -16,6 +16,7 @@
     checkForUpdateAtStartup,
     dismissUpdate,
   } from "$lib/updater.svelte";
+  import { initUiPrefs } from "$lib/ui-prefs";
 
   let { children } = $props();
 
@@ -26,6 +27,11 @@
   // ファイルを窓へドロップしたときのページ遷移を抑止する（仕様決定 BG）。
   // アプリ内のドラッグ並べ替えは妨げない
   $effect(() => preventFileDrop());
+
+  // 表示設定（ui.theme / ui.density、FR-76・FR-77）を <html> の
+  // data 属性へ反映する。チャットポップアップ窓でも適用するため
+  // isChatPopup のガードは掛けない
+  $effect(() => initUiPrefs());
 
   // deep link（yt-browser://open?url=...）の受信を開始する
   // （FR-17、仕様決定 AC）。リスナー登録と保留分ドレインを行い、
@@ -137,14 +143,14 @@
     padding: 0;
     border: none;
     background: none;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font: inherit;
     cursor: pointer;
   }
 
   .nav-queue:hover,
   .nav-queue.active {
-    color: #e8e8e8;
+    color: var(--fg);
   }
 
   .hidden {
@@ -172,15 +178,15 @@
   .update-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--overlay);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 60;
   }
   .update-dialog {
-    background: #202124;
-    border: 1px solid #3c4043;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 20px;
     max-width: 420px;
