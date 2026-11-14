@@ -643,7 +643,20 @@ const ja = {
   "settings.ops.cleanupConfirm": "孤児行を削除します。実行しますか？",
   "settings.ops.cleanupDone": "{count} 件の孤児行を削除しました",
   "settings.ops.cleanupFailed": "孤児行整理に失敗: {message}",
+  "settings.ops.diag": "診断情報をエクスポート",
+  "settings.ops.diag.desc":
+    "アプリログ・設定・環境情報を 1 つの zip にまとめて書き出します。署名 URL やトークン、パス内のユーザー名はマスクされます（FR-82）",
+  "settings.ops.diagExported": "診断情報をエクスポートしました: {path}",
+  "settings.ops.diagFailed": "診断情報のエクスポートに失敗: {message}",
   "settings.ops.busy": "実行中…",
+
+  // Phase 75: 通知履歴（FR-83、仕様決定 DH）
+  "settings.notices.title": "通知履歴",
+  "settings.notices.desc":
+    "このセッションで発行された通知の一覧です。新しい順に最大 {max} 件を保持し、アプリの再起動で消えます",
+  "settings.notices.empty": "このセッションではまだ通知は発行されていません",
+  "settings.notices.action": "アクション: {label}",
+  "settings.notices.clear": "履歴を消去",
 
 } as const;
 

@@ -56,6 +56,13 @@ tauri-plugin-notification = "=2.8.0"
 # エクスポート/インポートのファイル選択ダイアログ（FR-62、仕様決定 CM）。
 # ライセンス: Apache-2.0 OR MIT
 tauri-plugin-dialog = "=2.8.4"
+# 診断情報の zip 一括エクスポート（FR-82、仕様決定 DG）。
+# 公開 7 日経過ルールで 4.6.1（2025-09-03 公開）に固定。既定機能は暗号・
+# bzip2・zstd などを連れてくるため無効化し、deflate だけを flate2+zlib-rs
+# （既に lock 済みの依存）で有効にする。ライセンス: MIT
+zip = { version = "=4.6.1", default-features = false, features = [
+  "deflate-flate2-zlib-rs",
+] }
 
 [target."cfg(windows)".dependencies]
 windows-registry = "0.6"
