@@ -25,6 +25,20 @@ export type PlayerState = {
   /// 現在の音声出力デバイス（mpv `audio-device`、FR-32、仕様決定 BA）。
   /// 既定・自動選択は "auto"。
   audioDevice: string;
+  /// mpv `track-list` のうち字幕（`type=sub`）トラックの一覧
+  /// （FR-40、仕様決定 BP）。未取得時は空。
+  subTracks: SubTrack[];
+  /// 現在の字幕選択（mpv `sid`、FR-40）。"no" / "auto" / トラック ID の文字列。
+  sid: string;
+};
+
+/// 字幕トラック 1 件分（FR-40、仕様決定 BP）。
+/// mpv `track-list` の `type=sub` エントリ由来の id・title・lang。
+export type SubTrack = {
+  /// mpv トラック ID（`sid` へ渡す値）。
+  id: number;
+  title: string | null;
+  lang: string | null;
 };
 
 /// `audio_device_list` コマンドの 1 要素（FR-32、仕様決定 BA）。
@@ -217,7 +231,10 @@ export type PlayerAction =
   // A-B リピートの 3 状態巡回に対応する mpv 操作（FR-37、仕様決定 BM）
   | { type: "ab_loop_set_a" }
   | { type: "ab_loop_set_b" }
-  | { type: "ab_loop_clear" };
+  | { type: "ab_loop_clear" }
+  // 字幕トラックの選択（FR-40、仕様決定 BP）。
+  // sid は "no" / "auto" / トラック ID の文字列。セッション内のみ有効
+  | { type: "sub_track"; sid: string };
 
 export const playerStates = $state<{
   list: Map<number, PlayerState>;

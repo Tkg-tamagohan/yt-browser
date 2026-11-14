@@ -73,6 +73,13 @@ const ja = {
     "このウィンドウだけの音声出力先を変更します（セッション内のみ有効。次回の再生は自動に戻ります）",
   "player.audio.placeholder": "デバイス名を直接入力",
 
+  // Phase 52: 字幕トラックの選択（FR-40、仕様決定 BP）
+  "player.subtitle": "字幕",
+  "player.subtitle.hint":
+    "このウィンドウの字幕トラックを選択します（セッション内のみ有効。連続再生の次動画では自動選択に戻ります）",
+  "player.subtitle.none": "なし",
+  "player.subtitle.auto": "自動",
+
   // Phase 17: ループ再生（FR-16、仕様決定 AA）
   "player.loop.none": "ループ: なし",
   "player.loop.all": "ループ: 全体",
@@ -384,6 +391,19 @@ const ja = {
   "settings.wheel.desc":
     "mpv のホイール操作は「一時停止中＝コマ送り、再生中＝音量」。ここでは再生中の 1 ノッチあたりの音量変化量を設定する。mpv 起動オプションで渡すため、変更は次回の再生から有効",
   "settings.wheel.volumeDelta": "音量変化量（ノッチあたり）",
+
+  // Phase 52: 再生の初期速度と初期音量（FR-39、仕様決定 BO）
+  "settings.player.title": "再生",
+  "settings.player.desc":
+    "新規に再生を開始するインスタンスの初期値。mpv の起動引数で渡すため、変更は次回の再生開始から有効です（再生中インスタンスの速度・音量はカード上で変えられますが、セッション限りです）",
+  "settings.player.initialSpeed": "初期速度",
+  "settings.player.initialSpeed.desc":
+    "mpv の --speed に渡す値（0.25〜4.0、既定 1.0）。空欄は既定値に戻します",
+  "settings.player.initialVolume": "初期音量（%）",
+  "settings.player.initialVolume.desc":
+    "mpv の --volume に渡す値（0〜130、既定 100）。空欄は既定値に戻します",
+  "settings.player.unsaved":
+    "保存中に再生設定の値が変更されました。もう一度保存してください",
 
   // Phase 8: PiP 小窓の位置（次回の PiP 化から有効）
   "settings.pip.title": "PiP",
