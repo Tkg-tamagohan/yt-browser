@@ -122,7 +122,7 @@ pub fn run() {
             tracing::info!(path = %dir.display(), "DB 接続を確立");
             app.manage(db.clone());
 
-            // Chrome 拡張の Native Messaging ホスト定義を冪等に自己登録する（仕様決定 AH）
+            // Chrome 拡張の Native Messaging ホスト定義を冪等に自己登録する（仕様決定 AH・DM）
             native_host::register(app.path().config_dir().ok(), &dir);
 
             // mpv の IPC ソケット置き場。runtime_dir が取れない環境では app_data 配下に退避する
