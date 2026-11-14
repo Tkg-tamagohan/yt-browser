@@ -15,83 +15,66 @@ dev ビルドをそのまま起動すると同一 identifier の single-instance
 - スキーム登録は `HKCU\Software\Classes\yt-browser\shell\open\command` がインストール済み exe（本機では `E:\software\yt-browser\yt-browser.exe`）を指す。
   per-user インストールなら HKCU、per-machine インストールなら `HKLM\SOFTWARE\Classes\yt-browser\shell\open\command` 側になるため、環境が変わったら両ハイブを `reg query` で確認する（本機では HKCU のみ存在）。
   `yt-browser:` 形式の URL を OS から起動すると本番インスタンスと本番 DB に届くため、検証には使わない。
-- `src-tauri/tauri.conf.json` の `identifier` を末尾に `-dev` を付けた値へ一時変更すると、アプリデータ（`%APPDATA%\<identifier>\`）も別系統になる。
-  別 identifier は single-instance も別枠になるため、本番が動いていても dev インスタンスを起動できる。
+- 標準の `scripts/e2e_dev.py` は、`tauri dev --config <一時 JSON>` で `identifier` を `io.github.tkg-tamagohan.yt-browser-dev` へ差し替える。
+  別 identifier はアプリデータ（`%APPDATA%\<identifier>\`）と single-instance の排他範囲が分かれるため、本番が動いていても dev 専用 DB で共存起動できる（設定ファイル本体は書き換えない）。
 - `src-tauri/src/lib.rs` の `native_host::register` は Chrome の Native Messaging 登録キーが identifier に依らず共通（HOST_NAME `io.github.tkg_tamagohan.yt_browser` は固定値）のため、dev exe のパスで本番登録を上書きしうる。
   具体的には dev 起動時に `%APPDATA%\<identifier>-dev\native-messaging\` 配下へ書いたマニフェストのパスで `HKCU\Software\Google\Chrome\NativeMessagingHosts\<HOST_NAME>` の値を更新する。
   dev アプリデータを後で削除するとそのパスは実在しなくなり、拡張からの NM 呼び出しが本番側で失敗しうる。
-  `if std::env::var_os("YB_DEV_NO_NM").is_none() { native_host::register(...) }` のような環境変数ガードを一時的に差し込み、その変数を立てて起動する。
+  `e2e_dev.py` は起動前に `lib.rs` の `native_host::register(...)` 呼び出しをコメント化し、原文を `src-tauri/src/lib.rs.e2e-backup` に退避して終了時に自動復元する（`--no-suppress-nm` で無効化可）。
 - スキームのレジストリ登録はインストーラが行い、dev 起動では上書きされない（現行コードは `deep_link().register` を呼ばず `get_current()` で読むだけ）。
   将来コードに `register` 呼び出しが入るとこの前提が崩れるため、その場合は再確認する。
   検証後に `reg query "HKCU\Software\Classes\yt-browser\shell\open\command"` で本番 exe のままかを確認するとよい。
-- identifier と NM ガードの変更はコミット対象外の検証専用とし、検証後は `git checkout --` で戻す。
+- 強制終了などで `e2e_dev.py` の終了処理が走らなかった場合は、検証後に `lib.rs.e2e-backup` または `git checkout -- src-tauri/src/lib.rs` で復元する。
 
 ## 隔離インスタンスの起動
 
-debug ビルドは `devUrl`（`http://localhost:1420`）の vite サーバを読むため、先に起動しておく。
+`scripts/e2e_dev.py` を使うと、上記の分離（`--config` 一時 JSON と `lib.rs` 退避と復元）および `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=<port>"` 付き `pnpm tauri dev` を一括で起動できる。
 
 ```bash
-cd src-tauri && cargo build
-pnpm dev   # 別シェルで vite を起動
+python scripts/e2e_dev.py --dry-run          # 実施内容の確認だけ行う
+python scripts/e2e_dev.py                    # port 9222 で起動（このシェルは占有される）
+python scripts/e2e_dev.py --port 9333        # ポートを変える場合
 ```
 
-CDP ポートは exe の引数ではなく `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 環境変数で WebView2 に渡す。
+起動後、別ターミナルで主要画面の DOM smoke チェック（`SMK-01`〜`SMK-09`）を流せる。
 
 ```bash
-WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" YB_DEV_NO_NM=1 ./target/debug/yt-browser.exe
+python scripts/e2e_smoke.py                  # port 9222 の対象へ実行
+python scripts/e2e_smoke.py --port 9333 --timeout 20 --url-match localhost:1420
 ```
 
+手動でバイナリだけを起動する場合は、`devUrl`（`http://localhost:1420`）の vite サーバを先に起動し、`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"` を渡して起動する。
 起動直後にページが真っ白なら vite の未起動が疑わしい。
-vite を起動してから CDP で `location.href = 'http://localhost:1420/'` を評価して読み直せばよい。
+vite を起動してから `python scripts/cdp_client.py --navigate "http://localhost:1420/"` で読み直せばよい。
 
 ## CDP による DOM 評価
 
-Python 側は `websocket-client` パッケージが要る。
-`websockets` や `websocket` とは別物なので `pip install --user websocket-client` で入れる。
+`scripts/cdp_client.py` は Python 3.10+ の標準ライブラリのみで動き、外部パッケージ（`websocket-client` など）の追加は要らない。
+参考として、WebView2 は接続時に Origin ヘッダを送ると `Rejected an incoming WebSocket connection from the http://localhost:9222 origin.` で拒否するため、`cdp_client.py` 内の WebSocket 実装も Origin を送らず接続している。
 
-接続時に Origin ヘッダを送ると `Rejected an incoming WebSocket connection from the http://localhost:9222 origin.` で拒否される。
-`websocket.create_connection(url, suppress_origin=True)` で Origin を送らないようにする。
-
-`$TEMP/cdp_eval.py` の雛形は次のとおり。
-
-```python
-import json, sys, urllib.request
-from websocket import create_connection
-
-port = sys.argv[2] if len(sys.argv) > 2 else "9222"
-targets = json.load(urllib.request.urlopen(f"http://localhost:{port}/json/list"))
-page = next(t for t in targets if t["type"] == "page")
-ws = create_connection(page["webSocketDebuggerUrl"], suppress_origin=True)
-ws.send(json.dumps({
-    "id": 1, "method": "Runtime.evaluate",
-    "params": {"expression": sys.argv[1], "returnByValue": True, "awaitPromise": True},
-}))
-while True:
-    msg = json.loads(ws.recv())
-    if msg.get("id") == 1:
-        print(json.dumps(msg.get("result", {}).get("result", {}).get("value"), ensure_ascii=False))
-        break
-ws.close()
+```bash
+python scripts/cdp_client.py --list-targets
+python scripts/cdp_client.py --eval "document.title"
+python scripts/cdp_client.py --eval "JSON.stringify({items: document.querySelectorAll('ul.item-list > li').length})"
+python scripts/cdp_client.py --url-match localhost:1420 --eval "document.querySelector('nav.app-nav') !== null"
 ```
 
-呼び出しは `python "$TEMP/cdp_eval.py" "<JS 式>"` の形。
-返り値が見たい場合は JS 側で `JSON.stringify({...})` を返して観測する。
+複数 page ターゲットがある環境では `--url-match localhost:1420` で本体窓を指定する。
+`--eval` の返り値が見たい場合は JS 側で `JSON.stringify({...})` を返して観測する。
 
 ## deep link 経路の検証
 
 OS のスキーム起動を使わずに deep link ハンドラ以降の経路全体を動かせる。
-`deep_link.rs` が投げるのと同じ `app://open_url` イベントを、フロント側から `plugin:event|emit` で注入する。
+`scripts/cdp_client.py` の `--emit-open-url` / `--emit-queue-url` を使うと、`deep_link.rs` が投げるのと同じ `app://open_url` イベントを `window.__TAURI_INTERNALS__.invoke("plugin:event|emit", ...)` 経由で注入する（`core:event:default` の emit 権限を使う）。
 
-```js
-__TAURI_INTERNALS__.invoke('plugin:event|emit', {
-  event: 'app://open_url',
-  payload: { seq: 9001, url: 'yt-browser://open?url=' + encodeURIComponent('https://www.youtube.com/playlist?list=...') }
-})
+```bash
+python scripts/cdp_client.py --emit-open-url "https://www.youtube.com/playlist?list=..."
+python scripts/cdp_client.py --emit-queue-url "https://www.youtube.com/watch?v=<ID>"
 ```
 
-`seq` は冷起動との区別用の連番で値は何でもよい。
-ただしフロント側の `handledSeq` が処理済み seq を記憶するため、同一 seq の再注入は弾かれる。連続して注入するときは毎回 seq を増やす。
-注入後は dispatch → URL 分類 → `playlist_import` → トーストと Tauri イベントという本物と同一の経路を通る。
+`seq` には `Date.now()` を渡しており、冷起動との区別およびフロント側の `handledSeq` による重複排除を通過する。
+注入後は dispatch → URL 分類 → `playlist_import` や再生またはキュー追加 → トーストと Tauri イベントという本物と同一の経路を通る。
+動画 URL の `--emit-open-url` は再生が走るため、画面反映だけ見たいときはプレイリスト URL などを使う。
 
 ## 再マウントとイベント駆動更新の区別
 
@@ -172,11 +155,12 @@ __TAURI_INTERNALS__.invoke('chat_start', { videoId: '...', instanceId: 1 })
 
 ## 後片付け
 
-- `tasklist //FI "IMAGENAME eq yt-browser.exe" //FO CSV` でプロセスを列挙し、dev インスタンスの PID だけ `taskkill //PID <pid> //F` で止める（本番 PID を巻き込まない）。
-- vite は `Get-NetTCPConnection -LocalPort 1420 -State Listen` の `OwningProcess` を taskkill する。
-- dev identifier のアプリデータ `%APPDATA%\<identifier>-dev\` をディレクトリごと削除する（DB だけでなく `mpv\wheel.lua` や、NM ガードを入れ忘れた場合に書かれる `native-messaging\` も含む）。
-- `reg query "HKCU\Software\Google\Chrome\NativeMessagingHosts\io.github.tkg_tamagohan.yt_browser"` で値が本番 appdata のマニフェストを指しているか確認する。dev 側を指してしまった場合は本番アプリを一度起動すれば `native_host::register` が冪等に本番値へ戻す。
-- identifier と NM ガードの一時変更を `git checkout --` で戻し、`git status` で差分が検証前の状態に戻ったことを確認する。
+- `scripts/e2e_dev.py` を Ctrl+C で止めると dev プロセスツリーを終了し、`src-tauri/src/lib.rs.e2e-backup` から `lib.rs` を自動復元する。
+- スクリプトを強制終了した場合、または手動起動を使った場合は、`lib.rs.e2e-backup` からの書き戻し（または `git checkout -- src-tauri/src/lib.rs`）を行い、残ったプロセスだけを PID 指定で止める（`tasklist //FI "IMAGENAME eq yt-browser.exe" //FO CSV` で確認し、`taskkill //PID <pid> //F` で本番 PID を巻き込まないよう止める）。
+- dev identifier のアプリデータ `%APPDATA%\io.github.tkg-tamagohan.yt-browser-dev\` を必要に応じて削除する。
+- `reg query "HKCU\Software\Google\Chrome\NativeMessagingHosts\io.github.tkg_tamagohan.yt_browser"` で値が本番 appdata のマニフェストを指しているか確認する。
+  dev 側を指してしまった場合は本番アプリを一度起動すれば `native_host::register` が冪等に本番値へ戻す。
+- `git status` と `git diff` を確認し、一時変更や `lib.rs.e2e-backup` が作業ツリーに残っていないことを確かめる。
 
 ## 補足: gh CLI がなくても GitHub 操作できる
 

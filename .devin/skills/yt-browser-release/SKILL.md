@@ -1,6 +1,6 @@
 ---
 name: yt-browser-release
-description: yt-browser のリリース作成とバージョン更新の手順。bump_version.py による 4 箇所一括更新（Windows では PYTHONUTF8=1 が必須）、バンプ PR→マージ→マージコミットへのタグ push、公開後の資産と latest.json の署名確認を扱う。リリースを作る・バージョンを上げるときに使用する。手順の正本は docs/updater-runbook.md。
+description: yt-browser のリリース作成とバージョン更新の手順。bump_version.py による 4 箇所一括更新（Windows では出力文字化け防止のため PYTHONUTF8=1 を推奨）、バンプ PR、マージコミットへのタグ push、公開後の資産と latest.json の署名確認を扱う。リリースを作成またはバージョンを更新するときに使用する。手順の正本は docs/updater-runbook.md。
 ---
 
 # リリースの作成
@@ -18,8 +18,8 @@ PYTHONUTF8=1 python scripts/bump_version.py 0.6.0
 PYTHONUTF8=1 python scripts/bump_version.py --check   # 4 箇所の整合確認
 ```
 
-Windows の cp932 ロケールで `PYTHONUTF8=1` を付けないと UTF-8 ファイルの読み込みで `UnicodeDecodeError` になる。
-対象は `tauri.conf.json`・`package.json`・`Cargo.toml`・`Cargo.lock` の 4 箇所。
+`bump_version.py` のファイル読み書き自体はすべて `encoding="utf-8"` を指定済みのため読み込み失敗は起きないが、Windows の cp932 環境では標準出力やログの日本語表示の文字化けを防ぐため `PYTHONUTF8=1` を付けて実行する。
+対象は `tauri.conf.json`、`package.json`、`Cargo.toml`、`Cargo.lock` の 4 箇所。
 
 3. バンプを PR にして CI パス後にマージする（このリポジトリは変更をすべて PR 経由にする規約）。
 4. main の**マージコミット**にタグを打って push する（軽量タグが既存運用）。
