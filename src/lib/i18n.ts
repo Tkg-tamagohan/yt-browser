@@ -563,6 +563,60 @@ const ja = {
   "bookmark.labelSaved": "ラベルを更新しました",
   "bookmark.labelFailed": "ラベルの更新に失敗: {message}",
 
+  // Phase 66: 視聴統計タブ（FR-65、仕様決定 CP）
+  "library.tab.stats": "統計",
+  "library.stats.total": "累計視聴時間",
+  "library.stats.entries": "履歴 {count} 件",
+  "library.stats.byChannel": "チャンネル別",
+  "library.stats.byDay": "日別",
+  "library.stats.unknownChannel": "（不明）",
+  "library.stats.empty": "視聴履歴がまだありません",
+  "library.stats.failed": "統計の取得に失敗: {message}",
+  "library.stats.refresh": "再読み込み",
+
+  // Phase 66: 設定画面のカテゴリ並べ替え（FR-63、仕様決定 CN）
+  "settings.categories.title": "カテゴリ",
+  "settings.categories.desc":
+    "フィードのカテゴリ表示順。上下ボタンかドラッグ＆ドロップで並べ替え（プレイリストと同じ操作。変更は即時に保存されます）",
+  "settings.categories.empty": "カテゴリはありません",
+  "settings.categories.moveUp": "上へ",
+  "settings.categories.moveDown": "下へ",
+  "settings.categories.dragHint": "ドラッグで並べ替え",
+  "settings.categories.reorderFailed": "並べ替えに失敗: {message}",
+
+  // Phase 66: 設定画面の運用節（FR-62・FR-66、仕様決定 CM・CQ）
+  "settings.ops.title": "運用",
+  "settings.ops.desc":
+    "データのエクスポート/インポートとデータベースのメンテナンス",
+  "settings.ops.export": "データをエクスポート",
+  "settings.ops.export.desc":
+    "購読チャンネル・カテゴリ・設定・プレイリストを JSON ファイルに書き出します",
+  "settings.ops.exported": "エクスポートしました: {path}",
+  "settings.ops.exportFailed": "エクスポートに失敗: {message}",
+  "settings.ops.import": "データをインポート",
+  "settings.ops.import.desc":
+    "エクスポートした JSON を読み込みます。購読・カテゴリ・設定・プレイリストはファイルの内容で置き換わります",
+  "settings.ops.importConfirm":
+    "現在の購読・カテゴリ・設定・プレイリストがファイルの内容で置き換わります。実行しますか？",
+  "settings.ops.imported": "インポートしました: {path}",
+  "settings.ops.importFailed": "インポートに失敗: {message}",
+  "settings.ops.dbSize": "データベースサイズ",
+  "settings.ops.dbSize.desc":
+    "DB 本体と WAL ファイルの合計（メンテナンスの目安）",
+  "settings.ops.dbSize.failed": "サイズの取得に失敗: {message}",
+  "settings.ops.vacuum": "VACUUM",
+  "settings.ops.vacuum.desc":
+    "データベースを再構築して空き領域を縮めます",
+  "settings.ops.vacuumDone": "VACUUM を実行しました（{before} → {after}）",
+  "settings.ops.vacuumFailed": "VACUUM に失敗: {message}",
+  "settings.ops.cleanup": "孤児行整理",
+  "settings.ops.cleanup.desc":
+    "購読解除後に残った動画や、参照先の無い項目行を削除します（履歴は消えません）",
+  "settings.ops.cleanupConfirm": "孤児行を削除します。実行しますか？",
+  "settings.ops.cleanupDone": "{count} 件の孤児行を削除しました",
+  "settings.ops.cleanupFailed": "孤児行整理に失敗: {message}",
+  "settings.ops.busy": "実行中…",
+
 } as const;
 
 export type MessageKey = keyof typeof ja;

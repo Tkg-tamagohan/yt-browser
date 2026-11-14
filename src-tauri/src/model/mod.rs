@@ -246,7 +246,9 @@ pub struct Channel {
 }
 
 /// `categories` テーブルの 1 行（設計書 §8）。
-#[derive(Debug, Clone, Serialize)]
+/// エクスポート/インポートのダンプ形式でも使うため Deserialize も持つ
+/// （FR-62、仕様決定 CM）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Category {
     pub id: i64,
@@ -665,6 +667,124 @@ pub struct VideoBookmark {
     pub created_at: String,
     /// 一覧表示用に解決した動画タイトル。未解決は None。
     pub title: Option<String>,
+}
+
+/// データダンプのフォーマット版（FR-62、仕様決定 CM）。
+/// 読み込み側はこの版だけを受理し、未知の版はエラーで拒否する。
+pub const EXPORT_FORMAT_VERSION: u32 = 1;
+
+/// `data_export` が書き出す JSON のルート（FR-62、仕様決定 CM）。
+/// `channels` / `categories` / `settings` / `playlists`（＋項目）を
+/// まとめて持つ（設計書 §3.1 のエクスポート形式）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportDump {
+    /// フォーマット版。`EXPORT_FORMAT_VERSION` と一致するファイルだけを受理する。
+    pub version: u32,
+    pub exported_at: String,
+    pub channels: Vec<ExportChannel>,
+    pub categories: Vec<Category>,
+    /// settings テーブルのキー/値ペア。
+    pub settings: Vec<ExportSetting>,
+    pub playlists: Vec<ExportPlaylist>,
+}
+
+/// `channels` テーブル 1 行分のダンプ（全列を保持する）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportChannel {
+    pub channel_id: String,
+    pub title: String,
+    pub thumbnail_url: Option<String>,
+    pub category_id: Option<i64>,
+    pub subscribed_at: String,
+    pub last_polled_at: Option<String>,
+    pub rss_etag: Option<String>,
+    pub rss_last_modified: Option<String>,
+    pub backfill_videos_pos: i64,
+    pub backfill_streams_pos: i64,
+    pub backfill_shorts_pos: i64,
+}
+
+/// `settings` テーブル 1 行分のダンプ。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSetting {
+    pub key: String,
+    pub value: String,
+}
+
+/// `playlists` 1 行分とその項目のダンプ。
+/// 項目は表示メタ（タイトル等）も一緒に持ち、復元時に `videos` 台帳へ
+/// 補完登録して一覧の JOIN 表示が成立するようにする（暫定解釈）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPlaylist {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    pub items: Vec<ExportPlaylistItem>,
+}
+
+/// `playlist_items` 1 行分のダンプ（表示メタ付き）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPlaylistItem {
+    pub video_id: String,
+    pub position: i64,
+    /// `videos` 台帳の表示メタ。無い環境へ復元するときの補完用。
+    pub title: Option<String>,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
+/// `history_stats` の戻り値（FR-65、仕様決定 CP）。
+/// `watch_history` を集計した累計視聴時間とチャンネル別・日別の内訳。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStats {
+    /// 累計視聴時間（秒）。各行の視聴量は「completed=1 なら
+    /// `COALESCE(duration_sec, position_sec)`、それ以外は `position_sec`」
+    /// で見積もる（暫定解釈。再視聴の上乗せはない）。
+    pub total_sec: i64,
+    /// 履歴行数（登録されている動画の数）。
+    pub entry_count: i64,
+    /// チャンネル別内訳（視聴時間の降順）。上限は
+    /// `db::history` の `HISTORY_STATS_MAX_CHANNELS`（暫定 50 件）。
+    pub by_channel: Vec<HistoryChannelStat>,
+    /// 日別内訳（`last_watched_at` の日付降順）。
+    pub by_day: Vec<HistoryDayStat>,
+}
+
+/// `history_stats` のチャンネル別 1 行。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryChannelStat {
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub total_sec: i64,
+    /// そのチャンネルの履歴行数。
+    pub entry_count: i64,
+}
+
+/// `history_stats` の日別 1 行。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryDayStat {
+    /// `last_watched_at` の `date()`（UTC 基準の暦日、`YYYY-MM-DD`）。
+    pub day: String,
+    pub total_sec: i64,
+    pub entry_count: i64,
+}
+
+/// `db_size` の戻り値（FR-66、仕様決定 CQ）。DB ファイルと
+/// WAL/SHM サイドファイルの合計バイト数。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbSize {
+    /// データベース関連ファイルの合計サイズ（バイト）。
+    pub bytes: u64,
 }
 
 /// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。

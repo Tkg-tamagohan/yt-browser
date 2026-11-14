@@ -31,10 +31,12 @@
     type SponsorCategory,
   } from "$lib/settings-consts";
   import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
+  import SettingsCategoriesSection from "$lib/SettingsCategoriesSection.svelte";
   import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
   import SettingsLiveWaitSection from "$lib/SettingsLiveWaitSection.svelte";
+  import SettingsOpsSection from "$lib/SettingsOpsSection.svelte";
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
   import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
   import SettingsQualitySection from "$lib/SettingsQualitySection.svelte";
@@ -675,11 +677,15 @@
     bind:feedAutoReadDays={feedAutoReadDays}
   />
 
+  <SettingsCategoriesSection {notify} />
+
   <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
 
   <SettingsBlockedSection {notify} />
 
   <SettingsFiltersSection {notify} />
+
+  <SettingsOpsSection {notify} />
 
   <SettingsUpdateSection />
 

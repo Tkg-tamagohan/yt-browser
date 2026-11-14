@@ -12,9 +12,16 @@
   import LibraryPlaylists from "$lib/LibraryPlaylists.svelte";
   import LibraryWatchLater from "$lib/LibraryWatchLater.svelte";
   import LibrarySearch from "$lib/LibrarySearch.svelte";
+  import LibraryStats from "$lib/LibraryStats.svelte";
   import { asErrorMessage, type Playlist } from "$lib/players.svelte";
 
-  type Tab = "history" | "favorites" | "playlists" | "watchLater" | "search";
+  type Tab =
+    | "history"
+    | "favorites"
+    | "playlists"
+    | "watchLater"
+    | "search"
+    | "stats";
   let tab = $state<Tab>("history");
 
   // 状態・取得・編集ロジックはファクトリ側（$lib/library-page.svelte.ts）
@@ -63,7 +70,7 @@
   <h1>{t("library.title")}</h1>
 
   <nav class="tabs">
-    {#each ["history", "favorites", "playlists", "watchLater", "search"] as const as tb}
+    {#each ["history", "favorites", "playlists", "watchLater", "search", "stats"] as const as tb}
       <button
         class="tab"
         class:active={tab === tb}
@@ -73,7 +80,8 @@
         {:else if tb === "favorites"}{t("library.tab.favorites")}
         {:else if tb === "playlists"}{t("library.tab.playlists")}
         {:else if tb === "watchLater"}{t("library.tab.watchLater")}
-        {:else}{t("library.tab.search")}{/if}
+        {:else if tb === "search"}{t("library.tab.search")}
+        {:else}{t("library.tab.stats")}{/if}
       </button>
     {/each}
   </nav>
@@ -109,7 +117,7 @@
       va={lib.va}
       onPlaylistAdd={lib.onPlaylistAdd}
     />
-  {:else}
+  {:else if tab === "search"}
     <LibrarySearch
       searchQuery={lib.searchQuery}
       onSearchInput={lib.setSearchQuery}
@@ -118,6 +126,8 @@
       va={lib.va}
       onPlaylistAdd={lib.onPlaylistAdd}
     />
+  {:else}
+    <LibraryStats />
   {/if}
 </main>
 

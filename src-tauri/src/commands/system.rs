@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::db::Db;
 use crate::error::UiError;
-use crate::model::{DbStatus, MonitorInfo, SettingChanged, YtDlpStatus};
+use crate::model::{DbSize, DbStatus, ExportDump, MonitorInfo, SettingChanged, YtDlpStatus};
 use crate::yt::{self, YtDlpResolver};
 
 const MAX_SETTING_KEY_LEN: usize = 128;
@@ -120,4 +120,60 @@ pub async fn ytdlp_update(
 ) -> Result<String, UiError> {
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
     Ok(yt::update(&path).await?)
+}
+
+/// `data_export`（FR-62、仕様決定 CM）。`channels`/`categories`/`settings`/
+/// `playlists`（＋項目）を JSON ダンプして `path` へ書き出す。
+/// `path` はフロント側の保存ダイアログで選ばせた値をそのまま受け取る。
+#[tauri::command]
+pub fn data_export(path: String, db: State<'_, Db>) -> Result<(), UiError> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err(UiError::invalid_input("保存先パスが空です"));
+    }
+    let dump = db.export_dump()?;
+    let json = serde_json::to_string_pretty(&dump)
+        .map_err(|e| UiError::internal(format!("ダンプの直列化に失敗: {e}")))?;
+    std::fs::write(&path, json)
+        .map_err(|e| UiError::internal(format!("エクスポートファイルの書き込みに失敗: {e}")))?;
+    Ok(())
+}
+
+/// `data_import`（FR-62、仕様決定 CM）。`data_export` が書き出した JSON を
+/// 読み込み、対象テーブルをダンプ内容で置き換える。
+/// ファイルの読み取り・形式検証に失敗した場合は DB を変更しない。
+#[tauri::command]
+pub fn data_import(path: String, db: State<'_, Db>) -> Result<(), UiError> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err(UiError::invalid_input("読み込み元パスが空です"));
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| UiError::invalid_input(format!("インポートファイルを読めません: {e}")))?;
+    let dump: ExportDump = serde_json::from_str(&text)
+        .map_err(|e| UiError::invalid_input(format!("インポート形式が不正です: {e}")))?;
+    db.import_dump(&dump)?;
+    Ok(())
+}
+
+/// `db_size`（FR-66、仕様決定 CQ）。DB 本体と WAL/SHM サイドファイルの
+/// 合計バイト数を返す（設定画面の運用節の表示用）。
+#[tauri::command]
+pub fn db_size(db: State<'_, Db>) -> Result<DbSize, UiError> {
+    Ok(db.db_size()?)
+}
+
+/// `db_vacuum`（FR-66、仕様決定 CQ）。`VACUUM` で DB ファイルを再構築する。
+#[tauri::command]
+pub fn db_vacuum(db: State<'_, Db>) -> Result<(), UiError> {
+    db.db_vacuum()?;
+    Ok(())
+}
+
+/// `db_cleanup_orphans`（FR-66、仕様決定 CQ）。孤児行（参照切れの
+/// videos / playlist_items / favorites / watch_later）を削除する。
+/// 戻り値は削除した行数。
+#[tauri::command]
+pub fn db_cleanup_orphans(db: State<'_, Db>) -> Result<u64, UiError> {
+    Ok(db.db_cleanup_orphans()?)
 }

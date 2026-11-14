@@ -53,6 +53,9 @@ tauri-plugin-clipboard-manager = "=2.4.1"
 # 2.8.1（公開 4 日）を避けて 2.8.0 に固定。
 # ライセンス: MIT OR Apache-2.0
 tauri-plugin-notification = "=2.8.0"
+# エクスポート/インポートのファイル選択ダイアログ（FR-62、仕様決定 CM）。
+# ライセンス: Apache-2.0 OR MIT
+tauri-plugin-dialog = "=2.8.4"
 
 [target."cfg(windows)".dependencies]
 windows-registry = "0.6"
