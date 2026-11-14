@@ -212,10 +212,17 @@ pub fn list_feed(
         db.setting_get(crate::feed::SETTING_FEED_SHOW_SHORTS)?,
     ) || filter.kind.as_deref() == Some("short");
     // 述語適合が FEED_LIST_LIMIT 件に達するまで走査するため、
-    // 先頭が NG で抜けても後続の適合行を拾える
+    // 先頭が NG で抜けても後続の適合行を拾える。
+    // 説明文は遅延解決済みの行だけが持つ（FR-85、仕様決定 DJ）。
+    // 未解決（NULL）の行は video_desc の評価対象にしない暫定解釈。
     Ok(
         db.feed_list_filtered(&filter, show_shorts, crate::db::FEED_LIST_LIMIT, |i| {
-            !matcher.is_video_ng(&i.title, i.channel_title.as_deref(), Some(&i.channel_id))
+            !matcher.is_video_ng(
+                &i.title,
+                i.channel_title.as_deref(),
+                Some(&i.channel_id),
+                i.description.as_deref(),
+            )
         })?,
     )
 }

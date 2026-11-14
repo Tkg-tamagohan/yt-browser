@@ -191,9 +191,9 @@
   }
 
   .popup-actions button {
-    border: 1px solid #3c4043;
+    border: 1px solid var(--border);
     background: none;
-    color: #c8c9cc;
+    color: var(--fg-dim);
     border-radius: 6px;
     padding: 2px 8px;
     font-size: 0.85rem;
@@ -201,8 +201,8 @@
   }
 
   .popup-actions button.active {
-    border-color: #8ab4f8;
-    color: #8ab4f8;
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .popup-actions button:disabled {
@@ -211,7 +211,7 @@
   }
 
   .chat-status {
-    color: #f9ab00;
+    color: var(--warn);
     font-size: 0.85rem;
     margin: 4px 0;
     flex-shrink: 0;

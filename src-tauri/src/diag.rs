@@ -11,10 +11,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use regex::Regex;
-use serde::Serialize;
 use thiserror::Error;
 
 use crate::db::Db;
@@ -26,8 +24,6 @@ const LOG_KEEP: usize = 10;
 /// 1 ファイルあたりの取り込み上限。超過時は末尾側だけ残す
 /// （直近の行ほど障害再現時の診断価値が高いため）。
 const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
-/// 依存コマンドのバージョン確認のタイムアウト（yt::which_exists と同じ値）。
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// アプリログのファイル名プレフィックス（lib.rs の init_tracing と同一値）。
 const APP_LOG_PREFIX: &str = "yt-browser.log";
@@ -306,73 +302,20 @@ fn settings_json(ctx: &DiagContext<'_>, masker: &Masker) -> Result<String, DiagE
     ))?)
 }
 
-/// 依存コマンドの検出状況。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DepStatus {
-    name: &'static str,
-    found: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    version: Option<String>,
-    /// 解決パス（マスク済み）。bare コマンド名（PATH 解決）はそのまま残る
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-}
-
-/// `program --version` の先頭行を返す。未導入・タイムアウト・非ゼロ終了・
-/// 空出力は None（検出失敗として扱う）。
-async fn probe_version(program: &str) -> Option<String> {
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.arg("--version").kill_on_drop(true);
-    #[cfg(windows)]
-    cmd.creation_flags(crate::CREATE_NO_WINDOW);
-    let out = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.lines()
-        .next()
-        .map(|l| l.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// `environment.json` の中身。OS・バージョン・依存コマンドの検出状況。
 /// パス類はすべてマスク済みで返す。
 async fn environment_json(ctx: &DiagContext<'_>, masker: &Masker) -> Result<String, DiagError> {
-    // yt-dlp は設定・同梱・PATH を横断する resolver 経由で解決する
-    let (ytdlp_path, ytdlp_version) = ctx.ytdlp.status(ctx.db).await;
-    let mpv_version = probe_version("mpv").await;
-    let deno_version = probe_version("deno").await;
-    let mut deps = vec![
-        DepStatus {
-            name: "mpv",
-            found: mpv_version.is_some(),
-            version: mpv_version,
-            path: Some("mpv".to_string()),
-        },
-        DepStatus {
-            name: "yt-dlp",
-            found: ytdlp_path.is_some(),
-            version: ytdlp_version,
-            path: ytdlp_path.map(|p| masker.mask(&p)),
-        },
-        DepStatus {
-            name: "deno",
-            found: deno_version.is_some(),
-            version: deno_version,
-            path: Some("deno".to_string()),
-        },
-    ];
-    // mpv/deno は bare 名で PATH 解決するためパス欄は固定値（found 時のみ意味を持つ）
-    for d in &mut deps {
-        if !d.found {
-            d.path = None;
-        }
-    }
+    // 依存コマンドの検出は FR-74 の deps_status と同じ経路を使い、
+    // 解決パスだけ診断出力用にマスクする（検出本体は再実装しない）
+    let deps: Vec<crate::model::DepStatus> =
+        crate::deps::collect_deps_status(ctx.db, ctx.ytdlp)
+            .await
+            .into_iter()
+            .map(|mut d| {
+                d.path = d.path.map(|p| masker.mask(&p));
+                d
+            })
+            .collect();
 
     let generated_at = ctx.db.local_timestamp()?;
     let schema_version = ctx.db.schema_version()?;
@@ -473,6 +416,7 @@ fn write_zip(dest: &Path, entries: &[ZipEntry]) -> Result<(), DiagError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use zip::read::ZipArchive;
 
     fn masker_with(paths: &[(&str, &str)]) -> Masker {

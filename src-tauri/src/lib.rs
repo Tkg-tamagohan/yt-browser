@@ -5,6 +5,7 @@ mod chat;
 mod commands;
 mod db;
 mod deep_link;
+mod deps;
 mod diag;
 mod error;
 mod feed;
@@ -16,6 +17,7 @@ mod model;
 mod mpv;
 pub mod native_host;
 mod sponsor;
+mod ui;
 mod util;
 mod yt;
 
@@ -257,6 +259,8 @@ pub fn run() {
             commands::video_meta_resolve,
             commands::ytdlp_status,
             commands::ytdlp_update,
+            commands::deps_status,
+            commands::setup_deps_pending,
             commands::subscribe_channel,
             commands::playing_channel,
             commands::unsubscribe_channel,

@@ -247,6 +247,15 @@ export function asErrorMessage(e: unknown): string {
 
 export type YtDlpStatus = { path: string | null; version: string | null };
 
+/// `deps_status` の戻り値要素（FR-74、仕様決定 CY）。
+/// mpv・yt-dlp・deno の 1 件分。
+export type DepStatus = {
+  name: string;
+  detected: boolean;
+  path: string | null;
+  version: string | null;
+};
+
 export type DbStatus = { schemaVersion: number };
 
 export type SearchResult = {

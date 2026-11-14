@@ -205,7 +205,7 @@
   }
 
   .lead {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     margin-bottom: 2rem;
   }
 
@@ -219,7 +219,7 @@
   }
 
   .hint {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.9rem;
   }
 
@@ -235,15 +235,15 @@
   .status {
     padding: 4px 10px;
     border-radius: 8px;
-    background: #26282c;
+    background: var(--bg-inset);
     font-family: monospace;
   }
 
   .status.ok {
-    color: #7ee787;
+    color: var(--success);
   }
 
   .status.ng {
-    color: #ff7b72;
+    color: var(--danger);
   }
 </style>

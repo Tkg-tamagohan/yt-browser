@@ -67,7 +67,7 @@
     padding: 0;
     max-height: 320px;
     overflow-y: auto;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
   }
 
   .row {
@@ -75,11 +75,11 @@
     align-items: baseline;
     gap: 10px;
     padding: 6px 0;
-    border-bottom: 1px solid #2d2f33;
+    border-bottom: 1px solid var(--border-row);
   }
 
   .time {
-    color: #8ab4f8;
+    color: var(--accent);
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
   }
@@ -91,7 +91,7 @@
   }
 
   .action {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.8rem;
     flex-shrink: 0;
   }

@@ -134,13 +134,13 @@
   }
 
   .f-pattern {
-    color: #e8eaed;
+    color: var(--fg-strong);
     overflow-wrap: anywhere;
     flex: 1;
   }
 
   .f-kind {
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 0.8rem;
     white-space: nowrap;
   }

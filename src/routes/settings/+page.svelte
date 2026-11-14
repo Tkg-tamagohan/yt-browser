@@ -18,6 +18,10 @@
   import { popupShowAuthorEnabled } from "$lib/chat-popup-logic";
   import { closeOnEofEnabled } from "$lib/eof-logic";
   import {
+    uiDensity as parseUiDensity,
+    uiTheme as parseUiTheme,
+  } from "$lib/ui-logic";
+  import {
     asErrorMessage,
     formatOverrides,
     initPlayerEvents,
@@ -34,6 +38,8 @@
   import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
   import SettingsCategoriesSection from "$lib/SettingsCategoriesSection.svelte";
   import SettingsChatPopupSection from "$lib/SettingsChatPopupSection.svelte";
+  import SettingsDepsSection from "$lib/SettingsDepsSection.svelte";
+  import SettingsDiagSection from "$lib/SettingsDiagSection.svelte";
   import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
@@ -45,10 +51,15 @@
   import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
   import SettingsQualitySection from "$lib/SettingsQualitySection.svelte";
   import SettingsSponsorSection from "$lib/SettingsSponsorSection.svelte";
+  import SettingsUiSection from "$lib/SettingsUiSection.svelte";
   import SettingsUpdateSection from "$lib/SettingsUpdateSection.svelte";
   import SettingsWheelSection from "$lib/SettingsWheelSection.svelte";
   import SettingsWindowSection from "$lib/SettingsWindowSection.svelte";
   import type { MonitorInfo } from "$lib/monitors";
+  import {
+    filterSectionIds,
+    resolveSectionDefs,
+  } from "$lib/settings-filter";
 
   // 設計書 §4.3 のプリセット表（プレイヤーカードの画質選択と共有）
   const PRESETS = QUALITY_PRESETS;
@@ -118,6 +129,11 @@
   // 再生完了時の自動クローズ（player.close_on_eof、FR-43・仕様決定 BS）。
   // on で継続なし eof 終端の窓とカードを自動で畳む。既定は off（残す）
   let closeOnEof = $state(false);
+  // 配色テーマと一覧の表示密度（ui.theme / ui.density、FR-76・FR-77、
+  // 仕様決定 DA・DB）。既定は dark / comfortable。保存すると
+  // settings://changed 経由で即時に表示へ反映される
+  let uiTheme = $state("dark");
+  let uiDensity = $state("comfortable");
   // monitor_list の列挙結果。取得失敗環境では空列のまま（選択肢が無効になる）
   let monitors = $state<MonitorInfo[]>([]);
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
@@ -128,6 +144,18 @@
   let mpvExtraArgs = $state("");
   let mpvNetworkTimeout = $state("");
   let mpvHwdec = $state("auto-safe");
+
+  // ユーザー指定の yt-dlp 実行ファイル（ytdlp.path、FR-72・仕様決定 CW）。
+  // 空欄は自動検出（解決順は設計書 §5）
+  let ytdlpPath = $state("");
+  // 節フィルタの絞り込み入力（FR-73、仕様決定 CX）。節のラベル文字列への
+  // 大小文字を区別しない部分一致で表示する節を絞る
+  let sectionQuery = $state("");
+  // 節の絞り込みで非表示にするだけなら hidden で切り替える
+  // （再マウントで各節の状態や取得済みデータを失わないため）
+  const visibleSectionIds = $derived(
+    filterSectionIds(sectionQuery, resolveSectionDefs(t)),
+  );
 
   const effectiveFormat = $derived(
     selected === CUSTOM ? customFormat.trim() : selected,
@@ -428,6 +456,19 @@
         invalid = true;
         notify(t("settings.window.unsaved"));
       }
+      // ui.theme / ui.density: select の値は受理集合内なのでそのまま保存する
+      // （FR-76・FR-77、仕様決定 DA・DB）。表示への反映は
+      // settings://changed を受けた ui-prefs が即時に行う。
+      // 保存待ちの間に select が変更されると DB と画面がずれるため、
+      // スナップショットと比較してずれていれば未保存として通知する
+      const thSnapshot = uiTheme;
+      const dnSnapshot = uiDensity;
+      await invoke("settings_set", { key: "ui.theme", value: thSnapshot });
+      await invoke("settings_set", { key: "ui.density", value: dnSnapshot });
+      if (uiTheme !== thSnapshot || uiDensity !== dnSnapshot) {
+        invalid = true;
+        notify(t("settings.ui.unsaved"));
+      }
       // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
       // そのまま保存（auto は未指定として扱う）。選択肢 ID はドット無しなので
       // TONE_MAPPING_MPV で mpv の値へ変換する。
@@ -472,6 +513,15 @@
       if (mpvHwdec !== hwSnapshot) {
         invalid = true;
         notify(t("settings.hdr.unsaved"));
+      }
+      // ytdlp.path: ユーザー指定の yt-dlp 実行ファイル（FR-72、仕様決定 CW）。
+      // 空欄は自動検出へ戻す。パスの解決は呼び出しごとのため次回の
+      // yt-dlp 起動から有効。保存待ちの間に再入力された場合は未保存と通知する
+      const yp = ytdlpPath.trim();
+      await invoke("settings_set", { key: "ytdlp.path", value: yp });
+      if (ytdlpPath.trim() !== yp) {
+        invalid = true;
+        notify(t("settings.deps.unsaved"));
       }
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
       // 書き込み済みの画質式が適用されないまま残るのを防ぐため、成功通知だけ抑える
@@ -644,6 +694,16 @@
         key: "player.close_on_eof",
       });
       closeOnEof = closeOnEofEnabled(closeEofRaw);
+      // ui.theme / ui.density（FR-76・FR-77、仕様決定 DA・DB）。
+      // 未設定・その他の値は既定（dark / comfortable）
+      const uiThemeRaw = await invoke<string | null>("settings_get", {
+        key: "ui.theme",
+      });
+      uiTheme = parseUiTheme(uiThemeRaw);
+      const uiDensityRaw = await invoke<string | null>("settings_get", {
+        key: "ui.density",
+      });
+      uiDensity = parseUiDensity(uiDensityRaw);
       const toneRaw = await invoke<string | null>("settings_get", {
         key: "hdr.tone_mapping",
       });
@@ -686,6 +746,13 @@
       ) {
         mpvHwdec = hwRaw.trim();
       }
+      // ytdlp.path（FR-72、仕様決定 CW）。空・未設定は自動検出
+      const ytdlpPathRaw = await invoke<string | null>("settings_get", {
+        key: "ytdlp.path",
+      });
+      if (ytdlpPathRaw !== null) {
+        ytdlpPath = ytdlpPathRaw.trim();
+      }
       if (wheelRaw !== null) {
         const n = Number(wheelRaw);
         if (Number.isFinite(n)) wheelDelta = n;
@@ -720,80 +787,142 @@
 <main class="container">
   <h1>{t("settings.title")}</h1>
 
-  <SettingsQualitySection
-    {loading}
-    bind:selected={selected}
-    bind:customFormat={customFormat}
+  <!-- 節フィルタ（FR-73、仕様決定 CX）。ラベル文字列への部分一致で
+       表示する節を絞る。非表示は hidden 切替で、各節の状態は保持される -->
+  <input
+    class="section-filter"
+    type="search"
+    placeholder={t("settings.filter.placeholder")}
+    bind:value={sectionQuery}
   />
+  {#if sectionQuery.trim() !== "" && visibleSectionIds.size === 0}
+    <p class="subtle">{t("settings.filter.noMatch")}</p>
+  {/if}
 
-  <SettingsWheelSection {loading} bind:wheelDelta={wheelDelta} />
+  <div class:hidden={!visibleSectionIds.has("quality")}>
+    <SettingsQualitySection
+      {loading}
+      bind:selected={selected}
+      bind:customFormat={customFormat}
+    />
+  </div>
 
-  <SettingsPlayerSection
-    {loading}
-    bind:initialSpeed={initialSpeed}
-    bind:initialVolume={initialVolume}
-  />
+  <div class:hidden={!visibleSectionIds.has("wheel")}>
+    <SettingsWheelSection {loading} bind:wheelDelta={wheelDelta} />
+  </div>
 
-  <SettingsPipSection
-    {loading}
-    bind:pipDefault={pipDefault}
-    bind:pipFitAspect={pipFitAspect}
-    bind:pipGeometry={pipGeometry}
-    bind:pipQuality={pipQuality}
-  />
+  <div class:hidden={!visibleSectionIds.has("player")}>
+    <SettingsPlayerSection
+      {loading}
+      bind:initialSpeed={initialSpeed}
+      bind:initialVolume={initialVolume}
+    />
+  </div>
 
-  <SettingsWindowSection
-    {loading}
-    {monitors}
-    bind:windowScreen={windowScreen}
-    bind:closeOnEof={closeOnEof}
-  />
+  <div class:hidden={!visibleSectionIds.has("pip")}>
+    <SettingsPipSection
+      {loading}
+      bind:pipDefault={pipDefault}
+      bind:pipFitAspect={pipFitAspect}
+      bind:pipGeometry={pipGeometry}
+      bind:pipQuality={pipQuality}
+    />
+  </div>
 
-  <SettingsHdrSection
-    {loading}
-    bind:toneMapping={toneMapping}
-    bind:computePeak={computePeak}
-    bind:mpvExtraArgs={mpvExtraArgs}
-    bind:networkTimeout={mpvNetworkTimeout}
-    bind:hwdec={mpvHwdec}
-  />
+  <div class:hidden={!visibleSectionIds.has("window")}>
+    <SettingsWindowSection
+      {loading}
+      {monitors}
+      bind:windowScreen={windowScreen}
+      bind:closeOnEof={closeOnEof}
+    />
+  </div>
 
-  <SettingsSponsorSection
-    {loading}
-    bind:sponsorActions
-    bind:sponsorShowSegments
-  />
+  <div class:hidden={!visibleSectionIds.has("hdr")}>
+    <SettingsHdrSection
+      {loading}
+      bind:toneMapping={toneMapping}
+      bind:computePeak={computePeak}
+      bind:mpvExtraArgs={mpvExtraArgs}
+      bind:networkTimeout={mpvNetworkTimeout}
+      bind:hwdec={mpvHwdec}
+    />
+  </div>
 
-  <SettingsFeedSection
-    {loading}
-    bind:feedShowShorts={feedShowShorts}
-    bind:feedNotifyNew={feedNotifyNew}
-    bind:feedAutoReadPlayed={feedAutoReadPlayed}
-    bind:feedAutoReadDays={feedAutoReadDays}
-  />
+  <div class:hidden={!visibleSectionIds.has("sponsor")}>
+    <SettingsSponsorSection
+      {loading}
+      bind:sponsorActions
+      bind:sponsorShowSegments
+    />
+  </div>
 
-  <SettingsCategoriesSection {notify} />
+  <div class:hidden={!visibleSectionIds.has("feed")}>
+    <SettingsFeedSection
+      {loading}
+      bind:feedShowShorts={feedShowShorts}
+      bind:feedNotifyNew={feedNotifyNew}
+      bind:feedAutoReadPlayed={feedAutoReadPlayed}
+      bind:feedAutoReadDays={feedAutoReadDays}
+    />
+  </div>
 
-  <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
+  <div class:hidden={!visibleSectionIds.has("categories")}>
+    <SettingsCategoriesSection {notify} />
+  </div>
 
-  <SettingsChatPopupSection
-    {loading}
-    bind:showAuthor={chatShowAuthor}
-    bind:fontSize={chatFontSize}
-    bind:opacity={chatOpacity}
-  />
+  <div class:hidden={!visibleSectionIds.has("livewait")}>
+    <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
+  </div>
 
-  <SettingsBlockedSection {notify} />
+  <div class:hidden={!visibleSectionIds.has("chatpopup")}>
+    <SettingsChatPopupSection
+      {loading}
+      bind:showAuthor={chatShowAuthor}
+      bind:fontSize={chatFontSize}
+      bind:opacity={chatOpacity}
+    />
+  </div>
 
-  <SettingsFiltersSection {notify} />
+  <div class:hidden={!visibleSectionIds.has("ui")}>
+    <SettingsUiSection
+      {loading}
+      bind:uiTheme={uiTheme}
+      bind:uiDensity={uiDensity}
+    />
+  </div>
 
-  <SettingsNgUsersSection {notify} />
+  <div class:hidden={!visibleSectionIds.has("blocked")}>
+    <SettingsBlockedSection {notify} />
+  </div>
 
-  <SettingsOpsSection {notify} />
+  <div class:hidden={!visibleSectionIds.has("filters")}>
+    <SettingsFiltersSection {notify} />
+  </div>
 
-  <SettingsNoticesSection />
+  <div class:hidden={!visibleSectionIds.has("ngusers")}>
+    <SettingsNgUsersSection {notify} />
+  </div>
 
-  <SettingsUpdateSection />
+  <div class:hidden={!visibleSectionIds.has("ops")}>
+    <SettingsOpsSection {notify} />
+  </div>
+
+  <div class:hidden={!visibleSectionIds.has("notices")}>
+    <SettingsNoticesSection />
+  </div>
+
+  <div class:hidden={!visibleSectionIds.has("deps")}>
+    <SettingsDepsSection {loading} bind:ytdlpPath={ytdlpPath} />
+  </div>
+
+  <div class:hidden={!visibleSectionIds.has("diag")}>
+    <SettingsDiagSection {notify} />
+  </div>
+
+  <div class:hidden={!visibleSectionIds.has("update")}>
+    <SettingsUpdateSection />
+  </div>
 
   <button
     class="save-btn"
@@ -812,6 +941,14 @@
   h1 {
     font-size: 2rem;
     margin-bottom: 1.5rem;
+  }
+
+  .section-filter {
+    margin-bottom: 16px;
+  }
+
+  .hidden {
+    display: none;
   }
 
   .save-btn {
