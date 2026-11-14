@@ -112,6 +112,7 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
       "settings.ui.title",
       "settings.ui.theme",
       "settings.ui.density",
+      "settings.ui.language",
     ],
   },
   { id: "blocked", labelKeys: ["blocked.title"] },

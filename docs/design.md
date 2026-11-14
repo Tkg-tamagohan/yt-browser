@@ -54,7 +54,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
-| `ui` | 表示設定（`ui.*` キー）の解釈の正。配色と一覧密度はフロントだけで使う（FR-76・FR-77、仕様決定 DA・DB） |
+| `ui` | 表示設定（`ui.*` キー）の解釈の正。配色・一覧密度・UI 言語はフロントだけで使う（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF） |
 | `db` | 接続、マイグレーション、クエリ |
 | `model` | `Video`、`ChatEvent`、`FeedItem` などの共通型 |
 | `error` | `UiError { code, message }` への直列化と、各エラー型からの変換 |
@@ -297,6 +297,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `ui.theme` | `dark` / `light` / `system` | 配色テーマ（FR-76、仕様決定 DA）。色は `app.css` の CSS 変数で持ち、`<html>` の `data-theme` 属性で切り替える。`system` は OS の `prefers-color-scheme` に従う。未設定・その他の値は `dark`。解釈の正は Rust 側 `src-tauri/src/ui.rs` |
 | `ui.density` | `comfortable` / `compact` | 一覧の表示密度（FR-77、仕様決定 DB）。`compact` は動画行（VideoRow）の行高・サムネイルを CSS 変数で縮小する（暫定解釈: 対象は VideoRow のみ）。`<html>` の `data-density` 属性で切り替える。未設定・その他の値は `comfortable` |
 | `ui.shortcuts` | `on` / `off` | アプリ側キーボードショートカットの有効化（§4.20、FR-79、仕様決定 DD）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（暫定解釈の既定）。値の解釈と既定キーマップの適用はフロント側が持つ |
+| `ui.language` | `ja` / `en` | UI 言語（FR-81、仕様決定 DF）。i18n の現行ロケールを切り替え、`en` で UI が英語リソース表示になる（未翻訳キーは ja へフォールバックする機構を持つが、en リソースは全キーを網羅）。`<html>` の `lang` 属性と日時・再生数表示のロケールも連動する。`settings://changed` で即時に反映される。未設定・その他の値は `ja`。解釈の正は Rust 側 `src-tauri/src/ui.rs` |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -1466,13 +1467,13 @@ yt-browser/
       deps.rs         # 依存コマンド（mpv・yt-dlp・deno）の検出と初回セットアップ判定（§5）
       native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
-      ui.rs           # ui.* 表示設定の解釈の正（FR-76・FR-77、§3.3）
+      ui.rs           # ui.* 表示設定の解釈の正（FR-76・FR-77・FR-81、§3.3）
       util.rs
     mpv/wheel.lua     # include_str! でバイナリに埋め込む同梱スクリプト
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

@@ -20,6 +20,7 @@
   import { shortcutsEnabled as parseShortcutsEnabled } from "$lib/shortcuts-logic";
   import {
     uiDensity as parseUiDensity,
+    uiLanguage as parseUiLanguage,
     uiTheme as parseUiTheme,
   } from "$lib/ui-logic";
   import {
@@ -139,6 +140,9 @@
   // settings://changed 経由で即時に表示へ反映される
   let uiTheme = $state("dark");
   let uiDensity = $state("comfortable");
+  // UI 言語（ui.language、FR-81、仕様決定 DF）。既定は ja。保存すると
+  // settings://changed 経由で i18n の現行ロケールへ即時に反映される
+  let uiLanguage = $state("ja");
   // monitor_list の列挙結果。取得失敗環境では空列のまま（選択肢が無効になる）
   let monitors = $state<MonitorInfo[]>([]);
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
@@ -472,16 +476,25 @@
         invalid = true;
         notify(t("settings.window.unsaved"));
       }
-      // ui.theme / ui.density: select の値は受理集合内なのでそのまま保存する
-      // （FR-76・FR-77、仕様決定 DA・DB）。表示への反映は
-      // settings://changed を受けた ui-prefs が即時に行う。
+      // ui.theme / ui.density / ui.language: select の値は受理集合内なので
+      // そのまま保存する（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF）。
+      // 表示への反映は settings://changed を受けた ui-prefs が即時に行う。
       // 保存待ちの間に select が変更されると DB と画面がずれるため、
       // スナップショットと比較してずれていれば未保存として通知する
       const thSnapshot = uiTheme;
       const dnSnapshot = uiDensity;
+      const lgSnapshot = uiLanguage;
       await invoke("settings_set", { key: "ui.theme", value: thSnapshot });
       await invoke("settings_set", { key: "ui.density", value: dnSnapshot });
-      if (uiTheme !== thSnapshot || uiDensity !== dnSnapshot) {
+      await invoke("settings_set", {
+        key: "ui.language",
+        value: lgSnapshot,
+      });
+      if (
+        uiTheme !== thSnapshot ||
+        uiDensity !== dnSnapshot ||
+        uiLanguage !== lgSnapshot
+      ) {
         invalid = true;
         notify(t("settings.ui.unsaved"));
       }
@@ -715,8 +728,8 @@
         key: "player.close_on_eof",
       });
       closeOnEof = closeOnEofEnabled(closeEofRaw);
-      // ui.theme / ui.density（FR-76・FR-77、仕様決定 DA・DB）。
-      // 未設定・その他の値は既定（dark / comfortable）
+      // ui.theme / ui.density / ui.language（FR-76・FR-77・FR-81、
+      // 仕様決定 DA・DB・DF）。未設定・その他の値は既定（dark / comfortable / ja）
       const uiThemeRaw = await invoke<string | null>("settings_get", {
         key: "ui.theme",
       });
@@ -725,6 +738,10 @@
         key: "ui.density",
       });
       uiDensity = parseUiDensity(uiDensityRaw);
+      const uiLanguageRaw = await invoke<string | null>("settings_get", {
+        key: "ui.language",
+      });
+      uiLanguage = parseUiLanguage(uiLanguageRaw);
       const toneRaw = await invoke<string | null>("settings_get", {
         key: "hdr.tone_mapping",
       });
@@ -914,6 +931,7 @@
       {loading}
       bind:uiTheme={uiTheme}
       bind:uiDensity={uiDensity}
+      bind:uiLanguage={uiLanguage}
     />
   </div>
 

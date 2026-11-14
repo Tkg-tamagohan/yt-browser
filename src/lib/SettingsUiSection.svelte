@@ -1,19 +1,24 @@
 <script lang="ts">
-  // 表示設定セクション（FR-76・FR-77、仕様決定 DA・DB）。
-  // ui.theme で配色テーマ、ui.density で一覧の表示密度を選ぶ。
+  // 表示設定セクション（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF）。
+  // ui.theme で配色テーマ、ui.density で一覧の表示密度、
+  // ui.language で UI 言語を選ぶ。
   // 保存すると settings://changed 経由で即時に表示へ反映される
-  // （src/lib/ui-prefs.ts が data-theme / data-density を更新する）。
-  // 既定は theme=dark / density=comfortable（未設定・その他の値も同じ扱い）
+  // （src/lib/ui-prefs.ts が data-theme / data-density / lang と
+  // i18n の現行ロケールを更新する）。
+  // 既定は theme=dark / density=comfortable / language=ja
+  // （未設定・その他の値も同じ扱い）
   import { t } from "$lib/i18n";
 
   let {
     loading,
     uiTheme = $bindable(),
     uiDensity = $bindable(),
+    uiLanguage = $bindable(),
   }: {
     loading: boolean;
     uiTheme: string;
     uiDensity: string;
+    uiLanguage: string;
   } = $props();
 </script>
 
@@ -38,6 +43,13 @@
           {t("settings.ui.density.comfortable")}
         </option>
         <option value="compact">{t("settings.ui.density.compact")}</option>
+      </select>
+    </label>
+    <label class="row">
+      {t("settings.ui.language")}
+      <select bind:value={uiLanguage}>
+        <option value="ja">{t("settings.ui.language.ja")}</option>
+        <option value="en">{t("settings.ui.language.en")}</option>
       </select>
     </label>
   {/if}
