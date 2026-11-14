@@ -105,6 +105,10 @@ pub enum PlayerAction {
     FrameBackStep,
     /// PiP 表示の切り替え（設計書 §4.5: ontop・枠なし・小窓配置）。
     Pip { enabled: bool },
+    /// PiP 窓の一括整列（FR-41、仕様決定 BQ）。格子計算済みの目標
+    /// geometry（`WxH+x+y`、対象ディスプレイ左上を原点とする相対座標）を
+    /// PiP 表示中の窓へ適用する。セッション内のみ有効。
+    PipTile { geometry: String },
     /// 音声出力デバイスの切り替え（mpv `audio-device`、FR-32、仕様決定 BA）。
     /// 値は `audio_device_list` が返すデバイス名（`auto` は mpv 既定）。
     /// セッション内のみ有効で DB には保存しない。
