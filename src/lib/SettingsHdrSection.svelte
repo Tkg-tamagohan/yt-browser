@@ -22,9 +22,10 @@
   <section class="panel panel--filled">
     <h2>{t("settings.hdr.title")}</h2>
     <p class="subtle desc">{t("settings.hdr.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
+    <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
+         hidden 切替（ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={!loading}>…</p>
+    <div class:hidden={loading}>
       <label class="wheel-row">
         {t("settings.hdr.toneMapping")}
         <select bind:value={toneMapping}>
@@ -74,7 +75,7 @@
         </select>
       </label>
       <p class="subtle desc">{t("settings.hdr.hwdec.desc")}</p>
-    {/if}
+    </div>
   </section>
 
 <style>

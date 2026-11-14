@@ -156,6 +156,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_size` | なし | `Result<DbSize>`（`bytes`。FR-66、仕様決定 CQ） |
 | `db_vacuum` | なし | `Result<()>`（FR-66、仕様決定 CQ） |
 | `db_cleanup_orphans` | なし | `Result<u64>`（削除した行数。FR-66、仕様決定 CQ） |
+| `diag_export` | `path`（保存先ファイルパス。保存ダイアログで選択） | `Result<()>`（FR-82、仕様決定 DG、§4.21） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -1097,6 +1098,81 @@ keydown を購読し、`ui.shortcuts` が on のときだけ既定キーマッ�
   その要素本来の起動を優先する
 - 設定値の読み取りに失敗したときは既定（off）のまま動く
 
+### 4.21 診断情報のエクスポート（FR-82、仕様決定 DG）
+
+サポート目的で外部へ共有する診断情報を、設定画面の運用節から zip 1 本で
+書き出す。コマンドは `diag_export`（§3.1）で、保存先は
+`tauri-plugin-dialog` の保存ダイアログで選ばせる（既定名
+`yt-browser-diag-<yyyymmdd>-<hhmmss>.zip`。`diag-logic.ts`）。
+
+zip の内容は次のとおり（生成は `src-tauri/src/diag.rs`）。
+
+| エントリ | 内容 |
+|---|---|
+| `README.txt` | 同梱物の説明とマスク方針の注記 |
+| `environment.json` | OS・アーキテクチャ・アプリと Tauri のバージョン、表示環境（§4.14 の windowing_system）、DB スキーマバージョン、依存コマンド（mpv・yt-dlp・deno）の検出状況とバージョン、各種ディレクトリパス（マスク済み）、生成時刻 |
+| `settings.json` | `settings` テーブル全件の `{キー: 値}` オブジェクト（後述のマスク適用） |
+| `logs/` | アプリログ（`yt-browser.log*`）を更新時刻の新しい順に最大 10 件、各ファイル末尾側 2 MiB まで |
+
+依存コマンドの検出は FR-74 の `deps_status` と同じ経路
+（`deps::collect_deps_status`。mpv・deno は PATH 上の
+`<name> --version`、yt-dlp は設定・同梱・PATH を横断する
+リゾルバ経由）を使い、解決パスだけマスクしてから書き出す。
+ログ収集に失敗しても zip 生成は継続し、ログ無しの zip も正常とする
+（暫定解釈）。mpv ログ（`mpv-*.log`）は署名入りストリーム URL が
+mpv 自身の出力として記録され得て内容を制御できないため、
+§4.9 の「外部へ共有しない」前提どおり zip の対象外とする（暫定解釈）。
+
+マスク規則（zip に入れる直前に全テキストへ適用する）:
+
+1. 既知の絶対ディレクトリ（ログ・データ・設定・ホーム）を
+   `<LOG_DIR>`・`<DATA_DIR>`・`<CONFIG_DIR>`・`<HOME>` の
+   プレースホルダへ置き換える（区切りは `\` `/` 双方の表記を対象）
+2. URL クエリで秘匿名の値を `***` へ置き換える
+   （`sig=ABC&x=1` → `sig=***&x=1`）
+3. JSON 片の `"<秘匿名>": <値>` を `"<秘匿名>": "***"` へ置き換える
+4. `Authorization: Bearer|Basic <値>`、`Cookie:`、`Set-Cookie:` の
+   ヘッダ値を `***` へ置き換える（行末まで）
+5. 上記に残った汎用ユーザーディレクトリ（`C:\Users\<名>`・
+   `/home/<名>`・`/Users/<名>`）のユーザー名を `***` へ置き換える
+
+秘匿名は名前の列挙式（暫定解釈）で、署名系（`sig`・`lsig`・
+`signature`・`pot`・`po_token`）、認証系（`token` 系・`auth`・
+`authorization`・`key`・`api_key`・`apikey`・`secret`・
+`client_secret`・`password`・`passwd`・`bearer`）、セッション系
+（`session`・`session_id`・`sid`・`visitor_data`・`continuation`・
+`cookie`・`cookies`）、発信元の秘匿（`ip`・`ipbits`）を対象とする。
+動画 ID・itag・`expire` などの再生系パラメータは診断に要るため残す。
+`settings.json` ではこれに加えて、キー名が `token`・`secret`・
+`password`・`passwd`・`credential`・`cookie` の断片を含む設定は
+値全体を `"***"` とする（`ytdlp.po_token` など、値の中身を解析せず
+潰す）。それ以外の設定値は上記テキスト規則を適用する。
+
+マスク規則は網羅を保証するものではなく、未知の形式の秘匿値が残り得る。
+共有前に内容を確認するようユーザーガイドでも案内する。
+
+回帰テストは DB-DG-01 〜 DB-DG-09（マスク・設定出力・ログ収集・
+zip 生成の一通り）と DX-01（既定ファイル名の規則）。
+
+### 4.22 通知履歴（FR-83、仕様決定 DH）
+
+共有キュー（`notices.svelte.ts` の `notify()`）経由で発行した通知を、
+トースト表示とは別に履歴として保持し、設定画面の履歴一覧
+（`SettingsNoticesSection`）で新しい順に一覧できるようにする。
+履歴項目は `{ id, msg, at, actionLabel? }` で、実行可能な
+コールバックは持たずアクションはラベルのみ表示に留める
+（暫定解釈: 履歴から操作を再実行する要件は無い）。
+
+保持はメモリ内のみとする（暫定解釈: 永続化しない。通知は DB・
+イベント経路を持たないフロント側の一時表示機構であり、再起動を
+跨ぐ記録は要求されていないためマイグレーションは設けない）。
+保持上限は 200 件の暫定解釈（`NOTICE_HISTORY_MAX`）で、超過分は
+古い方から落とす。一覧には手動の消去ボタンを置く。
+なお各ページのローカル notify（設定画面の保存通知など共有キューを
+通らない通知）は履歴の対象外とする（暫定解釈）。
+
+回帰テストは NH-01 〜 NH-03（追加・上限削除・表示順・時刻形式）。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1438,7 +1514,32 @@ GPU なし環境（ソフトウェアレンダリング）の webkit2gtk で、D
   取得結果の採用は発行順の最新のみとし、お気に入りやプレイリストのローカル編集はコミット後に必ず再取得して DB の内容に収束させる
 
 ヒットずれ自体がプラットフォーム側の問題なので、ほかのリマウント要素でも同じ事象は起こり得る。
-現行 UI で残る発生源はパネルの開閉やリストの再描画程度であり、今後同じ症状が観測されたら同じ方針（リマウントを避ける常時マウント化）を当てる。
+FR-80（仕様決定 DE）では、残る発生源として挙げていたパネルの開閉と一覧の再描画にも常時マウント化を拡大した。
+
+拡大後の対象と方式は次のとおり。
+
+- プレイヤーカード内のチャット・概要欄・関連動画の 3 パネル、キューパネルの 3 面タブ、行アクションのプレイリスト追加メニュー、更新確認ダイアログ、ライブラリ画面の 6 タブは常時マウントし、開閉・切替はラッパまたは要素の `class:hidden` で行う
+- 一覧の「読み込み中・空・一覧」の出し分けブロック、およびフィルタ行・「さらに読み込む」ボタン・再開ヒント・DB / yt-dlp 状態表示のように、UI 状態やデータ有無で出入りする要素も同じく `class:hidden` で出し分ける
+- ブックマークのラベル編集やプレイリスト名のリネームのような編集モード、購読状態・既読・音声デバイス列挙の成否で入れ替わる要素も同様とする
+- 出し分けに使う `hidden` クラスは `src/app.css` のグローバル `.hidden { display: none !important; }` で定義する。切替対象の scoped style（display:flex/grid など）より詳細度で負けないよう `!important` を付ける
+
+常時マウント化で「開くとマウントされる」に乗っていた取得処理は、開閉遷移を見る `$effect` へ移した。
+`src/lib/remount-logic.ts` の `panelFetchKey` が「可視なら取得キー、非可視なら null」を返し、呼び出し側は戻り値の前回比較で取得を駆動する（RM-NN 系テスト）。
+概要欄パネルは動画 ID をキーに渡すため、開いたまま連続再生・ループで再生動画が切り替わっても従来どおり取り直される。
+関連動画パネルとライブラリの統計タブは固定キーを渡し、「開くたびに 1 回だけ取り直す」挙動を維持する。
+いずれも世代番号と破棄フラグで、閉じた後や連続した取り直しに届く古い応答の上書きを防ぐ。
+
+一方、次は暫定解釈として常時マウント化の対象外とした。
+
+- 要素を伴わないテキスト断片の条件分岐（件数や追記表示）
+- 同一スロットの排他的な表現バリアント（削除済みチャット表示、概要欄セグメントの種別、サムネイル代替表示、タイトルのボタン/テキスト）。常時マウント化すると常に死んだ DOM が残り、ずれの影響範囲も項目内部に限られるため
+- `<select>` 内の条件付き `<option>`（ポップアップ内の選択肢はヒット対象にならない）
+- 実行時に切り替わらない静的な分岐（`livewait`・`onplay`・`actionsPlacement` などの prop 固定分岐、チャットポップアップ窓かのウィンドウ種別判定）
+- フィード一覧のチャンネル別グループ化の切替（レイアウト構造そのものが変わり、両レイアウトを常時マウントすると行コンポーネントが二重に配置されるため）
+- トースト通知のように生成・消滅そのものが動作である一時要素とその内部
+
+開発・検証環境（Windows、Chromium 系 WebView2）ではこのヒットずれは発生しないため、拡大後の対象について「開閉や再描画でずれが出ない」という受け入れ条件の実機検証は未検証である。
+WebKitGTK 環境で今後同じ症状が観測された場合も、同じ方針（リマウントを避ける常時マウント化）を当てる。
 
 ## 10. セキュリティと権限
 
@@ -1476,6 +1577,7 @@ yt-browser/
       model/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
       deps.rs         # 依存コマンド（mpv・yt-dlp・deno）の検出と初回セットアップ判定（§5）
+      diag.rs         # 診断情報の zip エクスポートと秘匿マスク（§4.21）
       native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
       ui.rs           # ui.* 表示設定の解釈の正（FR-76・FR-77、§3.3）
@@ -1484,7 +1586,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

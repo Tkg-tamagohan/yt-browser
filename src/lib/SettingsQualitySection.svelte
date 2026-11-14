@@ -17,9 +17,10 @@
   <section class="panel panel--filled">
     <h2>{t("settings.quality.title")}</h2>
     <p class="subtle desc">{t("settings.quality.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
+    <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
+         hidden 切替（ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={!loading}>…</p>
+    <div class:hidden={loading}>
       <div class="presets">
         {#each PRESETS as p}
           <label>
@@ -32,16 +33,16 @@
           <input type="radio" bind:group={selected} value={CUSTOM} />
           {t("settings.quality.custom")}
         </label>
-        {#if selected === CUSTOM}
-          <input
-            type="text"
-            class="format-input"
-            bind:value={customFormat}
-            placeholder={t("settings.quality.format.label")}
-          />
-        {/if}
+        <!-- カスタム選択時のフォーマット入力欄も hidden 切替（FR-80） -->
+        <input
+          type="text"
+          class="format-input"
+          class:hidden={selected !== CUSTOM}
+          bind:value={customFormat}
+          placeholder={t("settings.quality.format.label")}
+        />
       </div>
-    {/if}
+    </div>
   </section>
 
 <style>

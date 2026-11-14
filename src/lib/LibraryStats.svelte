@@ -3,12 +3,20 @@
   // 累計視聴時間・チャンネル別・日別の 3 区画で表示する。
   // データはこのタブを開いたときに取り直す（履歴は再生のたびに
   // 変わるためキャッシュしない。再読み込みボタンでも取り直せる）
-  import { onMount } from "svelte";
+  //
+  // リマウント回避（webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE）で
+  // 常時マウントされ、表示はページ側がラッパの hidden で切り替える。
+  // 「開くとマウントされる」に乗っていた初回取得は、active prop の
+  // 立ち上がりを見る $effect（panelFetchKey 駆動）へ移した
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
   import { fmtWatchSec } from "$lib/stats-logic";
+  import { panelFetchKey } from "$lib/remount-logic";
   import { asErrorMessage, type HistoryStats } from "$lib/players.svelte";
+
+  // active はページ側のタブ選択状態（hidden 切替と同じ値）
+  let { active }: { active: boolean } = $props();
 
   let stats = $state<HistoryStats | null>(null);
   let loading = $state(false);
@@ -24,22 +32,37 @@
     }
   }
 
-  onMount(() => {
+  // タブを開くたびに取り直す（「開くとマウントされる」挙動の代替。
+  // 開いたままでは再取得しないため固定キーを渡す）
+  let lastKey: string | null = null;
+  $effect(() => {
+    const key = panelFetchKey(active, "open");
+    if (key === lastKey) return;
+    lastKey = key;
+    if (key === null) return;
     void load();
   });
 </script>
 
-{#if loading && stats === null}
-  <p class="subtle">{t("desc.loading")}</p>
-{:else if stats === null || stats.entryCount === 0}
-  <p class="subtle">{t("library.stats.empty")}</p>
-{:else}
+<!-- 読み込み中・空・集計表示の出し分けはリマウントを避けるため
+     hidden 切替とする（ヒットずれ対策、FR-80） -->
+<p class="subtle" class:hidden={!(loading && stats === null)}>
+  {t("desc.loading")}
+</p>
+<p
+  class="subtle"
+  class:hidden={(loading && stats === null) ||
+    (stats !== null && stats.entryCount > 0)}
+>
+  {t("library.stats.empty")}
+</p>
+<div class:hidden={stats === null || stats.entryCount === 0}>
   <div class="stats-head">
     <div>
       <div class="total-label subtle">{t("library.stats.total")}</div>
-      <div class="total-value">{fmtWatchSec(stats.totalSec)}</div>
+      <div class="total-value">{fmtWatchSec(stats?.totalSec ?? 0)}</div>
       <div class="subtle">
-        {t("library.stats.entries", { count: stats.entryCount })}
+        {t("library.stats.entries", { count: stats?.entryCount ?? 0 })}
       </div>
     </div>
     <button class="link" onclick={() => void load()} disabled={loading}>
@@ -51,7 +74,7 @@
     <section>
       <h2>{t("library.stats.byChannel")}</h2>
       <ul class="stat-list">
-        {#each stats.byChannel as c (c.channelId ?? "")}
+        {#each stats?.byChannel ?? [] as c (c.channelId ?? "")}
           <li>
             <span class="stat-name" title={c.channelId ?? ""}>
               {c.channelTitle || c.channelId || t("library.stats.unknownChannel")}
@@ -69,7 +92,7 @@
     <section>
       <h2>{t("library.stats.byDay")}</h2>
       <ul class="stat-list">
-        {#each stats.byDay as d (d.day)}
+        {#each stats?.byDay ?? [] as d (d.day)}
           <li>
             <span class="stat-name">{d.day}</span>
             <span class="stat-value">
@@ -83,7 +106,7 @@
       </ul>
     </section>
   </div>
-{/if}
+</div>
 
 <style>
   .stats-head {

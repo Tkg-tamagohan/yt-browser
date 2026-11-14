@@ -16,9 +16,10 @@
 <section class="panel panel--filled">
   <h2>{t("settings.livewait.title")}</h2>
   <p class="subtle desc">{t("settings.livewait.desc")}</p>
-  {#if loading}
-    <p class="subtle">…</p>
-  {:else}
+  <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
+       hidden 切替（ヒットずれ対策、FR-80） -->
+  <p class="subtle" class:hidden={!loading}>…</p>
+  <div class:hidden={loading}>
     <label class="row">
       {t("settings.livewait.action")}
       <select bind:value={liveWaitAction}>
@@ -26,7 +27,7 @@
         <option value="notify">{t("settings.livewait.action.notify")}</option>
       </select>
     </label>
-  {/if}
+  </div>
 </section>
 
 <style>

@@ -46,6 +46,7 @@
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
   import SettingsLiveWaitSection from "$lib/SettingsLiveWaitSection.svelte";
   import SettingsNgUsersSection from "$lib/SettingsNgUsersSection.svelte";
+  import SettingsNoticesSection from "$lib/SettingsNoticesSection.svelte";
   import SettingsOpsSection from "$lib/SettingsOpsSection.svelte";
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
   import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
@@ -833,9 +834,14 @@
     placeholder={t("settings.filter.placeholder")}
     bind:value={sectionQuery}
   />
-  {#if sectionQuery.trim() !== "" && visibleSectionIds.size === 0}
-    <p class="subtle">{t("settings.filter.noMatch")}</p>
-  {/if}
+  <!-- 該当なし表示もリマウントを避けるため hidden 切替（FR-80） -->
+  <p
+    class="subtle"
+    class:hidden={sectionQuery.trim() === "" ||
+      visibleSectionIds.size > 0}
+  >
+    {t("settings.filter.noMatch")}
+  </p>
 
   <div class:hidden={!visibleSectionIds.has("quality")}>
     <SettingsQualitySection
@@ -948,6 +954,10 @@
 
   <div class:hidden={!visibleSectionIds.has("ops")}>
     <SettingsOpsSection {notify} />
+  </div>
+
+  <div class:hidden={!visibleSectionIds.has("notices")}>
+    <SettingsNoticesSection />
   </div>
 
   <div class:hidden={!visibleSectionIds.has("deps")}>

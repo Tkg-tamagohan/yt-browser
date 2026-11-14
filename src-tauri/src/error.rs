@@ -77,6 +77,12 @@ impl From<crate::yt::YtError> for UiError {
     }
 }
 
+impl From<crate::diag::DiagError> for UiError {
+    fn from(e: crate::diag::DiagError) -> Self {
+        Self::new("diag_export", e.to_string())
+    }
+}
+
 impl From<crate::innertube::InnerTubeError> for UiError {
     fn from(e: crate::innertube::InnerTubeError) -> Self {
         let code = match &e {
