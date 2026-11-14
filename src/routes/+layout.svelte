@@ -5,6 +5,7 @@
   import { appNotices, runNoticeAction } from "$lib/notices.svelte";
   import { initDeepLinks } from "$lib/deeplink.svelte";
   import { preventFileDrop } from "$lib/file-drop-logic";
+  import { initBookmarks } from "$lib/bookmark.svelte";
   import { initLiveWaits } from "$lib/livewait.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
   import QueuePanel from "$lib/QueuePanel.svelte";
@@ -48,6 +49,13 @@
   $effect(() => {
     if (isChatPopup) return;
     void initLiveWaits();
+  });
+
+  // 動画内ブックマーク（FR-49、仕様決定 BZ）。一覧の初期取得だけを行う
+  // （専用イベントは持たず、変更はコマンド呼び出し側が取り直す）
+  $effect(() => {
+    if (isChatPopup) return;
+    void initBookmarks();
   });
 </script>
 

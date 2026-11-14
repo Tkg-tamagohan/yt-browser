@@ -343,6 +343,23 @@ pub const MIGRATIONS: &[Migration] = &[
                 registered_ms INTEGER NOT NULL
               );",
     },
+    // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）。
+    // 同一動画の同一位置の重複保存は UNIQUE (video_id, position_sec) で抑止する
+    // （暫定解釈: 位置表記が既定ラベルのため同位置の重複は実質同一行になる）。
+    // 表示用タイトルはテーブルに持たず、一覧取得時に videos → watch_history
+    // の順で解決する（video_meta_lookup と同じ規則）。
+    Migration {
+        version: 16,
+        name: "video_bookmarks",
+        sql: "CREATE TABLE video_bookmarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT NOT NULL,
+                position_sec INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (video_id, position_sec)
+              );",
+    },
     // Phase 58: プレイリストキューの永続化（FR-48、仕様決定 BY）。
     // queue_state を単一行（CHECK (id = 1)）からキューごとの行へ広げる。
     // playlist_id が NULL の行（id=1）は従来どおり一時キューの現在位置、
@@ -353,7 +370,7 @@ pub const MIGRATIONS: &[Migration] = &[
     // （旧行は id・current_index をそのまま引き継ぐ）。
     // 部分一意索引で playlist_id ごとに高々 1 行を保証する。
     Migration {
-        version: 16,
+        version: 17,
         name: "queue_state_playlist",
         sql: "CREATE TABLE queue_state_migr AS SELECT * FROM queue_state;
               DROP TABLE queue_state;

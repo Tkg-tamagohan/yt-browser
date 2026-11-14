@@ -3,7 +3,7 @@
 //! vitest の回帰テスト（LP-NN）から直接検証する。
 
 import type { VideoRef } from "./players.svelte";
-import type { LoopMode } from "./queue.svelte";
+import type { LoopMode, QueueKey } from "./queue.svelte";
 
 /// キュー項目の識別子付きエントリ（BG-10、仕様決定 BK）。
 /// `uid` はキュー内で一意の連番 ID で、video_id 基準では区別できない
@@ -185,6 +185,36 @@ export function indexAfterMove(
   if (from < index && to >= index) return index - 1;
   if (from > index && to <= index) return index + 1;
   return index;
+}
+
+/// 「キューに追加」の追加先キューの解決（FR-45、仕様決定 BV）。
+/// キューパネルのタブ選択（`queuePanel.selected`）を対象指定として使い、
+/// 選択中のキューが存在すればそれを、無ければ（未選択・消滅済み）
+/// 一時キュー（null）を返す。`selectedExists` には選択キーのキューが
+/// queues マップに存在するかを渡す
+export function resolveAddTarget(
+  selected: QueueKey,
+  selectedExists: boolean,
+): QueueKey {
+  return selected !== null && selectedExists ? selected : null;
+}
+
+/// 「残りをシャッフル」の並べ替え（FR-46、仕様決定 BW）。
+/// 現在位置（index）までの項目は順序を保ち、それより後の項目だけを
+/// ランダムに並べ替えた新しい項目列を返す。`rand` は [0,1) の乱数源で、
+/// テストからは決定的な系列を注入できるようにする（Fisher–Yates）。
+/// 残りが 1 項目以下なら入れ替え対象が無く、同じ並びの新しい列を返す
+export function shuffleTail(
+  items: QueueEntry[],
+  index: number,
+  rand: () => number,
+): QueueEntry[] {
+  const tail = items.slice(index + 1);
+  for (let i = tail.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [tail[i], tail[j]] = [tail[j], tail[i]];
+  }
+  return [...items.slice(0, index + 1), ...tail];
 }
 
 /// 「プレイリストとして保存」（`queue_save_as_playlist`）へ渡す項目列への

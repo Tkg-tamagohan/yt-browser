@@ -239,11 +239,13 @@ fn queue_playlist_state_cascades_on_playlist_delete() {
     assert!(db.queue_playlist_load().unwrap().is_empty());
 }
 
-/// DB-Q-09: v16 マイグレーション（FR-48、仕様決定 BY）。
+/// DB-Q-09: v17 マイグレーション（FR-48、仕様決定 BY）。
 /// 旧形式の単一行 queue_state（CHECK (id = 1)）の現在位置を引き継ぎ、
 /// playlist_id 列とプレイリストキュー行を追加できる。
+/// （v16 は Phase 59 の video_bookmarks で、queue_state に触れないため
+/// 移行前状態は v16 適用後も変わらない）
 #[test]
-fn migrate_v16_preserves_queue_state() {
+fn migrate_v17_preserves_queue_state() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
         "CREATE TABLE schema_migrations (
@@ -252,7 +254,7 @@ fn migrate_v16_preserves_queue_state() {
          );",
     )
     .unwrap();
-    for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 16) {
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 17) {
         conn.execute_batch(m.sql).unwrap();
         conn.execute(
             "INSERT INTO schema_migrations (version) VALUES (?1)",
@@ -260,7 +262,7 @@ fn migrate_v16_preserves_queue_state() {
         )
         .unwrap();
     }
-    // v15 状態では queue_state は単一行（CHECK (id = 1)）
+    // v16 状態でも queue_state は単一行（CHECK (id = 1)）
     conn.execute(
         "INSERT INTO queue_state (id, current_index) VALUES (1, 2)",
         [],
@@ -272,7 +274,7 @@ fn migrate_v16_preserves_queue_state() {
             []
         )
         .is_err());
-    for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 16) {
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 17) {
         conn.execute_batch(m.sql).unwrap();
         conn.execute(
             "INSERT INTO schema_migrations (version) VALUES (?1)",

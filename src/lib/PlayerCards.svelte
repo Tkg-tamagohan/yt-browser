@@ -36,6 +36,7 @@
   } from "$lib/chat.svelte";
   import { abLoopState, cycleAbLoop } from "$lib/ab.svelte";
   import type { AbState } from "$lib/ab-logic";
+  import { bookmarkAdd } from "$lib/bookmark.svelte";
   import {
     asErrorMessage,
     dropAbLoop,
@@ -781,6 +782,13 @@
         >
           {t("player.screenshot")}
         </button>
+        <!-- 動画内ブックマーク（FR-49、仕様決定 BZ）。現在位置を保存する -->
+        <button
+          title={t("bookmark.add.hint")}
+          onclick={() => void bookmarkAdd(p.videoId, p.position)}
+        >
+          {t("bookmark.add")}
+        </button>
         <button
           title={t("player.pip.hint")}
           disabled={pipBusy.has(p.instanceId)}
@@ -821,7 +829,7 @@
             class="link"
             onclick={() => {
               queuePanel.selected = queueKeyOfInstance(p.instanceId) ?? null;
-              queuePanel.waitsTab = false;
+              queuePanel.sideTab = null;
               queuePanel.open = true;
             }}
           >

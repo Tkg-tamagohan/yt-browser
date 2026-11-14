@@ -134,6 +134,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `live_wait_add` | `video`（`VideoRef`） | `Result<LiveWaitAddOutcome>`（`result` は `added` / `duplicate` / `live` / `ended` / `notBroadcast`。登録前に InnerTube `player` の放送状態を確認し、開始前のみ `added` で登録する。FR-44、仕様決定 BT） |
 | `live_wait_remove` | `video_id` | `Result<()>`（未登録でも正常終了） |
 | `live_wait_list` | なし | `Result<Vec<LiveWait>>`（予定時刻の昇順・未定は末尾） |
+| `bookmark_add` | `video_id`, `position_sec`（再生位置の秒。小数以下は切り捨てて整数秒で保存） | `Result<Option<VideoBookmark>>`（登録した行。同動画の同位置は None で重複抑止。FR-49、仕様決定 BZ、§4.17） |
+| `bookmark_list` | なし | `Result<Vec<VideoBookmark>>`（保存の新しい順。`title` は `videos` 台帳 → `watch_history` の順に解決した表示用の値で、未解決は None） |
+| `bookmark_remove` | `id` | `Result<()>`（未登録でも正常終了） |
+| `bookmark_set_label` | `id`, `label` | `Result<VideoBookmark>`（更新後の行。空・空白のみは位置表記へ戻す。未登録は NotFound） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -247,7 +251,8 @@ URL がイベントだけでは届かず失われる）。ドレインで `ready
 フロント側の振り分け（`deeplink.svelte.ts`）は、`open` では動画 URL → `play_video` で
 その場で再生、プレイリスト URL → `playlist_import` で取り込み、
 `watch`+`list` 複合は動画として扱う。`queue` は動画 URL のみ受理し、
-`video_meta_lookup` で表示メタを補完してから一時キューの末尾へ追加する
+`video_meta_lookup` で表示メタを補完してからキューへ追加する
+（追加先は行アクションと同じくパネル選択中のキュー、FR-45、仕様決定 BV）
 （再生は開始しない）。補完が外れた、または補完結果のタイトルが空の項目は
 `video_meta_resolve` で非同期に遅延解決し、結果が届けば表示メタを実タイトルへ
 更新して `queue_save` で永続化へ反映する（仕様決定 BD）。キュー表示メタの
@@ -514,12 +519,22 @@ BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロン�
 動画単位のままその都度完了として更新される（周回数の行は増やさない）。
 
 登録を伴わない一時キュー（キュースタック）も同じ武装機構で扱う（FR-20、仕様決定 AM）。
-行アクションは「キューに追加」（`queueAdd`、末尾）と「次に再生」
+行アクションは「キューに追加」（`queueAdd`、対象キューの末尾）と「次に再生」
 （`queuePlayNext`、実行中は現在項目の直後・未実行は先頭）で、
 追加は再生を開始せず積み上げるだけとする。
-一覧・編集（並べ替え・個別削除・全消去）はナビのキュー入口と
+「キューに追加」の追加先はキューパネルで選択中のキュー（一時キュー・
+プレイリストキューの双方、FR-45、仕様決定 BV）で、選択が無い・
+消滅済みなら一時キューとする（`resolveAddTarget`）。対象選択の UI は
+増やさず、パネルのタブ選択を対象指定として使う。「次に再生」は
+従来どおり一時キュー固定とする。
+一覧・編集（並べ替え・個別削除・残りシャッフル・全消去）はナビのキュー入口と
 キューを背負うインスタンスのカードから開く共通パネル（`QueuePanel`）で行い、
 編集後は実行中キューなら `player_set_queue` を張り替えて順序へ反映する。
+「残りをシャッフル」（`queueShuffleRest`、FR-46、仕様決定 BW）は
+現在位置より後の項目をランダムに並べ替える（`shuffleTail`）。
+項目一覧の順序変更として扱い、実行中キューなら同じ再武装経路で
+連続再生へ反映する（バックエンドの取り出しロジックは不変）。
+ループモードとは独立で、繰り返しの動作は従来どおりとする。
 再生中の項目を削除しても再生は止めないが、その場合 `index` が指すのは
 未再生の次項目になるため、`playingCurrent` フラグで武装対象の先頭を
 切り替える（次項目を武装から落とすと再生されずに飛ばされる）。
@@ -547,10 +562,13 @@ BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロン�
 管理し、各キューは項目列・現在位置・実行インスタンスを独立に持つ。
 複数のキューが別々の mpv インスタンスを背負って同時に連続再生でき、
 武装・世代管理・ループ状態はこれまでどおりインスタンス単位で動く。
-「キューに追加」「次に再生」は実行中キューの有無に関わらず常に一時キューへ
-入り、プレイリストキューへ後から項目を追加する経路は持たない。
+「キューに追加」はキューパネルで選択中のキューへ入る（FR-45、
+仕様決定 BV）。「次に再生」は実行中キューの有無に関わらず常に
+一時キューへ入る。
 プレイリストキューは連続再生開始時点の項目列スナップショットを持ち、
-開始後のプレイリスト編集は反映されない。
+開始後のプレイリスト編集は反映されない（「キューに追加」による
+キュー側への追記はスナップショットへの変更であって、
+プレイリストへは反映されない）。
 
 キューの寿命は種別で分かれる（FR-26）。「連続再生を止める」
 （`queueStop`）はインスタンスをキューから外すだけで、一時キューは項目だけ
@@ -576,6 +594,7 @@ BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロン�
 
 `QueuePanel` は上部のタブで表示対象キュー（一時キュー＋存在する
 プレイリストキュー）を切り替え、選択中のキューの一覧と編集を行う。
+タブ選択は「キューに追加」の追加先指定でもある（FR-45、仕様決定 BV）。
 選択中のキューが消滅した場合は一時キューを表示対象に戻す。
 キューを背負うプレイヤーカードの「キュー」ボタンは自分のキューを
 選択状態でパネルを開く。ループ状態はインスタンス単位のままで、
@@ -599,7 +618,7 @@ FR-29）が復元済みキューの末尾へ追記される順序を保つ。
 
 プレイリストキューも現在位置を DB へ永続化する（FR-48、仕様決定 BY。
 仕様決定 AY の「プレイリストキューは DB に保存しない」を改訂）。
-`queue_state` は v16 マイグレーションでキューごとの行へ広がり、
+`queue_state` は v17 マイグレーションでキューごとの行へ広がり、
 `playlist_id` NULL の行（id=1）が一時キュー、NULL 以外の行が
 プレイリストキュー（playlist_id は対象プレイリストへの FK、
 ON DELETE CASCADE）を表す。保存実体は playlist_id と現在位置のみで、
@@ -822,6 +841,30 @@ eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定
   異常系として定間隔で追い続け、自動解除期限の掃除に委ねる（暫定解釈）
 - 状態確認の連続失敗は 2 回で `livewait://status` の warn 通知を出し、復帰時に
   info 通知する（フィードポーラーと同じ方針）
+
+### 4.17 動画内ブックマーク（FR-49、仕様決定 BZ）
+
+プレイヤーカードの「ブックマーク」ボタンが現在位置（`player://state` の
+`position`）を `bookmark_add` で `video_bookmarks` へ保存し、キューパネルの
+ブックマークタブが一覧・位置ジャンプ・個別削除・ラベル編集を提供する。
+データは DB へ保存するため再起動でそのまま復元される。
+
+- 位置は mpv の `time-pos` の小数以下を切り捨てた整数秒で保存する
+  （シークバーの位置表示と同じ規則）
+- 既定ラベルは位置表記（"h:mm:ss" / "m:ss"）。ラベルの後付け編集は
+  `bookmark_set_label` で行い、空・空白のみの入力は位置表記へ戻す
+  （暫定解釈: 空ラベルの行は残さない）
+- 同一動画の同一位置の重複保存は UNIQUE (video_id, position_sec) で抑止し、
+  `bookmark_add` は既存行を変えず None を返す（暫定解釈）
+- 一覧の並びは保存の新しい順（`created_at` 降順、同時刻は行 ID 降順。
+  暫定解釈）。表示用タイトルはテーブルに持たず、一覧取得時に `videos`
+  台帳 → `watch_history` の順で解決する（`video_meta_lookup` と同じ規則）。
+  どちらにも無い場合は呼び出し側が動画 ID 表示に潰す
+- 行の位置ボタンは `play_video` の `start_sec` で保存位置から再生する
+  （`resume: false`。開始位置の解決順は §3.1）
+- ブックマーク変更の専用イベントは持たない。変更経路はコマンド呼び出しに
+  限られるため、呼び出し側が成功後に `bookmark_list` で取り直す
+  （暫定解釈。`livewait://changed` のようなバックエンド発の変更経路が無い）
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
@@ -1050,6 +1093,15 @@ CREATE TABLE live_waits (
   registered_ms INTEGER NOT NULL       -- 登録時刻（epoch ms）。予定の無い項目の自動解除の起点
 );
 
+CREATE TABLE video_bookmarks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,  -- 個別削除・ラベル編集の対象 ID（FR-49）
+  video_id TEXT NOT NULL,
+  position_sec INTEGER NOT NULL,         -- 整数秒（time-pos の小数以下切り捨て）
+  label TEXT NOT NULL,                   -- 既定は位置表記（"h:mm:ss" / "m:ss"）
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (video_id, position_sec)        -- 同位置の重複保存を抑止（暫定解釈）
+);
+
 CREATE TABLE schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1072,8 +1124,9 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
   バックフィル投入（`feed_backfill`）は RSS とは別経路で、新規行を既読・投入済みで挿入し、プレースホルダは既読のまま `ingested=1` に確定する。投入済みの既存行は投稿日・既読を含めて書き換えない（FR-21、仕様決定 AN）。
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
-- `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v16 で単一行制約を外した）
+- `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v17 で単一行制約を外した）
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
+- `video_bookmarks` は動画内ブックマーク（FR-49、仕様決定 BZ、§4.17）。自動採番の `id` を個別削除・ラベル編集の対象 ID とし、UNIQUE (video_id, position_sec) で同位置の重複保存を抑止する（暫定解釈）。表示用タイトルは行に持たず、一覧取得時に `videos` 台帳 → `watch_history` の順で解決する（`video_meta_lookup` と同じ規則）
 
 ## 9. エラーハンドリングと変更耐性
 
@@ -1154,7 +1207,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```

@@ -578,6 +578,26 @@ pub struct LiveWaitStatus {
     pub message: String,
 }
 
+/// `video_bookmarks` の 1 行（FR-49、仕様決定 BZ）。
+/// `title` はテーブルには持たず、一覧取得時に `videos` 台帳 →
+/// `watch_history` の順で解決した表示用の値（`video_meta_lookup` と同じ規則）。
+/// どちらにも無い・タイトルが空のときは None。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoBookmark {
+    /// 行 ID（AUTOINCREMENT）。個別削除・ラベル編集の対象指定に使う。
+    pub id: i64,
+    pub video_id: String,
+    /// 保存位置（秒、整数）。mpv の再生位置の小数以下は切り捨てて保存する。
+    pub position_sec: i64,
+    /// 表示ラベル。保存時は位置表記（"h:mm:ss" / "m:ss"）が既定値。
+    pub label: String,
+    /// 保存時刻（`datetime('now')`）。
+    pub created_at: String,
+    /// 一覧表示用に解決した動画タイトル。未解決は None。
+    pub title: Option<String>,
+}
+
 /// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。
 pub fn is_channel_id(s: &str) -> bool {
     s.len() == 24

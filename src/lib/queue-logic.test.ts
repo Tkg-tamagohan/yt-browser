@@ -7,6 +7,8 @@
 // MQ-02: 「連続再生を止める」後のキュー位置（一時は先頭・プレイリストは保存）（FR-26）
 // LP-04: 一時キュー永続化の項目変換と復元位置（FR-30、仕様決定 AY）
 // QM-01: キュー表示メタのフォールバック判定（FR-29、仕様決定 BD）
+// QE-01: 「キューに追加」の追加先解決（パネル選択中のキュー）（FR-45、仕様決定 BV）
+// QE-02: 現在位置より後の項目のシャッフル（FR-46、仕様決定 BW）
 // QS-01: 「プレイリストとして保存」の項目列変換（FR-47、仕様決定 BX）
 // QS-02: プレイリストキュー復元の保存位置（FR-48、仕様決定 BY）
 import { describe, expect, test } from "vitest";
@@ -20,9 +22,11 @@ import {
   persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
+  resolveAddTarget,
   restoredIndex,
   restoredPlaylistIndex,
   saveItemsOf,
+  shuffleTail,
   type QueueEntry,
 } from "./queue-logic";
 
@@ -290,6 +294,62 @@ describe("QM-01 isFallbackTitle（FR-29、仕様決定 BD）", () => {
     expect(isFallbackTitle("動画タイトル", "abcdefghijk")).toBe(false);
     // 別動画の ID はこの項目にとっては実タイトル扱い（上書きしない）
     expect(isFallbackTitle("xyz98765432", "abcdefghijk")).toBe(false);
+  });
+});
+
+describe("QE-01 resolveAddTarget（FR-45、仕様決定 BV）", () => {
+  test("一時キュー選択（null）なら一時キューへ", () => {
+    expect(resolveAddTarget(null, true)).toBe(null);
+    // 一時キューは常時存在するため selectedExists は参照されない
+    expect(resolveAddTarget(null, false)).toBe(null);
+  });
+
+  test("選択中のプレイリストキューが存在すればそのキューへ", () => {
+    expect(resolveAddTarget(7, true)).toBe(7);
+    expect(resolveAddTarget(12, true)).toBe(12);
+  });
+
+  test("選択中のキューが消滅済みなら一時キューへ戻す", () => {
+    // タブ選択の残滓（キュー消滅後の古いキー）で落とさない
+    expect(resolveAddTarget(7, false)).toBe(null);
+  });
+});
+
+describe("QE-02 shuffleTail（FR-46、仕様決定 BW）", () => {
+  // 決定的な乱数列を注入して Fisher–Yates の適用位置を検証する
+  const seq = (...vals: number[]) => {
+    let i = 0;
+    return () => vals[i++ % vals.length];
+  };
+
+  test("現在位置より後の項目だけを並べ替え、前側は順序を保つ", () => {
+    const items = es("A", "B", "C", "D", "E");
+    // index=1（B が現在位置）: 尾側 [C,D,E] に対し
+    // i=2 で j=0（C↔E）、i=1 で j=1（D 据え置き）→ [E,D,C]
+    const out = shuffleTail(items, 1, seq(0.1, 0.9));
+    expect(vids(out)).toEqual(["A", "B", "E", "D", "C"]);
+    // uid は項目に付随して動く（並べ替えで採番し直さない）
+    expect(out.map((i) => i.uid)).toEqual([1, 2, 5, 4, 3]);
+  });
+
+  test("現在位置が先頭なら 2 番目以降だけが対象（先頭項目は動かない）", () => {
+    const items = es("A", "B", "C");
+    // 尾側 [B,C] の i=1 で j=0（B↔C）→ [A,C,B]
+    expect(vids(shuffleTail(items, 0, seq(0.4)))).toEqual(["A", "C", "B"]);
+  });
+
+  test("残りが 1 項目以下なら並びは変わらない", () => {
+    expect(vids(shuffleTail(es("A", "B"), 0, seq(0.5)))).toEqual(["A", "B"]);
+    expect(vids(shuffleTail(es("A", "B"), 1, seq(0.5)))).toEqual(["A", "B"]);
+    expect(vids(shuffleTail(es("A"), 0, seq(0.5)))).toEqual(["A"]);
+    expect(shuffleTail([], 0, seq(0.5))).toEqual([]);
+  });
+
+  test("元の配列を書き換えない（新しい列を返す）", () => {
+    const items = es("A", "B", "C", "D");
+    const out = shuffleTail(items, 0, seq(0.9, 0.9, 0.9));
+    expect(vids(items)).toEqual(["A", "B", "C", "D"]);
+    expect(out).not.toBe(items);
   });
 });
 

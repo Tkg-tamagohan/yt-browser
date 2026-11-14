@@ -399,6 +399,7 @@ const ja = {
   "queue.panel.title": "キュー",
   "queue.play": "再生",
   "queue.clear": "全消去",
+  "queue.shuffle": "残りをシャッフル",
   "queue.saveAsPlaylist": "プレイリストとして保存",
   "queue.savedAsPlaylist": "プレイリスト「{name}」に保存しました",
   "queue.saveAsPlaylistFailed": "プレイリストの保存に失敗: {message}",
@@ -502,6 +503,26 @@ const ja = {
   "settings.livewait.action.notify": "トースト通知のみ",
   "settings.livewait.unsaved":
     "保存中にライブ待機の値が変更されました。もう一度保存してください",
+
+  // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）
+  "bookmark.add": "ブックマーク",
+  "bookmark.add.hint": "現在位置をブックマークへ保存",
+  "bookmark.tab": "ブックマーク",
+  "bookmark.empty": "ブックマークはありません",
+  "bookmark.saved": "ブックマークを保存しました: {position}",
+  "bookmark.duplicate": "この位置はすでに保存されています: {position}",
+  "bookmark.addFailed": "ブックマークの保存に失敗: {message}",
+  "bookmark.removed": "ブックマークを削除しました",
+  "bookmark.removeFailed": "ブックマークの削除に失敗: {message}",
+  "bookmark.remove": "ブックマークを削除",
+  "bookmark.listFailed": "ブックマーク一覧の取得に失敗: {message}",
+  "bookmark.play": "この位置から再生",
+  "bookmark.playFailed": "ブックマーク位置からの再生に失敗: {message}",
+  "bookmark.edit": "編集",
+  "bookmark.edit.hint": "ラベルを編集",
+  "bookmark.labelSave": "保存",
+  "bookmark.labelSaved": "ラベルを更新しました",
+  "bookmark.labelFailed": "ラベルの更新に失敗: {message}",
 
 } as const;
 
