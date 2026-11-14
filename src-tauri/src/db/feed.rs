@@ -22,9 +22,9 @@ pub struct NewVideo<'a> {
     pub kind: &'a str,
 }
 
-/// メタの遅延解決の対象行（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）。
+/// メタの遅延解決の対象行（FR-53・FR-56・FR-57・FR-85、仕様決定 CD・CG・CH・DJ）。
 /// `meta_resolve_targets` が返す。needs_* は「その時点で DB が欠いている情報」で、
-/// 解決側は必要な部分だけを埋めればよい（両方立つ行では 1 回の
+/// 解決側は必要な部分だけを埋めればよい（複数立つ行では 1 回の
 /// InnerTube 応答で同時に埋まる）。
 #[derive(Debug, Clone)]
 pub struct MetaResolveTarget {
@@ -36,6 +36,9 @@ pub struct MetaResolveTarget {
     pub needs_published: bool,
     /// kind_state が 0（未確定）または 2（失敗）（kind 判定を試す対象）。
     pub needs_kind: bool,
+    /// description が NULL（InnerTube メタ応答の shortDescription を
+    /// 書き込む余地あり。空文字は解決済み・説明なしで対象外）。
+    pub needs_desc: bool,
 }
 
 /// `feed_ingest` / `feed_subscribe` の戻り値。
@@ -152,7 +155,8 @@ impl Db {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
-                    v.thumbnail_url, v.published_at, v.kind, v.is_read
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.description
              FROM videos v
              JOIN channels c ON c.channel_id = v.channel_id
              WHERE v.ingested = 1
@@ -200,6 +204,7 @@ impl Db {
                 published_at: row.get(5)?,
                 kind: row.get(6)?,
                 is_read: row.get::<_, i64>(7)? != 0,
+                description: row.get(8)?,
             };
             if keep(&item) {
                 out.push(item);
@@ -313,21 +318,26 @@ impl Db {
         Ok(())
     }
 
-    /// メタの遅延解決の対象選出（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）。
+    /// メタの遅延解決の対象選出（FR-53・FR-56・FR-57・FR-85、仕様決定 CD・CG・CH・DJ）。
     /// 対象は次の和集合で、新しい行から `limit` 件まで取る:
     ///   - kind 未確定（kind_state=0）または前回失敗（kind_state=2）の行
     ///   - published_at が NULL で InnerTube メタ応答を未試行（meta_checked=0）の行
+    ///   - description が NULL の行（説明文を未解決。FR-85、仕様決定 DJ。
+    ///     空文字は解決済み・説明なしなので対象外）
     ///
-    /// 'short' は shorts 判定で確定済み（kind_state=1）なのでここには出ない。
+    /// 'short' は shorts 判定で確定済み（kind_state=1）なので kind では
+    /// ここに出ないが、投稿日時・説明文が欠けていればその旗だけで選ばれる。
     pub fn meta_resolve_targets(&self, limit: usize) -> Result<Vec<MetaResolveTarget>, DbError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT video_id, kind,
                     (published_at IS NULL) AS needs_published,
-                    (kind_state <> 1)      AS needs_kind
+                    (kind_state <> 1)      AS needs_kind,
+                    (description IS NULL)  AS needs_desc
                FROM videos
               WHERE kind_state <> 1
                  OR (published_at IS NULL AND meta_checked = 0)
+                 OR description IS NULL
               ORDER BY first_seen_at DESC, video_id
               LIMIT ?1",
         )?;
@@ -339,6 +349,7 @@ impl Db {
                 kind: row.get(1)?,
                 needs_published: row.get::<_, i64>(2)? != 0,
                 needs_kind: row.get::<_, i64>(3)? != 0,
+                needs_desc: row.get::<_, i64>(4)? != 0,
             });
         }
         Ok(out)
@@ -366,6 +377,22 @@ impl Db {
             [video_id],
         )?;
         Ok(())
+    }
+
+    /// 説明文の遅延書き戻し（FR-85、仕様決定 DJ）。
+    /// InnerTube メタ応答の `videoDetails.shortDescription` を入れる。
+    /// description が NULL の行だけを埋め、既存値は上書きしない
+    /// （投稿日時と同じく解決済みの値を守る暫定解釈: 投稿後に説明文が
+    /// 編集されても追従しない）。応答が説明文を持たない（パース結果が
+    /// 空文字）場合も空文字を書き込み、説明なしを確定させて
+    /// 「もう一度問う」対象から外す。実際に書き込めたら true。
+    pub fn videos_set_description(&self, video_id: &str, desc: &str) -> Result<bool, DbError> {
+        let conn = self.lock()?;
+        Ok(conn.execute(
+            "UPDATE videos SET description = ?2
+               WHERE video_id = ?1 AND description IS NULL",
+            rusqlite::params![video_id, desc],
+        )? > 0)
     }
 
     /// kind の遅延確定の書き戻し（FR-56、仕様決定 CG）。

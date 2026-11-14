@@ -50,7 +50,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§4.16） |
-| `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57、§4.18） |
+| `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時・説明文と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57・FR-85、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
@@ -190,7 +190,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタと `uid`（項目のユニーク ID、BG-10、仕様決定 BK）付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
 `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
 `video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
-`videos` 台帳の投稿日時・kind を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56、仕様決定 CD・CG、§4.18）。
+`videos` 台帳の投稿日時・kind・説明文を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56・FR-85、仕様決定 CD・CG・DJ、§4.18）。
 `history_list` のカーソルは末尾行の `(last_watched_at, rowid)` の対で、一覧の全順序（`last_watched_at` 降順、同時刻は rowid 降順）と同じ基準で「その行の次（より古い側）から」を取る（FR-52、仕様決定 CC。`history_prune` の保持対象とも同じ順序）。`next_cursor` の有無は `limit`+1 件の取得で確定し、末尾ちょうどのページでも空の次ページを要求しない。`query` はタイトルと `channel_title` への `%...%` 部分一致 LIKE で、`%`・`_`・`\` を退避して利用者入力のワイルドカードを無力化する（FR-61、仕様決定 CL。空・空白のみは絞り込みなし）。一覧取得のページングであり、保持上限 10000 件の剪定運用（仕様決定 AV）とは別物。
 `watch_later_add` は `favorite_add` と同じく `video_upsert` で `videos` 台帳へ登録してから `watch_later` へ挿入し、`watch_later_list` は台帳との JOIN で表示メタを取る（FR-59、仕様決定 CJ）。
 `library_search` は履歴・お気に入り・プレイリスト項目・あとで見るの 4 区分をタイトルとチャンネル名の `%...%` 部分一致 LIKE（`history_list` の `query` と同じ退避規則）で横断検索する（FR-60、仕様決定 CK）。`query` の空・空白のみは 0 件を返す（暫定解釈）。同一動画が複数区分でヒットしたときは 1 件へまとめ、ヒットした区分の列を `sources` に履歴→お気に入り→プレイリスト→あとで見るの正準順で持つ。表示メタは区分をまたいだ先出の行を使い、空欄は後出の行で補完する。履歴区分は履歴行自身の列に加えて `videos` 台帳のメタでも照合する（履歴行の channel 列が未入力でも台帳にあれば拾う）。結果の並びは履歴の新しい順→お気に入りの新しい順→プレイリストの登録順→あとで見るの新しい順の先出順（暫定解釈）で、`limit` は統合後の件数上限。UI はライブラリ画面の「検索」タブに検索ボックスを置き、各行はヒット区分のバッジを付ける（検索 UI の置き場所は FR-60 が指定しないため、タブ構成に合わせた暫定解釈）。
@@ -239,7 +239,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
-| `feed://kind_updated` | `{ count }` | shorts 非同期判定またはメタの遅延解決で `videos.kind` / `published_at` が更新された（一覧の再読込を促す。§4.18）。自動既読（§4.19）で既読化があったときも出す |
+| `feed://kind_updated` | `{ count }` | shorts 非同期判定またはメタの遅延解決で `videos.kind` / `published_at` / `description` が更新された（一覧の再読込を促す。§4.18）。自動既読（§4.19）で既読化があったときも出す |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
@@ -959,25 +959,35 @@ eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定
   限られるため、呼び出し側が成功後に `bookmark_list` で取り直す
   （暫定解釈。`livewait://changed` のようなバックエンド発の変更経路が無い）
 
-### 4.18 メタの遅延解決基盤（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）
+### 4.18 メタの遅延解決基盤（FR-53・FR-56・FR-57・FR-85、仕様決定 CD・CG・CH・DJ）
 
 `videos` 行のうち RSS・ローカル記録に欠けた投稿日時（`published_at`）と、
-RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワーカー（`metaresolve`
-モジュール、設計書 §2）が InnerTube `player` 応答で後から埋める。
-`player` の 1 応答から投稿日時・放送状態（`liveBroadcastDetails`・
-`videoDetails.isUpcoming`）・再生状態（`playabilityStatus`）・
-`isLiveContent` をまとめて取り、手動解決の `video_meta_resolve` と同じ
-経路を共用する（仕様決定 CD・CG）。
+RSS・バックフィルの推定に留まる種別（`kind`）、説明文（`description`）を、
+常駐ワーカー（`metaresolve` モジュール、設計書 §2）が InnerTube `player`
+応答で後から埋める。`player` の 1 応答から投稿日時・放送状態
+（`liveBroadcastDetails`・`videoDetails.isUpcoming`）・再生状態
+（`playabilityStatus`）・`isLiveContent`・説明文
+（`videoDetails.shortDescription`）をまとめて取り、手動解決の
+`video_meta_resolve` と同じ経路を共用する（仕様決定 CD・CG。
+説明文の遅延保存は FR-85・仕様決定 DJ で追加）。
 
-- 対象選出: `kind_state` が 0（未確定）または 2（直近の試行が失敗）の行と、
+- 対象選出: `kind_state` が 0（未確定）または 2（直近の試行が失敗）の行、
   `published_at` が NULL で `meta_checked=0`（InnerTube メタ応答を未試行）
-  の行を `first_seen_at` 降順で選ぶ。1 サイクルは最大 20 件、巡回間隔は
-  60 秒として処理量を上限化する（仕様決定 CD）。フィードの新規投入時には
-  `spawn_kind_detection` から `wake` で即時起こされる
+  の行、`description` が NULL の行を `first_seen_at` 降順で選ぶ。
+  1 サイクルは最大 20 件、巡回間隔は 60 秒として処理量を上限化する
+  （仕様決定 CD）。フィードの新規投入時には `spawn_kind_detection` から
+  `wake` で即時起こされる。説明文の選出は NULL 判定だけで試行済み印を
+  持たない（暫定解釈: 応答が説明文を持たないときは空文字を書き込み、
+  NULL でなくなることで解決済みを表す）
 - 投稿日時: `playerMicroformatRenderer.publishDate`（無ければ `uploadDate`）を
   UTC の ISO 表記へ正規化し、NULL の行だけに書き込む（FR-53、仕様決定 CD）。
   応答を得た時点で `meta_checked=1` を立て、publishDate を持たない応答への
   繰り返し問い合わせは抑止する（kind の再試行とは独立した記録）
+- 説明文: `videoDetails.shortDescription` を `description` が NULL の行
+  だけに書き込む（FR-85、仕様決定 DJ）。応答が説明文を持たない
+  （パース結果が空文字）場合も空文字を書き、説明なしを確定させて
+  「もう一度問う」対象から外す。既存値は上書きしない暫定解釈
+  （投稿後に説明文が編集されても追従しない）
 - kind 分類: `isLiveNow` 真は `live`（`isLiveContent` 偽は `premiere`）、
   放送詳細あり・終了時刻なしまたは `isUpcoming` 真は `upcoming`、
   終了時刻ありは `isLiveContent` 真なら `live`（ライブのアーカイブ）、
@@ -993,8 +1003,9 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
   する（FR-57、仕様決定 CH）。同一行の連続失敗が 1 起動内で 5 回を超えたら
   その起動中は対象から外し、次回起動で再び対象に戻す（恒久に失敗する行が
   選出順を占有しないための暫定解釈）
-- `kind` の値が変わった、または `published_at` を埋めた件数の合計が
-  1 件以上で `feed://kind_updated` を出し、一覧の再読込を促す
+- `kind` の値が変わった、または `published_at`・`description` を埋めた
+  件数の合計が 1 件以上で `feed://kind_updated` を出し、一覧の再読込を
+  促す（説明文の解決は `video_desc` フィルタの評価結果を変え得るため）
 - バックフィルのタブ由来など `video` 以外の推定 kind が付いた行へ
   「放送系でない」応答が返ったときは、由来の kind を残したまま確定する
   （放送予定が応答へ載る前の誤確定を避ける暫定解釈）
@@ -1153,7 +1164,8 @@ NG メッセージも送信自体は行い、UI 側の表示だけをフィル�
 
 - literal はパターン集合を Aho-Corasick で 1 回走査
 - regex は `RegexSet` でプリコンパイルし、ヒットした集合だけ個別 `Regex` で詳細を取る
-- highlight（FR-69、仕様決定 CT）は literal と同じ部分一致の照合を使うが、NG とは別の照合集合を持ち、マッチしたチャット発言を除去ではなく強調表示に使う。適用対象は `chat_text`（本文）と `chat_author`（投稿者名・チャンネル ID）で、NG と同じフィールド解決を踏襲する。動画系 target の highlight 行は登録できるが現行の評価経路では使わない（video_desc の「評価対象外」と同じ扱い。暫定解釈）
+- highlight（FR-69、仕様決定 CT）は literal と同じ部分一致の照合を使うが、NG とは別の照合集合を持ち、マッチしたチャット発言を除去ではなく強調表示に使う。適用対象は `chat_text`（本文）と `chat_author`（投稿者名・チャンネル ID）で、NG と同じフィールド解決を踏襲する。動画系 target の highlight 行は登録できるが現行の評価経路では使わない（暫定解釈）
+- `video_desc` は `videos.description`（遅延解決で保存した説明文、FR-85・仕様決定 DJ・§4.18）へ評価する。一覧の表示経路のうちフィード一覧だけが説明文を持つため、評価するのはフィード経路のみ（検索・関連動画の取得結果は説明文フィールドを持たず `video_desc` は未評価のまま通す暫定解釈）。説明未解決（`description` が NULL）の行は `video_desc` の評価対象にしない暫定解釈（説明文が取れるまで NG にならない）
 - フィルタ変更時にマッチャ全体を再構築する単純な方式にし、増分更新は行わない
 
 `chat_author` フィルタは設定画面の「NG ユーザー」節（仕様決定 CU、FR-70）からも管理でき、そこでは NG 系種別（literal / regex）の `chat_author` 行だけを一覧・追加（部分一致で固定）・解除する。
@@ -1206,7 +1218,9 @@ CREATE TABLE videos (
   first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
   ingested INTEGER NOT NULL DEFAULT 0,     -- 0=ライブラリ由来のプレースホルダ、1=フィード投入済み
   kind_state INTEGER NOT NULL DEFAULT 0,   -- kind の判定状態: 0=未確定, 1=確定, 2=直近の試行が失敗
-  meta_checked INTEGER NOT NULL DEFAULT 0  -- InnerTube メタ応答の試行済み印（投稿日時解決の重複抑止）
+  meta_checked INTEGER NOT NULL DEFAULT 0, -- InnerTube メタ応答の試行済み印（投稿日時解決の重複抑止）
+  description TEXT                         -- 遅延解決済みの説明文（FR-85、v22）。
+                                           -- NULL=未解決、''=解決済み・説明なし
 );
 
 CREATE TABLE watch_history (
@@ -1319,6 +1333,7 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。
   判定の失敗・未確定はメタの遅延解決基盤が定期的に再試行し、投稿日時の欠落と放送系 kind（`live`/`upcoming`/`premiere`）も同じ経路で後から埋める（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH、§4.18）。
   `kind_state` は kind の判定状態（0=未確定 / 1=確定 / 2=直近の試行が失敗）、`meta_checked` は投稿日時解決のための InnerTube メタ応答の試行済み印（§4.18）。
+  `description` は遅延解決で InnerTube `player` 応答の `videoDetails.shortDescription` を保存する説明列（FR-85、仕様決定 DJ。NULL=未解決、''=解決済み・説明なし）。`video_desc` NG フィルタの評価材料で、一覧取得時には返却ペイロードへ入れずフィルタ適用だけに使う。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
 - `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v17 で単一行制約を外した）
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）

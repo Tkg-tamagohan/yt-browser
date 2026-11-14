@@ -39,10 +39,14 @@ pub async fn search(
             .as_deref()
             .map(|c| !blocked.contains(c))
             .unwrap_or(true)
+            // ytsearch flat に説明文フィールドは無いため video_desc は
+            // 評価しない（FR-85、仕様決定 DJ。暫定解釈: 説明文を持たない
+            // 経路では未評価のまま通す）
             && !matcher.is_video_ng(
                 &r.title,
                 r.channel_title.as_deref(),
                 r.channel_id.as_deref(),
+                None,
             )
     });
     results.truncate(count as usize);
@@ -75,10 +79,13 @@ pub async fn get_related(
             .as_deref()
             .map(|c| !blocked.contains(c))
             .unwrap_or(true)
+            // InnerTube next の応答にも説明文フィールドは無いため
+            // video_desc は評価しない（search と同じ暫定解釈）
             && !matcher.is_video_ng(
                 &r.title,
                 r.channel_title.as_deref(),
                 r.channel_id.as_deref(),
+                None,
             )
     });
     Ok(results)

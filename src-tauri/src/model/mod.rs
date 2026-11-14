@@ -331,6 +331,11 @@ pub struct FeedItem {
     pub published_at: Option<String>,
     pub kind: String,
     pub is_read: bool,
+    /// 遅延解決済みの説明文（FR-85、仕様決定 DJ）。`video_desc` フィルタの
+    /// 評価だけに使う内部フィールドで、一覧行のペイロード増大を避けるため
+    /// 直列化では送らない（NULL は未解決、空文字は解決済み・説明なし）。
+    #[serde(skip)]
+    pub description: Option<String>,
 }
 
 /// `feed://new_items` イベントのペイロード（設計書 §3.2）。

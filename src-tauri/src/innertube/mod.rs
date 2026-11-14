@@ -141,8 +141,9 @@ impl InnerTube {
     }
 
     /// `player` エンドポイントで遅延解決用のメタ一式を取る
-    /// （FR-53・FR-56、仕様決定 CD・CG）。投稿日時・放送状態・再生状態を
-    /// 1 応答からまとめて切り出す（`video_meta` と同じ `player` 経路）。
+    /// （FR-53・FR-56・FR-85、仕様決定 CD・CG・DJ）。投稿日時・放送状態・
+    /// 再生状態・説明文を 1 応答からまとめて切り出す
+    /// （`video_meta` と同じ `player` 経路）。
     pub async fn meta_snapshot(&self, video_id: &str) -> Result<MetaSnapshot, InnerTubeError> {
         let v = self
             .post_json("player", json!({ "videoId": video_id }))
@@ -331,8 +332,8 @@ fn parse_broadcast_status(v: &Value) -> BroadcastStatus {
 }
 
 /// 遅延解決用に `player` 応答 1 件から切り出したメタ一式
-/// （FR-53・FR-56、仕様決定 CD・CG）。kind 判定は `metaresolve` モジュールが行い、
-/// ここでは生の値と正規化済みの投稿日時だけを持つ。
+/// （FR-53・FR-56・FR-85、仕様決定 CD・CG・DJ）。kind 判定は `metaresolve`
+/// モジュールが行い、ここでは生の値と正規化済みの投稿日時だけを持つ。
 #[derive(Debug, Clone, Default)]
 pub struct MetaSnapshot {
     /// 投稿日時（UTC へ正規化した `"YYYY-MM-DDTHH:MM:SS+00:00"`）。
@@ -347,6 +348,10 @@ pub struct MetaSnapshot {
     /// `playabilityStatus.status`（"OK" / "LIVE_STREAM_OFFLINE" / "UNPLAYABLE" 等）。
     /// 再生状態は kind 判定の補助にだけ使う（単独では判定しない暫定解釈）。
     pub playability: Option<String>,
+    /// `videoDetails.shortDescription`（FR-85、仕様決定 DJ）。
+    /// `parse_description` と同じく欠落・非文字列は空文字列に潰す
+    /// （呼び出し側は空文字も「解決済み・説明なし」として videos へ書く）。
+    pub description: String,
 }
 
 /// `player` 応答から遅延解決用のメタ一式を取る。
@@ -376,6 +381,11 @@ fn parse_meta_snapshot(v: &Value) -> MetaSnapshot {
             .and_then(|p| p.get("status"))
             .and_then(|s| s.as_str())
             .map(|s| s.to_string()),
+        description: video
+            .and_then(|d| d.get("shortDescription"))
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
@@ -1228,6 +1238,8 @@ mod tests {
         assert!(s.broadcast.has_details);
         assert_eq!(s.broadcast.is_live_now, Some(false));
         assert!(s.broadcast.start_ms.is_some() && s.broadcast.end_ms.is_some());
+        // FR-85/DJ: 実応答の shortDescription が切り出せる
+        assert!(s.description.contains("https://fanlink.tv/lofigirl-music"));
     }
 
     /// FR-53/CD: publishDate 優先・uploadDate フォールバック・欠落は None。
@@ -1269,5 +1281,12 @@ mod tests {
         assert_eq!(s.is_live_content, Some(true));
         let s = parse_meta_snapshot(&serde_json::json!({"videoDetails": {"videoId": "b"}}));
         assert!(s.playability.is_none() && s.is_live_content.is_none());
+        // FR-85/DJ: shortDescription の欠落は空文字列に潰す
+        // （解決済み・説明なしの区別は呼び出し側が空文字の書き込みで行う）
+        assert_eq!(s.description, "");
+        let s = parse_meta_snapshot(&serde_json::json!({
+            "videoDetails": {"videoId": "c", "shortDescription": "概要\n2 行目"}
+        }));
+        assert_eq!(s.description, "概要\n2 行目");
     }
 }
