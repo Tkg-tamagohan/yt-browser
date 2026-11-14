@@ -90,6 +90,14 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
     labelKeys: ["settings.livewait.title", "settings.livewait.action"],
   },
   {
+    id: "shortcuts",
+    labelKeys: [
+      "settings.shortcuts.title",
+      "settings.shortcuts.enabled",
+    ],
+    extraLabels: ["ui.shortcuts"],
+  },
+  {
     id: "chatpopup",
     labelKeys: [
       "settings.chatpopup.title",

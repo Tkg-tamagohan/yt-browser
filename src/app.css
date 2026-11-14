@@ -241,3 +241,10 @@ select {
 .panel + .panel {
   margin-top: 16px;
 }
+
+/* キーボードショートカット（FR-79、仕様決定 DD）の選択行。
+   shortcuts.svelte.ts が li.vr に付ける目印 */
+.vr[data-shortcut-selected] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

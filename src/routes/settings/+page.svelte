@@ -17,6 +17,7 @@
   } from "$lib/feed-settings";
   import { popupShowAuthorEnabled } from "$lib/chat-popup-logic";
   import { closeOnEofEnabled } from "$lib/eof-logic";
+  import { shortcutsEnabled as parseShortcutsEnabled } from "$lib/shortcuts-logic";
   import {
     uiDensity as parseUiDensity,
     uiTheme as parseUiTheme,
@@ -49,6 +50,7 @@
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
   import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
   import SettingsQualitySection from "$lib/SettingsQualitySection.svelte";
+  import SettingsShortcutsSection from "$lib/SettingsShortcutsSection.svelte";
   import SettingsSponsorSection from "$lib/SettingsSponsorSection.svelte";
   import SettingsUiSection from "$lib/SettingsUiSection.svelte";
   import SettingsUpdateSection from "$lib/SettingsUpdateSection.svelte";
@@ -109,6 +111,10 @@
   // 待機中の配信が始まったときの動作（live_wait.action、FR-44・仕様決定 BT(3)）。
   // play=新規インスタンスで自動再生 / notify=トースト通知のみ。既定は play
   let liveWaitAction = $state("play");
+  // アプリ側キーボードショートカットの有効化（ui.shortcuts、FR-79・
+  // 仕様決定 DD）。on で j/k・Enter・a・q の既定キーマップが効く。
+  // 既定は off（暫定解釈）
+  let shortcutsOn = $state(false);
   // チャットポップアップの表示カスタマイズ（chat.popup_show_author /
   // chat.popup_font_size / chat.popup_opacity、FR-68・仕様決定 CS）。
   // showAuthor の既定は off（従来どおり非表示）。文字サイズ・不透明度は
@@ -327,6 +333,17 @@
       if (liveWaitAction !== lwSnapshot) {
         invalid = true;
         notify(t("settings.livewait.unsaved"));
+      }
+      // ui.shortcuts: チェックボックスの 2 値を on/off で保存する
+      // （FR-79、仕様決定 DD）。settings://changed で即時に切り替わる
+      const sc = shortcutsOn;
+      await invoke("settings_set", {
+        key: "ui.shortcuts",
+        value: sc ? "on" : "off",
+      });
+      if (shortcutsOn !== sc) {
+        invalid = true;
+        notify(t("settings.shortcuts.unsaved"));
       }
       // chat.popup_show_author / chat.popup_font_size / chat.popup_opacity
       // （FR-68、仕様決定 CS）。開いているポップアップへは
@@ -651,6 +668,11 @@
       });
       // 未設定・その他の値は play（仕様決定 BT(3) の既定）
       liveWaitAction = liveWaitRaw?.trim() === "notify" ? "notify" : "play";
+      // ui.shortcuts（FR-79、仕様決定 DD）。解釈は feed.* 系の on/off と同じ
+      const shortcutsRaw = await invoke<string | null>("settings_get", {
+        key: "ui.shortcuts",
+      });
+      shortcutsOn = parseShortcutsEnabled(shortcutsRaw);
       // chat.popup_*（FR-68、仕様決定 CS）。投稿者名は on 系のみ表示、
       // 文字サイズ・不透明度は保存文字列をそのまま欄に戻す
       const chatAuthorRaw = await invoke<string | null>("settings_get", {
@@ -872,6 +894,10 @@
 
   <div class:hidden={!visibleSectionIds.has("livewait")}>
     <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
+  </div>
+
+  <div class:hidden={!visibleSectionIds.has("shortcuts")}>
+    <SettingsShortcutsSection {loading} bind:shortcutsEnabled={shortcutsOn} />
   </div>
 
   <div class:hidden={!visibleSectionIds.has("chatpopup")}>

@@ -9,6 +9,7 @@
   import VideoRow from "$lib/VideoRow.svelte";
   import {
     createVideoActionState,
+    openVideoContextMenu,
     videoRefOf,
   } from "$lib/video-actions.svelte";
   import type { FavoriteEntry } from "$lib/players.svelte";
@@ -36,6 +37,8 @@
             title={f.title}
             thumbnailUrl={f.thumbnailUrl}
             onplay={() => play(f.videoId, true)}
+            oncontextmenu={(e) =>
+              openVideoContextMenu(e, videoRefOf(f), va, onPlaylistAdd)}
           >
             {#snippet sub()}
               {#if f.channelTitle}{f.channelTitle}{/if}
