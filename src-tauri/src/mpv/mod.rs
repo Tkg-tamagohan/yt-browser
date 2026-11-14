@@ -3,6 +3,7 @@
 //! （仕様決定 B / FR-1）。再生制御はすべてこのモジュールを経由する。
 
 mod devices;
+mod foreground;
 mod ipc;
 mod manager;
 pub(crate) mod player;
@@ -185,6 +186,30 @@ pub(crate) fn network_timeout_ms(value: Option<String>) -> u64 {
         .unwrap_or(DEFAULT_NETWORK_TIMEOUT_MS)
 }
 
+/// mpv 窓の移動・前面化が関わる操作の可否判定に使う表示環境の分類
+/// （FR-42、仕様決定 BR）。値は `windows` / `x11` / `wayland` / `other`。
+/// Wayland はプロトコル上クライアント・第三者とも窓の前面化を
+/// 決められない恒久制限（仕様決定 BU）。
+/// `XDG_SESSION_TYPE` を優先し、未設定では `WAYLAND_DISPLAY` /
+/// `DISPLAY` の有無で推す。
+pub fn windowing_system() -> &'static str {
+    if cfg!(windows) {
+        return "windows";
+    }
+    match std::env::var("XDG_SESSION_TYPE").ok().as_deref() {
+        Some("wayland") => return "wayland",
+        Some("x11") => return "x11",
+        _ => {}
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
+        return "wayland";
+    }
+    if std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()) {
+        return "x11";
+    }
+    "other"
+}
+
 /// `window.screen` に保存したモニター名を、現在接続中のモニター列の
 /// インデックスへ解決する（FR-31、仕様決定 AZ）。`--screen` の番号は
 /// `available_monitors()` の列挙順と同じ並びを前提とする。
@@ -210,6 +235,14 @@ pub enum MpvError {
     Ipc(#[from] ipc::IpcError),
     #[error("インスタンス {0} は存在しない（既に終了した可能性がある）")]
     NoSuchInstance(u32),
+    #[error(
+        "インスタンス {0} の mpv 窓がまだありません（起動直後・窓のない状態では前面化できません）"
+    )]
+    WindowNotReady(u32),
+    #[error("この表示環境（{0}）では mpv 窓の前面化に対応していません")]
+    UnsupportedWindowing(String),
+    #[error("mpv 窓の前面化に失敗しました: {0}")]
+    ForegroundFailed(String),
 }
 
 #[cfg(test)]

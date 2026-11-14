@@ -117,6 +117,10 @@ pub enum PlayerAction {
     AbLoopSetB,
     /// A-B リピートの解除（`ab-loop-a` / `ab-loop-b` の双方を "no" へ）。
     AbLoopClear,
+    /// mpv 窓の前面化（FR-42、仕様決定 BR）。Windows はプロセス ID から
+    /// 窓ハンドルを特定して前面化、X11 は `window-id` の XID へ
+    /// EWMH `_NET_ACTIVE_WINDOW` を送る。Wayland は恒久制限で非対応。
+    FocusWindow,
 }
 
 /// `audio_device_list` コマンドの戻り値要素（FR-32、仕様決定 BA）。

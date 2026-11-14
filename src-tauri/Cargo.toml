@@ -52,6 +52,20 @@ tauri-plugin-clipboard-manager = "=2.4.1"
 
 [target."cfg(windows)".dependencies]
 windows-registry = "0.6"
+# mpv 窓の前面化（FR-42、仕様決定 BR）。HWND の特定と前面化 API。
+# ライセンス: MIT OR Apache-2.0
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# mpv 窓の前面化（FR-42、仕様決定 BR）。X11 で `window-id` の XID へ
+# EWMH `_NET_ACTIVE_WINDOW` を送る。0.14 では純粋 Rust 接続が既定で
+# libxcb 非依存（default-features = false で拡張プロトコルも省く）。
+# ライセンス: MIT OR Apache-2.0
+x11rb = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

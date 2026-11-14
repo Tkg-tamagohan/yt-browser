@@ -13,6 +13,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
+  import { focusDisabledKey } from "$lib/focus-logic";
   import { linkCopyText } from "$lib/copy-link-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
   import { notify } from "$lib/notices.svelte";
@@ -305,6 +306,24 @@
     }
   }
 
+  // mpv 窓の前面化（FR-42、仕様決定 BR）。表示環境は windowing_system で
+  // 判定し、Wayland・その他の不明環境ではボタンを無効化する。
+  // 取得失敗は未判定（空文字）のままにしてボタンを有効に保ち、
+  // 操作時のエラー通知に委ねる
+  let windowing = $state("");
+  const focusKey = $derived(focusDisabledKey(windowing));
+
+  async function focusPlayer(id: number): Promise<void> {
+    try {
+      await invoke("player_control", {
+        instanceId: id,
+        action: { type: "focus_window" },
+      });
+    } catch (e) {
+      notify(t("player.focus.failed", { message: asErrorMessage(e) }));
+    }
+  }
+
   async function closePlayer(id: number): Promise<void> {
     try {
       const videoId = playerStates.list.get(id)?.videoId;
@@ -380,6 +399,12 @@
       audioDevices = await invoke<AudioDevice[]>("audio_device_list");
     } catch {
       audioListFailed = true;
+    }
+    // mpv 窓の前面化可否（FR-42）。失敗時は未判定（ボタン有効）のまま
+    try {
+      windowing = await invoke<string>("windowing_system");
+    } catch {
+      // 判定不能の環境ではボタンを無効側へ倒さない
     }
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
@@ -609,6 +634,13 @@
           onclick={() => togglePip(p.instanceId, !p.pip)}
         >
           {p.pip ? t("player.unpip") : t("player.pip")}
+        </button>
+        <button
+          title={focusKey ? t(focusKey) : t("player.focus.hint")}
+          disabled={focusKey !== null}
+          onclick={() => void focusPlayer(p.instanceId)}
+        >
+          {t("player.focus")}
         </button>
         <button class="danger" onclick={() => closePlayer(p.instanceId)}>
           {t("player.close")}

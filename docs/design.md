@@ -68,6 +68,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `settings_get` | `key` | `Result<Option<String>>` |
 | `settings_set` | `key`, `value` | `Result<()>` |
 | `monitor_list` | なし | `Vec<MonitorInfo>`（接続中モニターの列挙。FR-31、仕様決定 AZ） |
+| `windowing_system` | なし | `String`（mpv 窓の前面化が動作する表示環境の分類。"windows" / "x11" / "wayland" / "other"。FR-42、仕様決定 BR、§4.12） |
 | `play_video` | `video_id`, `resume`, `pip?`, `format?`, `start_sec?` | `Result<instance_id>` |
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
@@ -135,7 +136,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
 表の引数名は Rust 側の受け取り名（snake_case）で記し、JS 側は camelCase のキーで渡す（`video_id` → `videoId`）。
 戻り値とイベントのペイロードは camelCase に直列化される。
-`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）を取る。
+`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）、`focus_window`（mpv 窓の前面化、§4.12）を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する項目の順序列で、各項目は `uid`＋`video_id` の対（`QueueArmItem`、空列は武装の解除）。`uid` はフロント側のキュー項目のユニーク ID で、継続時に `player://ended` の `continuedUid` としてそのまま返す（BG-10、仕様決定 BK）。`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
@@ -660,6 +661,29 @@ mpv 窓上のキー操作（既定の `l` キー）で設定したループは�
 成功時は保存先パスを本文とするトーストに「フォルダを開く」アクション（`tauri-plugin-opener` の `revealItemInDir`。capabilities の `opener:default` に含まれる）を添え、失敗は既存の通知経路で知らせる。
 保存先の変更設定は初版では持たない。
 
+### 4.12 mpv 窓の前面化（FR-42、仕様決定 BR）
+
+プレイヤーカードの「前面に出す」ボタンで、そのインスタンスの mpv 窓を前面へ出す。
+`player_control` の `focus_window` アクションとして送り、`MpvPlayer` が表示環境に応じて経路を選ぶ。
+
+表示環境の分類は `windowing_system` コマンドが返し、`XDG_SESSION_TYPE` を優先、未設定では `WAYLAND_DISPLAY` / `DISPLAY` の有無で推す（"windows" / "x11" / "wayland" / "other"）。
+Wayland はプロトコル上クライアント・第三者とも窓の前面化を決められない恒久制限（仕様決定 BU）のため、"wayland" と "other"（不明環境）ではボタンを無効化する。判定値の取得に失敗したときはボタンを有効に保ち、操作時のエラー通知に委ねる暫定仕様。
+バックエンド側でも windows / x11 以外は `UnsupportedWindowing` で拒否する二重の防御とする。
+
+Windows では mpv プロセスから窓ハンドルを特定する（仕様決定 BR）。
+まず `get_property window-id` の値を HWND として使い（mpv 0.37 以降、仕様決定 BU）、`IsWindow` で有効性を確かめる。
+プロパティが取れない構成（mpv 0.37 未満）や値が無効なときは、`EnumWindows` でプロセス ID に一致する可視トップレベル窓を列挙して特定する。
+いずれでも見つからなければ `WindowNotReady`（起動直後や窓の無い状態）。
+前面化は最小化中なら `SW_RESTORE` で戻してから `SetForegroundWindow` を呼び、フォアグラウンド権限で拒否された場合は現在のフォアグラウンド窓スレッドへ `AttachThreadInput` で入力をアタッチしてから `BringWindowToTop` + `SetForegroundWindow` を再試行する。
+この再試行はフォアグラウンドロックの制約下でユーザーのボタン操作に追随するための暫定仕様で、環境によってはタスクバー点滅に留まる可能性がある（実機未検証）。
+
+Linux の X11 では `get_property window-id` を XID として使う（mpv 0.36 以降、仕様決定 BU）。
+x11rb（純粋 Rust 接続、MIT OR Apache-2.0）で X サーバへ接続し、対象窓を引数にした `_NET_ACTIVE_WINDOW` の ClientMessage を root 窓へ送る（source=2: ユーザーの直接操作として扱う、EWMH 主経路）。
+副経路として `XRaiseWindow`（`ConfigureWindow` の stack-mode=Above）と `XSetInputFocus` も併せて送り、EWMH を見ない WM でも追従する。
+`window-id` が取れないとき（起動直後・mpv 0.36 未満・窓未作成のアイドル状態）は X11 では他の特定経路を持たないため `WindowNotReady` で失敗する。
+
+対象窓が見つからない・前面化が OS に拒否されたときはエラー（`mpv_window_not_ready` / `mpv_foreground_failed` / `mpv_windowing_unsupported`）としてトースト通知し、ボタン自体は再有効なまま残す（起動直後の一時的な不可を恒久エラーと区別しない暫定仕様）。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -956,7 +980,7 @@ yt-browser/
       main.rs
       lib.rs          # generate_handler! によるコマンドハンドラ登録の実体
       commands/
-      mpv/            # プロセス管理・IPC・プロパティ監視
+      mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
       chat/           # get_live_chat ポーラー・正規化
@@ -973,7 +997,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・focus-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```

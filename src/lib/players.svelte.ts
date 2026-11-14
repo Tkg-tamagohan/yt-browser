@@ -217,7 +217,9 @@ export type PlayerAction =
   // A-B リピートの 3 状態巡回に対応する mpv 操作（FR-37、仕様決定 BM）
   | { type: "ab_loop_set_a" }
   | { type: "ab_loop_set_b" }
-  | { type: "ab_loop_clear" };
+  | { type: "ab_loop_clear" }
+  // mpv 窓の前面化（FR-42、仕様決定 BR）。Wayland は恒久制限で非対応
+  | { type: "focus_window" };
 
 export const playerStates = $state<{
   list: Map<number, PlayerState>;

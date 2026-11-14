@@ -44,6 +44,9 @@ impl From<crate::mpv::MpvError> for UiError {
             crate::mpv::MpvError::SocketTimeout => "mpv_socket_timeout",
             crate::mpv::MpvError::Ipc(_) => "mpv_ipc",
             crate::mpv::MpvError::NoSuchInstance(_) => "mpv_no_instance",
+            crate::mpv::MpvError::WindowNotReady(_) => "mpv_window_not_ready",
+            crate::mpv::MpvError::UnsupportedWindowing(_) => "mpv_windowing_unsupported",
+            crate::mpv::MpvError::ForegroundFailed(_) => "mpv_foreground_failed",
         };
         Self::new(code, e.to_string())
     }
