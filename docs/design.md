@@ -130,6 +130,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `live_wait_add` | `video`（`VideoRef`） | `Result<LiveWaitAddOutcome>`（`result` は `added` / `duplicate` / `live` / `ended` / `notBroadcast`。登録前に InnerTube `player` の放送状態を確認し、開始前のみ `added` で登録する。FR-44、仕様決定 BT） |
 | `live_wait_remove` | `video_id` | `Result<()>`（未登録でも正常終了） |
 | `live_wait_list` | なし | `Result<Vec<LiveWait>>`（予定時刻の昇順・未定は末尾） |
+| `bookmark_add` | `video_id`, `position_sec`（再生位置の秒。小数以下は切り捨てて整数秒で保存） | `Result<Option<VideoBookmark>>`（登録した行。同動画の同位置は None で重複抑止。FR-49、仕様決定 BZ、§4.17） |
+| `bookmark_list` | なし | `Result<Vec<VideoBookmark>>`（保存の新しい順。`title` は `videos` 台帳 → `watch_history` の順に解決した表示用の値で、未解決は None） |
+| `bookmark_remove` | `id` | `Result<()>`（未登録でも正常終了） |
+| `bookmark_set_label` | `id`, `label` | `Result<VideoBookmark>`（更新後の行。空・空白のみは位置表記へ戻す。未登録は NotFound） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -789,6 +793,30 @@ eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定
 - 状態確認の連続失敗は 2 回で `livewait://status` の warn 通知を出し、復帰時に
   info 通知する（フィードポーラーと同じ方針）
 
+### 4.17 動画内ブックマーク（FR-49、仕様決定 BZ）
+
+プレイヤーカードの「ブックマーク」ボタンが現在位置（`player://state` の
+`position`）を `bookmark_add` で `video_bookmarks` へ保存し、キューパネルの
+ブックマークタブが一覧・位置ジャンプ・個別削除・ラベル編集を提供する。
+データは DB へ保存するため再起動でそのまま復元される。
+
+- 位置は mpv の `time-pos` の小数以下を切り捨てた整数秒で保存する
+  （シークバーの位置表示と同じ規則）
+- 既定ラベルは位置表記（"h:mm:ss" / "m:ss"）。ラベルの後付け編集は
+  `bookmark_set_label` で行い、空・空白のみの入力は位置表記へ戻す
+  （暫定解釈: 空ラベルの行は残さない）
+- 同一動画の同一位置の重複保存は UNIQUE (video_id, position_sec) で抑止し、
+  `bookmark_add` は既存行を変えず None を返す（暫定解釈）
+- 一覧の並びは保存の新しい順（`created_at` 降順、同時刻は行 ID 降順。
+  暫定解釈）。表示用タイトルはテーブルに持たず、一覧取得時に `videos`
+  台帳 → `watch_history` の順で解決する（`video_meta_lookup` と同じ規則）。
+  どちらにも無い場合は呼び出し側が動画 ID 表示に潰す
+- 行の位置ボタンは `play_video` の `start_sec` で保存位置から再生する
+  （`resume: false`。開始位置の解決順は §3.1）
+- ブックマーク変更の専用イベントは持たない。変更経路はコマンド呼び出しに
+  限られるため、呼び出し側が成功後に `bookmark_list` で取り直す
+  （暫定解釈。`livewait://changed` のようなバックエンド発の変更経路が無い）
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1012,6 +1040,15 @@ CREATE TABLE live_waits (
   registered_ms INTEGER NOT NULL       -- 登録時刻（epoch ms）。予定の無い項目の自動解除の起点
 );
 
+CREATE TABLE video_bookmarks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,  -- 個別削除・ラベル編集の対象 ID（FR-49）
+  video_id TEXT NOT NULL,
+  position_sec INTEGER NOT NULL,         -- 整数秒（time-pos の小数以下切り捨て）
+  label TEXT NOT NULL,                   -- 既定は位置表記（"h:mm:ss" / "m:ss"）
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (video_id, position_sec)        -- 同位置の重複保存を抑止（暫定解釈）
+);
+
 CREATE TABLE schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1034,6 +1071,7 @@ CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
 - `queue_items` / `queue_state` は一時キューの永続化（FR-30、仕様決定 AY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。プレイリストキューは保存しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
+- `video_bookmarks` は動画内ブックマーク（FR-49、仕様決定 BZ、§4.17）。自動採番の `id` を個別削除・ラベル編集の対象 ID とし、UNIQUE (video_id, position_sec) で同位置の重複保存を抑止する（暫定解釈）。表示用タイトルは行に持たず、一覧取得時に `videos` 台帳 → `watch_history` の順で解決する（`video_meta_lookup` と同じ規則）
 
 ## 9. エラーハンドリングと変更耐性
 
@@ -1114,7 +1152,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```

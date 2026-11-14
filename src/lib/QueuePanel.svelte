@@ -10,6 +10,18 @@
   import { notify } from "$lib/notices.svelte";
   import { asErrorMessage } from "$lib/players.svelte";
   import {
+    bookmarks,
+    bookmarkPlay,
+    bookmarkRemove,
+    bookmarkSetLabel,
+  } from "$lib/bookmark.svelte";
+  import {
+    bookmarkTitle,
+    fmtBookmarkSec,
+    normalizeBookmarkLabel,
+    type VideoBookmark,
+  } from "$lib/bookmark-logic";
+  import {
     liveWaits,
     liveWaitRemove,
   } from "$lib/livewait.svelte";
@@ -33,10 +45,30 @@
   );
   const sel = $derived(queues.list.get(selKey));
 
-  // キュータブの選択（待機タブの解除とペア）
+  // キュータブの選択（待機・ブックマークの固定タブ解除とペア）
   function selectQueue(key: QueueKey): void {
     queuePanel.selected = key;
-    queuePanel.waitsTab = false;
+    queuePanel.sideTab = null;
+  }
+
+  // ブックマークタブ（FR-49、仕様決定 BZ）。行のクリックで保存位置から
+  // 再生し、ラベルはインラインで後付け編集する
+  let editingId = $state<number | null>(null);
+  let draft = $state("");
+
+  async function playBookmark(b: VideoBookmark): Promise<void> {
+    try {
+      await bookmarkPlay(b);
+      goto("/");
+    } catch (e) {
+      notify(t("bookmark.playFailed", { message: asErrorMessage(e) }));
+    }
+  }
+
+  async function saveLabel(b: VideoBookmark): Promise<void> {
+    // 空・空白のみは位置表記へ戻す（バックエンドと同じ規則を先に適用）
+    await bookmarkSetLabel(b.id, normalizeBookmarkLabel(draft, b.positionSec));
+    editingId = null;
   }
 
   // 上下ボタンと共通の移動。実行中は queueMove 側で武装を張り替える
@@ -65,7 +97,7 @@
   <div class="qp-tabs">
     <button
       class="qp-tab"
-      class:active={!queuePanel.waitsTab && selKey === null}
+      class:active={queuePanel.sideTab === null && selKey === null}
       onclick={() => selectQueue(null)}
     >
       {t("queue.tab.temp")}
@@ -74,7 +106,7 @@
       {#if key !== null}
         <button
           class="qp-tab"
-          class:active={!queuePanel.waitsTab && selKey === key}
+          class:active={queuePanel.sideTab === null && selKey === key}
           title={q.playlistName}
           onclick={() => selectQueue(key)}
         >
@@ -85,14 +117,85 @@
     <!-- ライブ待機タブ（FR-44、仕様決定 BT(2)）。キュータブの隣に置く -->
     <button
       class="qp-tab"
-      class:active={queuePanel.waitsTab}
-      onclick={() => (queuePanel.waitsTab = true)}
+      class:active={queuePanel.sideTab === "waits"}
+      onclick={() => (queuePanel.sideTab = "waits")}
     >
       {t("livewait.tab")}
     </button>
+    <!-- ブックマークタブ（FR-49、仕様決定 BZ） -->
+    <button
+      class="qp-tab"
+      class:active={queuePanel.sideTab === "bookmarks"}
+      onclick={() => (queuePanel.sideTab = "bookmarks")}
+    >
+      {t("bookmark.tab")}
+    </button>
   </div>
 
-  {#if queuePanel.waitsTab}
+  {#if queuePanel.sideTab === "bookmarks"}
+    <div class="qp-head">
+      <h3>
+        {t("bookmark.tab")}
+        <span class="qp-count">{bookmarks.list.length}</span>
+      </h3>
+      <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
+    </div>
+    {#if bookmarks.list.length === 0}
+      <p class="subtle">{t("bookmark.empty")}</p>
+    {:else}
+      <ul class="qp-list">
+        {#each bookmarks.list as b (b.id)}
+          <li>
+            <button
+              class="link bm-pos"
+              title={t("bookmark.play")}
+              onclick={() => void playBookmark(b)}
+            >
+              {fmtBookmarkSec(b.positionSec)}
+            </button>
+            <span class="qp-text">
+              <span class="qp-title" title={bookmarkTitle(b)}
+                >{bookmarkTitle(b)}</span
+              >
+              {#if editingId === b.id}
+                <input
+                  class="bm-label"
+                  bind:value={draft}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") void saveLabel(b);
+                    if (e.key === "Escape") editingId = null;
+                  }}
+                />
+              {:else}
+                <span class="qp-ch">{b.label}</span>
+              {/if}
+            </span>
+            {#if editingId === b.id}
+              <button class="link" onclick={() => void saveLabel(b)}>
+                {t("bookmark.labelSave")}
+              </button>
+            {:else}
+              <button
+                class="link"
+                title={t("bookmark.edit.hint")}
+                onclick={() => {
+                  editingId = b.id;
+                  draft = b.label;
+                }}
+              >
+                {t("bookmark.edit")}
+              </button>
+            {/if}
+            <button
+              class="link danger"
+              title={t("bookmark.remove")}
+              onclick={() => void bookmarkRemove(b.id)}>×</button
+            >
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {:else if queuePanel.sideTab === "waits"}
     <div class="qp-head">
       <h3>
         {t("livewait.tab")}
@@ -332,5 +435,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* ブックマーク行（FR-49）: 位置はクリックでその位置から再生するボタン */
+  .bm-pos {
+    flex-shrink: 0;
+    min-width: 4.5em;
+    text-align: left;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bm-label {
+    background: #161719;
+    border: 1px solid #3c4043;
+    border-radius: 4px;
+    color: inherit;
+    font-size: 0.8rem;
+    padding: 2px 6px;
   }
 </style>
