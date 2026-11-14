@@ -31,7 +31,13 @@ pub async fn search(
     }
     let count = count.unwrap_or(SEARCH_LIMIT).clamp(1, SEARCH_COUNT_MAX);
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
-    let mut results = yt::search(&path, &q, count * SEARCH_FETCH_FACTOR).await?;
+    let mut results = yt::search(
+        &path,
+        &q,
+        count * SEARCH_FETCH_FACTOR,
+        yt::po_token_setting(&db).as_deref(),
+    )
+    .await?;
     let blocked = db.blocked_ids()?;
     let matcher = ng.get();
     results.retain(|r| {

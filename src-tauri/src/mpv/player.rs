@@ -238,6 +238,10 @@ pub(crate) struct SpawnOptions {
     pub(crate) ytdl_format: String,
     /// `ytdl_hook-ytdl_path` に渡す yt-dlp のパス。None なら mpv の既定解決に任せる。
     pub(crate) ytdlp_path: Option<String>,
+    /// PO Token（設定 `ytdlp.po_token`、FR-86・仕様決定 DK）。mpv が ytdl_hook
+    /// 経由で起動する yt-dlp へ `--ytdl-raw-options` で伝える値。
+    /// 呼び出し側で設定値を解決済み。None なら引数を付けない。
+    pub(crate) po_token: Option<String>,
     /// `--script` に渡す wheel.lua のパス（app_data/mpv/wheel.lua）。
     pub(crate) wheel_script: Option<PathBuf>,
     /// `wheel-volume_delta` に渡す音量変化量。None なら Lua 既定（2）。
@@ -325,6 +329,14 @@ fn mpv_args(opts: &SpawnOptions, socket_path: &Path, log_file: Option<PathBuf>) 
     }
     if !script_opts.is_empty() {
         args.push(format!("--script-opts={}", script_opts.join(",")));
+    }
+    // PO Token（FR-86、仕様決定 DK）。ストリーム解決は mpv の ytdl_hook が
+    // 起動する yt-dlp が担うため、`ytdl-raw-options` 経由で yt-dlp 側へ
+    // `--extractor-args "youtube:po_token=<値>"` を伝える
+    // （mpv の key=value 形式で `extractor-args=<値>` とし、ytdl_hook が
+    // `--extractor-args <値>` へ展開する）
+    if let Some(arg) = crate::yt::po_token_extractor_arg(opts.po_token.as_deref()) {
+        args.push(format!("--ytdl-raw-options=extractor-args={arg}"));
     }
     if let Some(script) = &opts.wheel_script {
         args.push(format!("--script={}", script.display()));
@@ -1555,9 +1567,35 @@ async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArmedQueue, LoadRetryState};
+    use super::{mpv_args, ArmedQueue, LoadRetryState, SpawnOptions};
     use crate::model::QueueArmItem;
     use serde_json::json;
+    use std::path::Path;
+
+    /// mpv_args 検証用の既定 SpawnOptions。各テストで必要なフィールドだけ
+    /// 上書きして使う。
+    fn base_spawn_opts() -> SpawnOptions {
+        SpawnOptions {
+            video_id: "vid00000000".to_string(),
+            start_sec: 0.0,
+            ytdl_format: "best".to_string(),
+            ytdlp_path: None,
+            po_token: None,
+            wheel_script: None,
+            wheel_volume_delta: None,
+            pip_geometry: None,
+            pip_fit_aspect: true,
+            tone_mapping: None,
+            hdr_compute_peak: None,
+            extra_args: None,
+            screen: None,
+            network_timeout_ms: 0,
+            hwdec: "auto-safe".to_string(),
+            log_dir: None,
+            initial_speed: 1.0,
+            initial_volume: 100.0,
+        }
+    }
 
     fn arm(uid: i64, video_id: &str) -> QueueArmItem {
         QueueArmItem {
@@ -1716,5 +1754,35 @@ mod tests {
         assert_eq!(super::parse_sid("-1"), None);
         assert_eq!(super::parse_sid(""), None);
         assert_eq!(super::parse_sid("1.5"), None);
+    }
+
+    /// DB-PO-03: PO Token の mpv 起動引数への構成（FR-86、仕様決定 DK）。
+    /// `ytdlp.po_token` 設定値は `--ytdl-raw-options=extractor-args=youtube:po_token=<値>`
+    /// として mpv へ渡り、ytdl_hook 経由の yt-dlp 呼び出しへ伝達される。
+    /// 既存引数（--ytdl-format・--script-opts 等）との併存と、
+    /// 未設定時に引数を付けないことを確認する。トークン値は仮値で検証する。
+    #[test]
+    fn mpv_args_passes_po_token_via_ytdl_raw_options() {
+        let socket = Path::new("sock");
+        // 設定あり: ytdl-raw-options に extractor-args が載る
+        let mut opts = base_spawn_opts();
+        opts.po_token = Some("TOKEN_VALUE".to_string());
+        opts.ytdlp_path = Some("yt-dlp".to_string());
+        let args = mpv_args(&opts, socket, None);
+        assert!(args.contains(
+            &"--ytdl-raw-options=extractor-args=youtube:po_token=TOKEN_VALUE".to_string()
+        ));
+        // 既存の ytdl 系引数と併存する
+        assert!(args.iter().any(|a| a.starts_with("--ytdl-format=")));
+        assert!(args
+            .iter()
+            .any(|a| a.starts_with("--script-opts=") && a.contains("ytdl_hook-ytdl_path=")));
+        // 未設定・空・空白のみなら ytdl-raw-options を付けない
+        for token in [None, Some(String::new()), Some("   ".to_string())] {
+            let mut opts = base_spawn_opts();
+            opts.po_token = token;
+            let args = mpv_args(&opts, socket, None);
+            assert!(args.iter().all(|a| !a.starts_with("--ytdl-raw-options=")));
+        }
     }
 }

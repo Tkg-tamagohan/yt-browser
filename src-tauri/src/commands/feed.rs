@@ -40,7 +40,7 @@ pub async fn subscribe_channel(
             // 非 ASCII ハンドルは Url::parse 経由でパーセントエンコードしてから渡す
             let url = url::Url::parse(&format!("https://www.youtube.com/@{h}"))
                 .map_err(|_| UiError::invalid_input("ハンドルの形式が不正です"))?;
-            yt::channel_id(&path, url.as_str())
+            yt::channel_id(&path, url.as_str(), yt::po_token_setting(&db).as_deref())
                 .await
                 .map_err(UiError::from)?
         }
@@ -127,7 +127,9 @@ pub async fn playing_channel(
     // 3) yt-dlp メタ（DB に知識が無いときだけ。失敗は解決不能扱い）
     if input.is_none() {
         if let Some(path) = resolver.resolve(&db).await {
-            if let Ok(cands) = yt::video_channel_ref(&path, &id).await {
+            if let Ok(cands) =
+                yt::video_channel_ref(&path, &id, yt::po_token_setting(&db).as_deref()).await
+            {
                 // 受理できない形（解釈不能な channel_id 等）は次候補へ
                 input = cands.into_iter().find(|c| parse_channel_ref(c).is_some());
             }
@@ -298,7 +300,16 @@ pub async fn feed_backfill(
         // 位置は DB の i64。実際に u32 を超える蓄積はないが丸めで安全側に倒す
         let start = (pos + 1).min(u32::MAX as i64) as u32;
         let end = (pos + BACKFILL_BATCH as i64).min(u32::MAX as i64) as u32;
-        match yt::channel_tab_entries(&path, &channel_id, tab, start, end).await {
+        match yt::channel_tab_entries(
+            &path,
+            &channel_id,
+            tab,
+            start,
+            end,
+            yt::po_token_setting(&db).as_deref(),
+        )
+        .await
+        {
             Ok(entries) => {
                 let items: Vec<crate::db::NewVideo> = entries
                     .iter()
