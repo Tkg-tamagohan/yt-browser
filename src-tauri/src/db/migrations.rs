@@ -385,4 +385,49 @@ pub const MIGRATIONS: &[Migration] = &[
               CREATE UNIQUE INDEX idx_queue_state_playlist
                 ON queue_state(playlist_id) WHERE playlist_id IS NOT NULL;",
     },
+    // Phase 62: メタの遅延解決基盤（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）。
+    // kind の値域に 'premiere' を追加し、kind の判定状態（kind_state）と
+    // 投稿日時解決の試行印（meta_checked）を新設する。
+    // CHECK 制約は ALTER で外せないため queue_state と同じくテーブルの
+    // 作り直しで対応する。既存行の kind_state は 'short' のみ確定済み（1）
+    // とし、'video'/'live'/'upcoming' は未確定（0）へ戻す:
+    // 'video' は放送系・shorts の双方が未検査、'live'/'upcoming' は
+    // バックフィルのタブ名による推定値のため InnerTube で実値を裏付ける
+    // （暫定解釈。放送系の誤分類は遅延解決で修正される）。
+    // meta_checked は一律 0（InnerTube メタ応答を未試行）へ初期化する。
+    Migration {
+        version: 18,
+        name: "videos_meta_resolve",
+        sql: "CREATE TABLE videos_migr AS SELECT * FROM videos;
+              DROP TABLE videos;
+              CREATE TABLE videos (
+                video_id TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                channel_title TEXT,
+                title TEXT NOT NULL,
+                thumbnail_url TEXT,
+                published_at TEXT,
+                duration_sec INTEGER,
+                kind TEXT NOT NULL DEFAULT 'video'
+                  CHECK (kind IN ('video','short','live','upcoming','premiere')),
+                is_read INTEGER NOT NULL DEFAULT 1,
+                first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+                ingested INTEGER NOT NULL DEFAULT 0,
+                kind_state INTEGER NOT NULL DEFAULT 0,
+                meta_checked INTEGER NOT NULL DEFAULT 0
+              );
+              INSERT INTO videos
+                (video_id, channel_id, channel_title, title, thumbnail_url,
+                 published_at, duration_sec, kind, is_read, first_seen_at,
+                 ingested, kind_state, meta_checked)
+              SELECT video_id, channel_id, channel_title, title, thumbnail_url,
+                published_at, duration_sec, kind, is_read, first_seen_at,
+                ingested,
+                CASE WHEN kind = 'short' THEN 1 ELSE 0 END,
+                0
+              FROM videos_migr;
+              DROP TABLE videos_migr;
+              CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC);
+              CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);",
+    },
 ];

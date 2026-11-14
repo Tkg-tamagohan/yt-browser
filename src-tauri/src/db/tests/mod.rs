@@ -5,6 +5,7 @@ mod filters;
 mod history;
 mod library;
 mod livewait;
+mod metaresolve;
 mod migrations;
 mod queue;
 mod settings;
