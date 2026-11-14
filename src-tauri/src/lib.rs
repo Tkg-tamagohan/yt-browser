@@ -123,7 +123,8 @@ pub fn run() {
             app.manage(db.clone());
 
             // Chrome 拡張の Native Messaging ホスト定義を冪等に自己登録する（仕様決定 AH・DM）
-            native_host::register(app.path().config_dir().ok(), &dir);
+            // [e2e_dev] 一時抑制（e2e_dev 終了時に自動復元）
+            // native_host::register(app.path().config_dir().ok(), &dir);
 
             // mpv の IPC ソケット置き場。runtime_dir が取れない環境では app_data 配下に退避する
             let socket_dir = app.path().runtime_dir().unwrap_or_else(|_| dir.join("run"));

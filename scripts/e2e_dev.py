@@ -152,6 +152,9 @@ def write_override_config(identifier: str, port: int) -> Path:
                 "app": {
                     "windows": [
                         {
+                            # JSON Merge Patch は配列を丸ごと置き換えるため、
+                            # 本体の tauri.conf.json と同じ dragDropEnabled を残す
+                            "dragDropEnabled": False,
                             "additionalBrowserArgs": (
                                 f"--remote-debugging-port={port}"
                             )
