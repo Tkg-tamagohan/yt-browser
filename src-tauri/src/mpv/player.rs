@@ -519,6 +519,12 @@ impl MpvPlayer {
         self.terminal.completed()
     }
 
+    /// `close_on_eof=off` の eof 終端でインスタンスを残すときに呼ぶ
+    /// （FR-43、仕様決定 BS）。終端理由を解除して後続の終端を受理させる。
+    pub(crate) fn rearm_after_eof(&self) {
+        self.terminal.rearm_after_eof();
+    }
+
     /// バックグラウンドで取得した SponsorBlock 区間を差し込む（設計書 §4.4）。
     pub(crate) fn set_sponsor_segments(&self, segments: Vec<crate::sponsor::ActiveSegment>) {
         lock(&self.sponsor).segments = segments;

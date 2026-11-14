@@ -101,6 +101,11 @@ pub struct PlayerEnded {
     /// フロントはこの値を `player_set_queue` の `base_seq` へ載せて、
     /// その後に別項目を取り出していた置換を拒否させる。
     pub armed_seq: u64,
+    /// この終端でインスタンスが畳まれたとき true（FR-43、仕様決定 BS）。
+    /// `continued` なら常に false。非継続でも `close_on_eof=off` の
+    /// eof 終端では false を送り、mpv 窓とカードを残す。フロントは
+    /// true のときだけカード除去とインスタンス紐付けの後始末を行う。
+    pub closed: bool,
 }
 
 /// `player_control` の操作指定（設計書 §3.1）。

@@ -454,8 +454,12 @@ const ja = {
   "settings.window.screen.missing": "{name}（現在は未接続）",
   "settings.window.monitor": "{name}（{dims}）",
   "settings.window.monitorPrimary": "{name}（{dims}・プライマリ）",
+  // Phase 55: 再生完了時の自動クローズ（FR-43、仕様決定 BS）
+  "settings.window.closeOnEof": "再生完了時に窓を自動で閉じる",
+  "settings.window.closeOnEof.desc":
+    "オンにすると、連続再生を伴わない最後までの再生（eof）で mpv 窓とプレイヤーカードを自動的に閉じます。オフ（既定）は従来どおり終了後も残します。途中終了やエラー終了は設定に関わらず閉じられます",
   "settings.window.unsaved":
-    "保存中に起動ディスプレイの値が変更されました。もう一度保存してください",
+    "保存中に再生窓の値が変更されました。もう一度保存してください",
 
   // Phase 29: フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
   "settings.feed.title": "フィード",

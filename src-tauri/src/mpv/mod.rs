@@ -70,6 +70,11 @@ pub(crate) const DEFAULT_INITIAL_SPEED: f64 = 1.0;
 pub(crate) const SETTING_PLAYER_INITIAL_VOLUME: &str = "player.initial_volume";
 /// `player.initial_volume` の既定値（FR-39、仕様決定 BO）。
 pub(crate) const DEFAULT_INITIAL_VOLUME: f64 = 100.0;
+/// 設定キー: 再生完了時の自動クローズ（FR-43、仕様決定 BS）。
+/// `on` のとき、継続再生を伴わない `reason=eof` の終端でインスタンス
+/// （mpv 窓とプレイヤーカード）を自動的に畳む。既定は `off`（残す）。
+/// 終端時点の設定値で都度判定する。
+pub(crate) const SETTING_PLAYER_CLOSE_ON_EOF: &str = "player.close_on_eof";
 
 /// `pip.geometry` / 既定値として受け付ける mpv geometry 形式
 /// （`WxH` と任意の `+-x+-y` のみ。mpv に渡す値なので曖昧な入力を残さない）。
@@ -264,6 +269,31 @@ pub fn windowing_system() -> &'static str {
     "other"
 }
 
+/// `player.close_on_eof` の保存値を解釈する（FR-43、仕様決定 BS）。
+/// 受理集合は `feed.show_shorts` と同じく明示的な on 系値のみ。
+/// 未設定・その他の値は off（既定）として false を返す。
+pub(crate) fn close_on_eof_enabled(value: Option<String>) -> bool {
+    match value {
+        Some(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "on" | "true" | "1" | "yes"
+        ),
+        None => false,
+    }
+}
+
+/// 終端イベント後にインスタンスを畳む（mpv 窓とカードを閉じる）かの判定
+/// （FR-43、仕様決定 BS）。継続再生へ進んだインスタンスは常に残す。
+/// 非継続の `reason=eof`（キュー消化完了を含む）だけは `close_on_eof` に従い、
+/// `on` なら閉じて `off`（既定）なら残す。eof 以外の終端（error・stop・
+/// process_exit 等）は設定に関わらず従来どおり閉じる。
+pub(crate) fn close_instance_on_end(reason: &str, continued: bool, close_on_eof: bool) -> bool {
+    if continued {
+        return false;
+    }
+    !(reason == "eof" && !close_on_eof)
+}
+
 /// `window.screen` に保存したモニター名を、現在接続中のモニター列の
 /// インデックスへ解決する（FR-31、仕様決定 AZ）。`--screen` の番号は
 /// `available_monitors()` の列挙順と同じ並びを前提とする。
@@ -308,9 +338,10 @@ pub enum MpvError {
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_pip_geometry, hwdec_mode, initial_speed, initial_volume, is_valid_hdr_compute_peak,
-        is_valid_hwdec, is_valid_pip_geometry, is_valid_tone_mapping, mpv_version_tuple,
-        network_timeout_ms, pip_default_enabled, pip_fit_aspect_enabled,
+        close_instance_on_end, close_on_eof_enabled, fit_pip_geometry, hwdec_mode, initial_speed,
+        initial_volume, is_valid_hdr_compute_peak, is_valid_hwdec, is_valid_pip_geometry,
+        is_valid_tone_mapping, mpv_version_tuple, network_timeout_ms, pip_default_enabled,
+        pip_fit_aspect_enabled,
         player::{prune_mpv_logs, split_extra_args, video_aspect_of},
         screen_index_of, DEFAULT_HWDEC, DEFAULT_INITIAL_SPEED, DEFAULT_INITIAL_VOLUME,
         DEFAULT_NETWORK_TIMEOUT_MS,
@@ -673,6 +704,49 @@ mod tests {
                 initial_volume(Some(bad.to_string())),
                 DEFAULT_INITIAL_VOLUME,
                 "{bad} は既定値へ戻すべき"
+            );
+        }
+    }
+
+    /// DB-PF-12: `player.close_on_eof` の解釈（FR-43、仕様決定 BS）。
+    /// 明示的な on 系値のみ true。未設定・その他は off（既定）で false。
+    #[test]
+    fn close_on_eof_enabled_values() {
+        for on in ["on", "true", "1", "yes", "ON", " on "] {
+            assert!(
+                close_on_eof_enabled(Some(on.to_string())),
+                "{on} は on として受理するべき"
+            );
+        }
+        for off in ["off", "false", "0", "no", "", "x"] {
+            assert!(
+                !close_on_eof_enabled(Some(off.to_string())),
+                "{off} は off として扱うべき"
+            );
+        }
+        assert!(!close_on_eof_enabled(None));
+    }
+
+    /// DB-PF-13: EOF 自動クローズの終端判定（FR-43、仕様決定 BS）。
+    /// 非継続の reason=eof だけが設定に従い、それ以外の終端は常に閉じる。
+    #[test]
+    fn close_instance_on_end_values() {
+        // 設定 off + eof + 非継続 → 残す（窓とカードが残る既定挙動）
+        assert!(!close_instance_on_end("eof", false, false));
+        // 設定 on + eof + 非継続 → 閉じる（キュー消化完了の eof も同じ経路）
+        assert!(close_instance_on_end("eof", false, true));
+        // 継続再生へ進んだ終端は設定に関わらず残す
+        assert!(!close_instance_on_end("eof", true, true));
+        assert!(!close_instance_on_end("eof", true, false));
+        // eof 以外の終端（error/stop/process_exit）は設定に関わらず閉じる
+        for reason in ["error", "stop", "process_exit", "unknown"] {
+            assert!(
+                close_instance_on_end(reason, false, false),
+                "off でも {reason} 終端は閉じるべき"
+            );
+            assert!(
+                close_instance_on_end(reason, false, true),
+                "on で {reason} 終端は閉じるべき"
             );
         }
     }

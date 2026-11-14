@@ -530,19 +530,23 @@
         } else if (!looping) {
           notify(t("player.ended", { reason: ev.payload.reason }));
         }
-        // 再生終了したインスタンスのチャットパネルも片付け、ポーラーを解放する
-        cleanupChatPanel(ev.payload.instanceId, ev.payload.videoId);
-        // 関連・概要欄パネルの開閉エントリも除去する（手動 close と同じ片付け。
-        // ended ではカード自体はマップから消えるが、ここに残ると残存になる）
-        const rel = new Set(relatedOpen);
-        rel.delete(ev.payload.instanceId);
-        relatedOpen = rel;
-        // 概要欄は連続再生・ループ遷移で開いたまま取り直す仕様（FR-33、
-        // 仕様決定 BB）なので、カードが消える非継続の終了時だけ除去する
-        if (!ev.payload.continued) {
-          const dsc = new Set(descOpen);
-          dsc.delete(ev.payload.instanceId);
-          descOpen = dsc;
+        // 再生終了したインスタンスのチャットパネルも片付け、ポーラーを解放する。
+        // close_on_eof=off で残された eof 終端のインスタンスは動画も残るため
+        // パネル類は畳まない（FR-43、仕様決定 BS）
+        if (ev.payload.closed !== false) {
+          cleanupChatPanel(ev.payload.instanceId, ev.payload.videoId);
+          // 関連・概要欄パネルの開閉エントリも除去する（手動 close と同じ片付け。
+          // ended ではカード自体はマップから消えるが、ここに残ると残存になる）
+          const rel = new Set(relatedOpen);
+          rel.delete(ev.payload.instanceId);
+          relatedOpen = rel;
+          // 概要欄は連続再生・ループ遷移で開いたまま取り直す仕様（FR-33、
+          // 仕様決定 BB）なので、カードが消える非継続の終了時だけ除去する
+          if (!ev.payload.continued) {
+            const dsc = new Set(descOpen);
+            dsc.delete(ev.payload.instanceId);
+            descOpen = dsc;
+          }
         }
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直させる
         runPlaybackHooks();

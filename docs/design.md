@@ -166,7 +166,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice, subTracks, sid }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq }` | 終了またはエラー |
+| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq, closed }` | 終了またはエラー。`closed` はその終端でインスタンスが畳まれたか（§4.15、FR-43） |
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
@@ -212,6 +212,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定）。PiP 窓の一括整列の対象ディスプレイ解決でも同じ保存値を使う（§4.12） |
 | `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
 | `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
+| `player.close_on_eof` | `on` / `off` | 再生完了時の自動クローズ（§4.15、FR-43、仕様決定 BS）。`on` のとき継続再生を伴わない `reason=eof` の終端でインスタンスを畳む。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（残す）。終端時点の値で都度判定する |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -538,6 +539,8 @@ BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロン�
 キューを畳む。なお途中項目の終了直後に継続先の読み込みが失敗した場合も
 `reason=eof`＋非継続で届くため、消費完了の判定は `reason` に加えて
 「現在位置が末尾項目」「終了した項目が末尾項目」の双方で行う。
+キューの寿命は `player.close_on_eof` による窓・カードの存否とは独立に
+適用される（§4.15。off で残されたインスタンスでも消費完了の扱いは同じ）。
 全消去と対象プレイリストの削除ではキューを畳む（`discardQueue`）。
 一時キューはエントリを残して中身を空に、プレイリストキューは
 エントリごと消す。「ここから連続再生」による上書きはエントリを畳まず、
@@ -727,6 +730,27 @@ x11rb（純粋 Rust 接続、MIT OR Apache-2.0）で X サーバへ接続し、�
 `window-id` が取れないとき（起動直後・mpv 0.36 未満・窓未作成のアイドル状態）は X11 では他の特定経路を持たないため `WindowNotReady` で失敗する。
 
 対象窓が見つからない・前面化が OS に拒否されたときはエラー（`mpv_window_not_ready` / `mpv_foreground_failed` / `mpv_windowing_unsupported`）としてトースト通知し、ボタン自体は再有効なまま残す（起動直後の一時的な不可を恒久エラーと区別しない暫定仕様）。
+
+### 4.15 再生完了時の自動クローズ（FR-43、仕様決定 BS）
+
+設定 `player.close_on_eof`（`on` / `off`、既定 `off`）で、継続再生を伴わない
+`reason=eof` の終端の振る舞いを変える。判定は終端イベントのたびにその時点の
+設定値で行い、純粋判定 `close_instance_on_end(reason, continued, close_on_eof)`
+が従う: 継続時は常に残し、非継続の eof（キュー消化完了を含む）だけが設定に従う。
+eof 以外の終端（`error`・`stop`・`process_exit` 等）は設定に関わらず閉じる。
+
+`on` のとき該当終端では従来どおり emitter が管理表から外して mpv を終了させ、
+カードは `player://ended` 経由で畳まれる。`off` のときはインスタンスを管理表へ
+残して mpv も存続させるため、mpv 窓は `--keep-open` の pause 状態で残り、
+カードもそのまま表示される。区別は `player://ended` の `closed` で伝え、
+フロントは `closed === false` の終端ではカード除去・インスタンス紐付け
+（ループ状態・武装世代）の後始末をしない。キューの寿命（`queueEndOutcome`）
+はインスタンス存否と独立に従来どおり適用する。
+
+残されたインスタンスは終端理由を `rearm_after_eof` で解除し、後続の終端
+（mpv 窓の手動終了によるソケット切断、シーク巻き戻し後の再 eof）を受理する。
+eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定を維持し、
+次ファイルの `file-loaded` またはプロセス再起動で解除する。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

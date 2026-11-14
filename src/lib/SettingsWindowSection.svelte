@@ -6,10 +6,12 @@
     loading,
     monitors,
     windowScreen = $bindable(),
+    closeOnEof = $bindable(),
   }: {
     loading: boolean;
     monitors: MonitorInfo[];
     windowScreen: string;
+    closeOnEof: boolean;
   } = $props();
 
   // モニター名が取れない環境では名前で選択できないため、選択肢は名前付きのみ
@@ -50,6 +52,11 @@
       <p class="subtle desc">{t("settings.window.screen.none")}</p>
     {/if}
     <p class="subtle desc">{t("settings.window.screen.desc")}</p>
+    <label class="check-row">
+      <input type="checkbox" bind:checked={closeOnEof} />
+      {t("settings.window.closeOnEof")}
+    </label>
+    <p class="subtle desc">{t("settings.window.closeOnEof.desc")}</p>
   {/if}
 </section>
 
@@ -69,6 +76,14 @@
     align-items: center;
     gap: 10px;
     margin: 12px 0;
+    font-size: 0.95rem;
+  }
+
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 0 4px;
     font-size: 0.95rem;
   }
 </style>

@@ -10,6 +10,7 @@
   } from "$lib/pip";
   import { QUALITY_PRESETS } from "$lib/quality";
   import { feedShowShortsEnabled } from "$lib/feed-settings";
+  import { closeOnEofEnabled } from "$lib/eof-logic";
   import {
     asErrorMessage,
     formatOverrides,
@@ -83,6 +84,9 @@
   // 再生窓を開くディスプレイ（window.screen、FR-31・仕様決定 AZ）。
   // 値はモニター名。空は自動（mpv 既定）
   let windowScreen = $state("");
+  // 再生完了時の自動クローズ（player.close_on_eof、FR-43・仕様決定 BS）。
+  // on で継続なし eof 終端の窓とカードを自動で畳む。既定は off（残す）
+  let closeOnEof = $state(false);
   // monitor_list の列挙結果。取得失敗環境では空列のまま（選択肢が無効になる）
   let monitors = $state<MonitorInfo[]>([]);
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
@@ -264,6 +268,17 @@
         invalid = true;
         notify(t("settings.window.unsaved"));
       }
+      // player.close_on_eof: チェックボックスの 2 値を on/off で保存する
+      // （FR-43、仕様決定 BS）。終端時点の値で判定されるため即時に効く
+      const ce = closeOnEof;
+      await invoke("settings_set", {
+        key: "player.close_on_eof",
+        value: ce ? "on" : "off",
+      });
+      if (closeOnEof !== ce) {
+        invalid = true;
+        notify(t("settings.window.unsaved"));
+      }
       // hdr.tone_mapping / hdr.compute_peak: DDL 相当の値は select なので
       // そのまま保存（auto は未指定として扱う）。選択肢 ID はドット無しなので
       // TONE_MAPPING_MPV で mpv の値へ変換する。
@@ -437,6 +452,12 @@
       if (screenRaw !== null) {
         windowScreen = screenRaw.trim();
       }
+      // player.close_on_eof（FR-43、仕様決定 BS）。解釈は Rust 側と同じ
+      // 明示的な on 系値のみで、未設定・その他は off（既定）
+      const closeEofRaw = await invoke<string | null>("settings_get", {
+        key: "player.close_on_eof",
+      });
+      closeOnEof = closeOnEofEnabled(closeEofRaw);
       const toneRaw = await invoke<string | null>("settings_get", {
         key: "hdr.tone_mapping",
       });
@@ -539,6 +560,7 @@
     {loading}
     {monitors}
     bind:windowScreen={windowScreen}
+    bind:closeOnEof={closeOnEof}
   />
 
   <SettingsHdrSection

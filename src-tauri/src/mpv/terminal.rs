@@ -12,6 +12,11 @@ pub(crate) struct TerminalTracker {
     ended_reason: Mutex<Option<String>>,
     /// 発行済みで未処理の `loadfile ... replace` の回数。
     pending_replaces: AtomicU32,
+    /// `close_on_eof=off` で eof 終端後も残されたインスタンスの目印
+    /// （FR-43、仕様決定 BS）。履歴の completed 判定を残された
+    /// インスタンスの後続の終端（mpv 窓の手動終了等）でも維持するための
+    /// フラグで、次ファイルのロード完了またはリセットで解除する。
+    kept_eof: AtomicU32,
 }
 
 impl TerminalTracker {
@@ -32,6 +37,7 @@ impl TerminalTracker {
     /// 2 本目以降の終端が受理されずキューが停止する。
     pub(crate) fn on_file_loaded(&self) {
         self.pending_replaces.store(0, Ordering::SeqCst);
+        self.kept_eof.store(0, Ordering::SeqCst);
         *lock(&self.ended_reason) = None;
     }
 
@@ -73,8 +79,20 @@ impl TerminalTracker {
     }
 
     /// 履歴保存用の completed 判定。終端理由が eof のときのみ true。
+    /// `rearm_after_eof` で残されたインスタンスは `kept_eof` でも true を維持する。
     pub(crate) fn completed(&self) -> bool {
         lock(&self.ended_reason).as_deref() == Some("eof")
+            || self.kept_eof.load(Ordering::SeqCst) > 0
+    }
+
+    /// `close_on_eof=off` の eof 終端でインスタンスを残すときに呼ぶ
+    /// （FR-43、仕様決定 BS）。記録済みの終端理由を解除して後続の
+    /// 終端（mpv 窓の手動終了によるソケット切断や、シーク巻き戻し後の
+    /// 再 eof）を受理できるようにする。eof 到達済みの事実は `kept_eof` に
+    /// 移し、履歴の completed 判定を維持する。
+    pub(crate) fn rearm_after_eof(&self) {
+        *lock(&self.ended_reason) = None;
+        self.kept_eof.store(1, Ordering::SeqCst);
     }
 
     /// `file-loaded` 前のロード失敗への自動再送（BG-9、仕様決定 BJ）で、
@@ -90,6 +108,7 @@ impl TerminalTracker {
     pub(crate) fn reset(&self) {
         *lock(&self.ended_reason) = None;
         self.pending_replaces.store(0, Ordering::SeqCst);
+        self.kept_eof.store(0, Ordering::SeqCst);
     }
 }
 
@@ -190,6 +209,46 @@ mod tests {
         assert!(t.on_end_file("error"));
         t.clear_ended_reason();
         assert!(t.on_end_file("eof"));
+    }
+
+    /// 終端判定: `close_on_eof=off` で残された eof 終端インスタンスの再武装
+    /// （FR-43、仕様決定 BS）。後続の終端を受理しつつ completed を維持する。
+    #[test]
+    fn rearm_after_eof_keeps_completed_and_reattaches() {
+        let t = TerminalTracker::default();
+        assert!(t.on_eof());
+        assert!(t.completed());
+        // 残す経路で再武装すると次の終端を受理できる
+        t.rearm_after_eof();
+        assert!(t.on_disconnect());
+        // 履歴の completed は eof 到達済みの事実で維持される
+        assert!(t.completed());
+    }
+
+    /// 終端判定: 再武装後に新しいファイルがロードされた場合、
+    /// kept_eof は解除されて新しい終端理由へ従う。
+    #[test]
+    fn file_loaded_clears_kept_eof() {
+        let t = TerminalTracker::default();
+        assert!(t.on_eof());
+        t.rearm_after_eof();
+        assert!(t.completed());
+        t.on_file_loaded();
+        assert!(!t.completed());
+        // 新ファイルの途中終了が受理される
+        assert!(t.on_end_file("error"));
+        assert!(!t.completed());
+    }
+
+    /// 終端判定: プロセス再起動の reset は kept_eof も初期化する。
+    #[test]
+    fn reset_clears_kept_eof() {
+        let t = TerminalTracker::default();
+        assert!(t.on_eof());
+        t.rearm_after_eof();
+        assert!(t.completed());
+        t.reset();
+        assert!(!t.completed());
     }
 
     /// 終端判定: replace 予約中に届いた旧ファイルの eof-reached は
