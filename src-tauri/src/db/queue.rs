@@ -1,14 +1,16 @@
-//! 一時キューの永続化（FR-30、仕様決定 AY）。
+//! キューの永続化（FR-30・FR-48、仕様決定 AY・BY）。
 //!
-//! `queue_items`（項目列＋表示メタ）と `queue_state`（現在位置）への
-//! write-through を担う。永続化の対象は一時キューのみで、
-//! プレイリストキューはセッション限りのままとする。
+//! 一時キューは `queue_items`（項目列＋表示メタ）と `queue_state`
+//! （playlist_id NULL の行の現在位置）への write-through で保存する。
+//! プレイリストキューは `queue_state` の playlist_id 行に現在位置だけを
+//! 持ち、項目列は `playlist_items` を正として複製しない（FR-48、
+//! 仕様決定 BY で「プレイリストキューは DB に保存しない」を改訂）。
 //! `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で
 //! 動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history`
 //! の順に補完する（yt-dlp による遅延解決は持たない）。
 
 use super::*;
-use crate::model::{QueueItem, QueueSnapshot, VideoRef};
+use crate::model::{PlaylistQueueState, QueueItem, QueueSnapshot, VideoRef};
 use rusqlite::OptionalExtension;
 
 impl Db {
@@ -87,6 +89,62 @@ impl Db {
             items,
             current_index,
         })
+    }
+
+    /// プレイリストキューの保存位置を書き換える（FR-48、仕様決定 BY）。
+    /// `playlist_id` ごとに高々 1 行（v16 の部分一意索引）で、
+    /// 現在位置だけを持つ（項目列は `playlist_items` を正として保存しない）。
+    /// キューが存在する間の各ミューテーションから write-through で呼ぶ。
+    /// 削除済みプレイリストへの保存は FK 違反として失敗する
+    /// （フロントはプレイリスト削除時にキューを畳むため通常到達しない）
+    pub fn queue_playlist_save(&self, playlist_id: i64, current_index: i64) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM queue_state WHERE playlist_id = ?1",
+            [playlist_id],
+        )?;
+        tx.execute(
+            "INSERT INTO queue_state (playlist_id, current_index) VALUES (?1, ?2)",
+            rusqlite::params![playlist_id, current_index.max(0)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// プレイリストキューの保存行を消す（キュー消滅時）。未保存なら何もしない。
+    /// プレイリスト自体の削除では FK の ON DELETE CASCADE で行が消えるため、
+    /// その後の呼び出しは空操作になる
+    pub fn queue_playlist_clear(&self, playlist_id: i64) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM queue_state WHERE playlist_id = ?1",
+            [playlist_id],
+        )?;
+        Ok(())
+    }
+
+    /// 永続化されているプレイリストキュー一覧（FR-48）。プレイリスト名を
+    /// JOIN して返す。削除済みプレイリストの行は CASCADE で消える前提だが、
+    /// 外部キー無効で残った場合も INNER JOIN でこぼさない
+    pub fn queue_playlist_load(&self) -> Result<Vec<PlaylistQueueState>, DbError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT s.playlist_id, p.name, s.current_index
+             FROM queue_state s JOIN playlists p ON p.id = s.playlist_id
+             WHERE s.playlist_id IS NOT NULL
+             ORDER BY s.playlist_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(PlaylistQueueState {
+                playlist_id: row.get(0)?,
+                playlist_name: row.get(1)?,
+                current_index: row.get(2)?,
+            });
+        }
+        Ok(out)
     }
 
     /// `videos` 台帳 → `watch_history` の順で表示メタを補完する

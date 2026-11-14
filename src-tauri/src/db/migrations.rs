@@ -360,4 +360,29 @@ pub const MIGRATIONS: &[Migration] = &[
                 UNIQUE (video_id, position_sec)
               );",
     },
+    // Phase 58: プレイリストキューの永続化（FR-48、仕様決定 BY）。
+    // queue_state を単一行（CHECK (id = 1)）からキューごとの行へ広げる。
+    // playlist_id が NULL の行（id=1）は従来どおり一時キューの現在位置、
+    // NULL 以外の行は永続化するプレイリストキュー（playlist_id = 対象
+    // プレイリストへの FK、現在位置のみ。項目列は playlist_items を正と
+    // し複製しない）。プレイリスト削除で行も消えるよう CASCADE とする。
+    // CHECK 制約は ALTER で外せないためテーブルの作り直しで対応する
+    // （旧行は id・current_index をそのまま引き継ぐ）。
+    // 部分一意索引で playlist_id ごとに高々 1 行を保証する。
+    Migration {
+        version: 17,
+        name: "queue_state_playlist",
+        sql: "CREATE TABLE queue_state_migr AS SELECT * FROM queue_state;
+              DROP TABLE queue_state;
+              CREATE TABLE queue_state (
+                id INTEGER PRIMARY KEY,
+                playlist_id INTEGER REFERENCES playlists(id) ON DELETE CASCADE,
+                current_index INTEGER NOT NULL DEFAULT 0
+              );
+              INSERT INTO queue_state (id, current_index)
+                SELECT id, current_index FROM queue_state_migr;
+              DROP TABLE queue_state_migr;
+              CREATE UNIQUE INDEX idx_queue_state_playlist
+                ON queue_state(playlist_id) WHERE playlist_id IS NOT NULL;",
+    },
 ];

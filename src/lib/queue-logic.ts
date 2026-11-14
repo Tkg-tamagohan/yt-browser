@@ -2,6 +2,7 @@
 //! queue.svelte.ts の状態・invoke から分離した決定部分で、
 //! vitest の回帰テスト（LP-NN）から直接検証する。
 
+import type { VideoRef } from "./players.svelte";
 import type { LoopMode, QueueKey } from "./queue.svelte";
 
 /// キュー項目の識別子付きエントリ（BG-10、仕様決定 BK）。
@@ -214,4 +215,43 @@ export function shuffleTail(
     [tail[i], tail[j]] = [tail[j], tail[i]];
   }
   return [...items.slice(0, index + 1), ...tail];
+}
+
+/// 「プレイリストとして保存」（`queue_save_as_playlist`）へ渡す項目列への
+/// 変換（FR-47、仕様決定 BX）。QueueEntry 列から表示メタを解決して
+/// VideoRef 列を作る。順序と同一動画の重複はそのまま保持し、
+/// 複製先で重複を持てるかの判断はバックエンド（`playlist_items` の
+/// 主キー）に委ねる。メタ未登録は videoId をタイトルに潰す
+/// （queueMetaOf と同じ扱い）。キューの表示メタは channel_id を
+/// 持たないため `channelId` は常に null
+export function saveItemsOf(
+  items: QueueEntry[],
+  metaOf: (videoId: string) => {
+    title: string;
+    channelTitle: string | null;
+    thumbnailUrl: string | null;
+  },
+): VideoRef[] {
+  return items.map(({ videoId }) => {
+    const m = metaOf(videoId);
+    return {
+      videoId,
+      title: m.title || videoId,
+      channelId: null,
+      channelTitle: m.channelTitle,
+      thumbnailUrl: m.thumbnailUrl,
+    };
+  });
+}
+
+/// プレイリストキュー復元時の保存位置（FR-48、仕様決定 BY）。
+/// `queue_playlist_load` の保存位置を、`playlist_items` から取り直した
+/// 項目列の件数へ収める。対象プレイリストが空（0 件）なら復元しない
+/// ことを null で表す
+export function restoredPlaylistIndex(
+  savedIndex: number,
+  itemCount: number,
+): number | null {
+  if (itemCount === 0) return null;
+  return restoredIndex(itemCount, savedIndex);
 }

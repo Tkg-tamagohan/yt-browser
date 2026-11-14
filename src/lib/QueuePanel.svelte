@@ -1,11 +1,11 @@
 <script lang="ts">
-  // キューパネル（FR-20・FR-26・FR-46、仕様決定 AM・AS・BW）。
+  // キューパネル（FR-20・FR-26・FR-45・FR-46・FR-47、仕様決定 AM・AS・BV・BW・BX）。
   // 上部のタブで表示対象キュー（一時キュー＋存在するプレイリストキュー）を
   // 切り替え、選択中キューの一覧・並べ替え（上下ボタンと DnD）・個別削除・
-  // 残りシャッフル・全消去・再生開始を提供する。停止中のプレイリストキューは
-  // 「再生」で保存位置から再開する。ナビ入口とキューを背負うカードから
-  // 同じパネルを開く。タブ選択は「キューに追加」の追加先指定でもある
-  // （FR-45、仕様決定 BV）
+  // 残りシャッフル・プレイリストとして保存・全消去・再生開始を提供する。
+  // 停止中のプレイリストキューは「再生」で保存位置から再開する。
+  // ナビ入口とキューを背負うカードから同じパネルを開く。
+  // タブ選択は「キューに追加」の追加先指定でもある（FR-45、仕様決定 BV）
   // 項目メタ（タイトル・チャンネル）はセッション内メモリのみ
   import { goto } from "$app/navigation";
   import { t } from "$lib/i18n";
@@ -36,6 +36,7 @@
     queueMove,
     queuePlayStart,
     queueRemoveAt,
+    queueSaveAsPlaylist,
     queueShuffleRest,
     queueStop,
     type QueueKey,
@@ -91,6 +92,27 @@
     } catch (e) {
       notify(
         t("queue.startFailed", { message: asErrorMessage(e) }),
+      );
+    }
+  }
+
+  // 「プレイリストとして保存」（FR-47、仕様決定 BX）。選択中キューの
+  // 項目を順序どおり新規プレイリストへ複製する。名前入力は行を
+  // 広げて行い、保存しても元のキューは変わらない
+  let saving = $state(false);
+  let saveName = $state("");
+
+  async function saveAsPlaylist(): Promise<void> {
+    const name = saveName.trim();
+    if (!name) return;
+    try {
+      const pl = await queueSaveAsPlaylist(selKey, name);
+      saving = false;
+      saveName = "";
+      notify(t("queue.savedAsPlaylist", { name: pl.name }));
+    } catch (e) {
+      notify(
+        t("queue.saveAsPlaylistFailed", { message: asErrorMessage(e) }),
       );
     }
   }
@@ -258,6 +280,15 @@
     >
       {t("queue.shuffle")}
     </button>
+    <!-- プレイリストとして保存（FR-47、仕様決定 BX）。選択中キューを
+         新規プレイリストへ複製する。押下で名前行を広げる -->
+    <button
+      class="link"
+      disabled={sel === undefined || sel.items.length === 0}
+      onclick={() => (saving = !saving)}
+    >
+      {t("queue.saveAsPlaylist")}
+    </button>
     <button
       class="link danger"
       disabled={(sel?.items.length ?? 0) === 0}
@@ -267,6 +298,25 @@
     </button>
     <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
   </div>
+
+  {#if saving && sel !== undefined && sel.items.length > 0}
+    <div class="qp-save">
+      <input
+        bind:value={saveName}
+        placeholder={t("library.playlist.newPlaceholder")}
+        onkeydown={(e) => {
+          if (e.key === "Enter") void saveAsPlaylist();
+        }}
+      />
+      <button
+        class="link"
+        disabled={saveName.trim() === ""}
+        onclick={() => void saveAsPlaylist()}
+      >
+        {t("library.playlist.create")}
+      </button>
+    </div>
+  {/if}
 
   {#if sel === undefined || sel.items.length === 0}
     <p class="subtle">{t("queue.empty")}</p>
@@ -395,6 +445,25 @@
     font-weight: 400;
     font-size: 0.85rem;
     margin-left: 6px;
+  }
+
+  /* 「プレイリストとして保存」の名前行（FR-47） */
+  .qp-save {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-shrink: 0;
+  }
+
+  .qp-save input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    border: 1px solid #3c4043;
+    border-radius: 6px;
+    background: #303134;
+    color: #e8eaed;
+    font-size: 0.85rem;
   }
 
   .qp-list {

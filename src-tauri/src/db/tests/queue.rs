@@ -181,3 +181,137 @@ fn video_meta_lookup_precedence() {
         Some("https://i.ytimg.com/vi/x.jpg")
     );
 }
+
+/// DB-Q-07: プレイリストキューの保存位置の永続化（FR-48、仕様決定 BY）。
+/// 保存→読み出し→更新→消去の往復と、一時キュー（id=1 行）との独立性、
+/// プレイリストごとに 1 行で管理されることを確認する。
+#[test]
+fn queue_playlist_state_round_trip() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl1 = db.playlist_create("PL1").unwrap();
+    let pl2 = db.playlist_create("PL2").unwrap();
+    // 未保存は空
+    assert!(db.queue_playlist_load().unwrap().is_empty());
+
+    // 一時キューの保存はプレイリストキュー側へ影響しない
+    db.queue_save(&[item("a1234567890", "A")], 0).unwrap();
+    assert!(db.queue_playlist_load().unwrap().is_empty());
+
+    // 保存→読み出し（プレイリスト名が JOIN で取れる）
+    db.queue_playlist_save(pl1.id, 3).unwrap();
+    db.queue_playlist_save(pl2.id, 1).unwrap();
+    let rows = db.queue_playlist_load().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].playlist_id, pl1.id);
+    assert_eq!(rows[0].playlist_name, "PL1");
+    assert_eq!(rows[0].current_index, 3);
+    assert_eq!(rows[1].playlist_id, pl2.id);
+    assert_eq!(rows[1].current_index, 1);
+    // 一時キューの位置は変わらない（独立に動作する）
+    assert_eq!(db.queue_load().unwrap().current_index, 0);
+
+    // 再保存は同じ playlist_id の行を更新する（高々 1 行）
+    db.queue_playlist_save(pl1.id, 5).unwrap();
+    let rows = db.queue_playlist_load().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].playlist_id, pl1.id);
+    assert_eq!(rows[0].current_index, 5);
+
+    // 消去は対象行だけを消す
+    db.queue_playlist_clear(pl1.id).unwrap();
+    let rows = db.queue_playlist_load().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].playlist_id, pl2.id);
+    // 未保存行の消去は空操作
+    db.queue_playlist_clear(pl1.id).unwrap();
+}
+
+/// DB-Q-08: プレイリスト削除で保存行が消える（FR-48、仕様決定 BY）。
+/// `playlist_id` の ON DELETE CASCADE で、プレイリスト削除に
+/// 残存する保存行を残さない。
+#[test]
+fn queue_playlist_state_cascades_on_playlist_delete() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl = db.playlist_create("PL").unwrap();
+    db.queue_playlist_save(pl.id, 2).unwrap();
+    assert_eq!(db.queue_playlist_load().unwrap().len(), 1);
+    db.playlist_delete(pl.id).unwrap();
+    assert!(db.queue_playlist_load().unwrap().is_empty());
+}
+
+/// DB-Q-09: v17 マイグレーション（FR-48、仕様決定 BY）。
+/// 旧形式の単一行 queue_state（CHECK (id = 1)）の現在位置を引き継ぎ、
+/// playlist_id 列とプレイリストキュー行を追加できる。
+/// （v16 は Phase 59 の video_bookmarks で、queue_state に触れないため
+/// 移行前状態は v16 適用後も変わらない）
+#[test]
+fn migrate_v17_preserves_queue_state() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version < 17) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+    // v16 状態でも queue_state は単一行（CHECK (id = 1)）
+    conn.execute(
+        "INSERT INTO queue_state (id, current_index) VALUES (1, 2)",
+        [],
+    )
+    .unwrap();
+    assert!(conn
+        .execute(
+            "INSERT INTO queue_state (id, current_index) VALUES (2, 0)",
+            []
+        )
+        .is_err());
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version == 17) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+    // 一時キュー行の位置が引き継がれる
+    let idx: i64 = conn
+        .query_row(
+            "SELECT current_index FROM queue_state WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(idx, 2);
+    // プレイリストキュー行を追加できる（単一行制約は外れている）
+    conn.execute("INSERT INTO playlists (id, name) VALUES (10, 'PL')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO queue_state (playlist_id, current_index) VALUES (10, 4)",
+        [],
+    )
+    .unwrap();
+    let pid: Option<i64> = conn
+        .query_row(
+            "SELECT playlist_id FROM queue_state WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pid, None);
+    // 同一 playlist_id の 2 行目は部分一意索引で弾かれる
+    assert!(conn
+        .execute(
+            "INSERT INTO queue_state (playlist_id, current_index) VALUES (10, 0)",
+            [],
+        )
+        .is_err());
+}

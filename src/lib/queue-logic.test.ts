@@ -9,6 +9,8 @@
 // QM-01: キュー表示メタのフォールバック判定（FR-29、仕様決定 BD）
 // QE-01: 「キューに追加」の追加先解決（パネル選択中のキュー）（FR-45、仕様決定 BV）
 // QE-02: 現在位置より後の項目のシャッフル（FR-46、仕様決定 BW）
+// QS-01: 「プレイリストとして保存」の項目列変換（FR-47、仕様決定 BX）
+// QS-02: プレイリストキュー復元の保存位置（FR-48、仕様決定 BY）
 import { describe, expect, test } from "vitest";
 import {
   armPlanFor,
@@ -22,6 +24,8 @@ import {
   reconcileIndex,
   resolveAddTarget,
   restoredIndex,
+  restoredPlaylistIndex,
+  saveItemsOf,
   shuffleTail,
   type QueueEntry,
 } from "./queue-logic";
@@ -346,5 +350,58 @@ describe("QE-02 shuffleTail（FR-46、仕様決定 BW）", () => {
     const out = shuffleTail(items, 0, seq(0.9, 0.9, 0.9));
     expect(vids(items)).toEqual(["A", "B", "C", "D"]);
     expect(out).not.toBe(items);
+  });
+});
+
+describe("QS-01 saveItemsOf（FR-47、仕様決定 BX）", () => {
+  // キュー表示メタの形に合わせた解決関数（queueMetaOf と同じ形）
+  const metaOf = (map: Record<string, { title: string; channelTitle: string | null; thumbnailUrl: string | null }>) =>
+    (videoId: string) =>
+      map[videoId] ?? { title: videoId, channelTitle: null, thumbnailUrl: null };
+
+  test("順序・重複・メタをそのまま VideoRef 列へ写す", () => {
+    const items = es("A", "B", "A", "C");
+    const out = saveItemsOf(
+      items,
+      metaOf({
+        A: { title: "動画A", channelTitle: "CH-A", thumbnailUrl: "thumb-a" },
+        C: { title: "動画C", channelTitle: null, thumbnailUrl: null },
+      }),
+    );
+    // 順序と同一動画の重複は保持する（重複可否はバックエンドの主キー側の判断）
+    expect(out.map((i) => i.videoId)).toEqual(["A", "B", "A", "C"]);
+    expect(out[0]).toEqual({
+      videoId: "A",
+      title: "動画A",
+      channelId: null,
+      channelTitle: "CH-A",
+      thumbnailUrl: "thumb-a",
+    });
+    // メタ未登録は videoId をタイトルに潰し、残りは null
+    expect(out[1]).toEqual({
+      videoId: "B",
+      title: "B",
+      channelId: null,
+      channelTitle: null,
+      thumbnailUrl: null,
+    });
+    // キュー項目の uid は複製へ持ち越さない（新規採番されるもの。BX(2)）
+    expect(out[2]).toEqual(out[0]);
+    // キューの表示メタは channel_id を持たないため常に null
+    expect(out.every((i) => i.channelId === null)).toBe(true);
+  });
+});
+
+describe("QS-02 restoredPlaylistIndex（FR-48、仕様決定 BY）", () => {
+  test("保存位置は項目数に収める（一時キュー復元と同じ規則）", () => {
+    expect(restoredPlaylistIndex(3, 5)).toBe(3);
+    expect(restoredPlaylistIndex(9, 5)).toBe(4);
+    expect(restoredPlaylistIndex(-1, 5)).toBe(0);
+    expect(restoredPlaylistIndex(0, 1)).toBe(0);
+  });
+
+  test("対象プレイリストが空（0 件）なら null（復元しない）", () => {
+    expect(restoredPlaylistIndex(0, 0)).toBeNull();
+    expect(restoredPlaylistIndex(3, 0)).toBeNull();
   });
 });

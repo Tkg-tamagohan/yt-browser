@@ -36,7 +36,8 @@ pub fn history_remove(video_id: String, db: State<'_, Db>) -> Result<(), UiError
 }
 
 /// `VideoRef` の入力検証と動画 ID 正規化。
-fn validate_video_ref(v: &VideoRef) -> Result<String, UiError> {
+/// キューのプレイリスト保存（commands::queue）からも使う
+pub(crate) fn validate_video_ref(v: &VideoRef) -> Result<String, UiError> {
     let id = parse_video_id(&v.video_id)?;
     if v.title.chars().count() > MAX_VIDEO_FIELD_LEN {
         return Err(UiError::invalid_input("タイトルが長すぎます"));
@@ -73,7 +74,8 @@ pub fn playlist_list(db: State<'_, Db>) -> Result<Vec<Playlist>, UiError> {
 }
 
 /// プレイリスト名の検証（トリム・非空・長さ）。
-fn validate_playlist_name(name: &str) -> Result<String, UiError> {
+/// キューのプレイリスト保存（commands::queue）からも使う
+pub(crate) fn validate_playlist_name(name: &str) -> Result<String, UiError> {
     let name = name.trim();
     if name.is_empty() {
         return Err(UiError::invalid_input("プレイリスト名が空です"));

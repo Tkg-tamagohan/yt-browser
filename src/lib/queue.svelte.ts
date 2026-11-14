@@ -14,8 +14,10 @@
 //! ループ状態もインスタンス別にフロントが持ち、武装対象の選択で実現する
 //! （1 項目は現在項目のみ、全体は末尾到達で先頭へ戻る回転順、キュー無しは
 //! 現在項目を巡回登録）。
-//! 一時キューだけは項目列（uid 込み）・表示メタ・現在位置を DB へ永続化し
-//! （FR-30、仕様決定 AY）、起動時に停止状態として復元する。
+//! 一時キューは項目列（uid 込み）・表示メタ・現在位置を DB へ永続化し
+//! （FR-30、仕様決定 AY）、プレイリストキューは playlist_id と現在位置
+//! だけを DB へ永続化する（FR-48、仕様決定 BY。項目列は playlist_items
+//! を正として複製しない）。起動時はどちらも停止状態として復元する。
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -23,6 +25,8 @@ import {
   playerStates,
   type PlayerEnded,
   type PlayerState,
+  type Playlist,
+  type PlaylistEntry,
   type VideoRef,
 } from "$lib/players.svelte";
 import { sanitizeMediaTitle } from "./copy-link-logic";
@@ -38,6 +42,8 @@ import {
   reconcileIndex,
   resolveAddTarget,
   restoredIndex,
+  restoredPlaylistIndex,
+  saveItemsOf,
   shuffleTail,
   type QueueEntry,
   type QueuePersistItem,
@@ -239,6 +245,38 @@ function persistTempQueue(): void {
     });
 }
 
+/// プレイリストキューの現在位置を DB へ保存する（FR-48、仕様決定 BY）。
+/// playlist_id と現在位置のみを書き、項目列は playlist_items を正として
+/// 保存しない。キューが存在する間の各ミューテーションの後に呼ぶ。
+/// 失敗してもメモリ上のキュー操作は完了済みのため、通知だけ出す
+function persistPlaylistQueue(q: QueueState): void {
+  if (q.playlistId === null) return;
+  const playlistId = q.playlistId;
+  const currentIndex = q.index;
+  persistChain = persistChain
+    .then(() =>
+      invoke<unknown>("queue_playlist_save", { playlistId, currentIndex }).then(
+        () => {},
+      ),
+    )
+    .catch((e) => {
+      notify(t("queue.persistFailed", { message: asErrorMessage(e) }));
+    });
+}
+
+/// プレイリストキューの保存行を消す（キュー消滅時）。
+/// 対象プレイリスト自体の削除では DB 側の CASCADE でも行が消えるため、
+/// その場合の呼び出しは空操作になる
+function clearPlaylistPersist(playlistId: number): void {
+  persistChain = persistChain
+    .then(() =>
+      invoke<unknown>("queue_playlist_clear", { playlistId }).then(() => {}),
+    )
+    .catch((e) => {
+      notify(t("queue.persistFailed", { message: asErrorMessage(e) }));
+    });
+}
+
 /// 起動時の一時キュー復元（FR-30、仕様決定 AY）。`queue_load` で
 /// 項目列と保存位置を読み、停止状態（instanceId なし）のキューとして
 /// 組み立てる。表示メタもキュー項目から `queueMeta` へ戻す
@@ -297,10 +335,73 @@ async function restoreTempQueue(): Promise<void> {
   );
 }
 
+/// `queue_playlist_load` の復元情報 1 行（FR-48）。
+type PlaylistQueueState = {
+  playlistId: number;
+  playlistName: string;
+  currentIndex: number;
+};
+
+/// 起動時のプレイリストキュー復元（FR-48、仕様決定 BY）。
+/// 永続化された playlist_id と現在位置を読み、項目列は `playlist_items`
+/// から取り直して停止状態（instanceId なし）のキューとして組み立てる。
+/// キュー項目の uid は復元分も新規採番する（DB には持たないため）。
+/// 対象プレイリストが削除済みなら保存行は DB 側の CASCADE で消えており
+/// ここには現れない。空になったプレイリストのキューは復元せず、
+/// 残存した保存行も掃除する。一時キューの復元とは独立に動作する
+async function restorePlaylistQueues(): Promise<void> {
+  const states = await invoke<PlaylistQueueState[]>("queue_playlist_load");
+  for (const s of states) {
+    // 既存キューは上書きしない（復元の待ち合わせ中に新しいキューが
+    // 作られた場合に、そちらを潰さないための保険）
+    if (queues.list.has(s.playlistId)) continue;
+    let entries: PlaylistEntry[];
+    try {
+      entries = await invoke<PlaylistEntry[]>("playlist_items", {
+        playlistId: s.playlistId,
+        afterPosition: null,
+        limit: null,
+      });
+    } catch {
+      // 項目列を取り直せないキューは復元しない
+      continue;
+    }
+    const index = restoredPlaylistIndex(s.currentIndex, entries.length);
+    if (index === null) {
+      // 対象プレイリストが空なら復元しない。残存した保存行も掃除する
+      clearPlaylistPersist(s.playlistId);
+      continue;
+    }
+    const q = newQueue(s.playlistId, s.playlistName);
+    q.items = entries.map((e) => newQueueEntry(e.videoId));
+    q.index = index;
+    const next = new Map(queues.list);
+    next.set(s.playlistId, q);
+    queues.list = next;
+    // 表示メタを playlist_items 由来で埋める
+    // （一時キュー復元と同じく未登録分だけ。キュー表示が動画 ID に
+    // 潰れないようにする）
+    const meta = new Map(queueMeta.list);
+    let metaChanged = false;
+    for (const e of entries) {
+      if (!meta.has(e.videoId)) {
+        meta.set(e.videoId, {
+          title: e.title || e.videoId,
+          channelTitle: e.channelTitle,
+          thumbnailUrl: e.thumbnailUrl,
+        });
+        metaChanged = true;
+      }
+    }
+    if (metaChanged) queueMeta.list = meta;
+  }
+}
+
 let initPromise: Promise<void> | null = null;
 
-/// キューの初期化。一時キューの復元 → `initQueueEvents` のイベント購読の
-/// 順で一度だけ行い、以後は同じ promise を返す（FR-30、仕様決定 AY）。
+/// キューの初期化。一時キューとプレイリストキューの復元 →
+/// `initQueueEvents` のイベント購読の順で一度だけ行い、以後は同じ
+/// promise を返す（FR-30・FR-48、仕様決定 AY・BY）。
 /// deep link のキュー追加が復元済みキューの末尾へ追記されるよう、
 /// deeplink 側もキュー項目へ触れる前にこれを await する（FR-29、
 /// 仕様決定 AX）
@@ -309,6 +410,11 @@ export function initQueue(): Promise<void> {
     initPromise = (async () => {
       try {
         await restoreTempQueue();
+      } catch (e) {
+        notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
+      }
+      try {
+        await restorePlaylistQueues();
       } catch (e) {
         notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
       }
@@ -541,6 +647,7 @@ export async function startQueue(
   // （discard 系以外では prune が走らないため）
   pruneMeta();
   if (playlistId === null) persistTempQueue();
+  else persistPlaylistQueue(q);
   await armQueue(q);
 }
 
@@ -585,6 +692,7 @@ export function discardQueue(key: QueueKey): void {
   }
   pruneMeta();
   if (key === null) persistTempQueue();
+  else clearPlaylistPersist(key);
 }
 
 /// 「連続再生を止める」（FR-20・FR-26、仕様決定 AM・AS）。
@@ -599,6 +707,7 @@ export function queueStop(key: QueueKey): void {
   q.index = indexAfterStop(q.playlistId, q.index);
   q.playingCurrent = true;
   if (key === null) persistTempQueue();
+  else persistPlaylistQueue(q);
 }
 
 /// 「キューに追加」（FR-20・FR-45、仕様決定 AM・AS・BV）。
@@ -615,7 +724,11 @@ export function queueAdd(v: VideoRef): void {
   const q = queues.list.get(key) ?? tempQueue();
   rememberMeta(v);
   q.items = [...q.items, newQueueEntry(v.videoId)];
+  // プレイリストキューへの追加も位置は変わらないが、write-through の
+  // 不変式に倣って保存を呼ぶ（項目列は playlist_items を正として保存
+  // しないため、キューへの追記分は永続化対象外＝再起動で戻らない点に注意）
   if (key === null) persistTempQueue();
+  else persistPlaylistQueue(q);
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -652,6 +765,7 @@ export function queueRemoveAt(key: QueueKey, i: number): void {
   q.index = indexAfterRemove(q.index, i, items.length);
   pruneMeta();
   if (key === null) persistTempQueue();
+  else persistPlaylistQueue(q);
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -669,6 +783,7 @@ export function queueMove(key: QueueKey, from: number, to: number): void {
   q.index = indexAfterMove(q.index, from, to2);
   q.items = items;
   if (key === null) persistTempQueue();
+  else persistPlaylistQueue(q);
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -680,7 +795,10 @@ export function queueShuffleRest(key: QueueKey): void {
   const q = queues.list.get(key);
   if (q === undefined) return;
   q.items = shuffleTail(q.items, q.index, Math.random);
+  // シャッフルで現在位置は変わらないため保存行は実質不変だが、
+  // write-through の不変式に倣い呼ぶ（項目列の並びは永続化対象外）
   if (key === null) persistTempQueue();
+  else persistPlaylistQueue(q);
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -689,6 +807,23 @@ export function queueShuffleRest(key: QueueKey): void {
 /// 表示メタは discardQueue 側の pruneMeta で一覧と一緒に解放する
 export function queueClear(key: QueueKey): void {
   discardQueue(key);
+}
+
+/// 「プレイリストとして保存」（FR-47、仕様決定 BX）。選択中キューの
+/// 項目を順序どおり新規プレイリストへ複製する。複製は新しい項目列として
+/// 作られキュー側の uid は引き継がない（新しいキューを作ったときに
+/// 新規採番される）。元のキューは保持する。
+/// 作成したプレイリストを返し、失敗時は呼び出し側が通知する
+export async function queueSaveAsPlaylist(
+  key: QueueKey,
+  name: string,
+): Promise<Playlist> {
+  const q = queues.list.get(key);
+  if (q === undefined || q.items.length === 0) {
+    throw new Error("キューが空です");
+  }
+  const items = saveItemsOf(q.items, queueMetaOf);
+  return await invoke<Playlist>("queue_save_as_playlist", { name, items });
 }
 
 /// キューの現在位置から連続再生を開始する（FR-20・FR-26、仕様決定 AM・AS）。
@@ -780,6 +915,9 @@ export function initQueueEvents(): Promise<void> {
               q.instanceId = null;
               q.index = 0;
               q.playingCurrent = true;
+              // 残したキューの新しい位置も永続化へ反映する
+              // （reset が返るのはプレイリストキューのみ）
+              persistPlaylistQueue(q);
             } else {
               discardQueue(key);
             }
@@ -810,6 +948,7 @@ export function initQueueEvents(): Promise<void> {
             q.playingCurrent = true;
           }
           if (key === null) persistTempQueue();
+          else persistPlaylistQueue(q);
           // 意図の変更が世代ずれで backend に拒否されていたときだけ
           // 最新世代で再適用する。通常の遷移では deque を置き換えない
           // （古い置換が消費済み項目を復活させるのを防ぐ、仕様決定 AD）
