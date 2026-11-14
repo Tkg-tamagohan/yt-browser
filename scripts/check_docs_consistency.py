@@ -58,6 +58,7 @@ TAURI_CONF = ROOT / "src-tauri" / "tauri.conf.json"
 CAPABILITIES_DIR = ROOT / "src-tauri" / "capabilities"
 WHEEL_LUA = ROOT / "src-tauri" / "mpv" / "wheel.lua"
 DOCS_DIR = ROOT / "docs"
+SCRIPTS_DIR = ROOT / "scripts"
 
 OK = "OK"
 WARN = "WARN"
@@ -712,6 +713,10 @@ def doc_and_code_files() -> list[Path]:
     files += iter_files(SRC_FRONTEND, (".ts", ".svelte"))
     files += iter_files(SRC_TAURI, (".rs",))
     files += iter_files(EXTENSION_DIR, (".js",))
+    files += [
+        p for p in iter_files(SCRIPTS_DIR, (".md", ".py"))
+        if p.name != "check_docs_consistency.py"
+    ]
     files.append(WHEEL_LUA)
     return [p for p in files if p.is_file()]
 
@@ -778,8 +783,7 @@ DECISION_REF_RE = re.compile(
 def decision_table_ids(heading: str) -> set[str]:
     """decision-records.md の指定見出しの表から ID 集合を取る。
 
-    `|| AT |` のような先頭空セル行があるため、行内で `^[A-Z]+$` に
-    一致する最初のセルを ID とする（ヘッダ行の `ID` セルは除く）。
+    行内で `^[A-Z]+$` に一致する最初のセルを ID とする（ヘッダ行の `ID` セルは除く）。
     """
     section_text = extract_section(read_text(DECISIONS_MD), heading)
     ids: set[str] = set()
@@ -898,7 +902,7 @@ def check_design_sections() -> Findings:
 # `// LP-01: 概要` を索引として拾う。FR-20 等の非テスト ID は
 # テスト ID 規約の対象外として除外する。
 TS_TEST_DECL_RE = re.compile(
-    r"(?:describe|it|test)\s*\(\s*\"([A-Z]{2,3}-\d{2})(?=[\s\"])"
+    r"(?:describe|it|test)\s*\(\s*\"([A-Z]{2,3}-\d{2})(?=[\s\":：])"
 )
 TS_TEST_TITLE_RE = re.compile(
     r"(?:describe|it|test)\s*\(\s*\"([^\"]+)\""
@@ -909,15 +913,20 @@ TS_TEST_ID_EXCLUDE_PREFIXES = {"FR", "BG", "INV", "DB"}
 
 
 def iter_test_ts() -> list[Path]:
-    """`*.test.ts` を返す（Path.suffix は `.ts` しか返さないため名前で判定）。"""
-    return sorted(
+    """`*.test.ts` と `extension/*.test.js` を返す（Path.suffix は `.ts` 等しか返さないため名前で判定）。"""
+    ts_tests = [
         p for p in SRC_FRONTEND.rglob("*")
         if p.is_file() and p.name.endswith(".test.ts")
-    )
+    ]
+    ext_tests = [
+        p for p in EXTENSION_DIR.glob("*.test.js")
+        if p.is_file()
+    ]
+    return sorted(ts_tests + ext_tests)
 
 
 def scan_ts_test_ids() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """`.test.ts` の宣言 ID（describe 先頭）と索引 ID（冒頭コメント）を返す。"""
+    """`.test.ts` / `.test.js` の宣言 ID（describe 先頭）と索引 ID（冒頭コメント）を返す。"""
     decl: dict[str, list[str]] = {}
     index: dict[str, list[str]] = {}
     for path in iter_test_ts():
@@ -937,10 +946,15 @@ def check_ts_test_ids() -> Findings:
     for test_id, locs in sorted(decl.items()):
         if len(locs) > 1:
             f.error(f"テスト ID `{test_id}` が重複: {', '.join(locs)}")
+    for test_id, locs in sorted(index.items()):
+        if len(locs) > 1:
+            f.error(f"テスト索引 ID `{test_id}` が重複: {', '.join(locs)}")
 
     for path in iter_test_ts():
         rel = str(path.relative_to(ROOT))
         text = read_text(path)
+        if not TS_TEST_DECL_RE.search(text):
+            f.error(f"{rel}: テスト ID 宣言（describe/it/test）が 1 件も無い")
         for m in TS_TEST_TITLE_RE.finditer(text):
             title = m.group(1)
             tokens = [
@@ -954,12 +968,18 @@ def check_ts_test_ids() -> Findings:
                         "（テスト ID はタイトル先頭に置く規約）"
                     )
 
-    for test_id, locs in sorted(index.items()):
-        if test_id not in decl:
-            f.warn(f"索引コメントの `{test_id}` に対応する describe/it が無い（{', '.join(locs)}）")
-    for test_id, locs in sorted(decl.items()):
-        if test_id not in index:
-            f.warn(f"`{test_id}` の describe 宣言に対応する索引コメントが無い（{', '.join(locs)}）")
+    for test_id in sorted(set(decl) | set(index)):
+        decl_locs = decl.get(test_id, [])
+        index_locs = index.get(test_id, [])
+        if not decl_locs:
+            f.warn(f"索引コメントの `{test_id}` に対応する describe/it が無い（{', '.join(index_locs)}）")
+        elif not index_locs:
+            f.warn(f"`{test_id}` の describe 宣言に対応する索引コメントが無い（{', '.join(decl_locs)}）")
+        elif set(decl_locs) != set(index_locs):
+            f.error(
+                f"`{test_id}` の宣言ファイル（{', '.join(decl_locs)}）と"
+                f"索引ファイル（{', '.join(index_locs)}）が一致しない"
+            )
 
     # 連番の抜けは報告のみ（check 5 と同じ扱い）
     by_prefix: dict[str, list[int]] = {}
@@ -978,7 +998,7 @@ def check_ts_test_ids() -> Findings:
         f.ok("連番の抜け（報告のみ）: " + " / ".join(gap_notes))
 
     if f.worst() == OK:
-        f.ok(f"{len(decl)} 件の .test.ts テスト ID が規約通り")
+        f.ok(f"{len(decl)} 件の .test.ts / .test.js テスト ID が規約通り")
     return f
 
 
@@ -1177,6 +1197,7 @@ def check_doc_links() -> Findings:
     targets = iter_files(DOCS_DIR, (".md",)) + [
         ROOT / "README.md",
         ROOT / "AGENTS.md",
+        SCRIPTS_DIR / "README.md",
     ]
     checked = 0
     for path in targets:
@@ -1251,6 +1272,54 @@ def check_repo_tree() -> Findings:
 
 
 # ---------------------------------------------------------------------------
+# チェック 16: decision-records.md の Markdown 表構文
+# ---------------------------------------------------------------------------
+
+
+def check_decision_tables() -> Findings:
+    f = Findings([])
+    text = read_text(DECISIONS_MD)
+    checked_rows = 0
+    for heading in (r"^仕様決定", r"^技術方針"):
+        section_text = extract_section(text, heading)
+        if not section_text:
+            f.error(f"decision-records.md に見出し `{heading}` が無い")
+            continue
+        in_table = False
+        seen_blank = False
+        for i, line in enumerate(section_text.splitlines(), 1):
+            s = line.strip()
+            if s.startswith("|"):
+                if seen_blank:
+                    f.error(
+                        f"decision-records.md（{heading} 節内 +{i} 行目）: "
+                        "表の途中に空行があり表が分断されている"
+                    )
+                    seen_blank = False
+                in_table = True
+                if s.startswith("||"):
+                    f.error(
+                        f"decision-records.md（{heading} 節内 +{i} 行目）: "
+                        "行頭に余分な `|`（`||`）がある"
+                    )
+                    continue
+                cells = [c.strip() for c in s.strip("|").split("|")]
+                if len(cells) != 3:
+                    f.error(
+                        f"decision-records.md（{heading} 節内 +{i} 行目）: "
+                        f"表の列数が 3 ではない（{len(cells)} 列）"
+                    )
+                    continue
+                if not all(re.fullmatch(r":?-{2,}:?", c) for c in cells):
+                    checked_rows += 1
+            elif in_table and not s:
+                seen_blank = True
+    if f.worst() == OK:
+        f.ok(f"仕様決定・技術方針表の全 {checked_rows} 行が 3 列・空行分断なし")
+    return f
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -1272,6 +1341,7 @@ def main() -> int:
     checks.append(("check 13: 拡張・識別子定数", check_extension_constants()))
     checks.append(("check 14: docs 間リンク", check_doc_links()))
     checks.append(("check 15: リポジトリ構成ツリー", check_repo_tree()))
+    checks.append(("check 16: 決定記録表構文", check_decision_tables()))
     # チェック 3（§8 DDL ↔ 適用後スキーマ）は src-tauri の
     # ddl_matches_design_section8 テストが担う
 

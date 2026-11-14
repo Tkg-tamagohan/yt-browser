@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { fmtWatchSec } from "./stats-logic";
 
-// ST-01: 視聴統計の秒数は和文単位で表示する（FR-65、仕様決定 CP）。
+// WS-01: 視聴統計の秒数は和文単位で表示する（FR-65、仕様決定 CP）。
 // 1 時間以上は時間と分、1 時間未満は分と秒、0 以下は 0秒。
-describe("fmtWatchSec", () => {
+describe("WS-01: fmtWatchSec", () => {
   it("0 以下・非有限・null/undefined は 0秒", () => {
     expect(fmtWatchSec(0)).toBe("0秒");
     expect(fmtWatchSec(-5)).toBe("0秒");

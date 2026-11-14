@@ -21,7 +21,7 @@ flowchart LR
     CORE -->|子プロセス起動| YTDLP[yt-dlp<br/>検索・メタデータ・更新]
     MPV -->|ytdl_hook が内部利用| YTDLP
     CORE -->|HTTPS| RSS[YouTube チャンネル RSS]
-    CORE -->|HTTPS| IT[InnerTube<br/>get_live_chat / get_live_chat_replay / next]
+    CORE -->|HTTPS| IT[InnerTube<br/>get_live_chat / get_live_chat_replay / next / player]
     CORE -->|HTTPS| SB[SponsorBlock API]
 ```
 
@@ -1506,7 +1506,7 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
 ### 9.2 YouTube 仕様変更への構造
 
 - ストリーム解決と検索は `yt` モジュール内の関数群（`resolve`・`search` 等）の向こうに隔離し、yt-dlp 実装の破損は更新で追従する（トレイト抽象化は第 2 の実装やテスト差し替えが必要になった時点で導入する。現状は未導入）
-- InnerTube の自前実装は `get_live_chat` と `next` に限定し、パーサーは保存した応答 JSON の golden fixture で回帰テストする（技術方針 O）
+- InnerTube の自前実装は `get_live_chat`、`get_live_chat_replay`、`next`、`player`（および視聴ページの初期データ抽出）に限定し、パーサーは保存した応答 JSON の golden fixture で回帰テストする（技術方針 O）
 - 仕様変更時に UI 側が壊れないよう、`chat` / `related` / `feed` の各劣化状態は独立したステータスとして UI に出す
 
 ### 9.3 ログ
