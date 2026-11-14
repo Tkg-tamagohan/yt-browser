@@ -4,6 +4,7 @@
   // お気に入り状態とプレイリスト一覧は親が持ち、変更はコールバックで受け取る。
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
+  import LiveWaitButton from "$lib/LiveWaitButton.svelte";
   import { notify } from "$lib/notices.svelte";
   import QueueButtons from "$lib/QueueButtons.svelte";
   import {
@@ -16,6 +17,9 @@
     video: VideoRef;
     faved?: boolean;
     playlists?: Playlist[];
+    /// 「配信を待機」行アクションを出すか（FR-44、仕様決定 BT(1)）。
+    /// フィード・検索・関連動画の行で有効にする
+    livewait?: boolean;
     onfavchange?: (videoId: string, faved: boolean) => void;
     onplaylistcreated?: (pl: Playlist) => void;
     /// プレイリストへの追加が成功したとき（一覧表示側が件数・項目を読み直すため）
@@ -25,6 +29,7 @@
     video,
     faved = false,
     playlists = [],
+    livewait = false,
     onfavchange,
     onplaylistcreated,
     onplaylistadd,
@@ -92,6 +97,9 @@
     ＋
   </button>
   <QueueButtons {video} />
+  {#if livewait}
+    <LiveWaitButton {video} />
+  {/if}
   {#if menuOpen}
     <div class="vact-menu">
       {#each playlists as pl (pl.id)}

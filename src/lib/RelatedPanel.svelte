@@ -117,6 +117,7 @@
               video={videoRefOf(r)}
               faved={va.favIds.has(r.videoId)}
               playlists={va.playlists}
+              livewait
               onfavchange={va.onFavChange}
               onplaylistcreated={va.onPlaylistCreated}
             />

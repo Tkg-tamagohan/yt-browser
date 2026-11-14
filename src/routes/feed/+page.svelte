@@ -660,6 +660,7 @@
                     video={videoRefOf(it)}
                     faved={va.favIds.has(it.videoId)}
                     playlists={va.playlists}
+                    livewait
                     onfavchange={va.onFavChange}
                     onplaylistcreated={va.onPlaylistCreated}
                   />
@@ -704,6 +705,7 @@
                 video={videoRefOf(it)}
                 faved={va.favIds.has(it.videoId)}
                 playlists={va.playlists}
+                livewait
                 onfavchange={va.onFavChange}
                 onplaylistcreated={va.onPlaylistCreated}
               />

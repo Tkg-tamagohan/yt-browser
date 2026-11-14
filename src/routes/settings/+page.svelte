@@ -29,6 +29,7 @@
   import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
+  import SettingsLiveWaitSection from "$lib/SettingsLiveWaitSection.svelte";
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
   import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
   import SettingsQualitySection from "$lib/SettingsQualitySection.svelte";
@@ -75,6 +76,9 @@
   let pipQuality = $state("");
   // フィード一覧に Shorts を表示するか（feed.show_shorts、仕様決定 AP）。既定は off
   let feedShowShorts = $state(false);
+  // 待機中の配信が始まったときの動作（live_wait.action、FR-44・仕様決定 BT(3)）。
+  // play=新規インスタンスで自動再生 / notify=トースト通知のみ。既定は play
+  let liveWaitAction = $state("play");
   // 新規インスタンスの初期速度・初期音量（player.initial_speed /
   // player.initial_volume、FR-39・仕様決定 BO）。mpv 起動引数へ渡すため
   // 次回の再生開始から有効。入力は文字列で保持し、保存時に範囲検証する。
@@ -217,6 +221,19 @@
       if (feedShowShorts !== fs) {
         invalid = true;
         notify(t("settings.feed.unsaved"));
+      }
+      // live_wait.action: select の値（play|notify）をそのまま保存する
+      // （FR-44、仕様決定 BT(3)）。次回の開始検出から反映される。
+      // 保存待ちの間に select が変更されると DB と画面がずれるため、
+      // スナップショットと比較してずれていれば未保存として通知する
+      const lwSnapshot = liveWaitAction;
+      await invoke("settings_set", {
+        key: "live_wait.action",
+        value: lwSnapshot,
+      });
+      if (liveWaitAction !== lwSnapshot) {
+        invalid = true;
+        notify(t("settings.livewait.unsaved"));
       }
       // player.initial_speed / player.initial_volume（FR-39、仕様決定 BO）。
       // 空欄は既定値へ戻す操作。範囲外・非数は失敗通知のみで保存しない
@@ -434,6 +451,11 @@
         key: "feed.show_shorts",
       });
       feedShowShorts = feedShowShortsEnabled(feedShortsRaw);
+      const liveWaitRaw = await invoke<string | null>("settings_get", {
+        key: "live_wait.action",
+      });
+      // 未設定・その他の値は play（仕様決定 BT(3) の既定）
+      liveWaitAction = liveWaitRaw?.trim() === "notify" ? "notify" : "play";
       const initialSpeedRaw = await invoke<string | null>("settings_get", {
         key: "player.initial_speed",
       });
@@ -579,6 +601,8 @@
   />
 
   <SettingsFeedSection {loading} bind:feedShowShorts={feedShowShorts} />
+
+  <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
 
   <SettingsBlockedSection {notify} />
 

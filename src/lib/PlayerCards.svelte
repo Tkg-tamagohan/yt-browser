@@ -821,6 +821,7 @@
             class="link"
             onclick={() => {
               queuePanel.selected = queueKeyOfInstance(p.instanceId) ?? null;
+              queuePanel.waitsTab = false;
               queuePanel.open = true;
             }}
           >

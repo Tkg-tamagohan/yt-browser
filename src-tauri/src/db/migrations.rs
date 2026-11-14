@@ -325,4 +325,22 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "queue_items_uid",
         sql: "ALTER TABLE queue_items ADD COLUMN uid INTEGER NOT NULL DEFAULT 0;",
     },
+    // Phase 56: ライブ配信の待機（FR-44、仕様決定 BT）。
+    // video_id を主キーにして同一動画の重複待機を抑止する。
+    // 表示メタは項目行へ持たせて videos 台帳を汚染しない（queue_items と同じ方針）。
+    // 予定時刻は epoch ms の INTEGER で持ち、不明は NULL。registered_ms は
+    // 予定時刻を持たない項目の自動解除（24 時間超過）の起点になる。
+    Migration {
+        version: 15,
+        name: "live_waits",
+        sql: "CREATE TABLE live_waits (
+                video_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                channel_id TEXT,
+                channel_title TEXT,
+                thumbnail_url TEXT,
+                scheduled_start_ms INTEGER,
+                registered_ms INTEGER NOT NULL
+              );",
+    },
 ];
