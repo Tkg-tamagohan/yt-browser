@@ -1,8 +1,10 @@
-//! 表示設定（`ui.*` キー）の解釈の正（FR-76・FR-77、仕様決定 DA・DB）。
+//! 表示設定（`ui.*` キー）の解釈の正（FR-76・FR-77・FR-81、
+//! 仕様決定 DA・DB・DF）。
 //!
-//! 配色と一覧密度はフロント側（`src/lib/ui-prefs.ts` が `<html>` の
-//! `data-theme` / `data-density` 属性へ反映し、`src/app.css` の CSS 変数が
-//! 実値を決める）だけで使う設定で、バックエンドでは参照しない。
+//! 配色・一覧密度・UI 言語はフロント側（`src/lib/ui-prefs.ts` が `<html>` の
+//! `data-theme` / `data-density` / `lang` 属性と i18n ロケールへ反映し、
+//! `src/app.css` の CSS 変数と `src/lib/i18n.ts` のリソースが実値を決める）
+//! だけで使う設定で、バックエンドでは参照しない。
 //! `chat/popup.rs` と `chat-popup-logic.ts` の関係と同じく、解釈の正をここに
 //! 置き、フロント側の `ui-logic.ts` が同一解釈を持つ（テストで検証）。
 
@@ -53,6 +55,25 @@ pub(crate) fn ui_density(value: Option<String>) -> &'static str {
     match value {
         Some(v) if v.trim().eq_ignore_ascii_case("compact") => "compact",
         _ => "comfortable",
+    }
+}
+
+/// 設定キー: UI 言語（FR-81、仕様決定 DF）。
+/// 値は "ja" / "en"。未設定・その他の値は "ja" として扱う。
+/// フロントが settings_get で読む表示側だけの設定でバックエンドでは
+/// 参照しないが、設定キー表との両方向照合（check_docs_consistency）の
+/// ため定数として保持する。
+#[allow(dead_code)]
+pub(crate) const SETTING_UI_LANGUAGE: &str = "ui.language";
+
+/// `ui.language` の保存値を UI 言語に解釈する（FR-81、仕様決定 DF）。
+/// "en" だけを受理し、未設定・その他の値は既定の "ja" へ戻す。
+/// 受理は大小文字と前後空白を許容する（`ui_theme` と同じ形）。
+#[allow(dead_code)]
+pub(crate) fn ui_language(value: Option<String>) -> &'static str {
+    match value {
+        Some(v) if v.trim().eq_ignore_ascii_case("en") => "en",
+        _ => "ja",
     }
 }
 
@@ -116,5 +137,30 @@ mod tests {
         assert_eq!(ui_theme_resolved("light", false), "light");
         assert_eq!(ui_theme_resolved("system", true), "light");
         assert_eq!(ui_theme_resolved("system", false), "dark");
+    }
+
+    /// DB-UI-04: `ui.language` の解釈（FR-81、仕様決定 DF）。
+    /// en だけを受理し、未設定・その他は既定の ja へ戻す。
+    #[test]
+    fn ui_language_values() {
+        assert_eq!(ui_language(Some("en".to_string())), "en");
+        assert_eq!(ui_language(Some(" EN ".to_string())), "en");
+        assert_eq!(ui_language(Some("En".to_string())), "en");
+        for (v, expected) in [
+            ("ja", "ja"),
+            ("", "ja"),
+            ("  ", "ja"),
+            ("english", "ja"),
+            ("en-US", "ja"),
+            ("fr", "ja"),
+            ("off", "ja"),
+        ] {
+            assert_eq!(
+                ui_language(Some(v.to_string())),
+                expected,
+                "{v:?} は {expected} になるべき"
+            );
+        }
+        assert_eq!(ui_language(None), "ja");
     }
 }
