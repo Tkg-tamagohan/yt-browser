@@ -445,6 +445,39 @@ impl Db {
         let n = conn.execute("UPDATE videos SET is_read = 1 WHERE is_read = 0", [])?;
         Ok(n as u64)
     }
+
+    /// 自動既読（FR-64、仕様決定 CO）。未読（`is_read=0`）の投入済み項目を
+    /// 設定に従って既読にし、既読化した件数を返す。
+    /// - `played` が真: `watch_history` に行がある項目を既読にする
+    ///   （「再生済み」= 再生履歴が残っている項目、とする暫定解釈。
+    ///   `completed` の完視聴までは要求しない）
+    /// - `days` が 1 以上: 投稿日時（`published_at`。NULL は `first_seen_at`
+    ///   にフォールバックする暫定解釈）が N 日経過した項目を既読にする。
+    ///   0 以下は無効
+    ///
+    /// 両ルールとも `ingested=0` のプレースホルダは対象外（一覧に出ないため）。
+    pub fn feed_auto_read(&self, played: bool, days: i64) -> Result<u64, DbError> {
+        let conn = self.lock()?;
+        let mut total = 0u64;
+        if played {
+            total += conn.execute(
+                "UPDATE videos SET is_read = 1
+                 WHERE is_read = 0 AND ingested = 1
+                   AND video_id IN (SELECT video_id FROM watch_history)",
+                [],
+            )? as u64;
+        }
+        if days > 0 {
+            total += conn.execute(
+                "UPDATE videos SET is_read = 1
+                 WHERE is_read = 0 AND ingested = 1
+                   AND datetime(COALESCE(published_at, first_seen_at))
+                       <= datetime('now', '-' || ?1 || ' days')",
+                [days],
+            )? as u64;
+        }
+        Ok(total)
+    }
 }
 
 /// 実行する前提で、チャンネルの存在確認はここでは行わない。

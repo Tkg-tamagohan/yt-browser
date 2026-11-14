@@ -9,7 +9,12 @@
     pipFitAspectEnabled,
   } from "$lib/pip";
   import { QUALITY_PRESETS } from "$lib/quality";
-  import { feedShowShortsEnabled } from "$lib/feed-settings";
+  import {
+    feedAutoReadDays as parseFeedAutoReadDays,
+    feedAutoReadPlayedEnabled,
+    feedNotifyNewEnabled,
+    feedShowShortsEnabled,
+  } from "$lib/feed-settings";
   import { closeOnEofEnabled } from "$lib/eof-logic";
   import {
     asErrorMessage,
@@ -76,6 +81,15 @@
   let pipQuality = $state("");
   // フィード一覧に Shorts を表示するか（feed.show_shorts、仕様決定 AP）。既定は off
   let feedShowShorts = $state(false);
+  // フィード更新後の新着検出でデスクトップ通知するか（feed.notify_new、
+  // FR-58・仕様決定 CI）。既定は off
+  let feedNotifyNew = $state(false);
+  // 再生済みの項目を自動で既読にするか（feed.auto_read_played、
+  // FR-64・仕様決定 CO）。既定は off。起動時とフィード更新後に適用される
+  let feedAutoReadPlayed = $state(false);
+  // N 日経過で既読にする自動既読（feed.auto_read_days、FR-64・仕様決定 CO）。
+  // 0 は無効（既定）。空欄は無効へのリセットとして扱う
+  let feedAutoReadDays = $state<number | undefined>(0);
   // 待機中の配信が始まったときの動作（live_wait.action、FR-44・仕様決定 BT(3)）。
   // play=新規インスタンスで自動再生 / notify=トースト通知のみ。既定は play
   let liveWaitAction = $state("play");
@@ -219,6 +233,45 @@
         value: fs ? "on" : "off",
       });
       if (feedShowShorts !== fs) {
+        invalid = true;
+        notify(t("settings.feed.unsaved"));
+      }
+      // feed.notify_new: チェックボックスの 2 値を on/off で保存する
+      // （FR-58、仕様決定 CI）。次回のフィード更新での新着検出から反映される
+      const nn = feedNotifyNew;
+      await invoke("settings_set", {
+        key: "feed.notify_new",
+        value: nn ? "on" : "off",
+      });
+      if (feedNotifyNew !== nn) {
+        invalid = true;
+        notify(t("settings.feed.unsaved"));
+      }
+      // feed.auto_read_played: チェックボックスの 2 値を on/off で保存する
+      // （FR-64、仕様決定 CO）。次回の自動既読適用（起動時・フィード更新後）から反映される
+      const ap = feedAutoReadPlayed;
+      await invoke("settings_set", {
+        key: "feed.auto_read_played",
+        value: ap ? "on" : "off",
+      });
+      if (feedAutoReadPlayed !== ap) {
+        invalid = true;
+        notify(t("settings.feed.unsaved"));
+      }
+      // feed.auto_read_days（FR-64、仕様決定 CO）。0 以上の整数だけ保存する
+      // （バックエンドも 0 以下・非整数は 0=無効へ正規化する）。
+      // 空欄は 0（無効）へのリセットとして扱う
+      const ad = feedAutoReadDays;
+      if (ad === undefined || (Number.isInteger(ad) && ad >= 0)) {
+        await invoke("settings_set", {
+          key: "feed.auto_read_days",
+          value: String(ad ?? 0),
+        });
+      } else {
+        invalid = true;
+        notify(t("settings.failed", { message: `feed.auto_read_days: ${ad}` }));
+      }
+      if (feedAutoReadDays !== ad) {
         invalid = true;
         notify(t("settings.feed.unsaved"));
       }
@@ -451,6 +504,20 @@
         key: "feed.show_shorts",
       });
       feedShowShorts = feedShowShortsEnabled(feedShortsRaw);
+      // feed.notify_new / feed.auto_read_*（FR-58・FR-64、仕様決定 CI・CO）。
+      // 解釈は Rust 側と同じで、未設定・その他の値は既定（off / 0=無効）
+      const notifyNewRaw = await invoke<string | null>("settings_get", {
+        key: "feed.notify_new",
+      });
+      feedNotifyNew = feedNotifyNewEnabled(notifyNewRaw);
+      const autoReadPlayedRaw = await invoke<string | null>("settings_get", {
+        key: "feed.auto_read_played",
+      });
+      feedAutoReadPlayed = feedAutoReadPlayedEnabled(autoReadPlayedRaw);
+      const autoReadDaysRaw = await invoke<string | null>("settings_get", {
+        key: "feed.auto_read_days",
+      });
+      feedAutoReadDays = parseFeedAutoReadDays(autoReadDaysRaw);
       const liveWaitRaw = await invoke<string | null>("settings_get", {
         key: "live_wait.action",
       });
@@ -600,7 +667,13 @@
     bind:sponsorShowSegments
   />
 
-  <SettingsFeedSection {loading} bind:feedShowShorts={feedShowShorts} />
+  <SettingsFeedSection
+    {loading}
+    bind:feedShowShorts={feedShowShorts}
+    bind:feedNotifyNew={feedNotifyNew}
+    bind:feedAutoReadPlayed={feedAutoReadPlayed}
+    bind:feedAutoReadDays={feedAutoReadDays}
+  />
 
   <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
 

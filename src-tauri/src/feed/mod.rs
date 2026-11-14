@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -39,12 +40,49 @@ const FAIL_NOTIFY_THRESHOLD: u32 = 2;
 
 /// 設定キー: フィード一覧に shorts 項目を含めるか（FR-23、仕様決定 AP）。
 pub(crate) const SETTING_FEED_SHOW_SHORTS: &str = "feed.show_shorts";
+/// 設定キー: フィード更新後の新着検出でデスクトップ通知するか（FR-58、仕様決定 CI）。
+pub(crate) const SETTING_FEED_NOTIFY_NEW: &str = "feed.notify_new";
+/// 設定キー: 再生済みの項目を既読にする自動既読（FR-64、仕様決定 CO）。
+pub(crate) const SETTING_FEED_AUTO_READ_PLAYED: &str = "feed.auto_read_played";
+/// 設定キー: N 日経過で既読にする自動既読（FR-64、仕様決定 CO）。0 は無効。
+pub(crate) const SETTING_FEED_AUTO_READ_DAYS: &str = "feed.auto_read_days";
 
 /// `feed.show_shorts` の保存値を解釈する（FR-23、仕様決定 AP）。
 /// `on` / `true` / `1` / `yes`（大小文字・前後空白を許容）だけが表示（true）で、
 /// それ以外と未設定は既定の非表示（false）を返す。
 /// フロント側の同一解釈は `src/lib/feed-settings.ts` の `feedShowShortsEnabled`。
 pub(crate) fn feed_show_shorts_enabled(value: Option<String>) -> bool {
+    on_off_enabled(value)
+}
+
+/// `feed.notify_new` の保存値を解釈する（FR-58、仕様決定 CI）。
+/// 受理集合は `feed.show_shorts` と同一で、未設定・その他の値は既定の off（通知しない）。
+/// フロント側の同一解釈は `src/lib/feed-settings.ts` の `feedNotifyNewEnabled`。
+pub(crate) fn feed_notify_new_enabled(value: Option<String>) -> bool {
+    on_off_enabled(value)
+}
+
+/// `feed.auto_read_played` の保存値を解釈する（FR-64、仕様決定 CO）。
+/// 受理集合は `feed.show_shorts` と同一で、未設定・その他の値は既定の off。
+/// フロント側の同一解釈は `src/lib/feed-settings.ts` の `feedAutoReadPlayedEnabled`。
+pub(crate) fn feed_auto_read_played_enabled(value: Option<String>) -> bool {
+    on_off_enabled(value)
+}
+
+/// `feed.auto_read_days` の保存値を解釈する（FR-64、仕様決定 CO）。
+/// 1 以上の整数だけを経過日数として受理し、未設定・空・非数・0 以下は
+/// 既定の 0（無効）を返す。
+/// フロント側の同一解釈は `src/lib/feed-settings.ts` の `feedAutoReadDays`。
+pub(crate) fn feed_auto_read_days(value: Option<String>) -> i64 {
+    value
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|&d| d > 0)
+        .unwrap_or(0)
+}
+
+/// on/off 系設定値の共有解釈。`on` / `true` / `1` / `yes`
+/// （大小文字・前後空白を許容）だけが true で、それ以外と未設定は false。
+fn on_off_enabled(value: Option<String>) -> bool {
     match value {
         Some(v) => matches!(
             v.trim().to_ascii_lowercase().as_str(),
@@ -391,7 +429,11 @@ impl FeedPoller {
             if let Err(e) = self.app.emit("feed://new_items", payload) {
                 tracing::warn!(error = %e, "feed://new_items の送出に失敗");
             }
+            self.notify_new_items(new_total);
         }
+        // 自動既読（FR-64、仕様決定 CO）はフィード更新後に適用する。
+        // 新着なしの巡回でも適用する（投稿日の経過判定は新着の有無に依らない）
+        self.apply_auto_read();
     }
 
     /// 1 チャンネルのポーリング。戻り値は新規挿入件数。
@@ -521,6 +563,72 @@ impl FeedPoller {
         };
         if let Err(e) = self.app.emit("feed://status", payload) {
             tracing::warn!(error = %e, "feed://status の送出に失敗");
+        }
+    }
+
+    /// 新着検出時のデスクトップ通知（FR-58、仕様決定 CI）。
+    /// 設定 `feed.notify_new` が on のときだけ出す（未設定・その他の値は off）。
+    /// 通知は件数だけの 1 件まとめとし、項目別やチャンネル別の通知は出さない
+    /// （暫定解釈。新規購読の初回投入はポーラーの新着検出ではないため対象外）。
+    /// 通知の失敗は取得処理を阻害しない（warn ログに留める）。
+    fn notify_new_items(&self, count: usize) {
+        let enabled = match self.db.setting_get(SETTING_FEED_NOTIFY_NEW) {
+            Ok(v) => feed_notify_new_enabled(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "feed.notify_new の読み取りに失敗");
+                return;
+            }
+        };
+        if !enabled {
+            return;
+        }
+        if let Err(e) = self
+            .app
+            .notification()
+            .builder()
+            .title("yt-browser")
+            .body(format!("{count} 件の新着を受信"))
+            .show()
+        {
+            tracing::warn!(error = %e, "新着のデスクトップ通知に失敗");
+        }
+    }
+
+    /// 自動既読の適用（FR-64、仕様決定 CO）。設定 `feed.auto_read_played` と
+    /// `feed.auto_read_days` を読んで `Db::feed_auto_read` へ渡す。
+    /// 起動時とフィード更新後（ポーラーの巡回・新規購読の初回投入）に呼ぶ。
+    /// 既読化があれば一覧の再読込を促す `feed://kind_updated` を出す
+    /// （`feed://new_items` は新着専用のため流用しない）。
+    pub fn apply_auto_read(&self) {
+        let played = match self.db.setting_get(SETTING_FEED_AUTO_READ_PLAYED) {
+            Ok(v) => feed_auto_read_played_enabled(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "feed.auto_read_played の読み取りに失敗");
+                false
+            }
+        };
+        let days = match self.db.setting_get(SETTING_FEED_AUTO_READ_DAYS) {
+            Ok(v) => feed_auto_read_days(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "feed.auto_read_days の読み取りに失敗");
+                0
+            }
+        };
+        if !played && days <= 0 {
+            return;
+        }
+        match self.db.feed_auto_read(played, days) {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::debug!(count = n, "自動既読を適用");
+                let payload = FeedNewItems { count: n as usize };
+                if let Err(e) = self.app.emit("feed://kind_updated", payload) {
+                    tracing::warn!(error = %e, "feed://kind_updated の送出に失敗");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "自動既読の適用に失敗");
+            }
         }
     }
 }
@@ -718,6 +826,64 @@ mod tests {
             );
         }
         assert!(!feed_show_shorts_enabled(None));
+    }
+
+    /// DB-NT-01: `feed.notify_new` の解釈（FR-58、仕様決定 CI）。
+    /// on 系の値だけデスクトップ通知を許可し、未設定・その他の値は
+    /// 既定の off（通知しない）。通知は新着検出（count > 0）のときだけ
+    /// 出すため、off 判定の網羅が通知抑止の条件になる。
+    #[test]
+    fn feed_notify_new_enabled_values() {
+        for on in ["on", "true", "1", "yes", "ON", " on "] {
+            assert!(
+                feed_notify_new_enabled(Some(on.to_string())),
+                "{on} は通知する"
+            );
+        }
+        for off in ["off", "false", "0", "no", "", "invalid"] {
+            assert!(
+                !feed_notify_new_enabled(Some(off.to_string())),
+                "{off} は通知しない"
+            );
+        }
+        assert!(!feed_notify_new_enabled(None));
+    }
+
+    /// DB-NT-02: `feed.auto_read_played` の解釈（FR-64、仕様決定 CO）。
+    /// 受理集合は `feed.notify_new` と同じ on 系のみで、未設定・
+    /// その他の値は既定の off。
+    #[test]
+    fn feed_auto_read_played_enabled_values() {
+        for on in ["on", "true", "1", "yes", "ON", " on "] {
+            assert!(
+                feed_auto_read_played_enabled(Some(on.to_string())),
+                "{on} は自動既読あり"
+            );
+        }
+        for off in ["off", "false", "0", "no", "", "invalid"] {
+            assert!(
+                !feed_auto_read_played_enabled(Some(off.to_string())),
+                "{off} は自動既読なし"
+            );
+        }
+        assert!(!feed_auto_read_played_enabled(None));
+    }
+
+    /// DB-NT-03: `feed.auto_read_days` の解釈（FR-64、仕様決定 CO）。
+    /// 1 以上の整数だけを経過日数として受理し、未設定・空・非数・
+    /// 0 以下・小数は 0（無効）へ正規化する。
+    #[test]
+    fn feed_auto_read_days_values() {
+        assert_eq!(feed_auto_read_days(None), 0);
+        for invalid in ["", "0", "-3", "abc", "2.5", "1e3"] {
+            assert_eq!(
+                feed_auto_read_days(Some(invalid.to_string())),
+                0,
+                "{invalid} は無効"
+            );
+        }
+        assert_eq!(feed_auto_read_days(Some("7".to_string())), 7);
+        assert_eq!(feed_auto_read_days(Some(" 30 ".to_string())), 30);
     }
 
     #[test]
