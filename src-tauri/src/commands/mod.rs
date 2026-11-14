@@ -2,6 +2,7 @@
 //! 入力検証と UI 向けの直列化に徹し、実処理は各モジュールへ委譲する。
 //! コマンド本体はドメイン別の子モジュールに置き、ここで再エクスポートする。
 
+mod bookmark;
 mod chat;
 mod deep_link;
 mod feed;
@@ -13,6 +14,7 @@ mod queue;
 mod search;
 mod system;
 
+pub use bookmark::*;
 pub use chat::*;
 pub use deep_link::*;
 pub use feed::*;

@@ -1,3 +1,4 @@
+mod bookmark;
 mod ddl;
 mod feed;
 mod filters;

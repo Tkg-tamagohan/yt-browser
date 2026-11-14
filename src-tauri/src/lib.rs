@@ -252,6 +252,10 @@ pub fn run() {
             commands::live_wait_add,
             commands::live_wait_remove,
             commands::live_wait_list,
+            commands::bookmark_add,
+            commands::bookmark_list,
+            commands::bookmark_remove,
+            commands::bookmark_set_label,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
