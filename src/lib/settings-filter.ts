@@ -126,8 +126,12 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
   { id: "ngusers", labelKeys: ["settings.ngusers.title"] },
   {
     id: "deps",
-    labelKeys: ["settings.deps.title", "settings.deps.ytdlpPath"],
-    extraLabels: ["yt-dlp", "ytdlp.path"],
+    labelKeys: [
+      "settings.deps.title",
+      "settings.deps.ytdlpPath",
+      "settings.deps.poToken",
+    ],
+    extraLabels: ["yt-dlp", "ytdlp.path", "ytdlp.po_token", "po token"],
   },
   {
     id: "diag",

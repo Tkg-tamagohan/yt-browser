@@ -1,15 +1,18 @@
 <script lang="ts">
   // 依存コマンド節（FR-72、仕様決定 CW）。
-  // `ytdlp.path`（ユーザー指定の yt-dlp 実行ファイル）の入力欄を置く。
+  // `ytdlp.path`（ユーザー指定の yt-dlp 実行ファイル）と
+  // `ytdlp.po_token`（PO Token、FR-86・仕様決定 DK）の入力欄を置く。
   // 保存は設定画面の保存ボタン経由（値の解決順は設計書 §5）。
   import { t } from "$lib/i18n";
 
   let {
     loading,
     ytdlpPath = $bindable(),
+    poToken = $bindable(),
   }: {
     loading: boolean;
     ytdlpPath: string;
+    poToken: string;
   } = $props();
 </script>
 
@@ -30,6 +33,16 @@
         />
       </label>
       <p class="subtle desc">{t("settings.deps.ytdlpPath.desc")}</p>
+      <label class="dep-row">
+        {t("settings.deps.poToken")}
+        <input
+          type="text"
+          class="path-input"
+          bind:value={poToken}
+          placeholder={t("settings.deps.poToken.placeholder")}
+        />
+      </label>
+      <p class="subtle desc">{t("settings.deps.poToken.desc")}</p>
     </div>
   </section>
 

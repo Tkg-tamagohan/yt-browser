@@ -275,6 +275,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `pip.default` | `on` / `off` | 再生の既定表示を PiP 小窓にするか（§4.5、仕様決定 AJ）。未設定・その他の値は `on`（PiP が既定） |
 | `pip.fit_aspect` | `on` / `off` | PiP 小窓のサイズを動画の表示アスペクト比へ追従させるか（§4.5、仕様決定 AL）。未設定・その他の値は `on`（追従する）。受理集合は `pip.default` と同一 |
 | `ytdlp.path` | ファイルパス | ユーザー指定の yt-dlp 実行ファイル（§5）。設定画面の依存節の入力欄からも設定できる（FR-72、仕様決定 CW） |
+| `ytdlp.po_token` | 文字列 | YouTube の PO Token（FR-86、仕様決定 DK）。空・未設定は未指定。設定時は yt-dlp 呼び出しへ `--extractor-args "youtube:po_token=<値>"` を自動構成する（§5）。値は yt-dlp の `po_token` 引数の形式そのまま。設定画面の依存節の入力欄からも設定できる |
 | `hdr.tone_mapping` | mpv `--tone-mapping` の方式名 | HDR→SDR 変換のトーンマッピング（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `hdr.compute_peak` | `yes` / `no` | HDR ピーク輝度のフレーム計測（§4.7、仕様決定 Y）。`auto`/空は未指定として mpv 既定 |
 | `mpv.extra_args` | 空白区切りの mpv 引数 | spawn 引数の末尾に追加する汎用受け皿（§4.7、仕様決定 Y）。無効な引数は mpv 起動失敗になる |
@@ -437,6 +438,10 @@ Windows の `--input-ipc-server` は `\\.\pipe\yt-browser-mpv-<instance>-<pid>`�
 `ytdl_path` を明示するのは、同梱 yt-dlp とシステム yt-dlp が混在する環境でどちらが使われるかを確定させるためである。
 `wheel-volume_delta` も同じ `--script-opts` の値に併合される。
 mpv のリスト型オプションは同じ指定を重ねると後が前を上書きするため、全エントリを 1 つのカンマ区切り値にまとめて渡す（設定キーは `wheel.volume_delta`、§4.2）。
+
+設定 `ytdlp.po_token` がある場合は `--ytdl-raw-options=extractor-args=youtube:po_token=<値>` を付ける
+（FR-86、仕様決定 DK、§5）。mpv の `ytdl-raw-options` は `key=value` 形式で ytdl_hook が yt-dlp 起動引数へ展開するため、
+ytdl_hook 経由のストリーム解決にも PO Token が伝わる。起動引数のため変更は次回の再生開始から有効。
 
 送受信の例。
 
@@ -1187,13 +1192,20 @@ zip 生成の一通り）と DX-01（既定ファイル名の規則）。
   システム管理のパスでは権限不足で失敗し得るため、失敗時は yt-dlp の出力をそのまま UI に返す。
 - **状態表示**：`ytdlp_status` コマンドが解決パスと `--version` の出力を返し、解決不能時は UI に警告を出す
 - **JS ランタイム**：yt-dlp の YouTube 解読用に deno を PATH で解決する前提とし、同梱の要否は配布フェーズで再検討する
-- **PO Token**：要求される環境では yt-dlp 側の手順（`--cookies-from-browser` や外部プロバイダ）を利用する
-  アプリからの伝達経路は後フェーズの課題とし、README に手順へのポインタを置く。
+- **PO Token**：要求される環境では yt-dlp 側の手順（`--cookies-from-browser` や外部プロバイダ）を利用する。
+  アプリからの伝達経路は FR-86・仕様決定 DK で追加した。設定 `ytdlp.po_token`（空・未設定は未指定）の値を、
+  YouTube へ問い合わせる yt-dlp 呼び出しへ `--extractor-args "youtube:po_token=<値>"` として自動構成する。
+  対象は検索・チャンネル ID 解決・再生中動画のチャンネル解決・バックフィル・プレイリスト取り込みの各呼び出しと、
+  ストリーム解決を担う mpv の ytdl_hook が起動する yt-dlp（`--ytdl-raw-options=extractor-args=<値>` で伝達、§4.1）。
+  `--version` と `-U`（更新）は extractor を走らせないため対象外とする（暫定解釈）。
+  値はトリムしてそのまま埋め込み、`<client>.<context>+<token>` 形式や `;` 以降の併記の解釈は yt-dlp 側に委ねる。
+  変更は保存後の次の yt-dlp 呼び出しから有効（mpv 経路は起動引数のため次回の再生開始から）。
+  汎用の extractor-args 設定キーは持たない（仕様決定 DK）
 - **失敗の扱い**：タイムアウト、非ゼロ終了、JSON パース失敗を区別して記録し、解析失敗は生の先頭部分をログに残す
 
 依存コマンドの設定画面公開と診断・初回誘導を次に置く（Phase 70、FR-72〜FR-75、仕様決定 CW・CX・CY・CZ）。
 
-- **依存節**：設定画面の「依存コマンド」節に `ytdlp.path` のパス入力欄を置く（FR-72、仕様決定 CW）。空欄は自動検出（上記の解決順）で、保存後の次の yt-dlp 呼び出しから有効
+- **依存節**：設定画面の「依存コマンド」節に `ytdlp.path` のパス入力欄を置く（FR-72、仕様決定 CW）。空欄は自動検出（上記の解決順）で、保存後の次の yt-dlp 呼び出しから有効。同じ節に `ytdlp.po_token` の入力欄を置く（FR-86、仕様決定 DK）。空欄は未指定で、保存後の次の yt-dlp 呼び出しから有効
 - **診断節**：`deps_status` コマンドが mpv・yt-dlp・deno の検出状況・バージョン・解決パスをこの順で返し、設定画面の「診断」節が一覧する（FR-74、仕様決定 CY）。mpv・deno は PATH 上の `<cmd> --version` で検出する（spawn 成功かつ終了コード 0 を検出とみなし、応答停止対策のタイムアウトは `yt::which_exists` と同じ 10 秒）。解決パスは PATH 解決名としてコマンド名を返す。yt-dlp は `YtDlpResolver` の解決順の結果を使う。`--version` 出力は先頭の非空行をバージョン表示に使う（mpv は後続行にビルド情報、deno は v8 / typescript の行が続くため）。3 件の検出は並行して行う
 - **初回セットアップ**：設定 `setup.deps_shown` が on 系でない起動時に `setup_deps_pending` が true を返し、フロントは FR-74 の依存検出画面（診断節と同じ一覧部品）をオーバーレイで表示してセットアップを誘導する（FR-75、仕様決定 CZ）。「はじめる」で `setup.deps_shown` に `on` を保存して閉じ、次回以降は表示しない。判定の解釈は `feed.show_shorts` 系と同じ on 系受理集合（on/true/1/yes）
 - **節フィルタ**：設定画面上部の絞り込み入力で、節のラベル文字列（見出しと項目名の i18n 解決値とコマンド名）への大小文字を区別しない部分一致で表示する節を絞る（FR-73、仕様決定 CX）。空・空白のみの入力は全節を表示する。非表示は hidden 切替で再マウントしない（§9.4 の方針に揃える暫定解釈）。判定は `settings-filter.ts` の純粋関数に集約し、節とラベルの対応は同ファイルの `SETTINGS_SECTION_DEFS` に登録する

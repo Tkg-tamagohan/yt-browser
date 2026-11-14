@@ -314,7 +314,9 @@ YouTube がお使いの IP からの匿名アクセスを bot と判定すると
    `mpv --ytdl=yes "https://www.youtube.com/watch?v=<動画ID>"` で再生できれば、アプリからも再生できます（mpv の ytdl_hook が同じ yt-dlp 設定を読むため）
 
 「tv_simply client https formats require a GVS PO Token」という警告が出る場合、tv_simply では合成済みフォーマット（itag=18、360p）だけが取れる状態です。
-アプリの既定画質式には合成済みフォーマットへのフォールバックがあるためそのまま再生できますが、高画質で見たい場合は yt-dlp ドキュメントの PO Token Guide に従って `po_token` の extractor-args を追加してください。
+アプリの既定画質式には合成済みフォーマットへのフォールバックがあるためそのまま再生できますが、高画質で見たい場合は PO Token を yt-dlp へ渡します。
+設定画面の「依存コマンド」節の「PO Token」欄（設定 `ytdlp.po_token`）に値を入れると、アプリの yt-dlp 呼び出し（mpv 経由のストリーム解決を含む）へ `--extractor-args "youtube:po_token=<値>"` が自動構成されます。
+値の形式は yt-dlp ドキュメントの PO Token Guide に従ってください（例: `mweb.gvs+<トークン>`）。空欄は未設定で、保存後の次の yt-dlp 呼び出しから有効になります。
 
 ## 既知の制限
 
