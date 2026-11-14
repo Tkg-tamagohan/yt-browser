@@ -13,6 +13,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
+  import { focusDisabledKey } from "$lib/focus-logic";
   import { linkCopyText } from "$lib/copy-link-logic";
   import { subTrackLabel } from "$lib/subtitle-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
@@ -243,11 +244,16 @@
   // 応答後も次の状態イベントが届く猶予を置いてから再有効化する
   let pipBusy = $state<Set<number>>(new Set());
 
+  // mpv 窓の移動・前面化が関わる表示環境の分類（windowing_system、
+  // FR-41・FR-42）。整列ボタンと前面化ボタンの有効化判定で共有する。
+  // 空文字は未判定（onMount の取得前・取得失敗）で、その間は
+  // ボタンを無効側へ倒さない
+  let windowing = $state("");
+
   // PiP 窓の一括整列（FR-41、仕様決定 BQ）。対象ディスプレイは
   // `window.screen` の保存名で解決し、未設定・未接続はプライマリ。
   // 実行時の窓位置変更には mpv 0.38 以降と Win32/X11 の環境が要る
   // （仕様決定 BU）。Wayland は恒久制限のためボタンを無効化する
-  let windowing = $state("other");
   let pipTileBusy = $state(false);
   const pipCount = $derived(
     [...players.values()].filter((p) => p.pip).length,
@@ -408,6 +414,21 @@
     }
   }
 
+  // mpv 窓の前面化（FR-42、仕様決定 BR）。表示環境は上記 windowing で
+  // 判定し、Wayland・その他の不明環境ではボタンを無効化する
+  const focusKey = $derived(focusDisabledKey(windowing));
+
+  async function focusPlayer(id: number): Promise<void> {
+    try {
+      await invoke("player_control", {
+        instanceId: id,
+        action: { type: "focus_window" },
+      });
+    } catch (e) {
+      notify(t("player.focus.failed", { message: asErrorMessage(e) }));
+    }
+  }
+
   async function closePlayer(id: number): Promise<void> {
     try {
       const videoId = playerStates.list.get(id)?.videoId;
@@ -484,8 +505,9 @@
     } catch {
       audioListFailed = true;
     }
-    // mpv 窓の移動可否（整列ボタンの有効化判定、FR-41・FR-42）。
-    // 取得失敗は "other" のままにし、操作時のエラーに任せる
+    // mpv 窓の移動・前面化可否（整列・前面化ボタンの有効化判定、
+    // FR-41・FR-42）。取得失敗は未判定（空文字）のままにし、
+    // 操作時のエラー通知に委ねる
     try {
       windowing = await invoke<string>("windowing_system");
     } catch {
@@ -761,6 +783,13 @@
           onclick={() => togglePip(p.instanceId, !p.pip)}
         >
           {p.pip ? t("player.unpip") : t("player.pip")}
+        </button>
+        <button
+          title={focusKey ? t(focusKey) : t("player.focus.hint")}
+          disabled={focusKey !== null}
+          onclick={() => void focusPlayer(p.instanceId)}
+        >
+          {t("player.focus")}
         </button>
         <button class="danger" onclick={() => closePlayer(p.instanceId)}>
           {t("player.close")}

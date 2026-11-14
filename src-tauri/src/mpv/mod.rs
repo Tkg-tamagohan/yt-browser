@@ -3,6 +3,7 @@
 //! （仕様決定 B / FR-1）。再生制御はすべてこのモジュールを経由する。
 
 mod devices;
+mod foreground;
 mod ipc;
 mod manager;
 pub(crate) mod player;
@@ -294,6 +295,14 @@ pub enum MpvError {
     NotPip(u32),
     #[error("PiP 窓の整列には mpv 0.38 以降が必要です（検出: {0}）")]
     MpvTooOld(String),
+    #[error(
+        "インスタンス {0} の mpv 窓がまだありません（起動直後・窓のない状態では前面化できません）"
+    )]
+    WindowNotReady(u32),
+    #[error("この表示環境（{0}）では mpv 窓の前面化に対応していません")]
+    UnsupportedWindowing(String),
+    #[error("mpv 窓の前面化に失敗しました: {0}")]
+    ForegroundFailed(String),
 }
 
 #[cfg(test)]

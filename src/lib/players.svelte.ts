@@ -237,7 +237,9 @@ export type PlayerAction =
   | { type: "ab_loop_clear" }
   // 字幕トラックの選択（FR-40、仕様決定 BP）。
   // sid は "no" / "auto" / トラック ID の文字列。セッション内のみ有効
-  | { type: "sub_track"; sid: string };
+  | { type: "sub_track"; sid: string }
+  // mpv 窓の前面化（FR-42、仕様決定 BR）。Wayland は恒久制限で非対応
+  | { type: "focus_window" };
 
 export const playerStates = $state<{
   list: Map<number, PlayerState>;

@@ -47,6 +47,9 @@ impl From<crate::mpv::MpvError> for UiError {
             crate::mpv::MpvError::InvalidGeometry(_) => "mpv_invalid_geometry",
             crate::mpv::MpvError::NotPip(_) => "mpv_not_pip",
             crate::mpv::MpvError::MpvTooOld(_) => "mpv_too_old",
+            crate::mpv::MpvError::WindowNotReady(_) => "mpv_window_not_ready",
+            crate::mpv::MpvError::UnsupportedWindowing(_) => "mpv_windowing_unsupported",
+            crate::mpv::MpvError::ForegroundFailed(_) => "mpv_foreground_failed",
         };
         Self::new(code, e.to_string())
     }

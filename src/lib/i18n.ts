@@ -113,6 +113,13 @@ const ja = {
   "player.screenshot.saved": "スクリーンショットを保存しました: {path}",
   "player.screenshot.failed": "スクリーンショットの保存に失敗: {message}",
   "player.screenshot.openFolder": "フォルダを開く",
+  // mpv 窓の前面化（FR-42、仕様決定 BR）
+  "player.focus": "前面に出す",
+  "player.focus.hint": "mpv の再生窓を最前面に出します",
+  "player.focus.wayland":
+    "Wayland では mpv 窓の前面化に対応していません（プロトコルの制約）",
+  "player.focus.other": "この表示環境では mpv 窓の前面化に対応していません",
+  "player.focus.failed": "mpv 窓を前面に出せませんでした: {message}",
 
   "ytdlp.checking": "yt-dlp を確認中…",
   "ytdlp.ok": "yt-dlp {version}（{path}）",

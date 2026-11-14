@@ -931,6 +931,9 @@ impl MpvPlayer {
                         .await?;
                 }
             }
+            PlayerAction::FocusWindow => {
+                self.focus_window().await?;
+            }
         }
         Ok(())
     }
@@ -981,6 +984,32 @@ impl MpvPlayer {
             ])
             .await?;
         Ok(())
+    }
+
+    /// mpv 窓の前面化（FR-42、仕様決定 BR）。
+    /// `window-id`（x11: 0.36+ の XID、win32: 0.37+ の HWND）を先に読み、
+    /// Windows では取れなければプロセス ID の可視トップレベル窓列挙へ退く。
+    /// 起動直後・アイドル中など窓未作成のとき、x11 では window-id が唯一の
+    /// 特定経路のため `WindowNotReady`、Windows では列挙も見つからなければ
+    /// 同じく `WindowNotReady` を返す。Wayland・その他の環境は恒久制限
+    /// （仕様決定 BU）として `UnsupportedWindowing` で拒否する。
+    async fn focus_window(&self) -> Result<(), MpvError> {
+        let ws = crate::mpv::windowing_system();
+        if ws != "windows" && ws != "x11" {
+            return Err(MpvError::UnsupportedWindowing(ws.to_string()));
+        }
+        // window-id は窓ができるまでプロパティ自体が取れない。IPC エラー
+        // （切断中等）もここでは未取得として扱い、OS 側の経路へ委ねる
+        let window_id = self
+            .ipc
+            .read()
+            .await
+            .command(vec![json!("get_property"), json!("window-id")])
+            .await
+            .ok()
+            .and_then(|v| v.as_i64());
+        let pid = self.child.lock().await.id();
+        super::foreground::focus_mpv_window(ws, window_id, pid, self.instance_id)
     }
 
     /// PiP 中に適用する geometry を算出する（FR-19、仕様決定 AL）。

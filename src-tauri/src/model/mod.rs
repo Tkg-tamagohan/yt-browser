@@ -144,6 +144,10 @@ pub enum PlayerAction {
     /// ID の文字列、"no"（なし）、"auto"（自動）。セッション内のみ有効で、
     /// 連続再生遷移では mpv の自動選択へ戻る。
     SubTrack { sid: String },
+    /// mpv 窓の前面化（FR-42、仕様決定 BR）。Windows はプロセス ID から
+    /// 窓ハンドルを特定して前面化、X11 は `window-id` の XID へ
+    /// EWMH `_NET_ACTIVE_WINDOW` を送る。Wayland は恒久制限で非対応。
+    FocusWindow,
 }
 
 /// `audio_device_list` コマンドの戻り値要素（FR-32、仕様決定 BA）。
