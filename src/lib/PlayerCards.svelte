@@ -14,6 +14,7 @@
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
   import { linkCopyText } from "$lib/copy-link-logic";
+  import { subTrackLabel } from "$lib/subtitle-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
   import {
     pipTileGeometry,
@@ -350,6 +351,32 @@
     return d.description !== "" ? d.description : d.name;
   }
 
+  // 字幕選択の変更中セット（FR-40、仕様決定 BP）。応答までの連続操作を
+  // 防ぎ、失敗時は select の表示を現在値へ戻す
+  let subBusy = $state<Set<number>>(new Set());
+
+  async function setSubtitle(
+    id: number,
+    sid: string,
+    el: HTMLSelectElement,
+  ): Promise<void> {
+    if (subBusy.has(id)) {
+      el.value = playerStates.list.get(id)?.sid ?? "auto";
+      return;
+    }
+    subBusy = new Set(subBusy).add(id);
+    try {
+      await control(id, { type: "sub_track", sid });
+    } catch {
+      // control がエラー通知を出す。欄の表示だけ実態へ戻す
+      el.value = playerStates.list.get(id)?.sid ?? "auto";
+    } finally {
+      const s = new Set(subBusy);
+      s.delete(id);
+      subBusy = s;
+    }
+  }
+
   async function setQuality(id: number, format: string, el: HTMLSelectElement): Promise<void> {
     if (qualityBusy.has(id)) return;
     qualityBusy = new Set(qualityBusy).add(id);
@@ -683,6 +710,32 @@
           {:else}
             <span class="subtle">…</span>
           {/if}
+        </label>
+        <label>
+          {t("player.subtitle")}
+          <select
+            value={p.sid}
+            title={t("player.subtitle.hint")}
+            disabled={subBusy.has(p.instanceId)}
+            onchange={(e) =>
+              setSubtitle(p.instanceId, e.currentTarget.value, e.currentTarget)}
+          >
+            <option value="no" selected={p.sid === "no"}>
+              {t("player.subtitle.none")}
+            </option>
+            <option value="auto" selected={p.sid === "auto"}>
+              {t("player.subtitle.auto")}
+            </option>
+            {#each p.subTracks as tr}
+              <option value={String(tr.id)} selected={String(tr.id) === p.sid}>
+                {subTrackLabel(tr)}
+              </option>
+            {/each}
+            <!-- 選択肢に無い現在値（track-list 更新直後の切替等）も残す -->
+            {#if p.sid !== "no" && p.sid !== "auto" && !p.subTracks.some((tr) => String(tr.id) === p.sid)}
+              <option value={p.sid} selected>{p.sid}</option>
+            {/if}
+          </select>
         </label>
         <button
           title={t("player.loop.hint")}

@@ -136,7 +136,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
 表の引数名は Rust 側の受け取り名（snake_case）で記し、JS 側は camelCase のキーで渡す（`video_id` → `videoId`）。
 戻り値とイベントのペイロードは camelCase に直列化される。
-`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）、`pip_tile{geometry}`（PiP 窓の一括整列、§4.12）を取る。
+`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）、`pip_tile{geometry}`（PiP 窓の一括整列、§4.12）、`sub_track{sid}`（字幕選択、§4.13）を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する項目の順序列で、各項目は `uid`＋`video_id` の対（`QueueArmItem`、空列は武装の解除）。`uid` はフロント側のキュー項目のユニーク ID で、継続時に `player://ended` の `continuedUid` としてそのまま返す（BG-10、仕様決定 BK）。`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
@@ -165,7 +165,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
-| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice }` | observe_property の変化を間引いて発火[^statesample] |
+| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice, subTracks, sid }` | observe_property の変化を間引いて発火[^statesample] |
 | `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq }` | 終了またはエラー |
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
@@ -210,6 +210,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定）。PiP 窓の一括整列の対象ディスプレイ解決でも同じ保存値を使う（§4.12） |
+| `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
+| `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -305,6 +307,8 @@ mpv --idle=yes
     --cache=yes
     --hwdec=<mpv.hwdec 値>
     --keep-open=yes
+    --speed=<player.initial_speed 値>
+    --volume=<player.initial_volume 値>
     --stream-lavf-o-append=timeout=<mpv.network_timeout_ms×1000>
     --log-file=<app_log_dir>/mpv-<アプリpid>-<instance>-<世代>.log
     --script=<app_data>/mpv/wheel.lua
@@ -333,7 +337,9 @@ mpv のリスト型オプションは同じ指定を重ねると後が前を上�
 {"command": ["observe_property", 4, "video-params"]}
 ```
 
-監視するプロパティは `time-pos`、`duration`、`pause`、`eof-reached`、`media-title`、`paused-for-cache`、`video-params`（fps 表示用）、`volume`、`speed`。
+監視するプロパティは `time-pos`、`duration`、`pause`、`eof-reached`、`media-title`、`paused-for-cache`、`video-params`（fps 表示用）、`volume`、`speed`、`audio-device`（§4.8）、`track-list`・`sid`（字幕選択、§4.13）。
+
+`--speed` と `--volume` は初期速度・初期音量の設定値（FR-39、仕様決定 BO）をそのまま渡す。起動引数で適用するため変更は次回の再生開始から有効で、稼働中インスタンスへの速度・音量の変更は `player_control` 経由のセッション限りの変更として従来どおり扱う。
 受信側は 1 ソケットにつき 1 読み取りタスクを持ち、`event` 行を購読者に振り分ける。
 
 ### 4.2 コマ送り
@@ -682,6 +688,22 @@ Wayland はプロトコル上クライアント・第三者とも窓の絶対位
 `windowing_system` は `XDG_SESSION_TYPE` を優先し、未設定では `WAYLAND_DISPLAY` / `DISPLAY` の有無で推す。
 整列対象はフロント側で PiP 表示中のインスタンスだけに限るため、通常窓のインスタンスは触れない。
 失敗はトーストで通知し、一部のインスタンスだけ失敗した場合は成功件数と最初のエラーを表示する。
+
+### 4.13 字幕トラックの選択（FR-40、仕様決定 BP）
+
+プレイヤーカードの「字幕」ドロップダウンから、再生中動画の字幕トラックを選ぶ。
+選択肢は「なし」（`no`）・「自動」（`auto`）・取得済みの各字幕トラックで、
+トラック列は監視プロパティ `track-list` のうち `type=sub` のエントリから
+`id`・`title`・`lang` を抜き出して `PlayerState.subTracks` に載せる。
+表示名は `title (lang)` を基本とし、欠けたフィールドは残りで代用する。
+現在値は監視プロパティ `sid` を `PlayerState.sid` へ正規化した文字列
+（`"no"` / `"auto"` / トラック ID）で追従する。
+
+適用は `player_control` の `sub_track` アクション → `set_property sid`。
+トラック ID は数値として、`no` / `auto` は文字列として mpv へ渡す。
+選択はセッション内のみ有効で DB には保存しない。mpv の `sid` は
+ファイルロードごとに自動選択へ戻るため、連続再生遷移では追加の
+リセットを送らず自動選択へ戻る（`load_video` 側でも表示状態を初期化する）。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

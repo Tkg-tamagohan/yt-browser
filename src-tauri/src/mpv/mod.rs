@@ -57,6 +57,18 @@ pub(crate) const DEFAULT_HWDEC: &str = "auto-safe";
 pub(crate) const SETTING_WINDOW_SCREEN: &str = "window.screen";
 /// 設定が無い・不正なときの既定値。画面右下寄せの 480x270。
 pub(crate) const DEFAULT_PIP_GEOMETRY: &str = "480x270-40-40";
+/// 設定キー: 新規インスタンスの初期再生速度（FR-39、仕様決定 BO）。
+/// mpv 起動引数 `--speed` へ渡す。受理範囲は 0.25〜4.0 で、
+/// 未設定・空・非数・範囲外は既定の 1.0 として扱う。
+pub(crate) const SETTING_PLAYER_INITIAL_SPEED: &str = "player.initial_speed";
+/// `player.initial_speed` の既定値（FR-39、仕様決定 BO）。
+pub(crate) const DEFAULT_INITIAL_SPEED: f64 = 1.0;
+/// 設定キー: 新規インスタンスの初期音量（FR-39、仕様決定 BO）。
+/// mpv 起動引数 `--volume` へ渡す。受理範囲は 0〜130 で、
+/// 未設定・空・非数・範囲外は既定の 100 として扱う。
+pub(crate) const SETTING_PLAYER_INITIAL_VOLUME: &str = "player.initial_volume";
+/// `player.initial_volume` の既定値（FR-39、仕様決定 BO）。
+pub(crate) const DEFAULT_INITIAL_VOLUME: f64 = 100.0;
 
 /// `pip.geometry` / 既定値として受け付ける mpv geometry 形式
 /// （`WxH` と任意の `+-x+-y` のみ。mpv に渡す値なので曖昧な入力を残さない）。
@@ -185,6 +197,24 @@ pub(crate) fn network_timeout_ms(value: Option<String>) -> u64 {
         .unwrap_or(DEFAULT_NETWORK_TIMEOUT_MS)
 }
 
+/// `player.initial_speed` の保存値を解釈する（FR-39、仕様決定 BO）。
+/// 0.25〜4.0 の数値だけを受理し、未設定・空・非数・範囲外・非有限は既定値へ戻す。
+pub(crate) fn initial_speed(value: Option<String>) -> f64 {
+    value
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && (0.25..=4.0).contains(v))
+        .unwrap_or(DEFAULT_INITIAL_SPEED)
+}
+
+/// `player.initial_volume` の保存値を解釈する（FR-39、仕様決定 BO）。
+/// 0〜130 の数値だけを受理し、未設定・空・非数・範囲外・非有限は既定値へ戻す。
+pub(crate) fn initial_volume(value: Option<String>) -> f64 {
+    value
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && (0.0..=130.0).contains(v))
+        .unwrap_or(DEFAULT_INITIAL_VOLUME)
+}
+
 /// 実行時の `set_property geometry` で窓の位置オフセット（`±x±y`）が
 /// 効く最低 mpv バージョン（仕様決定 BU）。win32 は 0.38 で実行時
 /// geometry 更新、x11 は 0.38 で位置修正・0.40 で xy 指定時の移動整理
@@ -269,11 +299,12 @@ pub enum MpvError {
 #[cfg(test)]
 mod tests {
     use super::{
-        fit_pip_geometry, hwdec_mode, is_valid_hdr_compute_peak, is_valid_hwdec,
-        is_valid_pip_geometry, is_valid_tone_mapping, mpv_version_tuple, network_timeout_ms,
-        pip_default_enabled, pip_fit_aspect_enabled,
+        fit_pip_geometry, hwdec_mode, initial_speed, initial_volume, is_valid_hdr_compute_peak,
+        is_valid_hwdec, is_valid_pip_geometry, is_valid_tone_mapping, mpv_version_tuple,
+        network_timeout_ms, pip_default_enabled, pip_fit_aspect_enabled,
         player::{prune_mpv_logs, split_extra_args, video_aspect_of},
-        screen_index_of, DEFAULT_HWDEC, DEFAULT_NETWORK_TIMEOUT_MS,
+        screen_index_of, DEFAULT_HWDEC, DEFAULT_INITIAL_SPEED, DEFAULT_INITIAL_VOLUME,
+        DEFAULT_NETWORK_TIMEOUT_MS,
     };
 
     /// 設計書 §4.5 の `pip.geometry` 受理形式（mpv に渡す値なので
@@ -581,6 +612,60 @@ mod tests {
         // keep 件以下なら何も消さない
         prune_mpv_logs(dir.path(), 10);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 5);
+    }
+
+    /// DB-PF-10: `player.initial_speed` の解釈（FR-39、仕様決定 BO）。
+    /// 0.25〜4.0 のみ受理、未設定・非数・範囲外は既定の 1.0 へ戻す。
+    #[test]
+    fn initial_speed_values() {
+        for (input, expected) in [
+            (None, DEFAULT_INITIAL_SPEED),
+            (Some("1.0"), 1.0),
+            (Some("0.25"), 0.25),
+            (Some("4.0"), 4.0),
+            (Some(" 2.5 "), 2.5),
+        ] {
+            assert_eq!(
+                initial_speed(input.map(|s| s.to_string())),
+                expected,
+                "{input:?} は {expected} になるべき"
+            );
+        }
+        for bad in [
+            "", "  ", "abc", "0", "0.1", "0.24", "4.1", "8", "-1", "inf", "NaN",
+        ] {
+            assert_eq!(
+                initial_speed(Some(bad.to_string())),
+                DEFAULT_INITIAL_SPEED,
+                "{bad} は既定値へ戻すべき"
+            );
+        }
+    }
+
+    /// DB-PF-11: `player.initial_volume` の解釈（FR-39、仕様決定 BO）。
+    /// 0〜130 のみ受理、未設定・非数・範囲外は既定の 100 へ戻す。
+    #[test]
+    fn initial_volume_values() {
+        for (input, expected) in [
+            (None, DEFAULT_INITIAL_VOLUME),
+            (Some("100"), 100.0),
+            (Some("0"), 0.0),
+            (Some("130"), 130.0),
+            (Some(" 60.5 "), 60.5),
+        ] {
+            assert_eq!(
+                initial_volume(input.map(|s| s.to_string())),
+                expected,
+                "{input:?} は {expected} になるべき"
+            );
+        }
+        for bad in ["", "  ", "abc", "-1", "130.1", "200", "inf", "NaN"] {
+            assert_eq!(
+                initial_volume(Some(bad.to_string())),
+                DEFAULT_INITIAL_VOLUME,
+                "{bad} は既定値へ戻すべき"
+            );
+        }
     }
 
     /// `window.screen` の保存名 → モニター列インデックスの解決
