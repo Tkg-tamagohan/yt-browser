@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { feedItemCompare, feedItemSortsAfter } from "./feed-page-logic";
 
+// FP-01: feedItemCompare の並び順（published_at 降順・NULL 末尾・video_id 昇順）
+// FP-02: feedItemSortsAfter のカーソル境界判定
 const item = (publishedAt: string | null, videoId: string) => ({
   publishedAt,
   videoId,
 });
 
-describe("feedItemCompare", () => {
+describe("FP-01: feedItemCompare", () => {
   it("published_at 降順・NULL 末尾・video_id 昇順の全順序を再現する", () => {
     const sorted = [
       item("2024-03-01T00:00:00Z", "b"),
@@ -22,7 +24,7 @@ describe("feedItemCompare", () => {
   });
 });
 
-describe("feedItemSortsAfter", () => {
+describe("FP-02: feedItemSortsAfter", () => {
   it("published_at がカーソルより古い項目は後側", () => {
     expect(
       feedItemSortsAfter(item("2024-01-01T00:00:00Z", "a"), "2024-02-01T00:00:00Z", "z"),

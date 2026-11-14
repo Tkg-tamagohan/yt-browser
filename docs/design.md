@@ -21,7 +21,7 @@ flowchart LR
     CORE -->|子プロセス起動| YTDLP[yt-dlp<br/>検索・メタデータ・更新]
     MPV -->|ytdl_hook が内部利用| YTDLP
     CORE -->|HTTPS| RSS[YouTube チャンネル RSS]
-    CORE -->|HTTPS| IT[InnerTube<br/>get_live_chat / get_live_chat_replay / next]
+    CORE -->|HTTPS| IT[InnerTube<br/>get_live_chat / get_live_chat_replay / next / player]
     CORE -->|HTTPS| SB[SponsorBlock API]
 ```
 
@@ -1506,7 +1506,7 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
 ### 9.2 YouTube 仕様変更への構造
 
 - ストリーム解決と検索は `yt` モジュール内の関数群（`resolve`・`search` 等）の向こうに隔離し、yt-dlp 実装の破損は更新で追従する（トレイト抽象化は第 2 の実装やテスト差し替えが必要になった時点で導入する。現状は未導入）
-- InnerTube の自前実装は `get_live_chat` と `next` に限定し、パーサーは保存した応答 JSON の golden fixture で回帰テストする（技術方針 O）
+- InnerTube の自前実装は `get_live_chat`、`get_live_chat_replay`、`next`、`player`（および視聴ページの初期データ抽出）に限定し、パーサーは保存した応答 JSON の golden fixture で回帰テストする（技術方針 O）
 - 仕様変更時に UI 側が壊れないよう、`chat` / `related` / `feed` の各劣化状態は独立したステータスとして UI に出す
 
 ### 9.3 ログ
@@ -1605,7 +1605,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   scripts/            # 開発・リリース補助（docs 整合チェック・バージョン更新・latest.json 生成）と CDP 検証基盤（FR-84。cdp_client/e2e_dev/e2e_smoke と README.md の手順書）
   package.json

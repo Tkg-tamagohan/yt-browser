@@ -46,16 +46,6 @@
   </section>
 
 <style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
   .presets {
     display: flex;
     flex-direction: column;
@@ -74,11 +64,5 @@
     color: var(--fg-muted);
     font-size: 0.8rem;
     overflow-wrap: anywhere;
-  }
-
-  .format-input {
-    width: 100%;
-    margin-top: 4px;
-    font-family: monospace;
   }
 </style>

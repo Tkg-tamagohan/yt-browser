@@ -1,9 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { t, type MessageKey } from "$lib/i18n";
+  import { t } from "$lib/i18n";
   import { asErrorMessage, type Filter } from "$lib/players.svelte";
-  import { FILTER_TARGETS, FILTER_KINDS } from "$lib/settings-consts";
+  import {
+    FILTER_TARGETS,
+    FILTER_KINDS,
+    filterTargetLabel,
+    filterKindLabel,
+  } from "$lib/settings-consts";
 
   let { notify }: { notify: (msg: string) => void } = $props();
 
@@ -46,20 +51,6 @@
     } catch (e) {
       notify(t("settings.filters.removeFailed", { message: asErrorMessage(e) }));
     }
-  }
-
-  /// フィルタ対象・種別の日本語ラベル。未定義の値は生値をそのまま出す
-  /// （メッセージキー欠落時のフォールバック。sponsor カテゴリと同じ方式）。
-  function filterTargetLabel(target: string): string {
-    const key = `filter.target.${target}` as MessageKey;
-    const s = t(key);
-    return s === key ? target : s;
-  }
-
-  function filterKindLabel(kind: string): string {
-    const key = `filter.kind.${kind}` as MessageKey;
-    const s = t(key);
-    return s === key ? kind : s;
   }
 
   onMount(() => {
@@ -110,63 +101,3 @@
         {/each}
       </ul>
   </section>
-
-<style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .filter-form {
-    display: flex;
-    gap: 8px;
-    margin: 12px 0;
-    flex-wrap: wrap;
-  }
-
-  .filter-form select {
-    padding: 4px;
-    border-radius: 6px;
-  }
-
-  .pattern-input {
-    flex: 1;
-    min-width: 200px;
-  }
-
-  .filter-list {
-    list-style: none;
-    padding: 0;
-    margin: 8px 0 0;
-  }
-
-  .filter-list li {
-    display: flex;
-    gap: 10px;
-    align-items: baseline;
-    padding: 4px 0;
-    font-size: 0.9rem;
-  }
-
-  .f-target {
-    color: var(--accent);
-    white-space: nowrap;
-  }
-
-  .f-kind {
-    color: var(--fg-muted);
-    font-size: 0.8rem;
-    white-space: nowrap;
-  }
-
-  .f-pattern {
-    color: var(--fg-strong);
-    overflow-wrap: anywhere;
-    flex: 1;
-  }
-</style>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { focusDisabledKey, focusWindowSupported } from "./focus-logic";
 
+// FG-01: mpv 窓の前面化可否判定（FR-42、仕様決定 BR）
 describe("FG-01: mpv 窓の前面化可否判定（FR-42、仕様決定 BR）", () => {
   it("windows と x11 は前面化可能、wayland は恒久制限で不可", () => {
     expect(focusWindowSupported("windows")).toBe(true);

@@ -20,30 +20,10 @@
        hidden 切替（ヒットずれ対策、FR-80） -->
   <p class="subtle" class:hidden={!loading}>…</p>
   <div class:hidden={loading}>
-    <label class="wheel-row">
+    <label class="setting-row">
       <input type="checkbox" bind:checked={shortcutsEnabled} />
       {t("settings.shortcuts.enabled")}
     </label>
     <p class="subtle desc">{t("settings.shortcuts.enabled.desc")}</p>
   </div>
 </section>
-
-<style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .wheel-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
-  }
-</style>

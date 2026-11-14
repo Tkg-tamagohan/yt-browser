@@ -53,16 +53,6 @@
   </section>
 
 <style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
   /* 定義が無かったまま使われていたクラスへ最小定義を補う
      （feed の .channel-list と同じ行構成。ch-title の
      省略表示はグローバル .ch-title が担う） */

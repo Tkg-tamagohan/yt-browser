@@ -29,7 +29,8 @@ python scripts/bump_version.py --check
 
 Windows の python 出力は cp932 で文字化けするため `PYTHONUTF8=1` を付ける
 （出力の可読性のためで、判定挙動は変わらない）。
-`extension/` の JS には lint が無いため変更は目視で確認する。
+`extension/shared.js` は `extension/shared.test.js`（`pnpm test` の一部）で単体検証される。
+`extension/` の `background.js`、`content.js`、`popup.js` には linter が無いため、変更は目視で確認する。
 
 ## 順序規則: 最終検証の後に編集しない
 
@@ -40,20 +41,15 @@ Windows の python 出力は cp932 で文字化けするため `PYTHONUTF8=1` �
 
 ## 実機検証用の一時変更の安全な戻し方
 
-CDP/dev ビルド検証では identifier の書き換えや Native Messaging 登録の
-抑制など、コミットへ紛れてはいけない一時変更を入れる
-（`yt-browser-windows-cdp-testing` スキル参照）。
+CDP/dev ビルド検証では `scripts/e2e_dev.py` が `src-tauri/src/lib.rs` の Native Messaging 登録呼び出しを一時コメント化し、`src-tauri/src/lib.rs.e2e-backup` へ退避したうえで終了時に自動復元する（`yt-browser-windows-cdp-testing` スキル参照）。
+スクリプト外で一時変更を加えた場合は、次の手順で安全に戻す。
 
 - 一時変更は実装と同じファイルにできるだけ混在させない。
-  Phase 38 では `lib.rs` の identifier 一時変更と `generate_handler!` の
-  コマンド登録が同居し、`git checkout -- src-tauri/src/lib.rs` の
-  広範囲 revert で登録行ごと消えて consistency ジョブが赤になった
-- 戻すときは `git checkout -- <file>` のまとめ戻しではなく、edit ツールや
-  `git checkout -p` で一時変更の行だけを戻す
-- 戻した直後に `git diff` で残存差分を目視し、「一時変更だけ消えて
-  実装変更が残っている」ことを確認する
-- 戻したあとは必ず検証ゲートを回し直す。前回検証を通した状態とは
-  別物になっている
+  Phase 38 では `lib.rs` の identifier 一時変更と `generate_handler!` のコマンド登録が同居し、`git checkout -- src-tauri/src/lib.rs` の広範囲 revert で登録行ごと消えて consistency ジョブが赤になった
+- `e2e_dev.py` を強制終了したときは `lib.rs.e2e-backup` の書き戻し、または edit ツールや `git checkout -p` で一時変更の行だけを戻す（`git checkout -- <file>` のまとめ戻しは避ける）
+- 戻した直後に `git status` と `git diff` を目視し、一時変更や `lib.rs.e2e-backup` が消えて実装変更だけが残っていることを確認する
+- 戻したあとは必ず検証ゲートを回し直す。
+  前回検証を通した状態とは別物になっている
 
 ## スクリプト生成ファイルは最後に formatter へ通す
 

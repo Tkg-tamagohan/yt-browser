@@ -53,16 +53,6 @@
   </section>
 
 <style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
   .row {
     display: flex;
     align-items: center;

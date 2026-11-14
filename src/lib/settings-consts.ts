@@ -1,6 +1,8 @@
 // 設定画面（src/routes/settings/+page.svelte）の定数群。
 // check_docs_consistency の DOMAIN_CONSTANTS がこのファイルの
 // SPONSOR_CATEGORIES / FILTER_TARGETS / FILTER_KINDS を参照する。
+import { t, type MessageKey } from "$lib/i18n";
+
 export const CUSTOM = "custom";
 
 // SponsorBlock のカテゴリ一覧（src-tauri/src/sponsor/mod.rs の設定キーに対応）
@@ -65,3 +67,17 @@ export const FILTER_TARGETS = [
   "chat_author",
 ] as const;
 export const FILTER_KINDS = ["literal", "regex", "highlight"] as const;
+
+/// フィルタ対象・種別の表示ラベル。未定義の値は生値をそのまま返す
+/// （メッセージキー欠落時のフォールバック）
+export function filterTargetLabel(target: string): string {
+  const key = `filter.target.${target}` as MessageKey;
+  const s = t(key);
+  return s === key ? target : s;
+}
+
+export function filterKindLabel(kind: string): string {
+  const key = `filter.kind.${kind}` as MessageKey;
+  const s = t(key);
+  return s === key ? kind : s;
+}

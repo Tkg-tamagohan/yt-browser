@@ -896,10 +896,6 @@
 </div>
 
 <style>
-  .player-cards.hidden {
-    display: none;
-  }
-
   .pip-tile-bar {
     display: flex;
     align-items: center;

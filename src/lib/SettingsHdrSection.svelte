@@ -26,7 +26,7 @@
          hidden 切替（ヒットずれ対策、FR-80） -->
     <p class="subtle" class:hidden={!loading}>…</p>
     <div class:hidden={loading}>
-      <label class="wheel-row">
+      <label class="setting-row">
         {t("settings.hdr.toneMapping")}
         <select bind:value={toneMapping}>
           {#each TONE_MAPPINGS as m}
@@ -36,7 +36,7 @@
           {/each}
         </select>
       </label>
-      <label class="wheel-row">
+      <label class="setting-row">
         {t("settings.hdr.computePeak")}
         <select bind:value={computePeak}>
           <option value="auto">{t("settings.hdr.auto")}</option>
@@ -44,7 +44,7 @@
           <option value="no">{t("settings.hdr.no")}</option>
         </select>
       </label>
-      <label class="wheel-row">
+      <label class="setting-row">
         {t("settings.hdr.extraArgs")}
         <input
           type="text"
@@ -54,7 +54,7 @@
         />
       </label>
       <p class="subtle desc">{t("settings.hdr.extraArgs.desc")}</p>
-      <label class="wheel-row">
+      <label class="setting-row">
         {t("settings.hdr.networkTimeout")}
         <input
           type="number"
@@ -66,7 +66,7 @@
         />
       </label>
       <p class="subtle desc">{t("settings.hdr.networkTimeout.desc")}</p>
-      <label class="wheel-row">
+      <label class="setting-row">
         {t("settings.hdr.hwdec")}
         <select bind:value={hwdec}>
           {#each HWDEC_MODES as m}
@@ -79,32 +79,8 @@
   </section>
 
 <style>
-  h2 {
-    font-size: 1.1rem;
-    margin: 0 0 4px;
-  }
-
-  .desc {
-    font-size: 0.9rem;
-    margin-top: 0;
-  }
-
-  .format-input {
-    width: 100%;
-    margin-top: 4px;
-    font-family: monospace;
-  }
-
   .timeout-input {
     width: 110px;
     margin-top: 4px;
-  }
-
-  .wheel-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 12px 0;
-    font-size: 0.95rem;
   }
 </style>
