@@ -9,12 +9,18 @@
   let {
     items,
     showAuthor = true,
+    showBadges = true,
     fillHeight = false,
   }: {
     items: ChatItem[];
     // 埋め込みパネルは投稿者名と superchat / membership のバッジを出す。
-    // ポップアップ窓は投稿時刻と本文だけを出す（仕様決定 AU）
+    // ポップアップ窓は投稿時刻と本文だけを出す（仕様決定 AU。
+    // chat.popup_show_author が on なら投稿者名だけ出す。FR-68・CS。
+    // バッジは設定化の対象外のためポップアップでは出さない）
     showAuthor?: boolean;
+    // superchat / membership のバッジを出すか。showAuthor が true の
+    // ときだけ効く（埋め込みパネルは true、ポップアップは false）
+    showBadges?: boolean;
     // true なら flex コンテナの残り高いっぱいに伸びる（ポップアップ窓）。
     // false なら高さは最大 320px まで（埋め込みパネル）
     fillHeight?: boolean;
@@ -43,10 +49,14 @@
           <span class="chat-author">
             {item.authorName ?? t("chat.anonymous")}
           </span>
-          {#if item.kind === "superchat" && item.amountDisplay}
-            <span class="chat-badge superchat-badge">{item.amountDisplay}</span>
-          {:else if item.kind === "membership"}
-            <span class="chat-badge">{t("chat.membership")}</span>
+          {#if showBadges}
+            {#if item.kind === "superchat" && item.amountDisplay}
+              <span class="chat-badge superchat-badge"
+                >{item.amountDisplay}</span
+              >
+            {:else if item.kind === "membership"}
+              <span class="chat-badge">{t("chat.membership")}</span>
+            {/if}
           {/if}
         {/if}
         <span class="chat-msg">{item.message}</span>
@@ -65,6 +75,10 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    /* chat.popup_font_size（FR-68、仕様決定 CS）がポップアップ窓の
+       祖先要素へ --chat-font-size として乗る。未設定（埋め込み
+       パネル）は従来の 0.88rem。行内の要素は em 指定で追従する */
+    font-size: var(--chat-font-size, 0.88rem);
   }
 
   /* ポップアップ窓では高さ上限ではなく flex コンテナの残りを使う */
@@ -78,7 +92,6 @@
   .chat-item {
     margin: 0;
     padding: 2px 0;
-    font-size: 0.88rem;
     display: flex;
     gap: 8px;
     align-items: baseline;
@@ -98,13 +111,16 @@
   .chat-time {
     color: #9aa0a6;
     font-family: monospace;
-    font-size: 0.78rem;
+    /* --chat-font-size の拡大縮小に追従させるため em 相対
+       （0.88rem 基準で 0.78rem と同じ比率） */
+    font-size: 0.89em;
     flex-shrink: 0;
   }
 
   .chat-author {
     color: #8ab4f8;
-    font-size: 0.8rem;
+    /* 0.88rem 基準で 0.8rem と同じ比率 */
+    font-size: 0.91em;
     flex-shrink: 0;
     max-width: 14em;
     overflow: hidden;
@@ -116,7 +132,8 @@
     background: #3c4043;
     border-radius: 4px;
     padding: 0 6px;
-    font-size: 0.75rem;
+    /* 0.88rem 基準で 0.75rem と同じ比率 */
+    font-size: 0.85em;
     flex-shrink: 0;
   }
 
@@ -132,6 +149,7 @@
   }
 
   .subtle {
-    font-size: 0.85rem;
+    /* 0.88rem 基準で 0.85rem と同じ比率 */
+    font-size: 0.97em;
   }
 </style>

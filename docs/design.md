@@ -249,6 +249,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `mpv.hwdec` | mpv `--hwdec` の値 | mpv のハードウェアデコード方式（§4.9、仕様決定 BE）。受理集合は `auto-safe` / `auto` / `auto-copy` / `d3d11va` / `d3d11va-copy` / `dxva2` / `dxva2-copy` / `nvdec` / `nvdec-copy` / `vulkan` / `no`。未設定・空・集合外は既定 `auto-safe`。`no` はドライバ内デッドロック環境での回避策 |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
+| `chat.popup_geometry` | `WxH±x±y` | チャットポップアップ窓の位置とサイズ（§6.2、FR-67、仕様決定 CR）。論理ピクセルで座標は符号付き・必須。移動・リサイズの窓イベントで自動保存し、次回 `chat_popup_open` で復元する。未設定・形式外は既定サイズ 360x560・位置は OS 任せ |
+| `chat.popup_show_author` | `on` / `off` | チャットポップアップに投稿者名を表示するか（§6.2、FR-68、仕様決定 CS）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（非表示）。superchat / membership のバッジは設定化の対象外 |
+| `chat.popup_font_size` | 数値 | チャットポップアップの文字サイズ px（§6.2、FR-68、仕様決定 CS）。受理範囲は 10〜32 で、未設定・空・非数・範囲外は既定 `14`（範囲と既定値は暫定） |
+| `chat.popup_opacity` | 数値 | チャットポップアップ内容の不透明度（§6.2、FR-68、仕様決定 CS）。受理範囲は 0.2〜1.0 で、未設定・空・非数・範囲外は既定 `1.0`。内容の CSS opacity へ適用する（適用先は暫定解釈） |
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定）。PiP 窓の一括整列の対象ディスプレイ解決でも同じ保存値を使う（§4.12） |
 | `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
 | `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
@@ -1052,7 +1056,9 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
 - 最前面は設定 `chat.popup_ontop`（`pip.default` と同じ受理集合、既定 `on`）で開き、窓内のピン切替は `setAlwaysOnTop` と `settings_set` への保存で反映する
 - ポーラーの利用者はバックエンド側で video_id ごとの参照集合として保持する。埋め込みパネルは `panel:<instance_id>`、ポップアップは固定キー `popup` を登録し、集合が空になった時点でポーラーを止める。別ウィンドウの利用者をメイン窓のフロントが数えられないため、ポップアップの閉じは窓の破棄イベントで検知する
 - 「パネルに戻す」は `chat_popup_return` が先にパネル利用者を登録してから `chat://open_panel` をメイン窓へ発行し、ポップアップを閉じる（切替中にポーラーは止まらない）。起票元インスタンスが同じ動画を再生中でなければ無効とする
-- ポップアップの表示行は投稿時刻と本文のみで、投稿者名と superchat / membership のバッジは出さない。`chat://message` / `chat://status` / `chat://reset` は埋め込みパネルと同じ経路で購読し、窓ごとの JS コンテキストで動画 ID へ直接振り分ける。窓を開く前に流れた分は受信できず、埋め込みパネルの蓄積分は引き継がない
+- 位置とサイズは設定 `chat.popup_geometry`（`WxH+x+y`、論理ピクセル、FR-67・仕様決定 CR）へ保存する。移動・リサイズは `Moved` / `Resized` / `ScaleFactorChanged` の窓イベントで `PopupGeomTracker` が記録し、イベントが位置・サイズの片方しか持たないため両方を記憶してマージし、400ms の間引きで書き込む。破棄イベントで末尾分を確定する。次回 `chat_popup_open` で保存値を復元し、いずれのモニターとも 48px 以上重ならない位置は画面外として位置のみ既定（OS 任せ）に戻し、サイズは復元する。モニター列挙に失敗した場合は判定不能として保存値を信じる
+- ポップアップの表示行は投稿時刻と本文のみで、superchat / membership のバッジは出さない（仕様決定 AU）。投稿者名は設定 `chat.popup_show_author` が on 系のときだけ出す（FR-68・仕様決定 CS）。文字サイズ `chat.popup_font_size`（10〜32px、既定 14）と内容の不透明度 `chat.popup_opacity`（0.2〜1.0、既定 1.0）はポップアップ窓側が `settings_get` で読み、ルート要素の `--chat-font-size` カスタムプロパティと `opacity` スタイルへ反映する（不透明度を窓枠ではなく内容の CSS opacity に掛けるのは暫定解釈）。3 設定とも `settings://changed` の購読で開いている窓へ即時に反映する。設定値の解釈の正は Rust 側 `chat/popup.rs` に置き、フロントの `chat-popup-logic.ts` が同一解釈を持つ
+- `chat://message` / `chat://status` / `chat://reset` は埋め込みパネルと同じ経路で購読し、窓ごとの JS コンテキストで動画 ID へ直接振り分ける。窓を開く前に流れた分は受信できず、埋め込みパネルの蓄積分は引き継がない
 - `chat_start` / `chat_stop` は埋め込みパネル利用者の登録・解除として扱い、パネル閉・ポップアップ閉・プレイヤー終了のいずれでも利用者解除を経由する
 
 ### 6.3 NG と送信のパイプライン
@@ -1302,7 +1308,7 @@ yt-browser/
       mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
-      chat/           # get_live_chat ポーラー・正規化
+      chat/           # get_live_chat ポーラー・正規化・ポップアップ窓の位置保存と表示設定の解釈（popup.rs）
       feed/           # RSS ポーラー
       livewait/       # ライブ配信待機のポーラー（§4.16）
       metaresolve/    # メタの遅延解決ワーカー（§4.18）
@@ -1318,7 +1324,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

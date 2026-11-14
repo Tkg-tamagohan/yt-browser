@@ -532,6 +532,21 @@ const ja = {
   "settings.livewait.unsaved":
     "保存中にライブ待機の値が変更されました。もう一度保存してください",
 
+  // Phase 67: チャットポップアップの表示カスタマイズ（FR-68、仕様決定 CS）
+  "settings.chatpopup.title": "チャットポップアップ",
+  "settings.chatpopup.desc":
+    "別ウィンドウで開くチャット（ポップアップ）の見た目。開いているポップアップにも即時に反映されます",
+  "settings.chatpopup.showAuthor": "投稿者名を表示する",
+  "settings.chatpopup.showAuthor.desc":
+    "オフ（既定）は投稿時刻と本文のみの表示です。superchat / membership のバッジは投稿者名を表示しても出しません",
+  "settings.chatpopup.fontSize": "文字サイズ（px）",
+  "settings.chatpopup.fontSize.desc": "10〜32 の数値。空欄は既定値 14 に戻します",
+  "settings.chatpopup.opacity": "不透明度",
+  "settings.chatpopup.opacity.desc":
+    "0.2〜1.0 の数値（小さいほど透けます）。空欄は既定値 1.0 に戻します",
+  "settings.chatpopup.unsaved":
+    "保存中にチャットポップアップの値が変更されました。もう一度保存してください",
+
   // Phase 59: 動画内ブックマーク（FR-49、仕様決定 BZ）
   "bookmark.add": "ブックマーク",
   "bookmark.add.hint": "現在位置をブックマークへ保存",
