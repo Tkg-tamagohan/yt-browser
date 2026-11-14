@@ -476,10 +476,21 @@ const ja = {
 
   // Phase 29: フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
   "settings.feed.title": "フィード",
-  "settings.feed.desc": "フィード一覧の表示設定。次回の一覧取得から反映される",
+  "settings.feed.desc":
+    "フィード一覧の表示と新着通知・自動既読の設定。一覧の表示は次回の一覧取得から、通知と自動既読は次回のフィード更新から反映される",
   "settings.feed.showShorts": "フィードに Shorts を表示する",
   "settings.feed.showShorts.desc":
     "オフのとき、フィード一覧の「すべて」「動画」の選択は Shorts を除外します。種別フィルタで「Shorts」を選ぶと常に表示します",
+  // Phase 65: 新着のデスクトップ通知と自動既読（FR-58・FR-64、仕様決定 CI・CO）
+  "settings.feed.notifyNew": "新着をデスクトップ通知する",
+  "settings.feed.notifyNew.desc":
+    "オンにすると、フィード更新で新着を検出したとき OS のデスクトップ通知を出します（既定はオフ）",
+  "settings.feed.autoReadPlayed": "再生した項目を自動で既読にする",
+  "settings.feed.autoReadPlayed.desc":
+    "オンにすると、再生履歴のあるフィード項目を自動で既読にします（既定はオフ）。起動時とフィード更新のたびに適用されます",
+  "settings.feed.autoReadDays": "投稿からこの日数が経過した項目を既読にする",
+  "settings.feed.autoReadDays.desc":
+    "投稿日時が指定した日数を経過したフィード項目を自動で既読にします。0（既定）は無効です。起動時とフィード更新のたびに適用されます",
   "settings.feed.unsaved":
     "保存中にフィードの値が変更されました。もう一度保存してください",
 

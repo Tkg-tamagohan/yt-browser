@@ -673,3 +673,118 @@ fn video_channel_normalizes_empty() {
     let (cid, _) = db.video_channel("missing00001").unwrap();
     assert!(cid.is_none());
 }
+
+/// DB-LD-23: 自動既読の「再生済み」ルール（FR-64、仕様決定 CO）。
+/// `feed_auto_read(played=true, days=0)` は `watch_history` に行がある
+/// 未読の投入済み項目だけ既読にし、履歴の無い項目は未読のまま残す。
+/// 既に既読の項目と `ingested=0` のプレースホルダには影響しない。
+#[test]
+fn feed_auto_read_marks_played_items() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    fn mk<'a>(id: &'a str, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at: Some("2026-10-08T00:00:00+00:00"),
+            kind: "video",
+        }
+    }
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[
+            mk("played000001", ch),
+            mk("unplayed0001", ch),
+            mk("alreadyread1", ch),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    // 既読済みの項目と、再生履歴（再生開始で作る行）を持つ未読項目を用意する
+    db.videos_mark_read(&["alreadyread1".to_string()]).unwrap();
+    db.history_upsert("played000001").unwrap();
+
+    // 再生済みルールだけ有効な適用（日数ルールは無効の 0）
+    let n = db.feed_auto_read(true, 0).unwrap();
+    assert_eq!(n, 1);
+
+    let is_read = |id: &str| {
+        db.feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.video_id == id)
+            .unwrap()
+            .is_read
+    };
+    assert!(is_read("played000001"));
+    assert!(!is_read("unplayed0001"));
+    assert!(is_read("alreadyread1"));
+    // 再適用は冪等（既読しか残っていなければ 0 件）
+    assert_eq!(db.feed_auto_read(true, 0).unwrap(), 0);
+}
+
+/// DB-LD-24: 自動既読の「N 日経過」ルール（FR-64、仕様決定 CO）。
+/// 投稿日時が N 日を経過した未読の投入済み項目だけ既読にし、N 日以内の
+/// 項目は未読のまま残す。`published_at` が NULL の項目は `first_seen_at`
+/// で判定する（暫定解釈）。`days` が 0 以下のときは適用しない。
+#[test]
+fn feed_auto_read_marks_aged_items() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    fn mk<'a>(id: &'a str, published_at: Option<&'a str>, ch: &'a str) -> NewVideo<'a> {
+        NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at,
+            kind: "video",
+        }
+    }
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[
+            // 十分昔の投稿日（30 日超は確実に経過）
+            mk("agedvid00001", Some("2000-01-01T00:00:00+00:00"), ch),
+            // 未来の投稿日（どの時点でも 30 日経過にはならない）
+            mk("recent000001", Some("2999-01-01T00:00:00+00:00"), ch),
+            // 投稿日なし: first_seen_at（投入時刻）で判定するため経過しない
+            mk("nodate000001", None, ch),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+
+    // days=0（無効）では何も既読にならない
+    assert_eq!(db.feed_auto_read(false, 0).unwrap(), 0);
+
+    let n = db.feed_auto_read(false, 30).unwrap();
+    assert_eq!(n, 1);
+
+    let is_read = |id: &str| {
+        db.feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.video_id == id)
+            .unwrap()
+            .is_read
+    };
+    assert!(is_read("agedvid00001"));
+    assert!(!is_read("recent000001"));
+    assert!(!is_read("nodate000001"));
+
+    // 経過した項目を含む残りがあっても、同じ日数では新たに既読にならない
+    assert_eq!(db.feed_auto_read(false, 30).unwrap(), 0);
+}
