@@ -3,7 +3,9 @@
 use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
-use crate::model::{FavoriteEntry, Playlist, PlaylistEntry, VideoRef, WatchHistory};
+use crate::model::{
+    FavoriteEntry, HistoryCursor, HistoryPage, Playlist, PlaylistEntry, VideoRef, WatchHistory,
+};
 use crate::yt::{self, YtDlpResolver};
 use tauri::{AppHandle, Emitter, State};
 
@@ -22,10 +24,19 @@ const MAX_PLAYLIST_NAME_LEN: usize = 100;
 const MAX_VIDEO_FIELD_LEN: usize = 1024;
 
 /// `history_list`（FR-7）。新しく見た順。`limit` 省略時は 500、上限 1000。
+/// `cursor` は前ページの `next_cursor` をそのまま渡すページングカーソル
+/// （FR-52、仕様決定 CC）。`query` はタイトル・チャンネル名の部分一致
+/// 絞り込み（FR-61、仕様決定 CL）。戻り値は `items` と `next_cursor` の
+/// ページで、続きが無ければ `next_cursor` は null。
 #[tauri::command]
-pub fn history_list(limit: Option<u32>, db: State<'_, Db>) -> Result<Vec<WatchHistory>, UiError> {
+pub fn history_list(
+    cursor: Option<HistoryCursor>,
+    query: Option<String>,
+    limit: Option<u32>,
+    db: State<'_, Db>,
+) -> Result<HistoryPage, UiError> {
     let limit = limit.unwrap_or(HISTORY_LIST_LIMIT).min(1000);
-    Ok(db.history_list(limit)?)
+    Ok(db.history_list(cursor.as_ref(), query.as_deref(), limit)?)
 }
 
 /// `history_remove`（FR-7、仕様決定 I の手動削除）。

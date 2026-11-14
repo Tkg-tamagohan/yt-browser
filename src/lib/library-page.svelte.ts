@@ -11,10 +11,13 @@ import { createVideoActionState } from "$lib/video-actions.svelte";
 import {
   asErrorMessage,
   type FavoriteEntry,
+  type HistoryCursor,
+  type HistoryPage,
   type Playlist,
   type PlaylistEntry,
   type WatchHistory,
 } from "$lib/players.svelte";
+import { mergeHistoryPage } from "$lib/history-logic";
 import {
   discardQueue,
   newQueueEntry,
@@ -36,6 +39,17 @@ type Options = {
 /// PL_PAGE は内部詳細として公開しない
 export function createLibraryPageState(opts: Options) {
   let history = $state<WatchHistory[]>([]);
+  // 履歴一覧のカーソルページング（FR-52、仕様決定 CC）と検索絞り込み
+  // （FR-61、仕様決定 CL）。historyCursor は直前の応答の nextCursor を
+  // そのまま持つ（表示行の削除でカーソルが狂わないよう、末尾表示行の
+  // 行末値ではなく応答値を使う）。historyReq は検索入力のたびに進み、
+  // 遅れて返る旧条件の応答が一覧を上書きしないようにする世代番号
+  let historyCursor = $state<HistoryCursor | null>(null);
+  let historyHasMore = $state(false);
+  let historyLoadingMore = $state(false);
+  let historyQuery = $state("");
+  let historyReq = 0;
+  const HISTORY_PAGE = 500;
   let favorites = $state<FavoriteEntry[]>([]);
 
   // 選択中プレイリストとその中身。reqId は選択ごとに進み、
@@ -100,8 +114,60 @@ export function createLibraryPageState(opts: Options) {
     },
   });
 
+  /// 履歴の先頭ページを取り直す（初回ロードと検索語の変更で使う）。
+  /// historyQuery は呼び出し時点の値を送る（検索中は同じ条件の一覧に
+  /// カーソルページングが効く。FR-52・FR-61、仕様決定 CC・CL）
   async function loadHistory(): Promise<void> {
-    history = await invoke<WatchHistory[]>("history_list", { limit: 500 });
+    const req = ++historyReq;
+    const page = await invoke<HistoryPage>("history_list", {
+      cursor: null,
+      query: historyQuery,
+      limit: HISTORY_PAGE,
+    });
+    if (req !== historyReq) return;
+    history = page.items;
+    historyCursor = page.nextCursor;
+    historyHasMore = page.nextCursor !== null;
+  }
+
+  /// 検索ボックスの入力（FR-61、仕様決定 CL）。
+  /// 入力ごとに先頭ページを取り直し、取り直し中の追記は世代違いで捨てる。
+  /// 旧条件のカーソルは即座に無効化する（古いカーソルと新しい検索語が
+  /// 組み合わさった追記を防ぐ）
+  function setHistoryQuery(value: string): void {
+    historyQuery = value;
+    historyCursor = null;
+    historyHasMore = false;
+    void loadHistory().catch((e) => {
+      notify(t("library.failed", { message: asErrorMessage(e) }));
+    });
+  }
+
+  /// 履歴一覧の次ページを末尾へ追記する（FR-52、仕様決定 CC）。
+  /// 世代は進めず、検索語の変更や取り直しが始まればこの追記は
+  /// 自動で失効する（feed の loadMoreItems と同じ構造）
+  async function loadMoreHistory(): Promise<void> {
+    const cursor = historyCursor;
+    if (!cursor || historyLoadingMore) return;
+    historyLoadingMore = true;
+    const req = historyReq;
+    try {
+      const page = await invoke<HistoryPage>("history_list", {
+        cursor,
+        query: historyQuery,
+        limit: HISTORY_PAGE,
+      });
+      if (req !== historyReq) return;
+      history = mergeHistoryPage(history, page.items);
+      historyCursor = page.nextCursor;
+      historyHasMore = page.nextCursor !== null;
+    } catch (e) {
+      if (req === historyReq) {
+        notify(t("library.failed", { message: asErrorMessage(e) }));
+      }
+    } finally {
+      historyLoadingMore = false;
+    }
   }
 
   async function loadFavorites(): Promise<void> {
@@ -760,6 +826,15 @@ export function createLibraryPageState(opts: Options) {
     set history(v: WatchHistory[]) {
       history = v;
     },
+    get historyQuery() {
+      return historyQuery;
+    },
+    get historyHasMore() {
+      return historyHasMore;
+    },
+    get historyLoadingMore() {
+      return historyLoadingMore;
+    },
     get favorites() {
       return favorites;
     },
@@ -860,6 +935,8 @@ export function createLibraryPageState(opts: Options) {
       return listReorderBusy;
     },
     loadHistory,
+    loadMoreHistory,
+    setHistoryQuery,
     loadFavorites,
     play,
     removeHistory,

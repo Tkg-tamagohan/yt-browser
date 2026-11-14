@@ -3,6 +3,8 @@
   // このコンポーネントは表示だけを受け持つ。タブ切替で再取得しない
   // 現行挙動を維持するため、ロードはここでは行わない。
   // va（VideoActions の状態）はプレイリストタブと共有の 1 インスタンス
+  // 検索ボックス（FR-61、仕様決定 CL）と「さらに読み込む」（FR-52、
+  // 仕様決定 CC）の状態もファクトリ側にあり、ここでは配線だけ行う
   import { t } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
   import VideoActions from "$lib/VideoActions.svelte";
@@ -15,6 +17,14 @@
 
   type Props = {
     history: WatchHistory[];
+    /// 検索ボックスの現在値（FR-61、仕様決定 CL）
+    searchQuery: string;
+    /// 検索ボックスの入力。入力のたびに先頭ページが取り直される
+    onSearchInput: (value: string) => void;
+    /// 「さらに読み込む」の表示可否と実行（FR-52、仕様決定 CC）
+    hasMore: boolean;
+    loadingMore: boolean;
+    loadMore: () => Promise<void>;
     play: (videoId: string, resume: boolean) => Promise<void>;
     removeHistory: (videoId: string) => Promise<void>;
     /// ファクトリ内の単一インスタンス（playlists がプレイリスト一覧の本体）
@@ -22,7 +32,18 @@
     /// VideoActions からのプレイリスト追加通知（FR-7）
     onPlaylistAdd: (playlistId: number) => Promise<void>;
   };
-  let { history, play, removeHistory, va, onPlaylistAdd }: Props = $props();
+  let {
+    history,
+    searchQuery,
+    onSearchInput,
+    hasMore,
+    loadingMore,
+    loadMore,
+    play,
+    removeHistory,
+    va,
+    onPlaylistAdd,
+  }: Props = $props();
 
   function progressOf(h: WatchHistory): string {
     if (h.completed) return t("library.history.completed");
@@ -37,8 +58,20 @@
   }
 </script>
 
+    <div class="history-search">
+      <input
+        type="text"
+        value={searchQuery}
+        placeholder={t("library.history.searchPlaceholder")}
+        oninput={(e) => onSearchInput(e.currentTarget.value)}
+      />
+    </div>
     {#if history.length === 0}
-      <p class="subtle">{t("library.history.empty")}</p>
+      <p class="subtle">
+        {searchQuery.trim()
+          ? t("library.history.searchEmpty")
+          : t("library.history.empty")}
+      </p>
     {:else}
       <ul class="rows">
         {#each history as h (h.videoId)}
@@ -80,4 +113,26 @@
           </VideoRow>
         {/each}
       </ul>
+      {#if hasMore}
+        <button
+          class="link load-more"
+          onclick={() => void loadMore()}
+          disabled={loadingMore}
+        >
+          {loadingMore
+            ? t("related.loading")
+            : t("library.history.loadMore")}
+        </button>
+      {/if}
     {/if}
+
+<style>
+  .history-search {
+    margin-bottom: 12px;
+  }
+
+  .history-search input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+</style>

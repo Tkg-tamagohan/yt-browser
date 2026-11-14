@@ -180,6 +180,28 @@ pub struct WatchHistory {
     pub completed: bool,
 }
 
+/// `history_list` のページングカーソル（FR-52、仕様決定 CC）。
+/// 前ページの末尾行を指し、この行の次（より古い側）から続きを返す。
+/// 同じ `last_watched_at`（秒精度）の並びは rowid 降順で決定的にするため、
+/// カーソルは一覧の全順序（`last_watched_at` 降順、rowid 降順）と同じ対を持つ。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCursor {
+    /// 末尾行の最終視聴日時。
+    pub last_watched_at: String,
+    /// 末尾行の rowid（同時刻の並びの決め手）。
+    pub rowid: i64,
+}
+
+/// `history_list` の 1 ページ分（FR-52、仕様決定 CC）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub items: Vec<WatchHistory>,
+    /// 次ページの取得にそのまま渡すカーソル。末尾まで達したら None。
+    pub next_cursor: Option<HistoryCursor>,
+}
+
 /// `monitor_list` コマンドの戻り値要素（FR-31、仕様決定 AZ）。
 /// 接続中モニター 1 台分。起動ディスプレイ設定の選択肢として使う。
 #[derive(Debug, Clone, Serialize)]
