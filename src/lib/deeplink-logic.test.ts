@@ -51,6 +51,19 @@ describe("DL-02 classifyTarget", () => {
     expect(classifyTarget("https://www.youtube.com/shorts/dQw4w9WgXcQ")).toEqual(
       { kind: "video", videoId: "dQw4w9WgXcQ", startSec: null },
     );
+    expect(classifyTarget("https://www.youtube.com/shorts/dQw4w9WgXcQ/")).toEqual(
+      { kind: "video", videoId: "dQw4w9WgXcQ", startSec: null },
+    );
+    expect(classifyTarget("https://www.youtube.com/live/dQw4w9WgXcQ")).toEqual({
+      kind: "video",
+      videoId: "dQw4w9WgXcQ",
+      startSec: null,
+    });
+    expect(classifyTarget("https://www.youtube.com/live/dQw4w9WgXcQ/")).toEqual({
+      kind: "video",
+      videoId: "dQw4w9WgXcQ",
+      startSec: null,
+    });
     expect(
       classifyTarget("https://music.youtube.com/watch?v=dQw4w9WgXcQ"),
     ).toEqual({ kind: "video", videoId: "dQw4w9WgXcQ", startSec: null });
@@ -94,6 +107,12 @@ describe("DL-02 classifyTarget", () => {
     expect(classifyTarget("https://www.youtube.com/")).toBeNull();
     expect(classifyTarget("https://example.com/watch?v=dQw4w9WgXcQ")).toBeNull();
     expect(classifyTarget("https://www.youtube.com/watch?v=short")).toBeNull();
+    expect(
+      classifyTarget("https://www.youtube.com/shorts/dQw4w9WgXcQextra"),
+    ).toBeNull();
+    expect(
+      classifyTarget("https://www.youtube.com/live/dQw4w9WgXcQextra"),
+    ).toBeNull();
     expect(classifyTarget("ftp://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBeNull();
   });
 });
