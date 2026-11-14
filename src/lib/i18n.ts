@@ -426,6 +426,36 @@ const ja = {
   "settings.feed.unsaved":
     "保存中にフィードの値が変更されました。もう一度保存してください",
 
+  // Phase 56: ライブ配信の待機（FR-44、仕様決定 BT）
+  "livewait.add": "配信を待機",
+  "livewait.waiting": "待機中",
+  "livewait.remove": "待機を解除",
+  "livewait.added": "配信を待機します: {title}",
+  "livewait.duplicate": "この動画は既に待機中です",
+  "livewait.live": "この動画はすでに放送中です（待機登録しません）",
+  "livewait.playNow": "再生する",
+  "livewait.ended": "この配信は終了しています（待機登録しません）",
+  "livewait.notBroadcast":
+    "放送予定のライブ・プレミア公開ではありません（待機登録しません）",
+  "livewait.addFailed": "配信待機の登録に失敗: {message}",
+  "livewait.removed": "待機を解除しました",
+  "livewait.removeFailed": "待機の解除に失敗: {message}",
+  "livewait.listFailed": "待機一覧の取得に失敗: {message}",
+  "livewait.tab": "待機",
+  "livewait.empty": "待機中の配信はありません",
+  "livewait.scheduledUnknown": "開始予定 不明",
+  "livewait.status": "ライブ待機: {message}",
+
+  // Phase 56: 設定画面のライブ待機セクション（live_wait.action）
+  "settings.livewait.title": "ライブ待機",
+  "settings.livewait.desc":
+    "待機中の配信が開始されたときの動作。次回の開始検出から反映される",
+  "settings.livewait.action": "配信開始時の動作",
+  "settings.livewait.action.play": "新規インスタンスで自動再生",
+  "settings.livewait.action.notify": "トースト通知のみ",
+  "settings.livewait.unsaved":
+    "保存中にライブ待機の値が変更されました。もう一度保存してください",
+
 } as const;
 
 export type MessageKey = keyof typeof ja;

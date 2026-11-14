@@ -5,6 +5,7 @@
   import { appNotices, runNoticeAction } from "$lib/notices.svelte";
   import { initDeepLinks } from "$lib/deeplink.svelte";
   import { preventFileDrop } from "$lib/file-drop-logic";
+  import { initLiveWaits } from "$lib/livewait.svelte";
   import PlayerCards from "$lib/PlayerCards.svelte";
   import QueuePanel from "$lib/QueuePanel.svelte";
   import { queuePanel, tempQueue } from "$lib/queue.svelte";
@@ -38,6 +39,15 @@
   $effect(() => {
     if (isChatPopup) return;
     checkForUpdateAtStartup();
+  });
+
+  // ライブ待機（FR-44、仕様決定 BT）。一覧の初期取得と
+  // livewait://changed・livewait://status の購読を始める。
+  // チャットポップアップ窓では購読しない（待機の登録・解除は
+  // コマンド経由のため本体窓だけで足りる）
+  $effect(() => {
+    if (isChatPopup) return;
+    void initLiveWaits();
   });
 </script>
 

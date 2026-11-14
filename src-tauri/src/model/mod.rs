@@ -479,6 +479,58 @@ pub struct QueueSnapshot {
     pub current_index: i64,
 }
 
+/// `live_waits` の 1 行（FR-44、仕様決定 BT）。待機一覧と
+/// `livewait://changed` の整合対象。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveWait {
+    pub video_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub thumbnail_url: Option<String>,
+    /// 予定開始（epoch ms）。InnerTube の予定時刻が無い項目は None。
+    pub scheduled_start_ms: Option<i64>,
+    /// 登録時刻（epoch ms）。予定の無い項目の自動解除期限の起点。
+    pub registered_ms: i64,
+}
+
+/// `live_wait_add` の結果区分（仕様決定 BT(1) の登録時確認）。
+/// `added` 以外は登録されない。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "result", rename_all = "camelCase")]
+pub enum LiveWaitAddOutcome {
+    /// 登録された。`scheduled_start_ms` は検出した予定時刻（無い場合 null）。
+    Added { scheduled_start_ms: Option<i64> },
+    /// 同一動画が既に待機中（重複抑止）。
+    Duplicate,
+    /// すでに放送中。通常再生を案内する。
+    Live,
+    /// 放送終了済み（`endTimestamp` あり）。
+    Ended,
+    /// `liveBroadcastDetails` の無い通常動画（待機対象ではない）。
+    NotBroadcast,
+}
+
+/// `livewait://changed` イベントのペイロード（設計書 §3.2）。
+/// 待機集合が変わった通知。対象が分かる場合は `video_id` を載せる。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveWaitChanged {
+    pub video_id: Option<String>,
+}
+
+/// `livewait://status` イベントのペイロード（設計書 §3.2）。
+/// 開始検出・終了・自動解除・確認失敗の継続をトーストへ流す。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveWaitStatus {
+    pub video_id: Option<String>,
+    /// "info" | "warn" | "error"。
+    pub level: String,
+    pub message: String,
+}
+
 /// チャンネル ID（`UC` プレフィックス + 22 文字）の形式チェック。
 pub fn is_channel_id(s: &str) -> bool {
     s.len() == 24

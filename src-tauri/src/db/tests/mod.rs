@@ -3,6 +3,7 @@ mod feed;
 mod filters;
 mod history;
 mod library;
+mod livewait;
 mod migrations;
 mod queue;
 mod settings;

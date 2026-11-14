@@ -49,6 +49,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
+| `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§6.4） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
@@ -125,6 +126,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `queue_load` | なし | `Result<QueueSnapshot>`（`items`＋`current_index`） |
 | `video_meta_lookup` | `video_id` | `Result<Option<VideoRef>>`（台帳・履歴のどちらにも無ければ None） |
 | `video_meta_resolve` | `video_id` | `Result<Option<VideoRef>>`（InnerTube `player` の `videoDetails` から表示メタ。タイトルが取れなければ None。FR-29、仕様決定 BD） |
+| `live_wait_add` | `video`（`VideoRef`） | `Result<LiveWaitAddOutcome>`（`result` は `added` / `duplicate` / `live` / `ended` / `notBroadcast`。登録前に InnerTube `player` の放送状態を確認し、開始前のみ `added` で登録する。FR-44、仕様決定 BT） |
+| `live_wait_remove` | `video_id` | `Result<()>`（未登録でも正常終了） |
+| `live_wait_list` | なし | `Result<Vec<LiveWait>>`（予定時刻の昇順・未定は末尾） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -180,6 +184,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=` / `yt-browser://queue?url=`）の受信（§3.4） |
 | `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
 | `settings://changed` | `{ key, value }` | `settings_set` のコミット毎に発火。コミット済みの値を載せるため購読側の再読み取りは不要。設定値を保持する画面（ホームの逆モードボタンが使う `pip.default` など）が画面外の変更に追従するために使う |
+| `livewait://changed` | `{ videoId? }` | 待機集合の変更（登録・解除・開始検出・終了・自動解除・予定時刻の追随更新）。購読側は `live_wait_list` で一覧を取り直す（FR-44、仕様決定 BT） |
+| `livewait://status` | `{ videoId?, level, message }` | 待機の状態通知。開始検出（`notify` 動作・自動再生の成否）、終了・自動解除、状態確認の劣化・復帰をトーストへ流す（FR-44、仕様決定 BT） |
 
 `player://state` は mpv の `time-pos` 変化をそのまま横流しするとイベント洪水になるため、サンプリングで間引いて送る。
 
@@ -209,6 +215,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定） |
+| `live_wait.action` | `play` / `notify` | ライブ待機の開始検出時の動作（§6.4、FR-44、仕様決定 BT）。`play` は新規インスタンスで自動再生、`notify` はトースト通知のみ。未設定・その他の値は `play` |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -758,6 +765,36 @@ NG メッセージも送信自体は行い、UI 側の表示だけをフィル�
 
 重複除去はセッション内の既処理 `item_id` 集合（上限 1 万件、超過分は古い順に破棄）が担い、応答内と処理済みの重複を除く。
 
+### 6.4 ライブ待機ポーラー（FR-44、仕様決定 BT）
+
+`live_waits` に登録された放送予定のライブ・プレミア公開予定を、バックエンドの
+ポーラーが InnerTube `player` 応答で巡回する。待機リストは DB へ保存するため
+再起動でそのまま復元され、ポーリングも再開される（仕様決定 BT(5)）。
+
+- 登録: `live_wait_add` が行アクション「配信を待機」から呼ばれ、先に InnerTube で
+  放送状態を確認する。`isLiveNow` 真は放送中として登録せず `live` を返し
+  （通常再生を案内）、`endTimestamp` ありは `ended`、`liveBroadcastDetails` も
+  `isUpcoming` も無い通常動画は `notBroadcast` を返す。開始前のみ `added` で
+  `live_waits` へ登録し、同一動画は `duplicate` で抑止する（仕様決定 BT(1)(6)）
+- 状態分類: 優先順位は「放送中（`isLiveNow` 真）> 終了済み（`endTimestamp` あり）>
+  開始前（`liveBroadcastDetails` または `videoDetails.isUpcoming` あり）> 非放送」。
+  予定時刻は `scheduledStartTimestamp` を優先し、無ければ `startTimestamp` を使う
+  （暫定解釈: 要件が名指しする `scheduledStartTimestamp` は 2026-11 時点の実応答では
+  未確認で、予約配信のロビーでは `startTimestamp` に予定開始が入ることを確認した）
+- ポーリング間隔: 予定時刻が「開始 2 分前〜予定 30 分超過」の直前窓内は 15 秒、
+  それ以外（予定無しを含む）は 60 秒（暫定値。仕様決定 BT は「直前から短間隔、
+  無ければ 60 秒程度」のみ指定）。予定超過後も一定時間は短間隔で遅延開始を追う
+- 遷移: 放送中の検出で待機を解除し、`live_wait.action` が `play` なら新規
+  インスタンスで自動再生（`play_video` と同じ pip・画質の解決順、レジュームは使わない）、
+  `notify` なら `livewait://status` のトースト通知のみ。`endTimestamp` の検出は
+  通知して解除する。開始予定から 24 時間を超えて未開始の項目は自動解除する
+  （予定の無い項目は登録時刻を起点とする暫定解釈）。ポーリングで InnerTube 側の
+  予定変更を検知したら保存値を追随更新する
+- `liveBroadcastDetails` をポーリング中に失った項目（中止・非公開化など）は
+  異常系として定間隔で追い続け、自動解除期限の掃除に委ねる（暫定解釈）
+- 状態確認の連続失敗は 2 回で `livewait://status` の warn 通知を出し、復帰時に
+  info 通知する（フィードポーラーと同じ方針）
+
 ## 7. NG フィルタエンジン（技術方針 M）
 
 フィルタのモデルは `target`（`video_title` / `video_desc` / `channel_title` / `channel_id` / `chat_text` / `chat_author`）× `kind`（`literal` / `regex`）の組み合わせで、評価対象から独立した判定器にする。
@@ -873,6 +910,16 @@ CREATE TABLE queue_state (
   current_index INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE live_waits (
+  video_id TEXT PRIMARY KEY,           -- 同一動画の重複待機抑止は主キーで担保（FR-44）
+  title TEXT NOT NULL,
+  channel_id TEXT,
+  channel_title TEXT,
+  thumbnail_url TEXT,
+  scheduled_start_ms INTEGER,          -- 予定開始（epoch ms）。不明は NULL
+  registered_ms INTEGER NOT NULL       -- 登録時刻（epoch ms）。予定の無い項目の自動解除の起点
+);
+
 CREATE TABLE schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -894,6 +941,7 @@ CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
 - `queue_items` / `queue_state` は一時キューの永続化（FR-30、仕様決定 AY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。プレイリストキューは保存しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する
+- `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§6.4）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
 
 ## 9. エラーハンドリングと変更耐性
 

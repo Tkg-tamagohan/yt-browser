@@ -140,10 +140,17 @@ export const queueMeta = $state<{ list: Map<string, QueueItemMeta> }>({
 
 /// キューパネルの開閉と表示対象キュー（FR-26）。ナビ入口とキューを
 /// 背負うカードの両方から共有する。`selected` は表示対象キューのキーで、
-/// 選択中のキューが消滅したら一時キューへ戻すのはパネル側の責務
-export const queuePanel = $state<{ open: boolean; selected: QueueKey }>({
+/// 選択中のキューが消滅したら一時キューへ戻すのはパネル側の責務。
+/// `waitsTab` が立つ間はキューではなくライブ待機タブ（FR-44、
+/// 仕様決定 BT(2)）を表示する
+export const queuePanel = $state<{
+  open: boolean;
+  selected: QueueKey;
+  waitsTab: boolean;
+}>({
   open: false,
   selected: null,
+  waitsTab: false,
 });
 
 /// メタを記憶する。キューへの投入経路（キューに追加・次に再生・

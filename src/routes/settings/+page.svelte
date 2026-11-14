@@ -28,6 +28,7 @@
   import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
+  import SettingsLiveWaitSection from "$lib/SettingsLiveWaitSection.svelte";
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
   import SettingsQualitySection from "$lib/SettingsQualitySection.svelte";
   import SettingsSponsorSection from "$lib/SettingsSponsorSection.svelte";
@@ -73,6 +74,9 @@
   let pipQuality = $state("");
   // フィード一覧に Shorts を表示するか（feed.show_shorts、仕様決定 AP）。既定は off
   let feedShowShorts = $state(false);
+  // 待機中の配信が始まったときの動作（live_wait.action、FR-44・仕様決定 BT(3)）。
+  // play=新規インスタンスで自動再生 / notify=トースト通知のみ。既定は play
+  let liveWaitAction = $state("play");
   // 再生窓を開くディスプレイ（window.screen、FR-31・仕様決定 AZ）。
   // 値はモニター名。空は自動（mpv 既定）
   let windowScreen = $state("");
@@ -206,6 +210,19 @@
       if (feedShowShorts !== fs) {
         invalid = true;
         notify(t("settings.feed.unsaved"));
+      }
+      // live_wait.action: select の値（play|notify）をそのまま保存する
+      // （FR-44、仕様決定 BT(3)）。次回の開始検出から反映される。
+      // 保存待ちの間に select が変更されると DB と画面がずれるため、
+      // スナップショットと比較してずれていれば未保存として通知する
+      const lwSnapshot = liveWaitAction;
+      await invoke("settings_set", {
+        key: "live_wait.action",
+        value: lwSnapshot,
+      });
+      if (liveWaitAction !== lwSnapshot) {
+        invalid = true;
+        notify(t("settings.livewait.unsaved"));
       }
       // window.screen: モニター名をそのまま保存（空は自動＝mpv 既定）。
       // 保存待ちの間に select が変更されると DB と画面がずれるため、
@@ -371,6 +388,11 @@
         key: "feed.show_shorts",
       });
       feedShowShorts = feedShowShortsEnabled(feedShortsRaw);
+      const liveWaitRaw = await invoke<string | null>("settings_get", {
+        key: "live_wait.action",
+      });
+      // 未設定・その他の値は play（仕様決定 BT(3) の既定）
+      liveWaitAction = liveWaitRaw?.trim() === "notify" ? "notify" : "play";
       const screenRaw = await invoke<string | null>("settings_get", {
         key: "window.screen",
       });
@@ -491,6 +513,8 @@
   />
 
   <SettingsFeedSection {loading} bind:feedShowShorts={feedShowShorts} />
+
+  <SettingsLiveWaitSection {loading} bind:liveWaitAction={liveWaitAction} />
 
   <SettingsBlockedSection {notify} />
 

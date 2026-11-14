@@ -9,6 +9,7 @@ mod error;
 mod feed;
 mod filter;
 mod innertube;
+mod livewait;
 mod model;
 mod mpv;
 pub mod native_host;
@@ -155,15 +156,26 @@ pub fn run() {
             app.manage(ng.clone());
 
             // ライブチャットのポーラー（設計書 §6.2）。
-            let chat =
-                std::sync::Arc::new(chat::ChatPoller::new(app.handle().clone(), innertube, ng));
+            let chat = std::sync::Arc::new(chat::ChatPoller::new(
+                app.handle().clone(),
+                innertube.clone(),
+                ng,
+            ));
             app.manage(chat);
 
             // 購読フィードのポーラー（設計書 §1.2）。TICK ごとに期限の来た
             // チャンネルの RSS を条件付き取得する。
-            let poller = feed::FeedPoller::new(db, app.handle().clone());
+            let poller = feed::FeedPoller::new(db.clone(), app.handle().clone());
             app.manage(poller.clone());
             tauri::async_runtime::spawn(poller.run());
+
+            // ライブ配信待機のポーラー（FR-44、仕様決定 BT）。
+            // DB の待機リストを復元し、予定時刻に応じた間隔で InnerTube
+            // `player` の放送状態を巡回する。再起動後もそのまま再開される
+            let live_wait =
+                livewait::LiveWaitPoller::new(db, app.handle().clone(), innertube);
+            app.manage(live_wait.clone());
+            tauri::async_runtime::spawn(live_wait.run());
 
             // deep link の保留バッファと cold start 分の取り込み。
             // 起動中への転送は single-instance のコールバック側が担う
@@ -237,6 +249,9 @@ pub fn run() {
             commands::filter_add,
             commands::filter_remove,
             commands::filter_list,
+            commands::live_wait_add,
+            commands::live_wait_remove,
+            commands::live_wait_list,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

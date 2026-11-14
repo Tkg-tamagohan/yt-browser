@@ -127,6 +127,19 @@ impl InnerTube {
         Ok(parse_video_meta(&v))
     }
 
+    /// `player` エンドポイントで放送状態（`liveBroadcastDetails` と
+    /// `videoDetails.isUpcoming`）を取る（FR-44、仕様決定 BT）。
+    /// 待機登録の可否判定とポーラーの状態分類に使う。
+    pub async fn broadcast_status(
+        &self,
+        video_id: &str,
+    ) -> Result<BroadcastStatus, InnerTubeError> {
+        let v = self
+            .post_json("player", json!({ "videoId": video_id }))
+            .await?;
+        Ok(parse_broadcast_status(&v))
+    }
+
     /// 指定動画の watch ページ HTML を取得する（チャットの初期継続トークン用）。
     pub async fn watch_html(&self, video_id: &str) -> Result<String, InnerTubeError> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
@@ -256,6 +269,54 @@ pub fn extract_broadcast_window(html: &str) -> BroadcastWindow {
         is_live_now: details
             .and_then(|d| d.get("isLiveNow"))
             .and_then(|b| b.as_bool()),
+    }
+}
+
+/// `player` 応答の放送状態（FR-44、仕様決定 BT）。待機の状態分類は
+/// `livewait` モジュールが行う（ここでは生の値だけを抜き出す）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BroadcastStatus {
+    /// `liveBroadcastDetails.isLiveNow`。
+    pub is_live_now: Option<bool>,
+    /// `liveBroadcastDetails.startTimestamp`（epoch ms）。
+    /// 予約配信のロビーではここに予定開始が入る（2026-11 実応答で確認）。
+    pub start_ms: Option<i64>,
+    /// `liveBroadcastDetails.endTimestamp`（epoch ms）。
+    pub end_ms: Option<i64>,
+    /// `liveBroadcastDetails.scheduledStartTimestamp`（epoch ms）。
+    /// 要件が名指しするフィールドだが実応答では未確認。
+    /// 返ってくる環境では startTimestamp に優先して予定時刻とする。
+    pub scheduled_start_ms: Option<i64>,
+    /// `liveBroadcastDetails` オブジェクトの有無。
+    pub has_details: bool,
+    /// `videoDetails.isUpcoming`（公開予定のロビー動画か）。
+    pub is_upcoming: bool,
+}
+
+/// `player` 応答 JSON から放送状態を取る。`liveBroadcastDetails` は
+/// `microformat.playerMicroformatRenderer` 配下にあるため、固定パスではなく
+/// キー名で探索する（extract_broadcast_window と同じ方針）。
+fn parse_broadcast_status(v: &Value) -> BroadcastStatus {
+    let details = find_key(v, "liveBroadcastDetails");
+    let video = find_key(v, "videoDetails");
+    let detail_ms = |key: &str| {
+        details
+            .and_then(|d| d.get(key))
+            .and_then(|t| t.as_str())
+            .and_then(iso8601_ms)
+    };
+    BroadcastStatus {
+        is_live_now: details
+            .and_then(|d| d.get("isLiveNow"))
+            .and_then(|b| b.as_bool()),
+        start_ms: detail_ms("startTimestamp"),
+        end_ms: detail_ms("endTimestamp"),
+        scheduled_start_ms: detail_ms("scheduledStartTimestamp"),
+        has_details: details.is_some(),
+        is_upcoming: video
+            .and_then(|d| d.get("isUpcoming"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false),
     }
 }
 
@@ -976,5 +1037,80 @@ mod tests {
         assert!(!w(None, None).is_ended());
         // isLiveNow:true だが end がある矛盾形は「放送中」を優先
         assert!(!w(Some(true), Some(1)).is_ended());
+    }
+
+    /// FR-44/BT: `player` 応答から放送状態を取る。
+    /// 予約配信の実応答（isLiveNow:false＋startTimestamp＋isUpcoming）を再現する。
+    #[test]
+    fn parse_broadcast_status_upcoming() {
+        // 2026-11 実機観測の形: playabilityStatus は分類に使わない
+        let v = serde_json::json!({
+            "playabilityStatus": {"status": "LIVE_STREAM_OFFLINE"},
+            "videoDetails": {"videoId": "abc12345678", "isUpcoming": true,
+                             "isLiveContent": true},
+            "microformat": {"playerMicroformatRenderer": {
+                "liveBroadcastDetails": {
+                    "isLiveNow": false,
+                    "startTimestamp": "2028-03-21T15:00:00+00:00"
+                }
+            }}
+        });
+        let s = parse_broadcast_status(&v);
+        assert_eq!(s.is_live_now, Some(false));
+        assert_eq!(s.start_ms, Some(1_837_263_600_000));
+        assert!(s.end_ms.is_none());
+        assert!(s.scheduled_start_ms.is_none());
+        assert!(s.has_details);
+        assert!(s.is_upcoming);
+    }
+
+    /// FR-44/BT: 放送中と終了済みの分類材料。`scheduledStartTimestamp` が
+    /// あれば startTimestamp より優先して予定時刻へ入れる（未観測フィールド）。
+    #[test]
+    fn parse_broadcast_status_live_ended_scheduled() {
+        let live = serde_json::json!({
+            "videoDetails": {"videoId": "a"},
+            "microformat": {"playerMicroformatRenderer": {
+                "liveBroadcastDetails": {
+                    "isLiveNow": true,
+                    "startTimestamp": "2026-11-03T18:00:39+00:00"
+                }
+            }}
+        });
+        let s = parse_broadcast_status(&live);
+        assert_eq!(s.is_live_now, Some(true));
+        assert!(s.has_details && !s.is_upcoming);
+
+        let ended = serde_json::json!({
+            "videoDetails": {"videoId": "b"},
+            "microformat": {"playerMicroformatRenderer": {
+                "liveBroadcastDetails": {
+                    "isLiveNow": false,
+                    "startTimestamp": "2026-05-01T12:00:00Z",
+                    "endTimestamp": "2026-05-01T13:00:00Z"
+                }
+            }}
+        });
+        let s = parse_broadcast_status(&ended);
+        assert_eq!(s.is_live_now, Some(false));
+        assert_eq!(s.end_ms, Some(1_777_640_400_000));
+
+        let scheduled = serde_json::json!({
+            "videoDetails": {"videoId": "c"},
+            "microformat": {"playerMicroformatRenderer": {
+                "liveBroadcastDetails": {
+                    "isLiveNow": false,
+                    "startTimestamp": "2028-03-21T15:00:00+00:00",
+                    "scheduledStartTimestamp": "2028-03-21T16:00:00+00:00"
+                }
+            }}
+        });
+        let s = parse_broadcast_status(&scheduled);
+        assert_eq!(s.scheduled_start_ms, Some(1_837_267_200_000));
+
+        // 通常動画は liveBroadcastDetails を持たない
+        let vod = serde_json::json!({"videoDetails": {"videoId": "dQw4w9WgXcQ"}});
+        let s = parse_broadcast_status(&vod);
+        assert!(!s.has_details && !s.is_upcoming && s.is_live_now.is_none());
     }
 }

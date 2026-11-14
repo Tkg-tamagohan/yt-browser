@@ -10,6 +10,11 @@
   import { notify } from "$lib/notices.svelte";
   import { asErrorMessage } from "$lib/players.svelte";
   import {
+    liveWaits,
+    liveWaitRemove,
+  } from "$lib/livewait.svelte";
+  import { fmtWaitStart } from "$lib/livewait-logic";
+  import {
     queues,
     queueMetaOf,
     queuePanel,
@@ -27,6 +32,12 @@
     queues.list.has(queuePanel.selected) ? queuePanel.selected : null,
   );
   const sel = $derived(queues.list.get(selKey));
+
+  // キュータブの選択（待機タブの解除とペア）
+  function selectQueue(key: QueueKey): void {
+    queuePanel.selected = key;
+    queuePanel.waitsTab = false;
+  }
 
   // 上下ボタンと共通の移動。実行中は queueMove 側で武装を張り替える
   let dragFrom = $state<number | null>(null);
@@ -54,8 +65,8 @@
   <div class="qp-tabs">
     <button
       class="qp-tab"
-      class:active={selKey === null}
-      onclick={() => (queuePanel.selected = null)}
+      class:active={!queuePanel.waitsTab && selKey === null}
+      onclick={() => selectQueue(null)}
     >
       {t("queue.tab.temp")}
     </button>
@@ -63,16 +74,57 @@
       {#if key !== null}
         <button
           class="qp-tab"
-          class:active={selKey === key}
+          class:active={!queuePanel.waitsTab && selKey === key}
           title={q.playlistName}
-          onclick={() => (queuePanel.selected = key)}
+          onclick={() => selectQueue(key)}
         >
           {q.playlistName}
         </button>
       {/if}
     {/each}
+    <!-- ライブ待機タブ（FR-44、仕様決定 BT(2)）。キュータブの隣に置く -->
+    <button
+      class="qp-tab"
+      class:active={queuePanel.waitsTab}
+      onclick={() => (queuePanel.waitsTab = true)}
+    >
+      {t("livewait.tab")}
+    </button>
   </div>
 
+  {#if queuePanel.waitsTab}
+    <div class="qp-head">
+      <h3>
+        {t("livewait.tab")}
+        <span class="qp-count">{liveWaits.list.length}</span>
+      </h3>
+      <button class="link" onclick={() => (queuePanel.open = false)}>×</button>
+    </div>
+    {#if liveWaits.list.length === 0}
+      <p class="subtle">{t("livewait.empty")}</p>
+    {:else}
+      <ul class="qp-list">
+        {#each liveWaits.list as w (w.videoId)}
+          <li>
+            <span class="qp-text">
+              <span class="qp-title" title={w.title}>{w.title}</span>
+              {#if w.channelTitle}
+                <span class="qp-ch">{w.channelTitle}</span>
+              {/if}
+              <span class="qp-ch">
+                {fmtWaitStart(w.scheduledStartMs) || t("livewait.scheduledUnknown")}
+              </span>
+            </span>
+            <button
+              class="link danger"
+              title={t("livewait.remove")}
+              onclick={() => void liveWaitRemove(w.videoId)}>×</button
+            >
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {:else}
   <div class="qp-head">
     <h3>
       {t("queue.panel.title")}
@@ -160,6 +212,7 @@
         </li>
       {/each}
     </ul>
+  {/if}
   {/if}
 </aside>
 
