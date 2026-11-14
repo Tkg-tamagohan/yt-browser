@@ -36,7 +36,9 @@ import {
   persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
+  resolveAddTarget,
   restoredIndex,
+  shuffleTail,
   type QueueEntry,
   type QueuePersistItem,
 } from "./queue-logic";
@@ -108,8 +110,10 @@ export function queueAt(key: QueueKey): QueueState | undefined {
   return queues.list.get(key);
 }
 
-/// 一時キューのエントリ（常時存在）。「キューに追加」「次に再生」の
-/// 送り先は実行中キューの有無に関わらず常にこちら（FR-26、仕様決定 AS）
+/// 一時キューのエントリ（常時存在）。「次に再生」の送り先は実行中
+/// キューの有無に関わらず常にこちら（FR-26、仕様決定 AS）。
+/// 「キューに追加」はパネル選択中のキューへ向かうため、選択が無い・
+/// 消滅済みのときだけこちらへ入る（FR-45、仕様決定 BV）
 export function tempQueue(): QueueState {
   const q = queues.list.get(null);
   if (q === undefined) throw new Error("一時キューのエントリがありません");
@@ -596,15 +600,21 @@ export function queueStop(key: QueueKey): void {
   if (key === null) persistTempQueue();
 }
 
-/// 「キューに追加」（FR-20、仕様決定 AM・AS）。一時キューの末尾へ積む。
-/// 実行中キューがプレイリストキューでも送り先は常に一時キューで、
-/// 一時キュー実行中はそのキューへの追記として武装を張り替える。
-/// 同一動画の重複登録は許す
+/// 「キューに追加」（FR-20・FR-45、仕様決定 AM・AS・BV）。
+/// キューパネルで選択中のキューの末尾へ積む（選択が無い・消滅済みなら
+/// 一時キュー）。実行中のキューへの追加はそのまま武装を張り替えて
+/// 連続再生へ反映する。同一動画の重複登録は許す。
+/// 対象選択の UI は増やさず、パネルのタブ選択を対象指定として使う
+/// （「次に再生」は従来どおり一時キュー固定）
 export function queueAdd(v: VideoRef): void {
-  const q = tempQueue();
+  const key = resolveAddTarget(
+    queuePanel.selected,
+    queues.list.has(queuePanel.selected),
+  );
+  const q = queues.list.get(key) ?? tempQueue();
   rememberMeta(v);
   q.items = [...q.items, newQueueEntry(v.videoId)];
-  persistTempQueue();
+  if (key === null) persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
 }
 
@@ -657,6 +667,18 @@ export function queueMove(key: QueueKey, from: number, to: number): void {
   items.splice(to2, 0, m);
   q.index = indexAfterMove(q.index, from, to2);
   q.items = items;
+  if (key === null) persistTempQueue();
+  if (q.instanceId !== null) void armQueue(q);
+}
+
+/// 「残りをシャッフル」（FR-46、仕様決定 BW）。現在位置より後の項目を
+/// ランダムに並べ替える。項目一覧の順序変更として扱い、実行中は
+/// 既存の再武装経路で連続再生へ反映する（取り出しロジックは不変）。
+/// ループモードとは独立で、繰り返しの動作は従来どおり
+export function queueShuffleRest(key: QueueKey): void {
+  const q = queues.list.get(key);
+  if (q === undefined) return;
+  q.items = shuffleTail(q.items, q.index, Math.random);
   if (key === null) persistTempQueue();
   if (q.instanceId !== null) void armQueue(q);
 }
