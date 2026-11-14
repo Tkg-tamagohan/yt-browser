@@ -125,6 +125,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `take_open_urls` | なし | `Result<Vec<{seq, url}>>` |
 | `queue_save` | `items`（`QueueItem` 列）、`current_index` | `Result<()>` |
 | `queue_load` | なし | `Result<QueueSnapshot>`（`items`＋`current_index`） |
+| `queue_save_as_playlist` | `name`, `items`（`VideoRef` 列） | `Result<Playlist>`（FR-47、仕様決定 BX。選択中キューの項目を新規プレイリストへ複製） |
+| `queue_playlist_save` | `playlist_id`, `current_index` | `Result<()>`（FR-48、仕様決定 BY。プレイリストキューの現在位置の write-through） |
+| `queue_playlist_clear` | `playlist_id` | `Result<()>`（FR-48。保存済みプレイリストキュー行の消去） |
+| `queue_playlist_load` | なし | `Result<Vec<PlaylistQueueState>>`（FR-48。`playlist_id`・`playlist_name`・`current_index` の列） |
 | `video_meta_lookup` | `video_id` | `Result<Option<VideoRef>>`（台帳・履歴のどちらにも無ければ None） |
 | `video_meta_resolve` | `video_id` | `Result<Option<VideoRef>>`（InnerTube `player` の `videoDetails` から表示メタ。タイトルが取れなければ None。FR-29、仕様決定 BD） |
 | `live_wait_add` | `video`（`VideoRef`） | `Result<LiveWaitAddOutcome>`（`result` は `added` / `duplicate` / `live` / `ended` / `notBroadcast`。登録前に InnerTube `player` の放送状態を確認し、開始前のみ `added` で登録する。FR-44、仕様決定 BT） |
@@ -183,7 +187,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `sponsor://skipped` | `{ instanceId, videoId, category, segment, action }` | スキップまたは通知（`action` は `"skip"` / `"notify"`） |
 | `sponsor://segments` | `{ instanceId, videoId, segments: [{ category, start, end, action }] }` | SponsorBlock 区間の取得完了時にインスタンスごとに送出（FR-36、仕様決定 BI）。区間なしと取得失敗は空列。`action` は `"skip"` / `"notify"` / `"off"` |
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=` / `yt-browser://queue?url=`）の受信（§3.4） |
-| `library://playlists_changed` | `Playlist`（取り込まれたプレイリスト） | `playlist_import` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
+| `library://playlists_changed` | `Playlist`（作成されたプレイリスト） | `playlist_import`・`queue_save_as_playlist` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
 | `settings://changed` | `{ key, value }` | `settings_set` のコミット毎に発火。コミット済みの値を載せるため購読側の再読み取りは不要。設定値を保持する画面（ホームの逆モードボタンが使う `pip.default` など）が画面外の変更に追従するために使う |
 | `livewait://changed` | `{ videoId? }` | 待機集合の変更（登録・解除・開始検出・終了・自動解除・予定時刻の追随更新）。購読側は `live_wait_list` で一覧を取り直す（FR-44、仕様決定 BT） |
 | `livewait://status` | `{ videoId?, level, message }` | 待機の状態通知。開始検出（`notify` 動作・自動再生の成否）、終了・自動解除、状態確認の劣化・復帰をトーストへ流す（FR-44、仕様決定 BT） |
@@ -520,10 +524,22 @@ BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロン�
 未再生の次項目になるため、`playingCurrent` フラグで武装対象の先頭を
 切り替える（次項目を武装から落とすと再生されずに飛ばされる）。
 項目の表示メタ（タイトル・チャンネル名・サムネイル）は `queueMeta` に持つ。
-一時キューの分は項目列と現在位置とともに DB へ保存し（FR-30、仕様決定 AY）、
-プレイリストキューの分はセッション内メモリにのみ持ち DB には保存しない。プレイリストキューの
+一時キューの分は項目列と現在位置とともに DB へ保存する（FR-30、仕様決定 AY）。
+プレイリストキューの表示メタはセッション内メモリのみで DB には保存しない
+（現在位置は FR-48・仕様決定 BY で永続化する。項目列は `playlist_items` を
+正とするため表示メタは復元時に再取得する）。プレイリストキューの
 スナップショット作成時はプレイリスト項目のメタをそのまま登録するため、
 キュー内の一覧は動画 ID ではなく動画名で表示される。
+
+キューパネルの「プレイリストとして保存」は、選択中キューの項目を
+順序どおり新規プレイリストへ複製する（FR-47、仕様決定 BX）。
+名前入力で `queue_save_as_playlist` を呼び、バックエンドが
+`playlist_create`＋`playlist_add_many` で作成から項目登録までを済ませる。
+元のキューは保持し、複製した項目列は新しいプレイリストのものであって
+キューの uid は引き継がない（そのプレイリストからキューを作ったときに
+新規採番される）。`playlist_items` の主キー制約上、キュー内の
+同一動画の重複は複製先で潰れて先出の位置を保つ。
+作成に成功したら `library://playlists_changed` で新規プレイリストを通知する。
 
 キューは一時キュー 1 個（`playlistId` なし）とプレイリストごとの
 キュー（最大 1 個）を同時に保持する（FR-26、仕様決定 AS）。
@@ -563,8 +579,7 @@ BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロン�
 選択中のキューが消滅した場合は一時キューを表示対象に戻す。
 キューを背負うプレイヤーカードの「キュー」ボタンは自分のキューを
 選択状態でパネルを開く。ループ状態はインスタンス単位のままで、
-キューの帰属に関わらず既存の振る舞いを変えない。プレイリストキューと
-その表示メタはセッション内メモリのみで、アプリ再起動で消える。
+キューの帰属に関わらず既存の振る舞いを変えない。
 
 一時キューは DB へ永続化する（FR-30、仕様決定 AY）。保存は write-through で、
 一時キューの全ミューテーション（追加・挿入・削除・移動・位置の進行・停止・
@@ -580,7 +595,26 @@ FR-29）が復元済みキューの末尾へ追記される順序を保つ。
 連番を主キーとして同一動画の重複を許容し、項目のユニーク ID `uid`
 （BG-10、仕様決定 BK）と `video_id`・`title`・`channel_title`・
 `thumbnail_url` を項目行へ持って `videos` 台帳を汚染しない）と
-`queue_state`（単一行の `current_index`）とする。
+`queue_state`（`playlist_id` が NULL の行の `current_index`）とする。
+
+プレイリストキューも現在位置を DB へ永続化する（FR-48、仕様決定 BY。
+仕様決定 AY の「プレイリストキューは DB に保存しない」を改訂）。
+`queue_state` は v16 マイグレーションでキューごとの行へ広がり、
+`playlist_id` NULL の行（id=1）が一時キュー、NULL 以外の行が
+プレイリストキュー（playlist_id は対象プレイリストへの FK、
+ON DELETE CASCADE）を表す。保存実体は playlist_id と現在位置のみで、
+項目列は `playlist_items` を正として複製しない。
+プレイリストキューの各ミューテーション（開始・停止・位置の進行・
+項目の削除・移動・消費完了時の位置リセット）の後に
+`queue_playlist_save` で位置を write-through し、キュー消滅時は
+`queue_playlist_clear` で行を消す（対象プレイリストの削除では
+FK の CASCADE でも消える）。
+起動時は `queue_playlist_load` で永続化されたプレイリストキュー一覧を
+読み、各キューの項目列は `playlist_items` から取り直して停止状態
+（実行インスタンスなし）として組み立てる。復元したキューの項目の
+uid は新規採番とし、表示メタは `playlist_items` のもので埋める。
+対象プレイリストが空なら復元せず、残存する保存行も消す。
+一時キューの復元（FR-30）とは独立に動作する。
 
 ### 4.7 HDR 設定と mpv 追加引数（INV-1、仕様決定 Y）
 
@@ -998,7 +1032,11 @@ CREATE TABLE queue_items (
 );
 
 CREATE TABLE queue_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),   -- 単一行
+  id INTEGER PRIMARY KEY,                -- 1 は一時キュー行、以降はプレイリストキュー行
+  playlist_id INTEGER REFERENCES playlists(id) ON DELETE CASCADE,
+                                         -- NULL は一時キュー。非 NULL はプレイリスト
+                                         -- キュー（対象への FK、FR-48、仕様決定 BY）で、
+                                         -- プレイリスト削除で行も消える
   current_index INTEGER NOT NULL DEFAULT 0
 );
 
@@ -1022,6 +1060,8 @@ CREATE TABLE schema_migrations (
 CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC);
 CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);
 CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
+CREATE UNIQUE INDEX idx_queue_state_playlist
+  ON queue_state(playlist_id) WHERE playlist_id IS NOT NULL;
 ```
 
 設計上の注意を二点置く。
@@ -1032,7 +1072,7 @@ CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
   バックフィル投入（`feed_backfill`）は RSS とは別経路で、新規行を既読・投入済みで挿入し、プレースホルダは既読のまま `ingested=1` に確定する。投入済みの既存行は投稿日・既読を含めて書き換えない（FR-21、仕様決定 AN）。
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
-- `queue_items` / `queue_state` は一時キューの永続化（FR-30、仕様決定 AY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。プレイリストキューは保存しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する
+- `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v16 で単一行制約を外した）
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
 
 ## 9. エラーハンドリングと変更耐性

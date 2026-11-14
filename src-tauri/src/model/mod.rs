@@ -515,6 +515,17 @@ pub struct QueueSnapshot {
     pub current_index: i64,
 }
 
+/// `queue_playlist_load` の復元情報 1 行（FR-48、仕様決定 BY）。
+/// 永続化したプレイリストキューの対象・表示名・保存位置を返す。
+/// 項目列は持たず `playlist_items` を正とする
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistQueueState {
+    pub playlist_id: i64,
+    pub playlist_name: String,
+    pub current_index: i64,
+}
+
 /// `live_waits` の 1 行（FR-44、仕様決定 BT）。待機一覧と
 /// `livewait://changed` の整合対象。
 #[derive(Debug, Clone, Serialize)]

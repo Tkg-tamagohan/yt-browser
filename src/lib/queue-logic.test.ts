@@ -7,6 +7,8 @@
 // MQ-02: 「連続再生を止める」後のキュー位置（一時は先頭・プレイリストは保存）（FR-26）
 // LP-04: 一時キュー永続化の項目変換と復元位置（FR-30、仕様決定 AY）
 // QM-01: キュー表示メタのフォールバック判定（FR-29、仕様決定 BD）
+// QS-01: 「プレイリストとして保存」の項目列変換（FR-47、仕様決定 BX）
+// QS-02: プレイリストキュー復元の保存位置（FR-48、仕様決定 BY）
 import { describe, expect, test } from "vitest";
 import {
   armPlanFor,
@@ -19,6 +21,8 @@ import {
   queueEndOutcome,
   reconcileIndex,
   restoredIndex,
+  restoredPlaylistIndex,
+  saveItemsOf,
   type QueueEntry,
 } from "./queue-logic";
 
@@ -286,5 +290,58 @@ describe("QM-01 isFallbackTitle（FR-29、仕様決定 BD）", () => {
     expect(isFallbackTitle("動画タイトル", "abcdefghijk")).toBe(false);
     // 別動画の ID はこの項目にとっては実タイトル扱い（上書きしない）
     expect(isFallbackTitle("xyz98765432", "abcdefghijk")).toBe(false);
+  });
+});
+
+describe("QS-01 saveItemsOf（FR-47、仕様決定 BX）", () => {
+  // キュー表示メタの形に合わせた解決関数（queueMetaOf と同じ形）
+  const metaOf = (map: Record<string, { title: string; channelTitle: string | null; thumbnailUrl: string | null }>) =>
+    (videoId: string) =>
+      map[videoId] ?? { title: videoId, channelTitle: null, thumbnailUrl: null };
+
+  test("順序・重複・メタをそのまま VideoRef 列へ写す", () => {
+    const items = es("A", "B", "A", "C");
+    const out = saveItemsOf(
+      items,
+      metaOf({
+        A: { title: "動画A", channelTitle: "CH-A", thumbnailUrl: "thumb-a" },
+        C: { title: "動画C", channelTitle: null, thumbnailUrl: null },
+      }),
+    );
+    // 順序と同一動画の重複は保持する（重複可否はバックエンドの主キー側の判断）
+    expect(out.map((i) => i.videoId)).toEqual(["A", "B", "A", "C"]);
+    expect(out[0]).toEqual({
+      videoId: "A",
+      title: "動画A",
+      channelId: null,
+      channelTitle: "CH-A",
+      thumbnailUrl: "thumb-a",
+    });
+    // メタ未登録は videoId をタイトルに潰し、残りは null
+    expect(out[1]).toEqual({
+      videoId: "B",
+      title: "B",
+      channelId: null,
+      channelTitle: null,
+      thumbnailUrl: null,
+    });
+    // キュー項目の uid は複製へ持ち越さない（新規採番されるもの。BX(2)）
+    expect(out[2]).toEqual(out[0]);
+    // キューの表示メタは channel_id を持たないため常に null
+    expect(out.every((i) => i.channelId === null)).toBe(true);
+  });
+});
+
+describe("QS-02 restoredPlaylistIndex（FR-48、仕様決定 BY）", () => {
+  test("保存位置は項目数に収める（一時キュー復元と同じ規則）", () => {
+    expect(restoredPlaylistIndex(3, 5)).toBe(3);
+    expect(restoredPlaylistIndex(9, 5)).toBe(4);
+    expect(restoredPlaylistIndex(-1, 5)).toBe(0);
+    expect(restoredPlaylistIndex(0, 1)).toBe(0);
+  });
+
+  test("対象プレイリストが空（0 件）なら null（復元しない）", () => {
+    expect(restoredPlaylistIndex(0, 0)).toBeNull();
+    expect(restoredPlaylistIndex(3, 0)).toBeNull();
   });
 });
