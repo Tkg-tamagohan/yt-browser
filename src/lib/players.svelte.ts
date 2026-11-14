@@ -42,6 +42,9 @@ export type PlayerEnded = {
   /// 継続先として読み込みを開始した項目（FR-16、仕様決定 AA）。
   /// videoId と同一なら現在項目の繰り返し（ループ）。非継続時は null
   continuedVideoId: string | null;
+  /// 継続先項目のユニーク ID（BG-10、仕様決定 BK）。キュー位置は
+  /// この値で照合するため、同一動画の連続登録でもずれない。非継続時は null
+  continuedUid: number | null;
   /// このイベント時点の武装取り出し世代（仕様決定 AD）。
   /// `player_set_queue` の `baseSeq` に載せて古い置換を拒否させる
   armedSeq: number;

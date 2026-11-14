@@ -105,15 +105,15 @@
     <p class="subtle">{t("queue.empty")}</p>
   {:else}
     <ul class="qp-list">
-      {#each sel.items as vid, i (i)}
-        {@const meta = queueMetaOf(vid)}
+      {#each sel.items as item, i (item.uid)}
+        {@const meta = queueMetaOf(item.videoId)}
         <li
           class:playing={sel.instanceId !== null && i === sel.index}
           class:drop-target={dragOver === i && dragFrom !== i}
           draggable="true"
           ondragstart={(e) => {
             dragFrom = i;
-            e.dataTransfer?.setData("text/plain", vid);
+            e.dataTransfer?.setData("text/plain", item.videoId);
             if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
           }}
           ondragover={(e) => {

@@ -316,4 +316,13 @@ pub const MIGRATIONS: &[Migration] = &[
                 current_index INTEGER NOT NULL DEFAULT 0
               );",
     },
+    // Phase 49: キュー項目のユニーク ID（BG-10、仕様決定 BK）。
+    // video_id 基準の照合では同一動画の連続登録を区別できないため、
+    // 項目ごとの連番 uid を持たせる。既存行は一律 0（旧形式）で、
+    // 復元側が 0 を新規払い出しへ振り替えるためバックフィルは要らない。
+    Migration {
+        version: 14,
+        name: "queue_items_uid",
+        sql: "ALTER TABLE queue_items ADD COLUMN uid INTEGER NOT NULL DEFAULT 0;",
+    },
 ];

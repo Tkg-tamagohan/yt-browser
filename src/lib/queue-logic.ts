@@ -4,8 +4,18 @@
 
 import type { LoopMode } from "./queue.svelte";
 
+/// キュー項目の識別子付きエントリ（BG-10、仕様決定 BK）。
+/// `uid` はキュー内で一意の連番 ID で、video_id 基準では区別できない
+/// 同一動画の連続登録を照合可能にする。武装キューと `player://ended`
+/// の `continuedUid` を経由してキュー位置の照合に使う
+export type QueueEntry = {
+  uid: number;
+  videoId: string;
+};
+
 /// バックエンドへ登録する武装キュー（FR-16、仕様決定 AA・AD）。
-/// `items` は今後再生する順序列、`loop` は取り出し分を末尾へ戻す巡回。
+/// `items` は今後再生する順序列（uid＋videoId の対）、`loop` は
+/// 取り出し分を末尾へ戻す巡回。
 /// - `one`: 現在項目だけの巡回（同項目の繰り返し）
 /// - `all`: 次項目以降 + 先頭〜現在項目の回転順を巡回（末尾→先頭巻き戻り）
 /// - `none`: 次項目以降を順に消費（空なら武装解除）
@@ -14,10 +24,10 @@ import type { LoopMode } from "./queue.svelte";
 /// false を渡し、その項目も武装に含める（FR-20、仕様決定 AM）
 export function armPlanFor(
   mode: LoopMode,
-  items: string[],
+  items: QueueEntry[],
   index: number,
   indexIsPlaying = true,
-): { items: string[]; loop: boolean } {
+): { items: QueueEntry[]; loop: boolean } {
   // 武装対象の先頭位置。index が未再生項目を指すときはその項目から含める
   const nextFrom = indexIsPlaying ? index + 1 : index;
   if (mode === "one") {
@@ -33,24 +43,22 @@ export function armPlanFor(
   return { items: items.slice(nextFrom), loop: false };
 }
 
-/// `player://ended` の `continuedVideoId`（実際に読み込みが始まった項目）から
-/// キュー位置を照合する。モード変更と遷移の競合でイベント到着時のモードは
+/// `player://ended` の `continuedUid`（実際に読み込みが始まった項目の
+/// uid）からキュー位置を照合する（BG-10、仕様決定 BK）。
+/// uid はキュー内で一意なため、同一動画の連続登録でも継続先の項目を
+/// 特定できる。モード変更と遷移の競合でイベント到着時のモードは
 /// 直前の遷移を表さないため、位置はロード済み項目で決める（続きの武装の
 /// 対象選定はその時点のモードで行う）。
-/// - 現在項目と同一: 繰り返し（位置据え置き）
-/// - 次項目と同一: 1 つ進める
-/// - 先頭項目と同一: 全体ループの巻き戻りで 0 へ
-/// - いずれでもない: queue drift として位置を変えない
+/// uid が一覧に見つからなければ（編集で消えた武装項目など）
+/// 位置を変えない
 export function reconcileIndex(
-  items: string[],
+  items: QueueEntry[],
   index: number,
-  continuedVideoId: string | null,
+  continuedUid: number | null,
 ): number {
-  if (continuedVideoId === null) return index;
-  if (items[index] === continuedVideoId) return index;
-  if (items[index + 1] === continuedVideoId) return index + 1;
-  if (items[0] === continuedVideoId) return 0;
-  return index;
+  if (continuedUid === null) return index;
+  const found = items.findIndex((i) => i.uid === continuedUid);
+  return found >= 0 ? found : index;
 }
 
 /// 項目削除に伴うキュー位置の調整（FR-20、仕様決定 AM）。
@@ -94,7 +102,7 @@ export function headPlayingAfterRemove(
 export function queueEndOutcome(
   playlistId: number | null,
   reason: string,
-  items: string[],
+  items: QueueEntry[],
   index: number,
   endedVideoId: string,
 ): "reset" | "destroy" {
@@ -102,7 +110,7 @@ export function queueEndOutcome(
   const consumed =
     reason === "eof" &&
     index >= items.length - 1 &&
-    items[items.length - 1] === endedVideoId;
+    items[items.length - 1]?.videoId === endedVideoId;
   return consumed ? "reset" : "destroy";
 }
 
@@ -118,8 +126,10 @@ export function indexAfterStop(
 }
 
 /// 一時キューの DB 保存形式の 1 項目（FR-30、仕様決定 AY）。
-/// backend の `QueueItem` と同じフィールド
+/// backend の `QueueItem` と同じフィールド。`uid` は項目の
+/// ユニーク ID（BG-10、仕様決定 BK）
 export type QueuePersistItem = {
+  uid: number;
   videoId: string;
   title: string;
   channelTitle: string | null;
@@ -127,19 +137,20 @@ export type QueuePersistItem = {
 };
 
 /// `queue_save` へ渡す項目列への変換（FR-30、仕様決定 AY）。
-/// `items`（動画 ID 列）から表示メタを解決してメタ付き項目列を作る。
+/// `items`（QueueEntry 列）から表示メタを解決してメタ付き項目列を作る。
 /// メタ未登録は videoId をタイトルに潰す（queueMetaOf と同じ扱い）
 export function persistItemsOf(
-  items: string[],
+  items: QueueEntry[],
   metaOf: (videoId: string) => {
     title: string;
     channelTitle: string | null;
     thumbnailUrl: string | null;
   },
 ): QueuePersistItem[] {
-  return items.map((videoId) => {
+  return items.map(({ uid, videoId }) => {
     const m = metaOf(videoId);
     return {
+      uid,
       videoId,
       title: m.title || videoId,
       channelTitle: m.channelTitle,

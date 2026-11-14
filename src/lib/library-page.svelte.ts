@@ -17,6 +17,7 @@ import {
 } from "$lib/players.svelte";
 import {
   discardQueue,
+  newQueueEntry,
   queueAt,
   rememberMeta,
   startQueue,
@@ -714,7 +715,7 @@ export function createLibraryPageState(opts: Options) {
       await startQueue(
         plId,
         pl?.name ?? "",
-        playlistItems.map((i) => i.videoId),
+        playlistItems.map((i) => newQueueEntry(i.videoId)),
         index,
         instanceId,
       );

@@ -12,7 +12,7 @@ use super::{
     SETTING_WINDOW_SCREEN,
 };
 use crate::db::Db;
-use crate::model::{PlayerAction, PlayerEnded, PlayerState};
+use crate::model::{PlayerAction, PlayerEnded, PlayerState, QueueArmItem};
 use crate::util::lock;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -215,15 +215,16 @@ impl PlayerManager {
     }
 
     /// 連続再生の武装キューを登録する（`player_set_queue` 経路、FR-10、仕様決定 S・AD）。
-    /// `items` は今後再生する項目の順序列。終端（自然終了・途中失敗）のたびに
-    /// 同一 mpv が先頭から再生する。`loop_all` で取り出し分を末尾へ戻して巡回する。
+    /// `items` は今後再生する項目の順序列（uid＋video_id の対、仕様決定 BK）。
+    /// 終端（自然終了・途中失敗）のたびに同一 mpv が先頭から再生する。
+    /// `loop_all` で取り出し分を末尾へ戻して巡回する。
     /// 空列は武装の解除。存在しないインスタンスでは MpvError::NoSuchInstance。
     /// `base_seq` 指定時は取り出し世代が一致するときだけ適用し、
     /// 拒否した場合は Ok(false) を返す（世代ずれはエラーではない）。
     pub async fn set_queue(
         &self,
         instance_id: u32,
-        items: Vec<String>,
+        items: Vec<QueueArmItem>,
         loop_all: bool,
         base_seq: Option<u64>,
     ) -> Result<bool, MpvError> {
@@ -524,11 +525,14 @@ impl PlayerManager {
                         // ロードに失敗した場合は通常どおり終端処理へ進む。
                         let mut continued = false;
                         let mut continued_video_id: Option<String> = None;
-                        if let Some(next_id) = player.take_next() {
+                        let mut continued_uid: Option<i64> = None;
+                        if let Some(next) = player.take_next() {
+                            let next_id = next.video_id.clone();
                             match player.load_video(&next_id, 0.0).await {
                                 Ok(()) => {
                                     continued = true;
                                     continued_video_id = Some(next_id.clone());
+                                    continued_uid = Some(next.uid);
                                     if let Err(e) = db.history_upsert(&next_id) {
                                         tracing::warn!(video_id = %next_id, error = %e, "履歴行の作成に失敗");
                                     }
@@ -545,6 +549,7 @@ impl PlayerManager {
                             reason,
                             continued,
                             continued_video_id,
+                            continued_uid,
                             armed_seq: player.armed_seq(),
                         };
                         if let Err(e) = app.emit("player://ended", &payload) {

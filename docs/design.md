@@ -73,7 +73,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
 | `player_close` | `instance_id` | `Result<()>` |
 | `audio_device_list` | なし | `Result<Vec<AudioDevice>>`（mpv が列挙する音声出力デバイス。FR-32、仕様決定 BA） |
-| `player_set_queue` | `instance_id`, `items`, `loop_all`, `base_seq` | `Result<bool>`（置き換えを適用したか） |
+| `player_set_queue` | `instance_id`, `items`（`QueueArmItem` 列：`uid`＋`video_id` の対）、`loop_all`, `base_seq` | `Result<bool>`（置き換えを適用したか） |
 | `player_switch` | `instance_id`, `video_id`, `resume`, `start_sec?` | `Result<()>` |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
 | `history_list` | `limit?`（既定 500、上限 1000） | `Result<Vec<WatchHistory>>` |
@@ -137,7 +137,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
-`player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する動画 ID の順序列（空列は武装の解除）、`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
+`player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する項目の順序列で、各項目は `uid`＋`video_id` の対（`QueueArmItem`、空列は武装の解除）。`uid` はフロント側のキュー項目のユニーク ID で、継続時に `player://ended` の `continuedUid` としてそのまま返す（BG-10、仕様決定 BK）。`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
 登録済み項目は次の終端（自然終了・途中失敗）で同一 mpv が先頭から読み込む。
 `playlist_import` は YouTube プレイリストを `yt-dlp --flat-playlist` で取り込み、
 各項目を `video_upsert` で `videos` 台帳に集約したうえで新規プレイリストへ登録する（FR-10、仕様決定 R）。
@@ -155,7 +155,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 フロント側では一括操作（`playlist_sort`・`playlist_reverse`）の実行中に行の並べ替え保存を開始せず、開始前に飛行中の `playlist_reorder` の確定を待つ。一括操作と個別並べ替えの適用順を「確定した並べ替え → 一括操作」に固定し、結果の反映は項目取得の世代管理で行う（操作後は必ず確定済みの DB 順を再取得して表示する）。
 `list_feed` はブロック済みチャンネルをクエリで除外し、返却前に動画系 NG フィルタ（§7 の動画系 target）を後段適用する（FR-9）。
 `take_open_urls` は deep link の保留分を取り出す初期ドレイン用で、呼び出し後は `app://open_url` イベント経路のみで届く。戻り値とイベントは `{seq, url}` で、seq は重複除去用の配送識別子（§3.4）。
-`queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタ付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
+`queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタと `uid`（項目のユニーク ID、BG-10、仕様決定 BK）付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
 `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
 `video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
 
@@ -164,7 +164,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, armedSeq }` | 終了またはエラー |
+| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq }` | 終了またはエラー |
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
@@ -467,7 +467,13 @@ true のときフロントはキュー位置を照合するだけで、通常の
 遷移が挟まって世代ずれで拒否された意図だけを再適用する。拒否応答時に
 観測世代が進んでいれば即時に最新意図で再送し、イベント未着なら次の
 終端イベント（`armedSeq` の最新世代）で張り直す。
-プレイリスト側の編集やキュー位置のずれ（queue drift）は仕様上の制約として許容し、
+キュー項目は `uid`＋`videoId` の対（`QueueEntry`）で、uid はフロントが
+採番するキュー内一意の連番 ID（BG-10、仕様決定 BK）。一時キューの
+uid は `queue_items.uid` 列として DB にも永続化される（§8）。
+継続先の照合を uid で行うため、同一動画の連続登録・削除・並べ替えで
+キュー位置がずれない（video_id 基準では同一動画を区別できず
+queue drift として許容していた従来の制約を解消した）。
+プレイリスト側の編集はキューのスナップショットへ反映されず、
 武装した時点の項目が流れる。
 インスタンスの `video_id`・履歴・SponsorBlock 区間は項目ごとに更新される。
 履歴は読み込み直後に `history_upsert` で行を確保し、SponsorBlock 区間は
@@ -478,9 +484,11 @@ true のときフロントはキュー位置を照合するだけで、通常の
 武装対象の選択で表現する。1 項目ループは現在項目を、全体ループは末尾到達で
 先頭項目を武装し、キューの無いインスタンスでは全体ループも現在項目の
 繰り返しとなる（1 項目ループはキュー中も次へ進まない）。
-`player://ended` は継続先の項目を `continuedVideoId` に載せ、フロントは
-終了した `videoId` と同一なら現在項目の繰り返し、別項目なら次項目への進行と
-区別してキュー位置を同期する。ループが継続している間（`continued` かつ
+`player://ended` は継続先の項目を `continuedUid`（項目のユニーク ID、
+BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロントは
+`continuedUid` で継続先の項目を特定してキュー位置を同期する
+（`reconcileIndex` の uid 照合。一覧に無い uid は位置据え置き）。
+ループが継続している間（`continued` かつ
 モードが「なし」以外）は終了トーストを抑制し、イベント自体はキュー進行の
 ため発行を続ける。各周回は終端のたびに履歴へ完了が保存され、履歴行は
 動画単位のままその都度完了として更新される（周回数の行は増やさない）。
@@ -551,9 +559,10 @@ FR-29）が復元済みキューの末尾へ追記される順序を保つ。
 アプリ終了は消滅理由に含めないため、実行中に終了したキューは
 「停止中・中断位置保持」として復元され、キューパネルの「再生」で
 保存位置から継続できる。保存実体は §8 の `queue_items`（`position` の
-連番を主キーとして同一動画の重複を許容し、`video_id`・`title`・
-`channel_title`・`thumbnail_url` を項目行へ持って `videos` 台帳を
-汚染しない）と `queue_state`（単一行の `current_index`）とする。
+連番を主キーとして同一動画の重複を許容し、項目のユニーク ID `uid`
+（BG-10、仕様決定 BK）と `video_id`・`title`・`channel_title`・
+`thumbnail_url` を項目行へ持って `videos` 台帳を汚染しない）と
+`queue_state`（単一行の `current_index`）とする。
 
 ### 4.7 HDR 設定と mpv 追加引数（INV-1、仕様決定 Y）
 
@@ -837,7 +846,9 @@ CREATE TABLE queue_items (
   video_id TEXT NOT NULL,
   title TEXT NOT NULL,
   channel_title TEXT,
-  thumbnail_url TEXT
+  thumbnail_url TEXT,
+  uid INTEGER NOT NULL DEFAULT 0     -- 項目のユニーク ID（BG-10、仕様決定 BK）。
+                                     -- v14 未満の行は 0 で、復元側で新規払い出しへ振り替える
 );
 
 CREATE TABLE queue_state (
@@ -865,7 +876,7 @@ CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
   バックフィル投入（`feed_backfill`）は RSS とは別経路で、新規行を既読・投入済みで挿入し、プレースホルダは既読のまま `ingested=1` に確定する。投入済みの既存行は投稿日・既読を含めて書き換えない（FR-21、仕様決定 AN）。
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
-- `queue_items` / `queue_state` は一時キューの永続化（FR-30、仕様決定 AY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。プレイリストキューは保存しない
+- `queue_items` / `queue_state` は一時キューの永続化（FR-30、仕様決定 AY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。プレイリストキューは保存しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する
 
 ## 9. エラーハンドリングと変更耐性
 

@@ -3,6 +3,7 @@ use crate::model::QueueItem;
 
 fn item(video_id: &str, title: &str) -> QueueItem {
     QueueItem {
+        uid: 0,
         video_id: video_id.to_string(),
         title: title.to_string(),
         channel_title: Some("テストCH".to_string()),
@@ -24,6 +25,7 @@ fn queue_save_load_round_trip() {
         item("dQw4w9WgXcQ", "A"),
         item("dQw4w9WgXcQ", "A"), // 同一動画の重複は許容
         QueueItem {
+            uid: 0,
             video_id: "abc12345678".to_string(),
             title: "B".to_string(),
             channel_title: None,
@@ -91,6 +93,45 @@ fn queue_index_is_clamped() {
     assert_eq!(db.queue_load().unwrap().current_index, 1);
     db.queue_save(&[], 5).unwrap();
     assert_eq!(db.queue_load().unwrap().current_index, 0);
+}
+
+/// DB-Q-06: キュー項目の uid の往復（BG-10、仕様決定 BK）。
+/// 保存した uid が読み出しでもそのまま返り、uid を持たない旧形式の
+/// 行（DEFAULT 0）は 0 で読み出せる（復元側で新規払い出しへ振り替える）。
+#[test]
+fn queue_uid_round_trip() {
+    let db = Db::connect_in_memory().unwrap();
+    let items = vec![
+        QueueItem {
+            uid: 11,
+            ..item("a1234567890", "A")
+        },
+        QueueItem {
+            uid: 12,
+            ..item("a1234567890", "A")
+        },
+    ];
+    db.queue_save(&items, 0).unwrap();
+    let snap = db.queue_load().unwrap();
+    // 同一動画でも uid が別々に保存・復元される
+    assert_eq!(snap.items[0].uid, 11);
+    assert_eq!(snap.items[1].uid, 12);
+    assert_eq!(snap.items[0].video_id, "a1234567890");
+    assert_eq!(snap.items[1].video_id, "a1234567890");
+
+    // uid 列追加前の行（DEFAULT 0 で入った行）は 0 で読み出せる
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO queue_items (position, video_id, title)
+             VALUES (2, 'legacy00000', '旧行')",
+            [],
+        )
+        .unwrap();
+    }
+    let snap = db.queue_load().unwrap();
+    assert_eq!(snap.items[2].uid, 0);
+    assert_eq!(snap.items[2].video_id, "legacy00000");
 }
 
 /// DB-Q-05: `video_meta_lookup` の補完順（FR-29、仕様決定 AX）。
