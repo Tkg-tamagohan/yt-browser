@@ -1,7 +1,7 @@
 use super::vref;
 use crate::db::*;
 
-/// DB-LD-27: 孤児行整理（FR-66、仕様決定 CQ）。
+/// DB-LD-29: 孤児行整理（FR-66、仕様決定 CQ）。
 /// `channels` に無いチャンネルの videos 行のうち、どの参照元にも
 /// 残っていないものだけを削除する。参照のある行・チャンネル ID が
 /// 空の台帳メタ行・購読中チャンネルの行は消さない。
@@ -139,7 +139,7 @@ fn cleanup_orphans_removes_only_unreferenced_rows() {
     assert_eq!(db.db_cleanup_orphans().unwrap(), 0);
 }
 
-/// DB-LD-28: DB サイズ表示と VACUUM（FR-66、仕様決定 CQ）。
+/// DB-LD-30: DB サイズ表示と VACUUM（FR-66、仕様決定 CQ）。
 /// インメモリ接続では page_count × page_size の近似値を返し、
 /// `db_vacuum` は正常終了する。ファイル接続では本体＋WAL 系
 /// ファイルの合計を返す（暫定解釈）。

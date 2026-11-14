@@ -47,7 +47,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `commands` | Tauri の invoke ハンドラ。入力検証と UI 向けの直列化に徹する |
 | `mpv` | プロセス起動、ソケット管理、JSON IPC クライアント、プロパティ監視 |
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
-| `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定 |
+| `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§4.16） |
 | `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57、§4.18） |
@@ -237,7 +237,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
-| `feed://kind_updated` | `{ count }` | shorts 非同期判定またはメタの遅延解決で `videos.kind` / `published_at` が更新された（一覧の再読込を促す。§4.18） |
+| `feed://kind_updated` | `{ count }` | shorts 非同期判定またはメタの遅延解決で `videos.kind` / `published_at` が更新された（一覧の再読込を促す。§4.18）。自動既読（§4.19）で既読化があったときも出す |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
@@ -277,6 +277,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `mpv.network_timeout_ms` | 整数（ミリ秒） | mpv のストリーム読み取りタイムアウト（§4.9、仕様決定 BE）。未設定・空・非整数は既定 `30000` で、`0` は無効化 |
 | `mpv.hwdec` | mpv `--hwdec` の値 | mpv のハードウェアデコード方式（§4.9、仕様決定 BE）。受理集合は `auto-safe` / `auto` / `auto-copy` / `d3d11va` / `d3d11va-copy` / `dxva2` / `dxva2-copy` / `nvdec` / `nvdec-copy` / `vulkan` / `no`。未設定・空・集合外は既定 `auto-safe`。`no` はドライバ内デッドロック環境での回避策 |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
+| `feed.notify_new` | `on` / `off` | フィード更新後の新着検出でデスクトップ通知するか（§4.19、FR-58、仕様決定 CI）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（通知しない）。ポーラーが新着検出のたびに都度読み取る |
+| `feed.auto_read_played` | `on` / `off` | 再生済みの項目を既読にする自動既読（§4.19、FR-64、仕様決定 CO）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`。起動時とフィード更新後の適用時に読み取る |
+| `feed.auto_read_days` | 整数（日数） | N 日経過で既読にする自動既読（§4.19、FR-64、仕様決定 CO）。1 以上の整数だけを受理し、未設定・空・非数・0 以下は既定 `0`（無効）。起動時とフィード更新後の適用時に読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定）。PiP 窓の一括整列の対象ディスプレイ解決でも同じ保存値を使う（§4.12） |
 | `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
@@ -993,6 +996,34 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
   投入側の暫定値では上書きしない（解決済みの判定を守る暫定解釈）
 - フィードの種別フィルタ `live` は放送系の傘として `live`・`upcoming`・
   `premiere` をまとめて拾う（暫定解釈）
+
+### 4.19 新着のデスクトップ通知と自動既読（FR-58・FR-64、仕様決定 CI・CO）
+
+フィード更新に連動する 2 つの補助動作をフィードポーラーが担う。
+
+- 新着のデスクトップ通知（FR-58、仕様決定 CI）:
+  ポーラーの巡回で新着を検出し `feed://new_items` を出したとき、
+  設定 `feed.notify_new` が on なら `tauri-plugin-notification` で
+  デスクトップ通知を出す。通知は件数だけの 1 件まとめとし、
+  項目別・チャンネル別の通知は出さない（暫定解釈）。
+  新規購読の初回投入はポーラーの新着検出ではないため通知しない
+  （暫定解釈）。通知はネイティブ側から出すため capabilities に
+  notification 系の権限は追加しない。通知の失敗は warn ログに留め、
+  取得処理を阻害しない
+- 自動既読（FR-64、仕様決定 CO）: 設定 `feed.auto_read_played` が on
+  なら `watch_history` に行がある（再生済みの暫定解釈。`completed`
+  の完視聴までは要求しない）未読の投入済み項目を既読にし、
+  `feed.auto_read_days` が 1 以上なら投稿日時が N 日経過した項目を
+  既読にする。投稿日時が NULL の項目は `first_seen_at` で判定する
+  （暫定解釈）。適用タイミングは起動時とフィード更新後で、
+  ポーラーの各巡回の終わりと新規購読の初回投入後に呼ぶ（暫定解釈:
+  初回投入も「フィード更新後」に含める）。既読化が 1 件以上あれば
+  `feed://kind_updated` で一覧の再読込を促す（`feed://new_items`
+  は新着専用のため流用しない）
+
+判定と適用は `Db::feed_auto_read` に集約し、対象は `is_read=0` かつ
+`ingested=1` の行に限る（`ingested=0` のプレースホルダは一覧に
+出ないため対象外）。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

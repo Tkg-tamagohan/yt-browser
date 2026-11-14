@@ -101,6 +101,10 @@ pub fn run() {
         // クリップボードへの書き込み（FR-34、仕様決定 BC）。
         // capabilities では write-text のみ許可し読み取りは付けない
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 新着のデスクトップ通知（FR-58、仕様決定 CI）。
+        // 通知はネイティブ側（フィードポーラー）から出すため
+        // WebView 向けの notification 権限は付けない
+        .plugin(tauri_plugin_notification::init())
         // エクスポート/インポートのファイル選択（FR-62、仕様決定 CM）。
         // capabilities では open/save/message（確認ダイアログ）のみ許可する
         .plugin(tauri_plugin_dialog::init())
@@ -171,6 +175,8 @@ pub fn run() {
             // チャンネルの RSS を条件付き取得する。
             let poller = feed::FeedPoller::new(db.clone(), app.handle().clone());
             app.manage(poller.clone());
+            // 起動時の自動既読（FR-64、仕様決定 CO）。設定が無効なら何もしない
+            poller.apply_auto_read();
             tauri::async_runtime::spawn(poller.run());
 
             // メタの遅延解決ワーカー（Phase 62、FR-53・FR-56・FR-57、

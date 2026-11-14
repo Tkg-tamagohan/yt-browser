@@ -25,7 +25,7 @@ fn seed(db: &Db) -> (Category, i64) {
     (cat, pl.id)
 }
 
-/// DB-LD-23: エクスポート/インポートの往復（FR-62、仕様決定 CM）。
+/// DB-LD-25: エクスポート/インポートの往復（FR-62、仕様決定 CM）。
 /// `export_dump` が 4 テーブルを全列で吐き、別 DB への `import_dump` で
 /// 同じ内容が復元される（プレイリスト項目と表示メタの補完を含む）。
 #[test]
@@ -83,7 +83,7 @@ fn export_import_roundtrip() {
     assert_eq!(dst2.playlist_list().unwrap()[0].item_count, 2);
 }
 
-/// DB-LD-24: インポートは対象テーブルをダンプ内容で置き換える
+/// DB-LD-26: インポートは対象テーブルをダンプ内容で置き換える
 /// （FR-62、仕様決定 CM）。ダンプに無い行は消え、既存のチャンネル/
 /// カテゴリ/設定/プレイリストはダンプ側へ揃う。形式版の不一致や
 /// 参照切れのダンプは `Import` エラーで DB を変更しない。
@@ -166,7 +166,7 @@ fn import_replaces_target_tables_and_rejects_invalid() {
     assert!(db.playlist_list().unwrap().is_empty());
 }
 
-/// DB-LD-25: `history_stats` は watch_history を集計して累計視聴時間・
+/// DB-LD-27: `history_stats` は watch_history を集計して累計視聴時間・
 /// チャンネル別・日別の内訳を返す（FR-65、仕様決定 CP）。
 /// 1 行の視聴量は「completed なら duration_sec（無ければ position_sec）、
 /// 未完は position_sec」で見積もり、日別は last_watched_at の日付で
