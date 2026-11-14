@@ -13,9 +13,10 @@
   <section class="panel panel--filled">
     <h2>{t("settings.wheel.title")}</h2>
     <p class="subtle desc">{t("settings.wheel.desc")}</p>
-    {#if loading}
-      <p class="subtle">…</p>
-    {:else}
+    <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
+         hidden 切替（ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={!loading}>…</p>
+    <div class:hidden={loading}>
       <label class="wheel-row">
         {t("settings.wheel.volumeDelta")}
         <input
@@ -27,7 +28,7 @@
           step="1"
         />
       </label>
-    {/if}
+    </div>
   </section>
 
 <style>

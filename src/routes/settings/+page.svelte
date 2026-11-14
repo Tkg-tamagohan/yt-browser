@@ -817,9 +817,14 @@
     placeholder={t("settings.filter.placeholder")}
     bind:value={sectionQuery}
   />
-  {#if sectionQuery.trim() !== "" && visibleSectionIds.size === 0}
-    <p class="subtle">{t("settings.filter.noMatch")}</p>
-  {/if}
+  <!-- 該当なし表示もリマウントを避けるため hidden 切替（FR-80） -->
+  <p
+    class="subtle"
+    class:hidden={sectionQuery.trim() === "" ||
+      visibleSectionIds.size > 0}
+  >
+    {t("settings.filter.noMatch")}
+  </p>
 
   <div class:hidden={!visibleSectionIds.has("quality")}>
     <SettingsQualitySection

@@ -30,9 +30,10 @@
 <section class="panel panel--filled">
   <h2>{t("settings.window.title")}</h2>
   <p class="subtle desc">{t("settings.window.desc")}</p>
-  {#if loading}
-    <p class="subtle">…</p>
-  {:else}
+  <!-- 読み込み中と設定内容の出し分けはリマウントを避けるため
+       hidden 切替（ヒットずれ対策、FR-80） -->
+  <p class="subtle" class:hidden={!loading}>…</p>
+  <div class:hidden={loading}>
     <label class="wheel-row">
       {t("settings.window.screen")}
       <select bind:value={windowScreen} disabled={named.length === 0}>
@@ -48,16 +49,16 @@
         {/if}
       </select>
     </label>
-    {#if named.length === 0}
-      <p class="subtle desc">{t("settings.window.screen.none")}</p>
-    {/if}
+    <p class="subtle desc" class:hidden={named.length > 0}>
+      {t("settings.window.screen.none")}
+    </p>
     <p class="subtle desc">{t("settings.window.screen.desc")}</p>
     <label class="check-row">
       <input type="checkbox" bind:checked={closeOnEof} />
       {t("settings.window.closeOnEof")}
     </label>
     <p class="subtle desc">{t("settings.window.closeOnEof.desc")}</p>
-  {/if}
+  </div>
 </section>
 
 <style>

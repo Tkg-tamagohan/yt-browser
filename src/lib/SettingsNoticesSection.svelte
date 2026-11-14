@@ -24,26 +24,29 @@
     {t("settings.notices.desc", { max: NOTICE_HISTORY_MAX })}
   </p>
 
-  {#if items.length === 0}
-    <p class="subtle empty">{t("settings.notices.empty")}</p>
-  {:else}
-    <ul class="history">
+  <!-- 空表示と一覧・クリアボタンの出し分けはリマウントを避けるため
+       hidden 切替（ヒットずれ対策、FR-80） -->
+  <p class="subtle empty" class:hidden={items.length > 0}>
+    {t("settings.notices.empty")}
+  </p>
+    <ul class="history" class:hidden={items.length === 0}>
       {#each items as n (n.id)}
         <li class="row">
           <span class="time">{formatNoticeAt(n.at)}</span>
           <span class="msg">{n.msg}</span>
-          {#if n.actionLabel}
-            <span class="action">
-              {t("settings.notices.action", { label: n.actionLabel })}
-            </span>
-          {/if}
+          <span class="action" class:hidden={!n.actionLabel}>
+            {t("settings.notices.action", { label: n.actionLabel ?? "" })}
+          </span>
         </li>
       {/each}
     </ul>
-    <button class="clear" onclick={() => clearNoticeHistory()}>
+    <button
+      class="clear"
+      class:hidden={items.length === 0}
+      onclick={() => clearNoticeHistory()}
+    >
       {t("settings.notices.clear")}
     </button>
-  {/if}
 </section>
 
 <style>

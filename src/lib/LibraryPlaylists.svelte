@@ -18,6 +18,13 @@
     play: (videoId: string, resume: boolean) => Promise<void>;
   };
   let { lib, play }: Props = $props();
+
+  // 選択中プレイリストのキュー状態（キューバッジ用）。
+  // 未選択時は temp キュー（キー null）を引かないよう undefined にする。
+  // hidden 切替で常時評価されるよう {#if} 内の {@const} から script 側へ移した
+  const selQueue = $derived(
+    lib.selectedId === null ? undefined : queueAt(lib.selectedId),
+  );
 </script>
 
     <div class="pl-grid">
@@ -53,11 +60,21 @@
             {lib.importing ? t("library.playlist.importing") : t("library.playlist.import")}
           </button>
         </div>
-        {#if lib.va.playlists.length === 0}
-          <p class="subtle">{t("library.playlists.empty")}</p>
-        {:else}
-          <p class="subtle drag-hint">{t("library.playlist.dragHint")}</p>
-          <ul class="pl-names">
+        <!-- 空表示と一覧の出し分けはリマウントを避けるため hidden 切替
+             （ヒットずれ対策、FR-80） -->
+        <p class="subtle" class:hidden={lib.va.playlists.length > 0}>
+          {t("library.playlists.empty")}
+        </p>
+        <p
+          class="subtle drag-hint"
+          class:hidden={lib.va.playlists.length === 0}
+        >
+          {t("library.playlist.dragHint")}
+        </p>
+          <ul
+            class="pl-names"
+            class:hidden={lib.va.playlists.length === 0}
+          >
             {#each lib.va.playlists as pl, index (pl.id)}
               <li
                 class:active={lib.selectedId === pl.id}
@@ -69,79 +86,108 @@
                 ondrop={(e) => lib.listDrop(index, e)}
                 ondragend={() => lib.listDragEnd()}
               >
-                {#if lib.renamingId === pl.id}
-                  <input
-                    type="text"
-                    bind:value={lib.renameText}
-                    onkeydown={(e) => {
-                      if (e.key === "Enter") void lib.commitRename(pl);
-                      if (e.key === "Escape") lib.renamingId = null;
-                    }}
-                  />
-                  <button class="link" onclick={() => void lib.commitRename(pl)}>OK</button>
-                {:else}
-                  <button class="pl-name" onclick={() => void lib.selectPlaylist(pl)}>
-                    {pl.name}
-                    <span class="subtle">{t("library.playlist.items", { count: pl.itemCount })}</span>
-                  </button>
-                  <button
-                    class="link"
-                    title={t("library.playlist.moveUp")}
-                    disabled={index === 0 || lib.listReorderBusy}
-                    onclick={() => lib.moveList(index, -1)}>↑</button
-                  >
-                  <button
-                    class="link"
-                    title={t("library.playlist.moveDown")}
-                    disabled={index === lib.va.playlists.length - 1 || lib.listReorderBusy}
-                    onclick={() => lib.moveList(index, 1)}>↓</button
-                  >
-                  <button
-                    class="link"
-                    title={t("library.playlist.rename")}
-                    onclick={() => lib.beginRename(pl)}>✎</button
-                  >
-                  <button
-                    class="link danger"
-                    title={t("library.playlist.delete")}
-                    onclick={() => void lib.deletePlaylist(pl)}>×</button
-                  >
-                {/if}
+                <!-- リネーム編集中の入力欄⇔名前行の切替はリマウントを
+                     避けるため hidden 切替（FR-80） -->
+                <input
+                  type="text"
+                  class:hidden={lib.renamingId !== pl.id}
+                  bind:value={lib.renameText}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") void lib.commitRename(pl);
+                    if (e.key === "Escape") lib.renamingId = null;
+                  }}
+                />
+                <button
+                  class="link"
+                  class:hidden={lib.renamingId !== pl.id}
+                  onclick={() => void lib.commitRename(pl)}>OK</button
+                >
+                <button
+                  class="pl-name"
+                  class:hidden={lib.renamingId === pl.id}
+                  onclick={() => void lib.selectPlaylist(pl)}
+                >
+                  {pl.name}
+                  <span class="subtle">{t("library.playlist.items", { count: pl.itemCount })}</span>
+                </button>
+                <button
+                  class="link"
+                  class:hidden={lib.renamingId === pl.id}
+                  title={t("library.playlist.moveUp")}
+                  disabled={index === 0 || lib.listReorderBusy}
+                  onclick={() => lib.moveList(index, -1)}>↑</button
+                >
+                <button
+                  class="link"
+                  class:hidden={lib.renamingId === pl.id}
+                  title={t("library.playlist.moveDown")}
+                  disabled={index === lib.va.playlists.length - 1 || lib.listReorderBusy}
+                  onclick={() => lib.moveList(index, 1)}>↓</button
+                >
+                <button
+                  class="link"
+                  class:hidden={lib.renamingId === pl.id}
+                  title={t("library.playlist.rename")}
+                  onclick={() => lib.beginRename(pl)}>✎</button
+                >
+                <button
+                  class="link danger"
+                  class:hidden={lib.renamingId === pl.id}
+                  title={t("library.playlist.delete")}
+                  onclick={() => void lib.deletePlaylist(pl)}>×</button
+                >
               </li>
             {/each}
           </ul>
-        {/if}
       </section>
       <section class="pl-items">
-        {#if lib.selectedId === null}
-          <p class="subtle">{t("library.playlist.selectHint")}</p>
-        {:else if lib.playlistItems.length === 0}
-          <p class="subtle">{t("library.playlist.empty")}</p>
-        {:else}
+        <!-- 未選択ヒント・空・一覧の出し分けはリマウントを避けるため
+             hidden 切替（ヒットずれ対策、FR-80）。キューバッジの
+             再生中⇔保存済みの切替も同じ方針 -->
+        <p class="subtle" class:hidden={lib.selectedId !== null}>
+          {t("library.playlist.selectHint")}
+        </p>
+        <p
+          class="subtle"
+          class:hidden={lib.selectedId === null ||
+            lib.playlistItems.length > 0}
+        >
+          {t("library.playlist.empty")}
+        </p>
+        <div
+          class:hidden={lib.selectedId === null ||
+            lib.playlistItems.length === 0}
+        >
           <div class="pl-tools">
-            {#if lib.selectedId !== null}
-              {@const selQueue = queueAt(lib.selectedId)}
-              {#if selQueue !== undefined}
-                <span class="queue-badge">
-                  {#if selQueue.instanceId !== null}
-                    {t("library.playlist.queueActive", {
-                      name: selQueue.playlistName,
-                      index: selQueue.index + 1,
-                      count: selQueue.items.length,
-                    })}
-                    <button class="link" onclick={() => queueStop(lib.selectedId)}
-                      >{t("library.playlist.queueStop")}</button
-                    >
-                  {:else}
-                    {t("library.playlist.queueSaved", {
-                      name: selQueue.playlistName,
-                      index: selQueue.index + 1,
-                      count: selQueue.items.length,
-                    })}
-                  {/if}
-                </span>
-              {/if}
-            {/if}
+            <span class="queue-badge" class:hidden={selQueue === undefined}>
+              <span
+                class:hidden={selQueue === undefined ||
+                  selQueue.instanceId === null}
+              >
+                {t("library.playlist.queueActive", {
+                  name: selQueue?.playlistName ?? "",
+                  index: (selQueue?.index ?? -1) + 1,
+                  count: selQueue?.items.length ?? 0,
+                })}
+                <button
+                  class="link"
+                  onclick={() => {
+                    if (lib.selectedId !== null) queueStop(lib.selectedId);
+                  }}
+                  >{t("library.playlist.queueStop")}</button
+                >
+              </span>
+              <span
+                class:hidden={selQueue === undefined ||
+                  selQueue.instanceId !== null}
+              >
+                {t("library.playlist.queueSaved", {
+                  name: selQueue?.playlistName ?? "",
+                  index: (selQueue?.index ?? -1) + 1,
+                  count: selQueue?.items.length ?? 0,
+                })}
+              </span>
+            </span>
             <button
               class="link"
               disabled={lib.sortBusy}
@@ -215,18 +261,17 @@
               </VideoRow>
             {/each}
           </ul>
-          {#if lib.plHasMore}
-            <button
-              class="link load-more"
-              onclick={() => void lib.loadMoreItems()}
-              disabled={lib.plLoadingMore}
-            >
-              {lib.plLoadingMore
-                ? t("related.loading")
-                : t("library.playlist.loadMore")}
-            </button>
-          {/if}
-        {/if}
+          <button
+            class="link load-more"
+            class:hidden={!lib.plHasMore}
+            onclick={() => void lib.loadMoreItems()}
+            disabled={lib.plLoadingMore}
+          >
+            {lib.plLoadingMore
+              ? t("related.loading")
+              : t("library.playlist.loadMore")}
+          </button>
+        </div>
       </section>
     </div>
 

@@ -1502,7 +1502,32 @@ GPU なし環境（ソフトウェアレンダリング）の webkit2gtk で、D
   取得結果の採用は発行順の最新のみとし、お気に入りやプレイリストのローカル編集はコミット後に必ず再取得して DB の内容に収束させる
 
 ヒットずれ自体がプラットフォーム側の問題なので、ほかのリマウント要素でも同じ事象は起こり得る。
-現行 UI で残る発生源はパネルの開閉やリストの再描画程度であり、今後同じ症状が観測されたら同じ方針（リマウントを避ける常時マウント化）を当てる。
+FR-80（仕様決定 DE）では、残る発生源として挙げていたパネルの開閉と一覧の再描画にも常時マウント化を拡大した。
+
+拡大後の対象と方式は次のとおり。
+
+- プレイヤーカード内のチャット・概要欄・関連動画の 3 パネル、キューパネルの 3 面タブ、行アクションのプレイリスト追加メニュー、更新確認ダイアログ、ライブラリ画面の 6 タブは常時マウントし、開閉・切替はラッパまたは要素の `class:hidden` で行う
+- 一覧の「読み込み中・空・一覧」の出し分けブロック、およびフィルタ行・「さらに読み込む」ボタン・再開ヒント・DB / yt-dlp 状態表示のように、UI 状態やデータ有無で出入りする要素も同じく `class:hidden` で出し分ける
+- ブックマークのラベル編集やプレイリスト名のリネームのような編集モード、購読状態・既読・音声デバイス列挙の成否で入れ替わる要素も同様とする
+- 出し分けに使う `hidden` クラスは `src/app.css` のグローバル `.hidden { display: none !important; }` で定義する。切替対象の scoped style（display:flex/grid など）より詳細度で負けないよう `!important` を付ける
+
+常時マウント化で「開くとマウントされる」に乗っていた取得処理は、開閉遷移を見る `$effect` へ移した。
+`src/lib/remount-logic.ts` の `panelFetchKey` が「可視なら取得キー、非可視なら null」を返し、呼び出し側は戻り値の前回比較で取得を駆動する（RM-NN 系テスト）。
+概要欄パネルは動画 ID をキーに渡すため、開いたまま連続再生・ループで再生動画が切り替わっても従来どおり取り直される。
+関連動画パネルとライブラリの統計タブは固定キーを渡し、「開くたびに 1 回だけ取り直す」挙動を維持する。
+いずれも世代番号と破棄フラグで、閉じた後や連続した取り直しに届く古い応答の上書きを防ぐ。
+
+一方、次は暫定解釈として常時マウント化の対象外とした。
+
+- 要素を伴わないテキスト断片の条件分岐（件数や追記表示）
+- 同一スロットの排他的な表現バリアント（削除済みチャット表示、概要欄セグメントの種別、サムネイル代替表示、タイトルのボタン/テキスト）。常時マウント化すると常に死んだ DOM が残り、ずれの影響範囲も項目内部に限られるため
+- `<select>` 内の条件付き `<option>`（ポップアップ内の選択肢はヒット対象にならない）
+- 実行時に切り替わらない静的な分岐（`livewait`・`onplay`・`actionsPlacement` などの prop 固定分岐、チャットポップアップ窓かのウィンドウ種別判定）
+- フィード一覧のチャンネル別グループ化の切替（レイアウト構造そのものが変わり、両レイアウトを常時マウントすると行コンポーネントが二重に配置されるため）
+- トースト通知のように生成・消滅そのものが動作である一時要素とその内部
+
+開発・検証環境（Windows、Chromium 系 WebView2）ではこのヒットずれは発生しないため、拡大後の対象について「開閉や再描画でずれが出ない」という受け入れ条件の実機検証は未検証である。
+WebKitGTK 環境で今後同じ症状が観測された場合も、同じ方針（リマウントを避ける常時マウント化）を当てる。
 
 ## 10. セキュリティと権限
 
@@ -1549,7 +1574,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

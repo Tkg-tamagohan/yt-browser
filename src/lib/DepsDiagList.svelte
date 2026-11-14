@@ -37,9 +37,12 @@
 </script>
 
 <div class="deps-list">
-  {#if loading && deps.length === 0}
-    <p class="subtle">{t("deps.refreshing")}</p>
-  {:else}
+  <!-- 読み込み中・失敗・一覧の出し分けはリマウントを避けるため
+       hidden 切替（ヒットずれ対策、FR-80） -->
+  <p class="subtle" class:hidden={!(loading && deps.length === 0)}>
+    {t("deps.refreshing")}
+  </p>
+  <div class:hidden={loading && deps.length === 0}>
     {#each deps as d (d.name)}
       <div class="dep-row">
         <span class="dep-name">{d.name}</span>
@@ -50,13 +53,13 @@
         <span class="dep-path">{d.path ?? "—"}</span>
       </div>
     {/each}
-    {#if error}
-      <p class="subtle ng">{t("deps.failed", { message: error })}</p>
-    {/if}
+    <p class="subtle ng" class:hidden={!error}>
+      {t("deps.failed", { message: error ?? "" })}
+    </p>
     <button class="refresh" onclick={() => void refresh()} disabled={loading}>
       {loading ? t("deps.refreshing") : t("deps.refresh")}
     </button>
-  {/if}
+  </div>
 </div>
 
 <style>

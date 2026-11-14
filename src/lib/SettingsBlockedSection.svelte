@@ -35,10 +35,12 @@
   <section class="panel panel--filled">
     <h2>{t("blocked.title")}</h2>
     <p class="subtle desc">{t("blocked.desc")}</p>
-    {#if blocked.length === 0}
-      <p class="subtle">{t("blocked.empty")}</p>
-    {:else}
-      <ul class="blocked-list">
+    <!-- 空表示と一覧の出し分けはリマウントを避けるため hidden 切替
+         （ヒットずれ対策、FR-80） -->
+    <p class="subtle" class:hidden={blocked.length > 0}>
+      {t("blocked.empty")}
+    </p>
+      <ul class="blocked-list" class:hidden={blocked.length === 0}>
         {#each blocked as b (b.channelId)}
           <li>
             <span class="ch-title" title={b.channelId}>{b.title}</span>
@@ -48,7 +50,6 @@
           </li>
         {/each}
       </ul>
-    {/if}
   </section>
 
 <style>
