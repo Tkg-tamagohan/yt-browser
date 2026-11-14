@@ -49,6 +49,10 @@ export type PlayerEnded = {
   /// このイベント時点の武装取り出し世代（仕様決定 AD）。
   /// `player_set_queue` の `baseSeq` に載せて古い置換を拒否させる
   armedSeq: number;
+  /// この終端でインスタンスが畳まれたとき true（FR-43、仕様決定 BS）。
+  /// 継続時は常に false。非継続でも `player.close_on_eof=off` の eof
+  /// 終端では false が届き、mpv 窓とカードは残る。後始末は true のときだけ行う
+  closed: boolean;
 };
 
 /// `player://restarted` イベント（設計書 §3.2、仕様決定 BE）。
@@ -300,8 +304,14 @@ export function initPlayerEvents(): Promise<void> {
       });
       await listen<PlayerEnded>("player://ended", (ev) => {
         inFlight.add(ev.payload.instanceId);
-        // 継続・非継続を問わずこの動画の区間表示は終わる。継続先の区間は
-        // 次動画分の sponsor://segments で届くまで無しとする
+        // close_on_eof=off の eof 終端ではインスタンスと動画が残るため
+        // カード・区間・AB ループ・画質上書きをいずれも畳まない
+        // （FR-43、仕様決定 BS）
+        if (!ev.payload.continued && ev.payload.closed === false) {
+          return;
+        }
+        // 継続・畳まれた非継続を問わずこの動画の区間表示は終わる。
+        // 継続先の区間は次動画分の sponsor://segments で届くまで無しとする
         dropSponsorSegments(ev.payload.instanceId);
         // A-B ループも動画の切替で mpv 側が解除するため表示状態を畳む
         dropAbLoop(ev.payload.instanceId);

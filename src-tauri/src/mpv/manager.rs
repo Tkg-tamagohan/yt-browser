@@ -4,12 +4,12 @@ use super::player::{
     MPV_LOG_KEEP, RECOVERY_WINDOW,
 };
 use super::{
-    hwdec_mode, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
-    network_timeout_ms, pip_fit_aspect_enabled, screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY,
-    DEFAULT_YTDL_FORMAT, SETTING_HDR_COMPUTE_PEAK, SETTING_HDR_TONE_MAPPING,
-    SETTING_MPV_EXTRA_ARGS, SETTING_MPV_HWDEC, SETTING_MPV_NETWORK_TIMEOUT_MS,
-    SETTING_PIP_FIT_ASPECT, SETTING_PIP_GEOMETRY, SETTING_WHEEL_VOLUME_DELTA,
-    SETTING_WINDOW_SCREEN,
+    close_instance_on_end, close_on_eof_enabled, hwdec_mode, is_valid_hdr_compute_peak,
+    is_valid_pip_geometry, is_valid_tone_mapping, network_timeout_ms, pip_fit_aspect_enabled,
+    screen_index_of, MpvError, DEFAULT_PIP_GEOMETRY, DEFAULT_YTDL_FORMAT, SETTING_HDR_COMPUTE_PEAK,
+    SETTING_HDR_TONE_MAPPING, SETTING_MPV_EXTRA_ARGS, SETTING_MPV_HWDEC,
+    SETTING_MPV_NETWORK_TIMEOUT_MS, SETTING_PIP_FIT_ASPECT, SETTING_PIP_GEOMETRY,
+    SETTING_PLAYER_CLOSE_ON_EOF, SETTING_WHEEL_VOLUME_DELTA, SETTING_WINDOW_SCREEN,
 };
 use crate::db::Db;
 use crate::model::{PlayerAction, PlayerEnded, PlayerState, QueueArmItem};
@@ -538,7 +538,10 @@ impl PlayerManager {
                     }
                     reason = ended_rx.recv() => {
                         let reason = reason.unwrap_or_else(|_| "unknown".into());
-                        let completed = reason == "eof";
+                        // close_on_eof=off で残されたインスタンスの後続終端
+                        // （窓の手動終了等）でも履歴の completed を維持する
+                        // （FR-43、仕様決定 BS）
+                        let completed = reason == "eof" || player.terminal_completed();
                         persist_now(&db, &player, completed);
                         let ended_video = player.video_id();
                         // 連続再生: 武装した次項目があれば同一 mpv で先頭から読み込む
@@ -564,6 +567,16 @@ impl PlayerManager {
                                 }
                             }
                         }
+                        // 終端時点の設定値で自動クローズを判定する（FR-43、
+                        // 仕様決定 BS）。非継続の eof 終端だけが設定に従い、
+                        // off（既定）ではインスタンスとカードを残す
+                        let close_on_eof = close_on_eof_enabled(
+                            db.setting_get(SETTING_PLAYER_CLOSE_ON_EOF)
+                                .ok()
+                                .flatten(),
+                        );
+                        let close_instance =
+                            close_instance_on_end(&reason, continued, close_on_eof);
                         let payload = PlayerEnded {
                             instance_id: player.instance_id(),
                             video_id: ended_video,
@@ -572,11 +585,19 @@ impl PlayerManager {
                             continued_video_id,
                             continued_uid,
                             armed_seq: player.armed_seq(),
+                            closed: close_instance,
                         };
                         if let Err(e) = app.emit("player://ended", &payload) {
                             tracing::warn!(error = %e, "player://ended の送出に失敗");
                         }
-                        if continued {
+                        if !close_instance {
+                            // 継続再生、または close_on_eof=off の eof 終端で
+                            // インスタンスを残す。残す eof 経路では終端理由を
+                            // 解除し、後続の終端（窓の手動終了やシーク巻き戻し
+                            // 後の再 eof）を受理できるようにする
+                            if !continued {
+                                player.rearm_after_eof();
+                            }
                             continue;
                         }
                         // 管理表から外し、ポンプを止めて mpv を終了させる。
