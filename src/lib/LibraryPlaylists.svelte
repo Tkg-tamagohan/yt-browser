@@ -233,7 +233,7 @@
 <style>
   .pos {
     width: 24px;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     text-align: right;
     flex-shrink: 0;
   }
@@ -266,7 +266,7 @@
     align-items: center;
     gap: 4px;
     padding: 4px 0;
-    border-bottom: 1px solid #2d2f33;
+    border-bottom: 1px solid var(--border-row);
   }
 
   .pl-names li[draggable="true"] {
@@ -274,11 +274,11 @@
   }
 
   .pl-names li.drop-target {
-    border-top: 2px solid #8ab4f8;
+    border-top: 2px solid var(--accent);
   }
 
   .pl-names li.active .pl-name {
-    color: #8ab4f8;
+    color: var(--accent);
   }
 
   .pl-name {
@@ -287,7 +287,7 @@
     padding: 6px 4px;
     border: none;
     background: none;
-    color: #e8e8e8;
+    color: var(--fg);
     text-align: left;
     cursor: pointer;
     overflow: hidden;
@@ -312,7 +312,7 @@
   }
 
   .queue-badge {
-    color: #8ab4f8;
+    color: var(--accent);
     font-size: 0.85rem;
   }
 

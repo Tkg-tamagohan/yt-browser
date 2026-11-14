@@ -162,7 +162,7 @@
     padding: 2px 6px;
     border: none;
     background: none;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 1rem;
     line-height: 1;
     cursor: pointer;
@@ -170,6 +170,6 @@
 
   .icon:hover,
   .icon.active {
-    color: #fdd663;
+    color: var(--warn-soft);
   }
 </style>

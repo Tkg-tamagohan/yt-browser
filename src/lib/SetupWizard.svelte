@@ -49,7 +49,7 @@
   .setup-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -57,8 +57,8 @@
   }
 
   .setup-dialog {
-    background: #202124;
-    border: 1px solid #3c4043;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 20px;
     max-width: 560px;

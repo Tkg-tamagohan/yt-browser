@@ -106,6 +106,14 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
       "settings.chatpopup.opacity",
     ],
   },
+  {
+    id: "ui",
+    labelKeys: [
+      "settings.ui.title",
+      "settings.ui.theme",
+      "settings.ui.density",
+    ],
+  },
   { id: "blocked", labelKeys: ["blocked.title"] },
   {
     id: "filters",

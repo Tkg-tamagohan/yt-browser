@@ -140,7 +140,7 @@
     display: flex;
     gap: 4px;
     margin: 12px 0 16px;
-    border-bottom: 1px solid #3c4043;
+    border-bottom: 1px solid var(--border);
   }
 
   .tab {
@@ -148,12 +148,12 @@
     border: none;
     border-bottom: 2px solid transparent;
     background: none;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     cursor: pointer;
   }
 
   .tab.active {
-    color: #e8e8e8;
-    border-bottom-color: #8ab4f8;
+    color: var(--fg);
+    border-bottom-color: var(--accent);
   }
 </style>

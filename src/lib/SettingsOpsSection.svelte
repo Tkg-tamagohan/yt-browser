@@ -190,7 +190,7 @@
     align-items: center;
     gap: 12px;
     padding: 8px 0;
-    border-top: 1px solid #2d2f33;
+    border-top: 1px solid var(--border-row);
   }
 
   .ops-text {
@@ -203,12 +203,12 @@
   }
 
   .size {
-    color: #8ab4f8;
+    color: var(--accent);
     font-variant-numeric: tabular-nums;
   }
 
   button.danger {
-    border-color: #b06060;
-    color: #e0a0a0;
+    border-color: var(--danger-soft-border);
+    color: var(--danger-soft);
   }
 </style>
