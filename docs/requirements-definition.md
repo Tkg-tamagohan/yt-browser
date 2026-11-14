@@ -794,6 +794,17 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
 - 調査の結果、mpv 0.38 以降では `set_property geometry` の `±x±y` が win32・x11 で実行時にも位置へ適用されると確認した。`window-id` プロパティから OS API で窓を動かす代替経路もある。Wayland はプロトコル上の恒久制限で位置変更不可（仕様決定 BU）
 - 結論は FR-41（PiP 窓の一括整列）と FR-42（mpv 窓の前面化）の実現手段として利用する
 
+### BG-11 Chrome 拡張の初期状態、再生位置取得、境界判定の修復と整理
+
+- 拡張の読み込みとブラウザ起動直後に、すでに開いている対象外タブでもツールバーのアクションボタンが有効のまま残る問題を修正し、既定で無効化した上で起動時とインストール時に既存タブの有効状態を同期する（仕様決定 DN）
+- `content.js` の再生位置取得では、インストリーム広告の再生中（`#movie_player.ad-showing`）を除外し、メインプレイヤー（`#movie_player video.html5-main-video`）やアクティブな Shorts リール要素（`ytd-reel-video-renderer[is-active] video`）を優先して選択する
+- ポップアップの「再生位置を引き継いで開く」を押したときも `video_position` を再取得して最新の再生位置で開き、再取得できない場合はポップアップ表示時点の取得値へフォールバックする
+- タブの即時クローズ時（`tabs.get`、`action.enable`/`disable`、フォールバックタブの `tabs.remove`）、`invoke` メッセージ応答、`contextMenus` 再作成時の未処理エラーを解消する
+- `/shorts/<id>` と `/live/<id>` の動画 ID 判定に末尾境界（`/` または末尾）を設け、12 文字以上の不正なパスセグメントを除外する（拡張と本体 `deeplink.svelte.ts` の双方）
+- `background.js` を ES Module 化して URL 判定関数（`classifyKind`、`classify`、`schemePrefix`）を `shared.js` へ集約し、単体テストの対象に加える
+  あわせてリリース配布 ZIP からテストファイル（`*.test.js`）を除外し、冗長なマッチパターンを整理する
+- 単体テストと整合チェックがすべて通過することを受け入れ条件とする
+
 ## 8. 制約とリスク
 
 - YouTube の仕様変更への追従が運用の前提になる。
