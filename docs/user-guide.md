@@ -49,6 +49,9 @@ pnpm tauri dev        # 開発起動
 pnpm tauri build      # AppImage / deb / rpm を生成（src-tauri/target/release/bundle 以下）
 ```
 
+開発者向けの CDP 検証基盤（dev ビルドへの DOM 確認・イベント注入）は
+[scripts/README.md](../scripts/README.md) を参照してください。
+
 ## 画面と機能
 
 ナビゲーションは左のタブで切り替えます。

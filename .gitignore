@@ -10,3 +10,5 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 __pycache__/
 *.py[cod]
+# scripts/e2e_dev.py が NM 登録抑制時に作る退避ファイル
+*.e2e-backup
