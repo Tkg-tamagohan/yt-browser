@@ -6,7 +6,7 @@ use crate::error::UiError;
 use crate::model::{AudioDevice, PlayerAction, PlayerState};
 use crate::mpv::{list_audio_devices, pip_default_enabled, PlayerManager, SETTING_PIP_DEFAULT};
 use crate::yt;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 /// `play_video`（設計書 §3.1）。`video_id` は URL 各形式も受け取り正規化する。
 /// `resume` が true のとき、未完了の履歴位置から再開する。
@@ -121,6 +121,29 @@ pub async fn player_control(
 #[tauri::command]
 pub async fn audio_device_list() -> Result<Vec<AudioDevice>, UiError> {
     Ok(list_audio_devices().await?)
+}
+
+/// `player_screenshot`（FR-38、仕様決定 BN）。再生中のフレームを字幕込み
+/// PNG でアプリデータ配下 `screenshots/` へ保存し、保存先のフルパスを返す。
+/// ファイル名は `ytb-<videoId>-<yyyymmddHHMMSS>.png`（ローカル時刻）。
+/// 「フォルダを開く」はフロント側が opener プラグインで行う。
+#[tauri::command]
+pub async fn player_screenshot(
+    instance_id: u32,
+    app: AppHandle,
+    players: State<'_, PlayerManager>,
+    db: State<'_, Db>,
+) -> Result<String, UiError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| UiError::internal(format!("アプリデータディレクトリを取得できません: {e}")))?
+        .join("screenshots");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| UiError::internal(format!("スクリーンショット保存先を作成できません: {e}")))?;
+    let timestamp = db.local_timestamp()?;
+    let path = players.screenshot(instance_id, &dir, &timestamp).await?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// `player_close`（設計書 §3.1）。

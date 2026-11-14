@@ -138,6 +138,19 @@ impl Db {
         Ok(())
     }
 
+    /// スクリーンショット名などファイル名向けのタイムスタンプ
+    /// （`yyyymmddHHMMSS`、FR-38・仕様決定 BN）。ローカル時刻で返す。
+    /// 日時整形ライブラリを持たないため SQLite の `localtime` 修飾子で生成する。
+    pub fn local_timestamp(&self) -> Result<String, DbError> {
+        let conn = self.lock()?;
+        let ts: String = conn.query_row(
+            "SELECT strftime('%Y%m%d%H%M%S', 'now', 'localtime')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(ts)
+    }
+
     /// 現在のスキーマバージョン（適用済みの最大 version）。
     pub fn schema_version(&self) -> Result<u32, DbError> {
         let conn = self.lock()?;

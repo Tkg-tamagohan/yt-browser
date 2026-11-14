@@ -105,6 +105,14 @@ pub enum PlayerAction {
     /// 値は `audio_device_list` が返すデバイス名（`auto` は mpv 既定）。
     /// セッション内のみ有効で DB には保存しない。
     AudioDevice { device: String },
+    /// A-B リピートの A 地点を現在位置へ設定（FR-37、仕様決定 BM）。
+    /// mpv `ab-loop-a` プロパティへ反映。セッション内のみ有効。
+    AbLoopSetA,
+    /// A-B リピートの B 地点を現在位置へ設定（ループ開始）。
+    /// mpv `ab-loop-b` プロパティへ反映。
+    AbLoopSetB,
+    /// A-B リピートの解除（`ab-loop-a` / `ab-loop-b` の双方を "no" へ）。
+    AbLoopClear,
 }
 
 /// `audio_device_list` コマンドの戻り値要素（FR-32、仕様決定 BA）。

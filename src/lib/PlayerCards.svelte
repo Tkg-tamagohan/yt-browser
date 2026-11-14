@@ -10,6 +10,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { t, type MessageKey } from "$lib/i18n";
   import { fmtDuration } from "$lib/format";
   import { linkCopyText } from "$lib/copy-link-logic";
@@ -25,8 +26,11 @@
     initChatEvents,
     toggleChat,
   } from "$lib/chat.svelte";
+  import { abLoopState, cycleAbLoop } from "$lib/ab.svelte";
+  import type { AbState } from "$lib/ab-logic";
   import {
     asErrorMessage,
+    dropAbLoop,
     formatOverrides,
     initPlayerEvents,
     playbackHooks,
@@ -185,6 +189,36 @@
     one: "player.loop.one",
   };
 
+  // AB ボタンの表示（FR-37、仕様決定 BM）。ボタンは現在の状態を示し、
+  // 押すたび なし → A 点 → ループ中 → 解除 の順に回る
+  const AB_LABEL: Record<AbState, MessageKey> = {
+    off: "player.ab.off",
+    a: "player.ab.a",
+    loop: "player.ab.loop",
+  };
+
+  // スクリーンショット（FR-38、仕様決定 BN）。保存先はバックエンドが
+  // アプリデータ配下 screenshots/ へ決める。成功時はパスの表示と
+  // 「フォルダを開く」導線をトーストで出す
+  async function takeScreenshot(id: number): Promise<void> {
+    try {
+      const path = await invoke<string>("player_screenshot", {
+        instanceId: id,
+      });
+      notify(t("player.screenshot.saved", { path }), {
+        label: t("player.screenshot.openFolder"),
+        run: () => {
+          // reveal は失敗しても保存自体は済んでいるため、通知だけ出す
+          void revealItemInDir(path).catch((e) =>
+            notify(t("player.error", { message: asErrorMessage(e) })),
+          );
+        },
+      });
+    } catch (e) {
+      notify(t("player.screenshot.failed", { message: asErrorMessage(e) }));
+    }
+  }
+
   function runPlaybackHooks(): void {
     for (const f of playbackHooks) f();
   }
@@ -293,6 +327,7 @@
       const key = queueKeyOfInstance(id);
       if (key !== undefined) discardQueue(key);
       clearLoop(id);
+      dropAbLoop(id);
       // 閉じた時点の位置で履歴が更新されているのでページ側のヒントを取り直させる
       runPlaybackHooks();
     } catch (e) {
@@ -384,6 +419,8 @@
       // 消滅しないためカード・パネル・キューの紐付けはそのまま維持し、
       // トーストだけ出す。最終的な失敗は player://ended の reason=error で届く
       await listen<PlayerRestarted>("player://restarted", (ev) => {
+        // mpv プロセスの差し替えで ab-loop-a/b は消えるため、表示状態も畳む
+        dropAbLoop(ev.payload.instanceId);
         notify(t("player.restarted", { attempt: ev.payload.attempt }));
       }),
       await listen<SponsorSkipped>("sponsor://skipped", (ev) => {
@@ -553,6 +590,18 @@
           onclick={() => void cycleLoop(p.instanceId)}
         >
           {t(LOOP_LABEL[loopMode(p.instanceId)])}
+        </button>
+        <button
+          title={t("player.ab.hint")}
+          onclick={() => void cycleAbLoop(p.instanceId, p.videoId)}
+        >
+          {t(AB_LABEL[abLoopState(p.instanceId, p.videoId)])}
+        </button>
+        <button
+          title={t("player.screenshot.hint")}
+          onclick={() => void takeScreenshot(p.instanceId)}
+        >
+          {t("player.screenshot")}
         </button>
         <button
           title={t("player.pip.hint")}

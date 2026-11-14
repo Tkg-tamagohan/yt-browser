@@ -751,6 +751,9 @@ impl MpvPlayer {
             .await
             .command(vec![json!("set_property"), json!("pause"), json!(false)])
             .await?;
+        // A-B リピートは動画の切替で引き継がない（FR-37、仕様決定 BM）。
+        // ab-loop-a/b は loadfile では mpv が自動解除しないため明示的に消す
+        self.clear_ab_points().await?;
         {
             let mut st = lock(&self.state);
             st.video_id = video_id.to_string();
@@ -862,7 +865,64 @@ impl MpvPlayer {
                     ])
                     .await?;
             }
+            PlayerAction::AbLoopSetA => {
+                self.set_ab_point("ab-loop-a").await?;
+            }
+            PlayerAction::AbLoopSetB => {
+                self.set_ab_point("ab-loop-b").await?;
+            }
+            PlayerAction::AbLoopClear => {
+                self.clear_ab_points().await?;
+            }
         }
+        Ok(())
+    }
+
+    /// A-B リピートの地点を現在位置へ設定する（FR-37、仕様決定 BM）。
+    /// 現在位置は `get_property time-pos` で都度読み、状態スナップショット
+    /// （300ms 間隔のサンプリング）の遅れを入れない。未取得（未ロード等）
+    /// のときはスナップショットの位置へ退く。
+    async fn set_ab_point(&self, prop: &'static str) -> Result<(), MpvError> {
+        let pos = self
+            .ipc
+            .read()
+            .await
+            .command(vec![json!("get_property"), json!("time-pos")])
+            .await?
+            .as_f64()
+            .unwrap_or_else(|| self.snapshot().position);
+        self.ipc
+            .read()
+            .await
+            .command(vec![json!("set_property"), json!(prop), json!(pos)])
+            .await?;
+        Ok(())
+    }
+
+    /// A-B リピートを解除する。`ab-loop-a` / `ab-loop-b` は loadfile しても
+    /// mpv が自動解除しないため、ボタンの解除と読み替え時の引き継ぎ防止の
+    /// 両方で両方へ `"no"` を送る（FR-37、仕様決定 BM）。
+    async fn clear_ab_points(&self) -> Result<(), MpvError> {
+        let ipc = self.ipc.read().await;
+        for prop in ["ab-loop-a", "ab-loop-b"] {
+            ipc.command(vec![json!("set_property"), json!(prop), json!("no")])
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// 現在フレームを字幕込み PNG で `path` へ保存する（FR-38、仕様決定 BN）。
+    /// 保存先はフルパス指定で、mpv 側のファイル名生成には委ねない。
+    pub(crate) async fn screenshot(&self, path: &Path) -> Result<(), MpvError> {
+        self.ipc
+            .read()
+            .await
+            .command(vec![
+                json!("screenshot-to-file"),
+                json!(path.to_string_lossy().to_string()),
+                json!("subtitles"),
+            ])
+            .await?;
         Ok(())
     }
 
@@ -1133,6 +1193,12 @@ pub(crate) fn split_extra_args(input: &str) -> Vec<String> {
     out
 }
 
+/// スクリーンショットの保存ファイル名（FR-38、仕様決定 BN）。
+/// `ytb-<videoId>-<yyyymmddHHMMSS>.png`。
+pub(crate) fn screenshot_file_name(video_id: &str, timestamp: &str) -> String {
+    format!("ytb-{video_id}-{timestamp}.png")
+}
+
 /// `video-params` プロパティから表示アスペクト比を取る（FR-19）。
 /// `aspect`（表示比率）を優先し、無効・未取得なら `dw`/`dh`、さらに
 /// `w`/`h` から算出する。各候補は正の有限値だけ受理し、非正値・非有限・
@@ -1342,5 +1408,15 @@ mod tests {
     fn load_retry_requires_armed_spec() {
         let mut s = LoadRetryState::default();
         assert!(s.begin_retry().is_none());
+    }
+
+    /// スクリーンショットのファイル名規約（FR-38、仕様決定 BN）。
+    /// `ytb-<videoId>-<yyyymmddHHMMSS>.png`。
+    #[test]
+    fn screenshot_file_name_format() {
+        assert_eq!(
+            super::screenshot_file_name("dQw4w9WgXcQ", "20260115143022"),
+            "ytb-dQw4w9WgXcQ-20260115143022.png"
+        );
     }
 }

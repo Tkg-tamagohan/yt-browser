@@ -75,6 +75,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `audio_device_list` | なし | `Result<Vec<AudioDevice>>`（mpv が列挙する音声出力デバイス。FR-32、仕様決定 BA） |
 | `player_set_queue` | `instance_id`, `items`, `loop_all`, `base_seq` | `Result<bool>`（置き換えを適用したか） |
 | `player_switch` | `instance_id`, `video_id`, `resume`, `start_sec?` | `Result<()>` |
+| `player_screenshot` | `instance_id` | `Result<String>`（保存先のフルパス。FR-38、仕様決定 BN、§4.11） |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
 | `history_list` | `limit?`（既定 500、上限 1000） | `Result<Vec<WatchHistory>>` |
 | `history_remove` | `video_id` | `Result<()>` |
@@ -134,7 +135,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
 表の引数名は Rust 側の受け取り名（snake_case）で記し、JS 側は camelCase のキーで渡す（`video_id` → `videoId`）。
 戻り値とイベントのペイロードは camelCase に直列化される。
-`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）を取る。
+`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する動画 ID の順序列（空列は武装の解除）、`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
@@ -634,6 +635,22 @@ mpv ログにはデマクサが開いた署名入りストリーム URL が記�
 再送も失敗した場合（2 回目の `end-file reason=error` または再送コマンド自体の失敗）は従来の終端・失敗通知経路へ流れる。
 再生中のストリーム断（`file-loaded` 後のエラー）は対象外で、従来どおり即座に終端となる。
 
+### 4.11 A-B リピートとスクリーンショット（FR-37・FR-38、仕様決定 BM・BN）
+
+A-B リピートはプレイヤーカードの「A-B」ボタン（ループボタンの右隣）で操作する。
+押下ごとに「なし → A 点設定 → ループ中 → 解除」の 3 状態を巡回し、各遷移は `player_control` の `ab_loop_set_a` / `ab_loop_set_b` / `ab_loop_clear` アクションとして送る。
+`ab_loop_set_*` は `get_property time-pos` で押下時点の位置を読んでから mpv の `ab-loop-a` / `ab-loop-b` プロパティへ反映し、解除は両プロパティへ `"no"` を設定する。
+表示状態はフロント側のセッション状態としてインスタンス・動画 ID ごとに持ち（`ab-logic.ts` の純粋関数で遷移を管理、AB-NN 系テスト）、永続化はしない。
+`ab-loop-a`/`ab-loop-b` は `loadfile` しても mpv が自動解除しないため、動画の切替でループが前動画へ残らないよう `load_video`（`player_switch`・連続再生の読み替え）で明示的に消す。
+フロント側の表示状態も `player://ended`・`player://closed` で畳み、ウォッチドッグによるプロセス差し替え（`player://restarted`）でも mpv 側の設定が消えるため同様に畳む。
+mpv 窓上のキー操作（既定の `l` キー）で設定したループはカード表示へ反映しない（暫定。観察プロパティには含めない）。
+
+スクリーンショットはプレイヤーカードの「スクリーンショット」ボタンが `player_screenshot` コマンドを呼び、mpv の `screenshot-to-file`（`subtitles` フラグで字幕込み PNG）を実行する。
+保存先はアプリデータ配下の `screenshots/` で、ファイル名は `ytb-<videoId>-<yyyymmddHHMMSS>.png`。
+日時部分はローカル時刻で、日時整形ライブラリを持たないため SQLite の `localtime` 修飾子で生成する。
+成功時は保存先パスを本文とするトーストに「フォルダを開く」アクション（`tauri-plugin-opener` の `revealItemInDir`。capabilities の `opener:default` に含まれる）を添え、失敗は既存の通知経路で知らせる。
+保存先の変更設定は初版では持たない。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -945,7 +962,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```

@@ -1,7 +1,7 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
 use super::player::{
-    prune_mpv_logs, MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS, MPV_LOG_KEEP,
-    RECOVERY_WINDOW,
+    prune_mpv_logs, screenshot_file_name, MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS,
+    MPV_LOG_KEEP, RECOVERY_WINDOW,
 };
 use super::{
     hwdec_mode, is_valid_hdr_compute_peak, is_valid_pip_geometry, is_valid_tone_mapping,
@@ -15,7 +15,7 @@ use crate::db::Db;
 use crate::model::{PlayerAction, PlayerEnded, PlayerState};
 use crate::util::lock;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -319,6 +319,27 @@ impl PlayerManager {
             }
             _ => player.control(action).await,
         }
+    }
+
+    /// `player_screenshot` の実体（FR-38、仕様決定 BN）。再生中フレームを
+    /// 字幕込み PNG で `<dir>/ytb-<videoId>-<timestamp>.png` へ保存し、
+    /// 保存先パスを返す。`dir` は呼び出し側で作成済み前提、`timestamp` は
+    /// ローカル時刻の `yyyymmddHHMMSS`。
+    /// 存在しないインスタンスでは MpvError::NoSuchInstance。
+    pub async fn screenshot(
+        &self,
+        instance_id: u32,
+        dir: &Path,
+        timestamp: &str,
+    ) -> Result<PathBuf, MpvError> {
+        let player = {
+            let players = lock(&self.players);
+            players.get(&instance_id).map(|e| e.player.clone())
+        };
+        let player = player.ok_or(MpvError::NoSuchInstance(instance_id))?;
+        let path = dir.join(screenshot_file_name(&player.video_id(), timestamp));
+        player.screenshot(&path).await?;
+        Ok(path)
     }
 
     /// `pip.geometry` 設定値を検証して返す。無効・未設定は既定値に戻す。

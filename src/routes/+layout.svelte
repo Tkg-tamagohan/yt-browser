@@ -2,7 +2,7 @@
   import { page } from "$app/state";
   import "../app.css";
   import { t } from "$lib/i18n";
-  import { appNotices } from "$lib/notices.svelte";
+  import { appNotices, runNoticeAction } from "$lib/notices.svelte";
   import { initDeepLinks } from "$lib/deeplink.svelte";
   import { preventFileDrop } from "$lib/file-drop-logic";
   import PlayerCards from "$lib/PlayerCards.svelte";
@@ -77,7 +77,14 @@
 
 <div class="toasts" aria-live="polite">
   {#each appNotices as n (n.id)}
-    <div class="notice">{n.msg}</div>
+    <div class="notice">
+      {n.msg}
+      {#if n.action}
+        <button class="notice-action" onclick={() => runNoticeAction(n)}>
+          {n.action.label}
+        </button>
+      {/if}
+    </div>
   {/each}
 </div>
 
@@ -138,6 +145,11 @@
   }
   .toasts .notice {
     margin-top: 0;
+  }
+  .toasts .notice-action {
+    margin-left: 8px;
+    padding: 1px 8px;
+    font-size: 0.85rem;
   }
   .update-overlay {
     position: fixed;
