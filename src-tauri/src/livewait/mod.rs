@@ -78,9 +78,7 @@ pub fn classify_broadcast(s: &BroadcastStatus) -> WaitBroadcast {
 /// それ以外（予定無しを含む）は定間隔（仕様決定 BT）。
 pub fn next_poll_ms(now_ms: i64, scheduled_ms: Option<i64>) -> i64 {
     match scheduled_ms {
-        Some(s) if (s - NEAR_BEFORE_MS..=s + NEAR_AFTER_MS).contains(&now_ms) => {
-            POLL_SHORT_MS
-        }
+        Some(s) if (s - NEAR_BEFORE_MS..=s + NEAR_AFTER_MS).contains(&now_ms) => POLL_SHORT_MS,
         _ => POLL_BASE_MS,
     }
 }
@@ -279,12 +277,7 @@ impl LiveWaitPoller {
     /// `play` は新規インスタンスの自動再生、`notify` はトースト通知のみ。
     async fn on_live(&self, wait: &LiveWait) {
         self.remove_entry(&wait.video_id);
-        let action = wait_action_of(
-            self.db
-                .setting_get(SETTING_LIVE_WAIT_ACTION)
-                .ok()
-                .flatten(),
-        );
+        let action = wait_action_of(self.db.setting_get(SETTING_LIVE_WAIT_ACTION).ok().flatten());
         match action {
             WaitAction::Play => match self.auto_play(wait).await {
                 Ok(()) => emit_status(
@@ -366,12 +359,8 @@ impl LiveWaitPoller {
     /// 次回予定の設定。
     fn reschedule(&self, video_id: &str, delay_ms: i64) {
         let mut sched = lock(&self.sched);
-        sched
-            .entry(video_id.to_string())
-            .or_default()
-            .next_at = Some(
-            Instant::now() + Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0)),
-        );
+        sched.entry(video_id.to_string()).or_default().next_at =
+            Some(Instant::now() + Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0)));
     }
 
     /// 取得成功時の失敗カウンタ整理と復帰通知。
@@ -462,7 +451,14 @@ mod tests {
         );
         // scheduledStartTimestamp があれば優先（未観測フィールド）
         assert_eq!(
-            classify_broadcast(&status(Some(false), Some(1000), None, Some(2000), true, true)),
+            classify_broadcast(&status(
+                Some(false),
+                Some(1000),
+                None,
+                Some(2000),
+                true,
+                true
+            )),
             WaitBroadcast::Upcoming {
                 scheduled_ms: Some(2000)
             }
@@ -470,9 +466,7 @@ mod tests {
         // isUpcoming だけでも開始前（liveBroadcastDetails を持たない予定形）
         assert_eq!(
             classify_broadcast(&status(None, None, None, None, false, true)),
-            WaitBroadcast::Upcoming {
-                scheduled_ms: None
-            }
+            WaitBroadcast::Upcoming { scheduled_ms: None }
         );
         // 放送中
         assert_eq!(
@@ -486,7 +480,14 @@ mod tests {
         );
         // 終了済み
         assert_eq!(
-            classify_broadcast(&status(Some(false), Some(500), Some(900), None, true, false)),
+            classify_broadcast(&status(
+                Some(false),
+                Some(500),
+                Some(900),
+                None,
+                true,
+                false
+            )),
             WaitBroadcast::Ended
         );
         // 詳細無し・非 upcoming は通常動画
@@ -540,7 +541,10 @@ mod tests {
     #[test]
     fn wait_action_parsing() {
         assert_eq!(wait_action_of(None), WaitAction::Play);
-        assert_eq!(wait_action_of(Some("notify".to_string())), WaitAction::Notify);
+        assert_eq!(
+            wait_action_of(Some("notify".to_string())),
+            WaitAction::Notify
+        );
         assert_eq!(wait_action_of(Some("play".to_string())), WaitAction::Play);
         assert_eq!(wait_action_of(Some("bogus".to_string())), WaitAction::Play);
         assert_eq!(wait_action_of(Some("".to_string())), WaitAction::Play);

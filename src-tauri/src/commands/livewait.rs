@@ -8,9 +8,7 @@ use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
 use crate::innertube::InnerTube;
-use crate::livewait::{
-    classify_broadcast, emit_changed, epoch_ms, LiveWaitPoller, WaitBroadcast,
-};
+use crate::livewait::{classify_broadcast, emit_changed, epoch_ms, LiveWaitPoller, WaitBroadcast};
 use crate::model::{LiveWait, LiveWaitAddOutcome, VideoRef};
 
 /// 待機項目の各文字列の上限（queue_save と同じ扱い）。
@@ -30,9 +28,8 @@ pub async fn live_wait_add(
     app: AppHandle,
 ) -> Result<LiveWaitAddOutcome, UiError> {
     let video_id = parse_video_id(&video.video_id)?;
-    let too_long = |s: &Option<String>| {
-        s.as_deref().unwrap_or("").chars().count() > MAX_WAIT_TEXT_LEN
-    };
+    let too_long =
+        |s: &Option<String>| s.as_deref().unwrap_or("").chars().count() > MAX_WAIT_TEXT_LEN;
     if video.title.chars().count() > MAX_WAIT_TEXT_LEN
         || too_long(&video.channel_id)
         || too_long(&video.channel_title)

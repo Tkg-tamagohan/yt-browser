@@ -739,7 +739,10 @@ export function initQueueEvents(): Promise<void> {
         const q = key !== undefined ? queues.list.get(key) : undefined;
         if (!p.continued) {
           // 終端（末尾・途中失敗・手動停止・プロセス消失）: 寿命ルールに
-          // 従ってキューを残すか畳むかを決め、ループ状態を外す
+          // 従ってキューを残すか畳むかを決め、ループ状態を外す。
+          // キューの消費完了判定はインスタンス存否と独立に適用する
+          // （close_on_eof=off の eof 終端で残されたインスタンスでも
+          // キュー消化の事実は変わらない。FR-43、仕様決定 BS）
           if (q !== undefined && key !== undefined) {
             if (
               queueEndOutcome(
@@ -758,9 +761,14 @@ export function initQueueEvents(): Promise<void> {
               discardQueue(key);
             }
           }
-          clearLoop(p.instanceId);
-          armedSeqs.delete(p.instanceId);
-          rearmPending.delete(p.instanceId);
+          // インスタンスが畳まれたときだけ紐付け状態を掃除する。
+          // close_on_eof=off で残ったインスタンスはループ切替や再武装が
+          // まだ使えるため、観測世代と保留意図を維持する
+          if (p.closed !== false) {
+            clearLoop(p.instanceId);
+            armedSeqs.delete(p.instanceId);
+            rearmPending.delete(p.instanceId);
+          }
           return;
         }
         if (q !== undefined) {

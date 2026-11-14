@@ -57,6 +57,25 @@ pub struct PlayerState {
     /// 現在の音声出力デバイス（mpv `audio-device`、FR-32、仕様決定 BA）。
     /// 既定・自動選択は "auto"。
     pub audio_device: String,
+    /// mpv `track-list` のうち字幕（`type=sub`）トラックの一覧
+    /// （FR-40、仕様決定 BP）。未取得時は空。
+    pub sub_tracks: Vec<SubTrack>,
+    /// 現在の字幕選択（mpv `sid`、FR-40、仕様決定 BP）。
+    /// "no"（なし）/"auto"（自動）/トラック ID の文字列。
+    pub sid: String,
+}
+
+/// 字幕トラック 1 件分（FR-40、仕様決定 BP）。
+/// mpv `track-list` の `type=sub` エントリから id・title・lang を抜き出したもの。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubTrack {
+    /// mpv トラック ID（`sid` へ渡す値）。
+    pub id: i64,
+    /// トラック名（YouTube の字幕トラックでは言語名が入ることが多い）。無ければ None。
+    pub title: Option<String>,
+    /// 言語コード（`en` / `ja` 等）。無ければ None。
+    pub lang: Option<String>,
 }
 
 /// `player://ended` イベントのペイロード（設計書 §3.2）。
@@ -82,6 +101,11 @@ pub struct PlayerEnded {
     /// フロントはこの値を `player_set_queue` の `base_seq` へ載せて、
     /// その後に別項目を取り出していた置換を拒否させる。
     pub armed_seq: u64,
+    /// この終端でインスタンスが畳まれたとき true（FR-43、仕様決定 BS）。
+    /// `continued` なら常に false。非継続でも `close_on_eof=off` の
+    /// eof 終端では false を送り、mpv 窓とカードを残す。フロントは
+    /// true のときだけカード除去とインスタンス紐付けの後始末を行う。
+    pub closed: bool,
 }
 
 /// `player_control` の操作指定（設計書 §3.1）。
@@ -105,6 +129,10 @@ pub enum PlayerAction {
     FrameBackStep,
     /// PiP 表示の切り替え（設計書 §4.5: ontop・枠なし・小窓配置）。
     Pip { enabled: bool },
+    /// PiP 窓の一括整列（FR-41、仕様決定 BQ）。格子計算済みの目標
+    /// geometry（`WxH+x+y`、対象ディスプレイ左上を原点とする相対座標）を
+    /// PiP 表示中の窓へ適用する。セッション内のみ有効。
+    PipTile { geometry: String },
     /// 音声出力デバイスの切り替え（mpv `audio-device`、FR-32、仕様決定 BA）。
     /// 値は `audio_device_list` が返すデバイス名（`auto` は mpv 既定）。
     /// セッション内のみ有効で DB には保存しない。
@@ -117,6 +145,14 @@ pub enum PlayerAction {
     AbLoopSetB,
     /// A-B リピートの解除（`ab-loop-a` / `ab-loop-b` の双方を "no" へ）。
     AbLoopClear,
+    /// 字幕トラックの選択（FR-40、仕様決定 BP）。`sid` は mpv の字幕トラック
+    /// ID の文字列、"no"（なし）、"auto"（自動）。セッション内のみ有効で、
+    /// 連続再生遷移では mpv の自動選択へ戻る。
+    SubTrack { sid: String },
+    /// mpv 窓の前面化（FR-42、仕様決定 BR）。Windows はプロセス ID から
+    /// 窓ハンドルを特定して前面化、X11 は `window-id` の XID へ
+    /// EWMH `_NET_ACTIVE_WINDOW` を送る。Wayland は恒久制限で非対応。
+    FocusWindow,
 }
 
 /// `audio_device_list` コマンドの戻り値要素（FR-32、仕様決定 BA）。

@@ -66,10 +66,7 @@ impl Db {
     /// 個別解除。戻り値は削除したか（未登録なら false）。
     pub fn live_wait_remove(&self, video_id: &str) -> Result<bool, DbError> {
         let conn = self.lock()?;
-        let n = conn.execute(
-            "DELETE FROM live_waits WHERE video_id = ?1",
-            [video_id],
-        )?;
+        let n = conn.execute("DELETE FROM live_waits WHERE video_id = ?1", [video_id])?;
         Ok(n > 0)
     }
 

@@ -172,8 +172,7 @@ pub fn run() {
             // ライブ配信待機のポーラー（FR-44、仕様決定 BT）。
             // DB の待機リストを復元し、予定時刻に応じた間隔で InnerTube
             // `player` の放送状態を巡回する。再起動後もそのまま再開される
-            let live_wait =
-                livewait::LiveWaitPoller::new(db, app.handle().clone(), innertube);
+            let live_wait = livewait::LiveWaitPoller::new(db, app.handle().clone(), innertube);
             app.manage(live_wait.clone());
             tauri::async_runtime::spawn(live_wait.run());
 
@@ -192,6 +191,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::monitor_list,
+            commands::windowing_system,
             commands::play_video,
             commands::player_list,
             commands::player_control,

@@ -55,6 +55,19 @@ const ja = {
   "player.pip.hint":
     "最前面・枠なしの小窓で再生。mpv のショートカット（q で終了、m でミュート）は小窓上でも使えます",
 
+  // Phase 53: PiP 窓の一括整列（FR-41、仕様決定 BQ）
+  "player.pipTile": "PiP を整列",
+  "player.pipTile.hint":
+    "すべての PiP 窓を対象モニターへ格子状に並べます（対象は設定の起動ディスプレイ。自動ならプライマリ）",
+  "player.pipTile.count": "PiP 窓: {count} 台",
+  "player.pipTile.done": "{count} 台の PiP 窓を整列しました",
+  "player.pipTile.partial":
+    "{ok}/{total} 台を整列しました（失敗: {message}）",
+  "player.pipTile.failed": "PiP 窓の整列に失敗: {message}",
+  "player.pipTile.noMonitor": "整列先のモニターが見つかりません",
+  "player.pipTile.wayland":
+    "Wayland では窓の整列に対応していません（mpv の恒久制限）",
+
   // Phase 25: 再生の既定表示を PiP 化（FR-18、仕様決定 AJ）
   "player.playWindow": "通常窓で再生",
   "player.window.hint":
@@ -72,6 +85,13 @@ const ja = {
   "player.audio.hint":
     "このウィンドウだけの音声出力先を変更します（セッション内のみ有効。次回の再生は自動に戻ります）",
   "player.audio.placeholder": "デバイス名を直接入力",
+
+  // Phase 52: 字幕トラックの選択（FR-40、仕様決定 BP）
+  "player.subtitle": "字幕",
+  "player.subtitle.hint":
+    "このウィンドウの字幕トラックを選択します（セッション内のみ有効。連続再生の次動画では自動選択に戻ります）",
+  "player.subtitle.none": "なし",
+  "player.subtitle.auto": "自動",
 
   // Phase 17: ループ再生（FR-16、仕様決定 AA）
   "player.loop.none": "ループ: なし",
@@ -93,6 +113,13 @@ const ja = {
   "player.screenshot.saved": "スクリーンショットを保存しました: {path}",
   "player.screenshot.failed": "スクリーンショットの保存に失敗: {message}",
   "player.screenshot.openFolder": "フォルダを開く",
+  // mpv 窓の前面化（FR-42、仕様決定 BR）
+  "player.focus": "前面に出す",
+  "player.focus.hint": "mpv の再生窓を最前面に出します",
+  "player.focus.wayland":
+    "Wayland では mpv 窓の前面化に対応していません（プロトコルの制約）",
+  "player.focus.other": "この表示環境では mpv 窓の前面化に対応していません",
+  "player.focus.failed": "mpv 窓を前面に出せませんでした: {message}",
 
   "ytdlp.checking": "yt-dlp を確認中…",
   "ytdlp.ok": "yt-dlp {version}（{path}）",
@@ -385,6 +412,19 @@ const ja = {
     "mpv のホイール操作は「一時停止中＝コマ送り、再生中＝音量」。ここでは再生中の 1 ノッチあたりの音量変化量を設定する。mpv 起動オプションで渡すため、変更は次回の再生から有効",
   "settings.wheel.volumeDelta": "音量変化量（ノッチあたり）",
 
+  // Phase 52: 再生の初期速度と初期音量（FR-39、仕様決定 BO）
+  "settings.player.title": "再生",
+  "settings.player.desc":
+    "新規に再生を開始するインスタンスの初期値。mpv の起動引数で渡すため、変更は次回の再生開始から有効です（再生中インスタンスの速度・音量はカード上で変えられますが、セッション限りです）",
+  "settings.player.initialSpeed": "初期速度",
+  "settings.player.initialSpeed.desc":
+    "mpv の --speed に渡す値（0.25〜4.0、既定 1.0）。空欄は既定値に戻します",
+  "settings.player.initialVolume": "初期音量（%）",
+  "settings.player.initialVolume.desc":
+    "mpv の --volume に渡す値（0〜130、既定 100）。空欄は既定値に戻します",
+  "settings.player.unsaved":
+    "保存中に再生設定の値が変更されました。もう一度保存してください",
+
   // Phase 8: PiP 小窓の位置（次回の PiP 化から有効）
   "settings.pip.title": "PiP",
   "settings.pip.desc":
@@ -414,8 +454,12 @@ const ja = {
   "settings.window.screen.missing": "{name}（現在は未接続）",
   "settings.window.monitor": "{name}（{dims}）",
   "settings.window.monitorPrimary": "{name}（{dims}・プライマリ）",
+  // Phase 55: 再生完了時の自動クローズ（FR-43、仕様決定 BS）
+  "settings.window.closeOnEof": "再生完了時に窓を自動で閉じる",
+  "settings.window.closeOnEof.desc":
+    "オンにすると、連続再生を伴わない最後までの再生（eof）で mpv 窓とプレイヤーカードを自動的に閉じます。オフ（既定）は従来どおり終了後も残します。途中終了やエラー終了は設定に関わらず閉じられます",
   "settings.window.unsaved":
-    "保存中に起動ディスプレイの値が変更されました。もう一度保存してください",
+    "保存中に再生窓の値が変更されました。もう一度保存してください",
 
   // Phase 29: フィード一覧の shorts 既定非表示（FR-23、仕様決定 AP）
   "settings.feed.title": "フィード",

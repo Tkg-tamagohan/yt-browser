@@ -49,7 +49,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
-| `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§6.4） |
+| `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§4.16） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
@@ -69,6 +69,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `settings_get` | `key` | `Result<Option<String>>` |
 | `settings_set` | `key`, `value` | `Result<()>` |
 | `monitor_list` | なし | `Vec<MonitorInfo>`（接続中モニターの列挙。FR-31、仕様決定 AZ） |
+| `windowing_system` | なし | `String`（mpv 窓の移動・前面化が動作する表示環境の分類。"windows" / "x11" / "wayland" / "other"。FR-41・FR-42、仕様決定 BQ・BR、§4.12・§4.14） |
 | `play_video` | `video_id`, `resume`, `pip?`, `format?`, `start_sec?` | `Result<instance_id>` |
 | `player_list` | なし | `Vec<PlayerState>` |
 | `player_control` | `instance_id`, `action`（後述の `PlayerAction` 列挙） | `Result<()>` |
@@ -139,7 +140,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 頻繁に増減するイベント型の操作をコマンド名で細分化しない。
 表の引数名は Rust 側の受け取り名（snake_case）で記し、JS 側は camelCase のキーで渡す（`video_id` → `videoId`）。
 戻り値とイベントのペイロードは camelCase に直列化される。
-`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）を取る。
+`action` は `type` をタグとする列挙で、`pause{value}`（`true` が一時停止、`false` が再開）、`seek{seconds}`（絶対位置の秒数）、`volume{value}`（0〜130 の絶対設定）、`speed{value}`（絶対設定）、`quality{format}`（`ytdl-format` 式の変更、変更後は現在位置を保持してリロード）、`frame_step`、`frame_back_step`、`pip{enabled}`、`audio_device{device}`（音声出力先の切替、§4.8）、`ab_loop_set_a`、`ab_loop_set_b`、`ab_loop_clear`（A-B リピート、§4.11）、`pip_tile{geometry}`（PiP 窓の一括整列、§4.12）、`sub_track{sid}`（字幕選択、§4.13）、`focus_window`（mpv 窓の前面化、§4.14）を取る。
 `player_list` は稼働中インスタンスのスナップショット一覧を返す。
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する項目の順序列で、各項目は `uid`＋`video_id` の対（`QueueArmItem`、空列は武装の解除）。`uid` はフロント側のキュー項目のユニーク ID で、継続時に `player://ended` の `continuedUid` としてそのまま返す（BG-10、仕様決定 BK）。`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
@@ -168,8 +169,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
-| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq }` | 終了またはエラー |
+| `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice, subTracks, sid }` | observe_property の変化を間引いて発火[^statesample] |
+| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq, closed }` | 終了またはエラー。`closed` はその終端でインスタンスが畳まれたか（§4.15、FR-43） |
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
@@ -214,8 +215,11 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `mpv.hwdec` | mpv `--hwdec` の値 | mpv のハードウェアデコード方式（§4.9、仕様決定 BE）。受理集合は `auto-safe` / `auto` / `auto-copy` / `d3d11va` / `d3d11va-copy` / `dxva2` / `dxva2-copy` / `nvdec` / `nvdec-copy` / `vulkan` / `no`。未設定・空・集合外は既定 `auto-safe`。`no` はドライバ内デッドロック環境での回避策 |
 | `feed.show_shorts` | `on` / `off` | フィード一覧に `kind='short'` の項目を含めるか（FR-23、仕様決定 AP）。未設定・その他の値は `off`（除外）。種別フィルタで `short` を明示選択した場合は設定に関わらず表示する。`list_feed` が都度読み取る |
 | `chat.popup_ontop` | `on` / `off` | チャットポップアップ窓を最前面で開くか（§6.2、FR-27、仕様決定 AT）。未設定・その他の値は `on`（最前面）。受理集合は `pip.default` と同一 |
-| `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定） |
-| `live_wait.action` | `play` / `notify` | ライブ待機の開始検出時の動作（§6.4、FR-44、仕様決定 BT）。`play` は新規インスタンスで自動再生、`notify` はトースト通知のみ。未設定・その他の値は `play` |
+| `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定）。PiP 窓の一括整列の対象ディスプレイ解決でも同じ保存値を使う（§4.12） |
+| `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
+| `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
+| `player.close_on_eof` | `on` / `off` | 再生完了時の自動クローズ（§4.15、FR-43、仕様決定 BS）。`on` のとき継続再生を伴わない `reason=eof` の終端でインスタンスを畳む。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（残す）。終端時点の値で都度判定する |
+| `live_wait.action` | `play` / `notify` | ライブ待機の開始検出時の動作（§4.16、FR-44、仕様決定 BT）。`play` は新規インスタンスで自動再生、`notify` はトースト通知のみ。未設定・その他の値は `play` |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -311,6 +315,8 @@ mpv --idle=yes
     --cache=yes
     --hwdec=<mpv.hwdec 値>
     --keep-open=yes
+    --speed=<player.initial_speed 値>
+    --volume=<player.initial_volume 値>
     --stream-lavf-o-append=timeout=<mpv.network_timeout_ms×1000>
     --log-file=<app_log_dir>/mpv-<アプリpid>-<instance>-<世代>.log
     --script=<app_data>/mpv/wheel.lua
@@ -339,7 +345,9 @@ mpv のリスト型オプションは同じ指定を重ねると後が前を上�
 {"command": ["observe_property", 4, "video-params"]}
 ```
 
-監視するプロパティは `time-pos`、`duration`、`pause`、`eof-reached`、`media-title`、`paused-for-cache`、`video-params`（fps 表示用）、`volume`、`speed`。
+監視するプロパティは `time-pos`、`duration`、`pause`、`eof-reached`、`media-title`、`paused-for-cache`、`video-params`（fps 表示用）、`volume`、`speed`、`audio-device`（§4.8）、`track-list`・`sid`（字幕選択、§4.13）。
+
+`--speed` と `--volume` は初期速度・初期音量の設定値（FR-39、仕様決定 BO）をそのまま渡す。起動引数で適用するため変更は次回の再生開始から有効で、稼働中インスタンスへの速度・音量の変更は `player_control` 経由のセッション限りの変更として従来どおり扱う。
 受信側は 1 ソケットにつき 1 読み取りタスクを持ち、`event` 行を購読者に振り分ける。
 
 ### 4.2 コマ送り
@@ -451,7 +459,7 @@ PiP 小窓のサイズは動画の表示アスペクト比へ追従する（FR-1
 
 再生の既定表示は PiP とする（FR-18、仕様決定 AJ）。`play_video` の `pip` 引数は省略時に設定 `pip.default`（`on`/`off`、未設定・その他の値は `on`）で解決し、明示の `true`/`false` は強制 PiP・強制通常窓として既定に優先する。PiP が既定のため `pip.quality.format` はほぼ全再生の起動画質式として機能する（解決順自体は変更しない）。連続再生・ループの遷移は同一 mpv プロセスで行われ、`ontop`・`border`・`geometry` は遷移を跨いで維持される。
 
-再生窓を開くディスプレイは設定 `window.screen` で選ぶ（FR-31、仕様決定 AZ）。設定画面の「再生窓」節は `monitor_list` コマンドが返す接続中モニターの列挙からモニター名を選ばせ、空・未設定は自動（mpv 既定）とする。保存値のモニター名は `PlayerManager::play` が spawn のたびに `available_monitors()` の列挙順インデックスへ解決し、`--screen=<番号>` として mpv 起動引数に渡す。保存名が現在の列挙に無いときは `--screen` を渡さず mpv 既定にフォールバックする。`--screen` は起動時引数のため稼働中インスタンスには影響せず、実行時のディスプレイ移動は対象外。`--geometry` の位置座標は指定ディスプレイ上の相対座標として mpv が解釈する。
+再生窓を開くディスプレイは設定 `window.screen` で選ぶ（FR-31、仕様決定 AZ）。設定画面の「再生窓」節は `monitor_list` コマンドが返す接続中モニターの列挙からモニター名を選ばせ、空・未設定は自動（mpv 既定）とする。保存値のモニター名は `PlayerManager::play` が spawn のたびに `available_monitors()` の列挙順インデックスへ解決し、`--screen=<番号>` として mpv 起動引数に渡す。保存名が現在の列挙に無いときは `--screen` を渡さず mpv 既定にフォールバックする。`--screen` は起動時引数のため稼働中インスタンスの単独移動には使わないが、PiP 窓の一括整列（§4.12、FR-41）は同じ保存値を整列先の解決に使う。`--geometry` の位置座標は指定ディスプレイ上の相対座標として mpv が解釈する。
 
 ### 4.6 連続再生キュー（FR-10、仕様決定 S）
 
@@ -538,6 +546,8 @@ BG-10、仕様決定 BK）と `continuedVideoId` の両方に載せ、フロン�
 キューを畳む。なお途中項目の終了直後に継続先の読み込みが失敗した場合も
 `reason=eof`＋非継続で届くため、消費完了の判定は `reason` に加えて
 「現在位置が末尾項目」「終了した項目が末尾項目」の双方で行う。
+キューの寿命は `player.close_on_eof` による窓・カードの存否とは独立に
+適用される（§4.15。off で残されたインスタンスでも消費完了の扱いは同じ）。
 全消去と対象プレイリストの削除ではキューを畳む（`discardQueue`）。
 一時キューはエントリを残して中身を空に、プレイリストキューは
 エントリごと消す。「ここから連続再生」による上書きはエントリを畳まず、
@@ -667,6 +677,118 @@ mpv 窓上のキー操作（既定の `l` キー）で設定したループは�
 成功時は保存先パスを本文とするトーストに「フォルダを開く」アクション（`tauri-plugin-opener` の `revealItemInDir`。capabilities の `opener:default` に含まれる）を添え、失敗は既存の通知経路で知らせる。
 保存先の変更設定は初版では持たない。
 
+### 4.12 PiP 窓の一括整列（FR-41、仕様決定 BQ）
+
+プレイヤーカード群の上部にある「PiP を整列」ボタンで、PiP 表示中の全インスタンスの窓を対象ディスプレイ上に格子状へタイリングする（窓ごとの位置プリセットは持たない、FR-41）。
+対象ディスプレイは `monitor_list` の列挙から `window.screen` の保存名で解決し、未設定・保存名が現在の列挙に無いときはプライマリ、それも取れない環境では列挙先頭を使う（仕様決定 BQ の「未設定・自動は主モニター」）。
+格子は `src/lib/pip-tile-logic.ts` の純粋関数が計算する（PT-NN 系テスト）。列数は `ceil(√n)`、行数は `ceil(n/cols)` とし、マス目はディスプレイ寸法を整数境界で分割した `WxH+x+y`（対象ディスプレイ左上原点の相対座標）として各窓へ割り当てる。
+mpv は `geometry` の位置座標を窓のあるディスプレイ上の相対位置として解釈するため（仕様決定 AZ(4)）、座標は仮想デスクトップ絶対値ではなくモニター内相対値とする。
+窓の並び順は instance_id 昇順・マス目の消費は行優先とする暫定仕様。
+
+各窓への適用は `player_control` の `pip_tile{geometry}` アクションで行う。
+受け取った geometry は `is_valid_pip_geometry` で検証し、対象が PiP 表示中でなければ拒否する。
+適用時は PiP 中の基底 geometry（`pip_base`）を差し替えてから `pip_target_geometry` を送るため、`pip.fit_aspect` の追従（§4.5）はマス目を上限枠として継続する（縦長動画はマス目に内接する細い窓でマス目左上へ寄る）。
+実行時の `set_property geometry` で位置オフセット（`±x±y`）が効くのは mpv 0.38 以降（win32・x11、仕様決定 BU）。
+このため適用前に `get_property mpv-version` で版を確かめ、解釈できた値が 0.38 未満なら拒否する（サイズだけ変わる半端な整列を避ける）。
+バージョン文字列を解釈できない構成（mpv-git 等）は判定を保留して適用を続ける暫定仕様。
+旧 mpv 環境へのフォールバックとしての OS 窓操作経路（`window-id` → `XMoveWindow` / `SetWindowPos`）は、仕様決定 BU の選択肢のうち依存を増やさない側として採用せず、バージョン拒否とした。
+
+表示環境の分類は `windowing_system` コマンドが返す。
+Wayland はプロトコル上クライアント・第三者とも窓の絶対位置を決められない恒久制限（仕様決定 BU）のため、ボタンを無効化する。
+`windowing_system` は `XDG_SESSION_TYPE` を優先し、未設定では `WAYLAND_DISPLAY` / `DISPLAY` の有無で推す。
+整列対象はフロント側で PiP 表示中のインスタンスだけに限るため、通常窓のインスタンスは触れない。
+失敗はトーストで通知し、一部のインスタンスだけ失敗した場合は成功件数と最初のエラーを表示する。
+
+### 4.13 字幕トラックの選択（FR-40、仕様決定 BP）
+
+プレイヤーカードの「字幕」ドロップダウンから、再生中動画の字幕トラックを選ぶ。
+選択肢は「なし」（`no`）・「自動」（`auto`）・取得済みの各字幕トラックで、
+トラック列は監視プロパティ `track-list` のうち `type=sub` のエントリから
+`id`・`title`・`lang` を抜き出して `PlayerState.subTracks` に載せる。
+表示名は `title (lang)` を基本とし、欠けたフィールドは残りで代用する。
+現在値は監視プロパティ `sid` を `PlayerState.sid` へ正規化した文字列
+（`"no"` / `"auto"` / トラック ID）で追従する。
+
+適用は `player_control` の `sub_track` アクション → `set_property sid`。
+トラック ID は数値として、`no` / `auto` は文字列として mpv へ渡す。
+選択はセッション内のみ有効で DB には保存しない。mpv の `sid` は
+ファイルロードごとに自動選択へ戻るため、連続再生遷移では追加の
+リセットを送らず自動選択へ戻る（`load_video` 側でも表示状態を初期化する）。
+
+### 4.14 mpv 窓の前面化（FR-42、仕様決定 BR）
+
+プレイヤーカードの「前面に出す」ボタンで、そのインスタンスの mpv 窓を前面へ出す。
+`player_control` の `focus_window` アクションとして送り、`MpvPlayer` が表示環境に応じて経路を選ぶ。
+
+表示環境の分類は `windowing_system` コマンドが返し、`XDG_SESSION_TYPE` を優先、未設定では `WAYLAND_DISPLAY` / `DISPLAY` の有無で推す（"windows" / "x11" / "wayland" / "other"）。
+Wayland はプロトコル上クライアント・第三者とも窓の前面化を決められない恒久制限（仕様決定 BU）のため、"wayland" と "other"（不明環境）ではボタンを無効化する。判定値の取得に失敗したときはボタンを有効に保ち、操作時のエラー通知に委ねる暫定仕様。
+バックエンド側でも windows / x11 以外は `UnsupportedWindowing` で拒否する二重の防御とする。
+
+Windows では mpv プロセスから窓ハンドルを特定する（仕様決定 BR）。
+まず `get_property window-id` の値を HWND として使い（mpv 0.37 以降、仕様決定 BU）、`IsWindow` で有効性を確かめる。
+プロパティが取れない構成（mpv 0.37 未満）や値が無効なときは、`EnumWindows` でプロセス ID に一致する可視トップレベル窓を列挙して特定する。
+いずれでも見つからなければ `WindowNotReady`（起動直後や窓の無い状態）。
+前面化は最小化中なら `SW_RESTORE` で戻してから `SetForegroundWindow` を呼び、フォアグラウンド権限で拒否された場合は現在のフォアグラウンド窓スレッドへ `AttachThreadInput` で入力をアタッチしてから `BringWindowToTop` + `SetForegroundWindow` を再試行する。
+この再試行はフォアグラウンドロックの制約下でユーザーのボタン操作に追随するための暫定仕様で、環境によってはタスクバー点滅に留まる可能性がある（実機未検証）。
+
+Linux の X11 では `get_property window-id` を XID として使う（mpv 0.36 以降、仕様決定 BU）。
+x11rb（純粋 Rust 接続、MIT OR Apache-2.0）で X サーバへ接続し、対象窓を引数にした `_NET_ACTIVE_WINDOW` の ClientMessage を root 窓へ送る（source=2: ユーザーの直接操作として扱う、EWMH 主経路）。
+副経路として `XRaiseWindow`（`ConfigureWindow` の stack-mode=Above）と `XSetInputFocus` も併せて送り、EWMH を見ない WM でも追従する。
+`window-id` が取れないとき（起動直後・mpv 0.36 未満・窓未作成のアイドル状態）は X11 では他の特定経路を持たないため `WindowNotReady` で失敗する。
+
+対象窓が見つからない・前面化が OS に拒否されたときはエラー（`mpv_window_not_ready` / `mpv_foreground_failed` / `mpv_windowing_unsupported`）としてトースト通知し、ボタン自体は再有効なまま残す（起動直後の一時的な不可を恒久エラーと区別しない暫定仕様）。
+
+### 4.15 再生完了時の自動クローズ（FR-43、仕様決定 BS）
+
+設定 `player.close_on_eof`（`on` / `off`、既定 `off`）で、継続再生を伴わない
+`reason=eof` の終端の振る舞いを変える。判定は終端イベントのたびにその時点の
+設定値で行い、純粋判定 `close_instance_on_end(reason, continued, close_on_eof)`
+が従う: 継続時は常に残し、非継続の eof（キュー消化完了を含む）だけが設定に従う。
+eof 以外の終端（`error`・`stop`・`process_exit` 等）は設定に関わらず閉じる。
+
+`on` のとき該当終端では従来どおり emitter が管理表から外して mpv を終了させ、
+カードは `player://ended` 経由で畳まれる。`off` のときはインスタンスを管理表へ
+残して mpv も存続させるため、mpv 窓は `--keep-open` の pause 状態で残り、
+カードもそのまま表示される。区別は `player://ended` の `closed` で伝え、
+フロントは `closed === false` の終端ではカード除去・インスタンス紐付け
+（ループ状態・武装世代）の後始末をしない。キューの寿命（`queueEndOutcome`）
+はインスタンス存否と独立に従来どおり適用する。
+
+残されたインスタンスは終端理由を `rearm_after_eof` で解除し、後続の終端
+（mpv 窓の手動終了によるソケット切断、シーク巻き戻し後の再 eof）を受理する。
+eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定を維持し、
+次ファイルの `file-loaded` またはプロセス再起動で解除する。
+
+### 4.16 ライブ待機ポーラー（FR-44、仕様決定 BT）
+
+`live_waits` に登録された放送予定のライブ・プレミア公開予定を、バックエンドの
+ポーラーが InnerTube `player` 応答で巡回する。待機リストは DB へ保存するため
+再起動でそのまま復元され、ポーリングも再開される（仕様決定 BT(5)）。
+
+- 登録: `live_wait_add` が行アクション「配信を待機」から呼ばれ、先に InnerTube で
+  放送状態を確認する。`isLiveNow` 真は放送中として登録せず `live` を返し
+  （通常再生を案内）、`endTimestamp` ありは `ended`、`liveBroadcastDetails` も
+  `isUpcoming` も無い通常動画は `notBroadcast` を返す。開始前のみ `added` で
+  `live_waits` へ登録し、同一動画は `duplicate` で抑止する（仕様決定 BT(1)(6)）
+- 状態分類: 優先順位は「放送中（`isLiveNow` 真）> 終了済み（`endTimestamp` あり）>
+  開始前（`liveBroadcastDetails` または `videoDetails.isUpcoming` あり）> 非放送」。
+  予定時刻は `scheduledStartTimestamp` を優先し、無ければ `startTimestamp` を使う
+  （暫定解釈: 要件が名指しする `scheduledStartTimestamp` は 2026-11 時点の実応答では
+  未確認で、予約配信のロビーでは `startTimestamp` に予定開始が入ることを確認した）
+- ポーリング間隔: 予定時刻が「開始 2 分前〜予定 30 分超過」の直前窓内は 15 秒、
+  それ以外（予定無しを含む）は 60 秒（暫定値。仕様決定 BT は「直前から短間隔、
+  無ければ 60 秒程度」のみ指定）。予定超過後も一定時間は短間隔で遅延開始を追う
+- 遷移: 放送中の検出で待機を解除し、`live_wait.action` が `play` なら新規
+  インスタンスで自動再生（`play_video` と同じ pip・画質の解決順、レジュームは使わない）、
+  `notify` なら `livewait://status` のトースト通知のみ。`endTimestamp` の検出は
+  通知して解除する。開始予定から 24 時間を超えて未開始の項目は自動解除する
+  （予定の無い項目は登録時刻を起点とする暫定解釈）。ポーリングで InnerTube 側の
+  予定変更を検知したら保存値を追随更新する
+- `liveBroadcastDetails` をポーリング中に失った項目（中止・非公開化など）は
+  異常系として定間隔で追い続け、自動解除期限の掃除に委ねる（暫定解釈）
+- 状態確認の連続失敗は 2 回で `livewait://status` の warn 通知を出し、復帰時に
+  info 通知する（フィードポーラーと同じ方針）
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -764,36 +886,6 @@ mpv 窓上のキー操作（既定の `l` キー）で設定したループは�
 NG メッセージも送信自体は行い、UI 側の表示だけをフィルタで制御する。
 
 重複除去はセッション内の既処理 `item_id` 集合（上限 1 万件、超過分は古い順に破棄）が担い、応答内と処理済みの重複を除く。
-
-### 6.4 ライブ待機ポーラー（FR-44、仕様決定 BT）
-
-`live_waits` に登録された放送予定のライブ・プレミア公開予定を、バックエンドの
-ポーラーが InnerTube `player` 応答で巡回する。待機リストは DB へ保存するため
-再起動でそのまま復元され、ポーリングも再開される（仕様決定 BT(5)）。
-
-- 登録: `live_wait_add` が行アクション「配信を待機」から呼ばれ、先に InnerTube で
-  放送状態を確認する。`isLiveNow` 真は放送中として登録せず `live` を返し
-  （通常再生を案内）、`endTimestamp` ありは `ended`、`liveBroadcastDetails` も
-  `isUpcoming` も無い通常動画は `notBroadcast` を返す。開始前のみ `added` で
-  `live_waits` へ登録し、同一動画は `duplicate` で抑止する（仕様決定 BT(1)(6)）
-- 状態分類: 優先順位は「放送中（`isLiveNow` 真）> 終了済み（`endTimestamp` あり）>
-  開始前（`liveBroadcastDetails` または `videoDetails.isUpcoming` あり）> 非放送」。
-  予定時刻は `scheduledStartTimestamp` を優先し、無ければ `startTimestamp` を使う
-  （暫定解釈: 要件が名指しする `scheduledStartTimestamp` は 2026-11 時点の実応答では
-  未確認で、予約配信のロビーでは `startTimestamp` に予定開始が入ることを確認した）
-- ポーリング間隔: 予定時刻が「開始 2 分前〜予定 30 分超過」の直前窓内は 15 秒、
-  それ以外（予定無しを含む）は 60 秒（暫定値。仕様決定 BT は「直前から短間隔、
-  無ければ 60 秒程度」のみ指定）。予定超過後も一定時間は短間隔で遅延開始を追う
-- 遷移: 放送中の検出で待機を解除し、`live_wait.action` が `play` なら新規
-  インスタンスで自動再生（`play_video` と同じ pip・画質の解決順、レジュームは使わない）、
-  `notify` なら `livewait://status` のトースト通知のみ。`endTimestamp` の検出は
-  通知して解除する。開始予定から 24 時間を超えて未開始の項目は自動解除する
-  （予定の無い項目は登録時刻を起点とする暫定解釈）。ポーリングで InnerTube 側の
-  予定変更を検知したら保存値を追随更新する
-- `liveBroadcastDetails` をポーリング中に失った項目（中止・非公開化など）は
-  異常系として定間隔で追い続け、自動解除期限の掃除に委ねる（暫定解釈）
-- 状態確認の連続失敗は 2 回で `livewait://status` の warn 通知を出し、復帰時に
-  info 通知する（フィードポーラーと同じ方針）
 
 ## 7. NG フィルタエンジン（技術方針 M）
 
@@ -941,7 +1033,7 @@ CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
   `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
 - `queue_items` / `queue_state` は一時キューの永続化（FR-30、仕様決定 AY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。プレイリストキューは保存しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する
-- `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§6.4）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
+- `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
 
 ## 9. エラーハンドリングと変更耐性
 
@@ -1004,11 +1096,12 @@ yt-browser/
       main.rs
       lib.rs          # generate_handler! によるコマンドハンドラ登録の実体
       commands/
-      mpv/            # プロセス管理・IPC・プロパティ監視
+      mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
       chat/           # get_live_chat ポーラー・正規化
       feed/           # RSS ポーラー
+      livewait/       # ライブ配信待機のポーラー（§4.16）
       sponsor/        # SponsorBlock
       filter/         # NG エンジン
       db/             # rusqlite・マイグレーション
@@ -1021,7 +1114,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js）
   package.json
 ```

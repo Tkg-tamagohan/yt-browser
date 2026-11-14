@@ -29,7 +29,10 @@ fn live_wait_insert_list_round_trip() {
     assert_eq!(g.title, "配信 dQw4w9WgXcQ");
     assert_eq!(g.channel_id.as_deref(), Some("UCchan000000000000001"));
     assert_eq!(g.channel_title.as_deref(), Some("テストCH"));
-    assert_eq!(g.thumbnail_url.as_deref(), Some("https://i.ytimg.com/vi/x.jpg"));
+    assert_eq!(
+        g.thumbnail_url.as_deref(),
+        Some("https://i.ytimg.com/vi/x.jpg")
+    );
     assert_eq!(g.scheduled_start_ms, Some(1_837_263_600_000));
     assert_eq!(g.registered_ms, 1_000);
 
@@ -63,7 +66,9 @@ fn live_wait_insert_dedups_by_video_id() {
     assert_eq!(list[0].title, "配信 dQw4w9WgXcQ");
     assert_eq!(list[0].scheduled_start_ms, Some(100));
     // 別動画は登録できる
-    assert!(db.live_wait_insert(&wait("abc12345678", None, 2_000)).unwrap());
+    assert!(db
+        .live_wait_insert(&wait("abc12345678", None, 2_000))
+        .unwrap());
     assert_eq!(db.live_wait_list().unwrap().len(), 2);
 }
 
@@ -71,10 +76,13 @@ fn live_wait_insert_dedups_by_video_id() {
 #[test]
 fn live_wait_list_order() {
     let db = Db::connect_in_memory().unwrap();
-    db.live_wait_insert(&wait("v_late_____", Some(300), 10)).unwrap();
+    db.live_wait_insert(&wait("v_late_____", Some(300), 10))
+        .unwrap();
     db.live_wait_insert(&wait("v_none_____", None, 5)).unwrap();
-    db.live_wait_insert(&wait("v_early____", Some(100), 15)).unwrap();
-    db.live_wait_insert(&wait("v_early2___", Some(100), 8)).unwrap();
+    db.live_wait_insert(&wait("v_early____", Some(100), 15))
+        .unwrap();
+    db.live_wait_insert(&wait("v_early2___", Some(100), 8))
+        .unwrap();
     let ids: Vec<String> = db
         .live_wait_list()
         .unwrap()
@@ -92,7 +100,8 @@ fn live_wait_list_order() {
 #[test]
 fn live_wait_remove_individual() {
     let db = Db::connect_in_memory().unwrap();
-    db.live_wait_insert(&wait("dQw4w9WgXcQ", Some(100), 1)).unwrap();
+    db.live_wait_insert(&wait("dQw4w9WgXcQ", Some(100), 1))
+        .unwrap();
     db.live_wait_insert(&wait("abc12345678", None, 2)).unwrap();
     assert!(db.live_wait_remove("dQw4w9WgXcQ").unwrap());
     let ids: Vec<String> = db
@@ -117,7 +126,8 @@ fn live_wait_persists_across_reconnect() {
         let db = Db::connect(&path).unwrap();
         db.live_wait_insert(&wait("dQw4w9WgXcQ", Some(1_837_263_600_000), 1_000))
             .unwrap();
-        db.live_wait_insert(&wait("abc12345678", None, 2_000)).unwrap();
+        db.live_wait_insert(&wait("abc12345678", None, 2_000))
+            .unwrap();
     }
     let db = Db::connect(&path).unwrap();
     let list = db.live_wait_list().unwrap();
@@ -132,9 +142,11 @@ fn live_wait_persists_across_reconnect() {
 #[test]
 fn live_wait_set_scheduled_follows() {
     let db = Db::connect_in_memory().unwrap();
-    db.live_wait_insert(&wait("dQw4w9WgXcQ", Some(100), 1_000)).unwrap();
+    db.live_wait_insert(&wait("dQw4w9WgXcQ", Some(100), 1_000))
+        .unwrap();
     // 予定が後ろへずれた（YouTube 側で延期）
-    db.live_wait_set_scheduled("dQw4w9WgXcQ", Some(200)).unwrap();
+    db.live_wait_set_scheduled("dQw4w9WgXcQ", Some(200))
+        .unwrap();
     assert_eq!(
         db.live_wait_get("dQw4w9WgXcQ")
             .unwrap()

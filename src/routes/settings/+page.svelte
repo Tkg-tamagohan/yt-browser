@@ -10,6 +10,7 @@
   } from "$lib/pip";
   import { QUALITY_PRESETS } from "$lib/quality";
   import { feedShowShortsEnabled } from "$lib/feed-settings";
+  import { closeOnEofEnabled } from "$lib/eof-logic";
   import {
     asErrorMessage,
     formatOverrides,
@@ -30,6 +31,7 @@
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
   import SettingsLiveWaitSection from "$lib/SettingsLiveWaitSection.svelte";
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
+  import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
   import SettingsQualitySection from "$lib/SettingsQualitySection.svelte";
   import SettingsSponsorSection from "$lib/SettingsSponsorSection.svelte";
   import SettingsUpdateSection from "$lib/SettingsUpdateSection.svelte";
@@ -77,9 +79,18 @@
   // 待機中の配信が始まったときの動作（live_wait.action、FR-44・仕様決定 BT(3)）。
   // play=新規インスタンスで自動再生 / notify=トースト通知のみ。既定は play
   let liveWaitAction = $state("play");
+  // 新規インスタンスの初期速度・初期音量（player.initial_speed /
+  // player.initial_volume、FR-39・仕様決定 BO）。mpv 起動引数へ渡すため
+  // 次回の再生開始から有効。入力は文字列で保持し、保存時に範囲検証する。
+  // 空欄は既定値へ戻す操作として扱う
+  let initialSpeed = $state("");
+  let initialVolume = $state("");
   // 再生窓を開くディスプレイ（window.screen、FR-31・仕様決定 AZ）。
   // 値はモニター名。空は自動（mpv 既定）
   let windowScreen = $state("");
+  // 再生完了時の自動クローズ（player.close_on_eof、FR-43・仕様決定 BS）。
+  // on で継続なし eof 終端の窓とカードを自動で畳む。既定は off（残す）
+  let closeOnEof = $state(false);
   // monitor_list の列挙結果。取得失敗環境では空列のまま（選択肢が無効になる）
   let monitors = $state<MonitorInfo[]>([]);
   // 稼働中インスタンスへの即時適用が残っている画質式。全台に適用できたら null
@@ -224,12 +235,64 @@
         invalid = true;
         notify(t("settings.livewait.unsaved"));
       }
+      // player.initial_speed / player.initial_volume（FR-39、仕様決定 BO）。
+      // 空欄は既定値へ戻す操作。範囲外・非数は失敗通知のみで保存しない
+      // （backend 側も範囲外を既定値へ戻すため、ここで弾いて入力ミスを知らせる）
+      const is = initialSpeed.trim();
+      if (is === "") {
+        await invoke("settings_set", { key: "player.initial_speed", value: "" });
+      } else {
+        const n = Number(is);
+        if (Number.isFinite(n) && n >= 0.25 && n <= 4.0) {
+          await invoke("settings_set", {
+            key: "player.initial_speed",
+            value: is,
+          });
+        } else {
+          invalid = true;
+          notify(t("settings.failed", { message: `player.initial_speed: ${is}` }));
+        }
+      }
+      if (initialSpeed.trim() !== is) {
+        invalid = true;
+        notify(t("settings.player.unsaved"));
+      }
+      const iv = initialVolume.trim();
+      if (iv === "") {
+        await invoke("settings_set", { key: "player.initial_volume", value: "" });
+      } else {
+        const n = Number(iv);
+        if (Number.isFinite(n) && n >= 0 && n <= 130) {
+          await invoke("settings_set", {
+            key: "player.initial_volume",
+            value: iv,
+          });
+        } else {
+          invalid = true;
+          notify(t("settings.failed", { message: `player.initial_volume: ${iv}` }));
+        }
+      }
+      if (initialVolume.trim() !== iv) {
+        invalid = true;
+        notify(t("settings.player.unsaved"));
+      }
       // window.screen: モニター名をそのまま保存（空は自動＝mpv 既定）。
       // 保存待ちの間に select が変更されると DB と画面がずれるため、
       // スナップショットと比較してずれていれば未保存として通知する
       const ws = windowScreen;
       await invoke("settings_set", { key: "window.screen", value: ws });
       if (windowScreen !== ws) {
+        invalid = true;
+        notify(t("settings.window.unsaved"));
+      }
+      // player.close_on_eof: チェックボックスの 2 値を on/off で保存する
+      // （FR-43、仕様決定 BS）。終端時点の値で判定されるため即時に効く
+      const ce = closeOnEof;
+      await invoke("settings_set", {
+        key: "player.close_on_eof",
+        value: ce ? "on" : "off",
+      });
+      if (closeOnEof !== ce) {
         invalid = true;
         notify(t("settings.window.unsaved"));
       }
@@ -393,12 +456,30 @@
       });
       // 未設定・その他の値は play（仕様決定 BT(3) の既定）
       liveWaitAction = liveWaitRaw?.trim() === "notify" ? "notify" : "play";
+      const initialSpeedRaw = await invoke<string | null>("settings_get", {
+        key: "player.initial_speed",
+      });
+      if (initialSpeedRaw !== null) {
+        initialSpeed = initialSpeedRaw.trim();
+      }
+      const initialVolumeRaw = await invoke<string | null>("settings_get", {
+        key: "player.initial_volume",
+      });
+      if (initialVolumeRaw !== null) {
+        initialVolume = initialVolumeRaw.trim();
+      }
       const screenRaw = await invoke<string | null>("settings_get", {
         key: "window.screen",
       });
       if (screenRaw !== null) {
         windowScreen = screenRaw.trim();
       }
+      // player.close_on_eof（FR-43、仕様決定 BS）。解釈は Rust 側と同じ
+      // 明示的な on 系値のみで、未設定・その他は off（既定）
+      const closeEofRaw = await invoke<string | null>("settings_get", {
+        key: "player.close_on_eof",
+      });
+      closeOnEof = closeOnEofEnabled(closeEofRaw);
       const toneRaw = await invoke<string | null>("settings_get", {
         key: "hdr.tone_mapping",
       });
@@ -483,6 +564,12 @@
 
   <SettingsWheelSection {loading} bind:wheelDelta={wheelDelta} />
 
+  <SettingsPlayerSection
+    {loading}
+    bind:initialSpeed={initialSpeed}
+    bind:initialVolume={initialVolume}
+  />
+
   <SettingsPipSection
     {loading}
     bind:pipDefault={pipDefault}
@@ -495,6 +582,7 @@
     {loading}
     {monitors}
     bind:windowScreen={windowScreen}
+    bind:closeOnEof={closeOnEof}
   />
 
   <SettingsHdrSection
