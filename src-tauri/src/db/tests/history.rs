@@ -62,7 +62,7 @@ fn history_list_and_remove() {
         db.history_update_progress(v, "t", i as f64, Some(60), false)
             .unwrap();
     }
-    let list = db.history_list(500).unwrap();
+    let list = db.history_list(None, None, 500).unwrap().items;
     assert_eq!(list.len(), 3);
     // last_watched_at は datetime('now') 同時刻でも rowid 降順で
     // 決定的になる（同一時刻の順序不定を防ぐ）
@@ -71,11 +71,11 @@ fn history_list_and_remove() {
     assert_eq!(list[2].video_id, "a1");
     assert!(list.iter().all(|h| !h.completed));
     db.history_remove("a2").unwrap();
-    let list = db.history_list(500).unwrap();
+    let list = db.history_list(None, None, 500).unwrap().items;
     assert_eq!(list.len(), 2);
     assert!(!list.iter().any(|h| h.video_id == "a2"));
     // limit が効く
-    assert_eq!(db.history_list(1).unwrap().len(), 1);
+    assert_eq!(db.history_list(None, None, 1).unwrap().items.len(), 1);
 }
 
 /// DB-LD-05: 手動削除した履歴は再生中プレイヤーの進捗保存で復活しない。
@@ -134,7 +134,7 @@ fn history_prune_keeps_recent_cap() {
         tx.commit().unwrap();
     }
     db.history_prune().unwrap();
-    let list = db.history_list(10001).unwrap();
+    let list = db.history_list(None, None, 10001).unwrap().items;
     assert_eq!(list.len(), 10000);
     // 最新（v10000）が先頭、境界の v1 が最後に残り、最古の v0 が消える
     assert_eq!(list[0].video_id, "v10000");
@@ -142,5 +142,150 @@ fn history_prune_keeps_recent_cap() {
     assert!(db.history_get("v0").unwrap().is_none());
     // 上限以内に戻った後は何も消さない
     db.history_prune().unwrap();
-    assert_eq!(db.history_list(10001).unwrap().len(), 10000);
+    assert_eq!(
+        db.history_list(None, None, 10001).unwrap().items.len(),
+        10000
+    );
+}
+
+/// DB-LD-13: 履歴一覧のカーソルページング（FR-52、仕様決定 CC）。
+/// ページをまたいで重複・欠落なく全件取れ、末尾到達で next_cursor が
+/// None になる。同時刻の並び（rowid 降順）の境界でもカーソルが進む。
+#[test]
+fn history_list_paginates_with_cursor() {
+    let db = Db::connect_in_memory().unwrap();
+    {
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        // last_watched_at を 1 秒ずつずらして確定順にする（v6 が最新）
+        for i in 0..7 {
+            tx.execute(
+                "INSERT INTO watch_history (video_id, title, last_watched_at)
+                 VALUES (?1, 't', datetime('2024-01-01', '+' || ?2 || ' seconds'))",
+                rusqlite::params![format!("v{i}"), i],
+            )
+            .unwrap();
+        }
+        // 同時刻の行を末尾側（より新しい側）に 3 件足す（s2 が先頭になる）
+        for i in 0..3 {
+            tx.execute(
+                "INSERT INTO watch_history (video_id, title, last_watched_at)
+                 VALUES (?1, 't', '2025-01-01 00:00:00')",
+                [format!("s{i}")],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    // 3 件ずつ: s2,s1,s0 / v6,v5,v4 / v3,v2,v1 / v0
+    let p1 = db.history_list(None, None, 3).unwrap();
+    assert_eq!(
+        p1.items
+            .iter()
+            .map(|h| h.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["s2", "s1", "s0"]
+    );
+    assert!(p1.next_cursor.is_some());
+    let p2 = db.history_list(p1.next_cursor.as_ref(), None, 3).unwrap();
+    assert_eq!(
+        p2.items
+            .iter()
+            .map(|h| h.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["v6", "v5", "v4"]
+    );
+    let p3 = db.history_list(p2.next_cursor.as_ref(), None, 3).unwrap();
+    assert_eq!(
+        p3.items
+            .iter()
+            .map(|h| h.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["v3", "v2", "v1"]
+    );
+    let p4 = db.history_list(p3.next_cursor.as_ref(), None, 3).unwrap();
+    assert_eq!(
+        p4.items
+            .iter()
+            .map(|h| h.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["v0"]
+    );
+    // 末尾まで達したら next_cursor は None（空の次ページを要求しない）
+    assert!(p4.next_cursor.is_none());
+    // 全ページをカーソルで繋いでも重複・欠落がない
+    let mut ids = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = db.history_list(cursor.as_ref(), None, 4).unwrap();
+        cursor = page.next_cursor;
+        let done = cursor.is_none();
+        ids.extend(page.items.iter().map(|h| h.video_id.clone()));
+        if done {
+            break;
+        }
+    }
+    assert_eq!(ids.len(), 10);
+    let mut uniq = ids.clone();
+    uniq.sort();
+    uniq.dedup();
+    assert_eq!(uniq.len(), ids.len());
+}
+
+/// DB-LD-14: 履歴一覧の検索絞り込み（FR-61、仕様決定 CL）。
+/// タイトル・チャンネル名への部分一致で絞り、空・空白のみの検索語は
+/// 絞り込みなしとして扱う。`%`・`_` はワイルドカードではなく文字として探す。
+#[test]
+fn history_list_search_filters() {
+    let db = Db::connect_in_memory().unwrap();
+    {
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        let rows = [
+            ("v1", "Rust 入門", Some("技術チャンネル")),
+            ("v2", "料理 カレー", Some("料理チャンネル")),
+            ("v3", "100% 果汁", Some("ドリンク")),
+            ("v4", "アンダー_スコア", None),
+        ];
+        for (i, (id, title, ch)) in rows.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO watch_history
+                   (video_id, title, channel_title, last_watched_at)
+                 VALUES (?1, ?2, ?3, datetime('2024-01-01', '+' || ?4 || ' seconds'))",
+                rusqlite::params![id, title, ch, i],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let ids = |q: Option<&str>| {
+        db.history_list(None, q, 10)
+            .unwrap()
+            .items
+            .iter()
+            .map(|h| h.video_id.clone())
+            .collect::<Vec<_>>()
+    };
+    // タイトルの部分一致
+    assert_eq!(ids(Some("カレー")), ["v2"]);
+    // チャンネル名の部分一致
+    assert_eq!(ids(Some("料理")), ["v2"]);
+    // channel_title が NULL の行はタイトルだけで拾える
+    assert_eq!(ids(Some("スコア")), ["v4"]);
+    // `%` と `_` はワイルドカードではなくリテラルとして探す
+    assert_eq!(ids(Some("100%")), ["v3"]);
+    assert_eq!(ids(Some("アンダー_スコア")), ["v4"]);
+    // 空・空白のみの検索語は絞り込みなし
+    assert_eq!(ids(Some("   ")).len(), 4);
+    assert_eq!(ids(None).len(), 4);
+    // 絞り込み中もカーソルページングが効く（ヒット 2 件を 1 件ずつ取る）
+    let p1 = db.history_list(None, Some("チャンネル"), 1).unwrap();
+    assert_eq!(p1.items.len(), 1);
+    assert!(p1.next_cursor.is_some());
+    let p2 = db
+        .history_list(p1.next_cursor.as_ref(), Some("チャンネル"), 1)
+        .unwrap();
+    assert_eq!(p2.items.len(), 1);
+    assert!(p2.next_cursor.is_none());
+    assert_ne!(p1.items[0].video_id, p2.items[0].video_id);
 }

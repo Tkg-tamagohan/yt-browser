@@ -72,6 +72,11 @@
   {#if tab === "history"}
     <LibraryHistory
       history={lib.history}
+      searchQuery={lib.historyQuery}
+      onSearchInput={lib.setHistoryQuery}
+      hasMore={lib.historyHasMore}
+      loadingMore={lib.historyLoadingMore}
+      loadMore={lib.loadMoreHistory}
       play={lib.play}
       removeHistory={lib.removeHistory}
       va={lib.va}
