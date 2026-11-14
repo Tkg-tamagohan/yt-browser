@@ -2,7 +2,10 @@
 //! SponsorBlock 判定を `MpvPlayer` にまとめる。
 use super::spawn::{ipc_endpoint, launch, loadfile_replace};
 use super::terminal::TerminalTracker;
-use super::{fit_pip_geometry, IpcClient, IpcEvent, MpvError, DEFAULT_PIP_GEOMETRY};
+use super::{
+    fit_pip_geometry, is_valid_pip_geometry, mpv_version_tuple, IpcClient, IpcEvent, MpvError,
+    DEFAULT_PIP_GEOMETRY, MIN_TILE_MPV_VERSION,
+};
 use crate::model::{PlayStatus, PlayerAction, PlayerState, QueueArmItem};
 use crate::util::lock;
 use serde_json::json;
@@ -868,6 +871,9 @@ impl MpvPlayer {
                 // 保持中の値（spawn 時の解決値＋set_pip_fit の反映分）を使う
                 self.set_pip(*enabled, DEFAULT_PIP_GEOMETRY).await?;
             }
+            PlayerAction::PipTile { geometry } => {
+                self.set_pip_tile_geometry(geometry).await?;
+            }
             PlayerAction::AudioDevice { device } => {
                 // 実行時変更可（mpv 0.41 で実機確認）。未知のデバイス名も
                 // プロパティ自体は受理され、AO の初期化時に mpv 側が
@@ -988,6 +994,44 @@ impl MpvPlayer {
         if !lock(&self.state).pip {
             return Ok(());
         }
+        self.apply_geometry(&self.pip_target_geometry()).await
+    }
+
+    /// PiP 窓の一括整列（FR-41、仕様決定 BQ）。フロントが格子計算した
+    /// 目標 geometry（`WxH+x+y`、対象ディスプレイ左上原点の相対座標）を
+    /// PiP 中の窓へ適用する。`pip_base` を差し替えるためアスペクト追従
+    /// （FR-19、仕様決定 AL）は割り当てられたマス目を上限枠として継続する。
+    /// 実行時の geometry で位置オフセットが効くのは mpv 0.38 以降
+    /// （仕様決定 BU）。それ未満ではサイズだけ変わる半端な結果になるため、
+    /// バージョンを確認してから適用する。set_pip と同じく `pip_op` で
+    /// 直列化し、PiP 解除との競合を防ぐ。
+    async fn set_pip_tile_geometry(&self, geometry: &str) -> Result<(), MpvError> {
+        let _op = self.pip_op.lock().await;
+        if !is_valid_pip_geometry(geometry) {
+            return Err(MpvError::InvalidGeometry(geometry.to_string()));
+        }
+        if !lock(&self.state).pip {
+            return Err(MpvError::NotPip(self.instance_id));
+        }
+        // バージョン文字列を解釈できない構成（mpv-git 等）は判定を保留して
+        // 適用を続ける。get_property 自体が失敗する状態では後続の geometry
+        // 送信も失敗するため、ここでは成否を見ない
+        let version = self
+            .ipc
+            .read()
+            .await
+            .command(vec![json!("get_property"), json!("mpv-version")])
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string));
+        if let Some(v) = version.as_deref() {
+            if let Some((major, minor)) = mpv_version_tuple(v) {
+                if (major, minor) < MIN_TILE_MPV_VERSION {
+                    return Err(MpvError::MpvTooOld(v.to_string()));
+                }
+            }
+        }
+        *lock(&self.pip_base) = Some(geometry.to_string());
         self.apply_geometry(&self.pip_target_geometry()).await
     }
 

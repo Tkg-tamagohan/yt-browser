@@ -212,6 +212,9 @@ export type PlayerAction =
   | { type: "frame_step" }
   | { type: "frame_back_step" }
   | { type: "pip"; enabled: boolean }
+  // PiP 窓の一括整列（FR-41、仕様決定 BQ）。geometry は格子計算済みの
+  // `WxH+x+y`（対象ディスプレイ左上原点の相対座標）
+  | { type: "pip_tile"; geometry: string }
   // 音声出力先の切替（FR-32、仕様決定 BA）。値は audio_device_list の name
   | { type: "audio_device"; device: string }
   // A-B リピートの 3 状態巡回に対応する mpv 操作（FR-37、仕様決定 BM）
