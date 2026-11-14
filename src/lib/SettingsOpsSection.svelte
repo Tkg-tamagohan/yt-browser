@@ -79,7 +79,7 @@
     const path = await open({ multiple: false, filters: [JSON_FILTER] });
     if (typeof path !== "string") return;
     const yes = await ask(t("settings.ops.importConfirm"), {
-      title: t("settings.ops.import"),
+      title: t("settings.ops.import.label"),
       kind: "warning",
     });
     if (!yes) return;
@@ -138,12 +138,11 @@
 
 <section class="panel panel--filled">
   <h2>{t("settings.ops.title")}</h2>
-  <p class="subtle desc">{t("settings.ops.desc")}</p>
 
   <div class="ops-group">
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.export")}</div>
+        <div>{t("settings.ops.export.label")}</div>
         <div class="subtle">{t("settings.ops.export.desc")}</div>
       </div>
       <button onclick={() => void exportData()} disabled={busy}>
@@ -152,7 +151,7 @@
     </div>
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.import")}</div>
+        <div>{t("settings.ops.import.label")}</div>
         <div class="subtle">{t("settings.ops.import.desc")}</div>
       </div>
       <button onclick={() => void importData()} disabled={busy}>
@@ -165,7 +164,7 @@
         <div class="subtle">{t("settings.ops.diag.desc")}</div>
       </div>
       <button onclick={() => void exportDiag()} disabled={busy}>
-        {t("settings.ops.diag")}
+        {t("settings.ops.export")}
       </button>
     </div>
   </div>
@@ -182,7 +181,7 @@
     </div>
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.vacuum")}</div>
+        <div>{t("settings.ops.vacuum.label")}</div>
         <div class="subtle">{t("settings.ops.vacuum.desc")}</div>
       </div>
       <button onclick={() => void vacuum()} disabled={busy}>
@@ -191,7 +190,7 @@
     </div>
     <div class="ops-row">
       <div class="ops-text">
-        <div>{t("settings.ops.cleanup")}</div>
+        <div>{t("settings.ops.cleanup.label")}</div>
         <div class="subtle">{t("settings.ops.cleanup.desc")}</div>
       </div>
       <button class="danger" onclick={() => void cleanupOrphans()} disabled={busy}>

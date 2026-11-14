@@ -65,12 +65,6 @@
         <p class="subtle" class:hidden={lib.va.playlists.length > 0}>
           {t("library.playlists.empty")}
         </p>
-        <p
-          class="subtle drag-hint"
-          class:hidden={lib.va.playlists.length === 0}
-        >
-          {t("library.playlist.dragHint")}
-        </p>
           <ul
             class="pl-names"
             class:hidden={lib.va.playlists.length === 0}
@@ -200,7 +194,6 @@
               onclick={() => void lib.reverseItems()}
               >{t("library.playlist.reverse")}</button
             >
-            <span class="subtle drag-hint">{t("library.playlist.dragHint")}</span>
           </div>
           <ul class="rows">
             {#each lib.playlistItems as it, index (it.videoId)}
@@ -359,11 +352,6 @@
   .queue-badge {
     color: var(--accent);
     font-size: 0.85rem;
-  }
-
-  .drag-hint {
-    font-size: 0.8rem;
-    margin-left: auto;
   }
 
   @media (max-width: 700px) {

@@ -28,7 +28,6 @@
         <input type="checkbox" bind:checked={pipDefault} />
         {t("settings.pip.default")}
       </label>
-      <p class="subtle desc">{t("settings.pip.default.desc")}</p>
       <label class="setting-row">
         <input type="checkbox" bind:checked={pipFitAspect} />
         {t("settings.pip.fitAspect")}

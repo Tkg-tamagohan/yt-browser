@@ -39,7 +39,7 @@
           class="format-input"
           class:hidden={selected !== CUSTOM}
           bind:value={customFormat}
-          placeholder={t("settings.quality.format.label")}
+          placeholder="bv*[height<=1080]+ba/b[height<=1080]"
         />
       </div>
     </div>

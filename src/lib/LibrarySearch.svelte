@@ -43,11 +43,8 @@
         oninput={(e) => onSearchInput(e.currentTarget.value)}
       />
     </div>
-    <!-- ヒント・空・一覧の 3 系統はリマウントを避けるため
+    <!-- 空・一覧の 2 系統はリマウントを避けるため
          hidden 切替（ヒットずれ対策、FR-80） -->
-    <p class="subtle" class:hidden={searchQuery.trim() !== ""}>
-      {t("library.search.hint")}
-    </p>
     <p
       class="subtle"
       class:hidden={searchQuery.trim() === "" || items.length > 0}
