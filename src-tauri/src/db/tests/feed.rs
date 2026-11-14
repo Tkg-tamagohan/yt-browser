@@ -559,7 +559,8 @@ fn feed_backfill_ingest_inserts_read_and_confirms_placeholder() {
         .is_none());
 }
 
-/// バックフィル取得済み位置の読み書き（FR-21、仕様決定 AN）。
+/// バックフィル取得済み位置の読み書き（FR-21・FR-55、仕様決定 AN・CF）。
+/// `/shorts` タブの位置も `/videos`・`/streams` と独立に保持される。
 #[test]
 fn channel_backfill_positions_roundtrip() {
     let db = Db::connect_in_memory().unwrap();
@@ -574,15 +575,59 @@ fn channel_backfill_positions_roundtrip() {
         last_modified: None,
     })
     .unwrap();
-    assert_eq!(db.channel_backfill_positions(ch).unwrap(), (0, 0));
-    db.channel_set_backfill_positions(ch, 100, 50).unwrap();
-    assert_eq!(db.channel_backfill_positions(ch).unwrap(), (100, 50));
-    // 存在しないチャンネルは (0, 0)
+    assert_eq!(db.channel_backfill_positions(ch).unwrap(), (0, 0, 0));
+    db.channel_set_backfill_positions(ch, 100, 50, 30).unwrap();
+    assert_eq!(db.channel_backfill_positions(ch).unwrap(), (100, 50, 30));
+    // 存在しないチャンネルは (0, 0, 0)
     assert_eq!(
         db.channel_backfill_positions("UCabsent00000000000001")
             .unwrap(),
-        (0, 0)
+        (0, 0, 0)
     );
+}
+
+/// DB-LD-18: /shorts タブからのバックフィル投入（FR-55、仕様決定 CF）。
+/// ショート行は kind='short'・既読・投入済みで積まれる（/videos・/streams と
+/// 同じ既読投入で、kind だけ取り込み元タブに対応する）。
+#[test]
+fn feed_backfill_ingest_stores_shorts_as_short_kind() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "テストCH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    let n = db
+        .feed_backfill_ingest(
+            ch,
+            &[NewVideo {
+                video_id: "short0000001",
+                channel_id: ch,
+                channel_title: "テストCH",
+                title: "過去ショート",
+                thumbnail_url: None,
+                published_at: None,
+                kind: "short",
+            }],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(n, 1);
+    let item = db
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.video_id == "short0000001")
+        .unwrap();
+    // 種別フィルタの 'short' で拾える投入となる
+    assert_eq!(item.kind, "short");
+    assert!(item.is_read);
 }
 
 /// 再生中チャンネル解決の第 1 段（FR-12）。

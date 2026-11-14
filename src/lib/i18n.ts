@@ -413,6 +413,11 @@ const ja = {
   "queue.restoreFailed": "キューの復元に失敗しました: {message}",
   "library.removed": "削除しました",
   "library.removeFailed": "削除に失敗: {message}",
+  // Phase 63: 削除の取り消し（FR-54、仕様決定 CE）。
+  // トーストのアクションボタン「元に戻す」で削除前スナップショットを復元する
+  "library.undo": "元に戻す",
+  "library.restored": "元に戻しました",
+  "library.restoreFailed": "復元に失敗: {message}",
 
   // Phase 7: ホイール割り当て（決定記録: script-opts 注入のため次回再生から有効）
   "settings.wheel.title": "ホイール割り当て",

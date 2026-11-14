@@ -260,9 +260,9 @@ fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
     out
 }
 
-/// チャンネルタブの投稿一覧（FR-21、仕様決定 AN のバックフィル）。
-/// `/videos`・`/streams` タブを flat-playlist で `start..=end`（1 始まり）の
-/// 範囲取得する。戻り値は `(video_id, title, thumbnail_url)` の列。
+/// チャンネルタブの投稿一覧（FR-21・FR-55、仕様決定 AN・CF のバックフィル）。
+/// `/videos`・`/streams`・`/shorts` タブを flat-playlist で `start..=end`
+/// （1 始まり）の範囲取得する。戻り値は `(video_id, title, thumbnail_url)` の列。
 /// 投稿日はチャンネルタブの flat エントリに載らないため取らない
 /// （videos.published_at は NULL で投入され、フィード一覧では末尾側に並ぶ）。
 pub async fn channel_tab_entries(
