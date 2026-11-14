@@ -145,20 +145,27 @@ impl Matcher {
         &self.invalid
     }
 
-    /// 動画系 target の NG 判定（FR-9）。一覧の表示経路（フィード・検索・関連動画）で
-    /// `is_video_ng` に渡せる値を評価する。`video_desc` は現行の取得経路
-    /// （RSS・ytsearch flat・InnerTube next）のどれにも説明文フィールドが無く
-    /// 評価対象外（決定記録 Phase 6 に記録）。
+    /// 動画系 target の NG 判定（FR-9・FR-85、仕様決定 DJ）。一覧の表示経路
+    /// （フィード・検索・関連動画）で `is_video_ng` に渡せる値を評価する。
+    /// `desc` は `videos.description` の遅延解決済み説明文（v22 以降）で、
+    /// 説明文を持たない経路（検索・関連動画）と未解決の行は None を渡す。
+    /// None・空文字は `video_desc` の評価対象にしない（暫定解釈:
+    /// 説明文が取れていない項目を未評価で残す）。
     pub fn is_video_ng(
         &self,
         title: &str,
         channel_title: Option<&str>,
         channel_id: Option<&str>,
+        desc: Option<&str>,
     ) -> bool {
         if self.is_blocked("video_title", title) {
             return true;
         }
-        for (target, text) in [("channel_title", channel_title), ("channel_id", channel_id)] {
+        for (target, text) in [
+            ("channel_title", channel_title),
+            ("channel_id", channel_id),
+            ("video_desc", desc),
+        ] {
             if let Some(t) = text {
                 if self.is_blocked(target, t) {
                     return true;
@@ -297,11 +304,11 @@ mod tests {
             f("channel_title", "regex", r"公式$"),
             f("channel_id", "literal", "UCbad"),
         ]);
-        assert!(m.is_video_ng("【切り抜き】雑談", None, None));
-        assert!(m.is_video_ng("通常タイトル", Some("公式チャンネル公式"), None));
-        assert!(m.is_video_ng("通常タイトル", None, Some("UCbad123")));
-        assert!(!m.is_video_ng("通常タイトル", Some("個人勢"), Some("UCgood")));
-        assert!(!m.is_video_ng("通常タイトル", None, None));
+        assert!(m.is_video_ng("【切り抜き】雑談", None, None, None));
+        assert!(m.is_video_ng("通常タイトル", Some("公式チャンネル公式"), None, None));
+        assert!(m.is_video_ng("通常タイトル", None, Some("UCbad123"), None));
+        assert!(!m.is_video_ng("通常タイトル", Some("個人勢"), Some("UCgood"), None));
+        assert!(!m.is_video_ng("通常タイトル", None, None, None));
     }
 
     /// FT-07: highlight 種別は NG とは別の照合集合で評価され、
@@ -336,5 +343,29 @@ mod tests {
         let m = Matcher::rebuild(&[f("chat_text", "highlight", "初見")]);
         assert!(!m.is_highlighted("chat_text", ""));
         assert!(!Matcher::empty().is_highlighted("chat_text", "初見です"));
+    }
+
+    /// FT-09: `video_desc` は渡された説明文へ literal / regex の
+    /// 部分一致で評価される（FR-85、仕様決定 DJ）。説明文の無い経路
+    /// （None）と空文字・未解決の行は NG にしない（暫定解釈）。
+    #[test]
+    fn video_desc_matches_when_present() {
+        let m = Matcher::rebuild(&[
+            f("video_desc", "literal", "提供"),
+            f("video_desc", "regex", r"https?://example\.com"),
+        ]);
+        assert!(m.is_video_ng(
+            "通常タイトル",
+            Some("個人勢"),
+            Some("UCgood"),
+            Some("本編は提供込み\nhttps://example.com/x")
+        ));
+        // 説明文だけがマッチしても NG（他フィールドは無関係）
+        assert!(m.is_video_ng("無害", None, None, Some("提供: テスト")));
+        // 説明文がパターンに合わなければ NG ではない
+        assert!(!m.is_video_ng("無害", None, None, Some("関係ない説明文")));
+        // None（説明文を持たない経路・未解決行）と空文字は評価しない
+        assert!(!m.is_video_ng("無害", None, None, None));
+        assert!(!m.is_video_ng("無害", None, None, Some("")));
     }
 }
