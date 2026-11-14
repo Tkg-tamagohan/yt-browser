@@ -81,9 +81,11 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player_screenshot` | `instance_id` | `Result<String>`（保存先のフルパス。FR-38、仕様決定 BN、§4.11） |
 | `history_get` | `video_id` | `Result<Option<WatchHistory>>` |
 | `history_list` | `cursor?`（前ページの `next_cursor` をそのまま渡すカーソル、FR-52・仕様決定 CC）、`query?`（タイトル・チャンネル名の部分一致絞り込み、FR-61・仕様決定 CL）、`limit?`（既定 500、上限 1000） | `Result<HistoryPage>`（`items`＋`next_cursor`。末尾まで達したら `next_cursor` は null） |
-| `history_remove` | `video_id` | `Result<()>` |
+| `history_remove` | `video_id` | `Result<Option<WatchHistory>>`（削除した行のスナップショット。対象行が無ければ null。FR-54、仕様決定 CE） |
+| `history_restore` | `entry`（`history_remove` が返した `WatchHistory`） | `Result<()>`（FR-54、仕様決定 CE） |
 | `favorite_add` | `video`（`VideoRef`） | `Result<()>` |
-| `favorite_remove` | `video_id` | `Result<()>` |
+| `favorite_remove` | `video_id` | `Result<Option<FavoriteEntry>>`（削除した行のスナップショット。対象行が無ければ null。FR-54、仕様決定 CE） |
+| `favorite_restore` | `entry`（`favorite_remove` が返した `FavoriteEntry`） | `Result<()>`（FR-54、仕様決定 CE） |
 | `favorite_list` | なし | `Result<Vec<FavoriteEntry>>` |
 | `playlist_list` | なし | `Result<Vec<Playlist>>` |
 | `playlist_create` | `name` | `Result<Playlist>` |
@@ -91,7 +93,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_delete` | `playlist_id` | `Result<()>` |
 | `playlist_items` | `playlist_id`, `after_position?`, `limit?`（両省略で全件。ページングは末尾行の `position` を `after_position` に渡す） | `Result<Vec<PlaylistEntry>>` |
 | `playlist_add` | `playlist_id`, `video`（`VideoRef`） | `Result<()>` |
-| `playlist_remove` | `playlist_id`, `video_id` | `Result<()>` |
+| `playlist_remove` | `playlist_id`, `video_id` | `Result<Option<PlaylistEntry>>`（削除した行のスナップショット。対象行が無ければ null。FR-54、仕様決定 CE） |
+| `playlist_item_restore` | `playlist_id`, `entry`（`playlist_remove` が返した `PlaylistEntry`） | `Result<PlaylistEntry>`（実際に登録された行。FR-54、仕様決定 CE） |
 | `playlist_import` | `url`, `name?` | `Result<Playlist>` |
 | `playlist_reorder` | `playlist_id`, `video_ids` | `Result<()>` |
 | `playlist_reorder_lists` | `playlist_ids`（プレイリスト全件の新しい表示順） | `Result<()>` |
@@ -113,7 +116,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、`cursor`（`published_at`+`video_id`）、`channel_id`（チャンネル別フィード、仕様決定 AN）、全項目省略可。shorts 既定除外は `feed.show_shorts` で制御（仕様決定 AP）） | `Result<Vec<FeedItem>>` |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>` |
-| `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置、`errors`） |
+| `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams`・`/shorts` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN。`/shorts` は FR-55・仕様決定 CF） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置（`videos_pos`・`streams_pos`・`shorts_pos`）、`errors`） |
 | `search` | `query`, `count?`（返す表示件数の上限。省略時 20・上限 500。ytsearch に継続が無いため、「さらに読み込む」は count を増やした再取得＋画面側の差分追記とする（仕様決定 AR）） | `Result<Vec<SearchResult>>` |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
 | `get_description` | `video_id` | `Result<String>`（InnerTube `player` の `videoDetails.shortDescription`。空・未設定は空文字列。FR-33、仕様決定 BB） |
@@ -181,6 +184,20 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `history_list` のカーソルは末尾行の `(last_watched_at, rowid)` の対で、一覧の全順序（`last_watched_at` 降順、同時刻は rowid 降順）と同じ基準で「その行の次（より古い側）から」を取る（FR-52、仕様決定 CC。`history_prune` の保持対象とも同じ順序）。`next_cursor` の有無は `limit`+1 件の取得で確定し、末尾ちょうどのページでも空の次ページを要求しない。`query` はタイトルと `channel_title` への `%...%` 部分一致 LIKE で、`%`・`_`・`\` を退避して利用者入力のワイルドカードを無力化する（FR-61、仕様決定 CL。空・空白のみは絞り込みなし）。一覧取得のページングであり、保持上限 10000 件の剪定運用（仕様決定 AV）とは別物。
 `watch_later_add` は `favorite_add` と同じく `video_upsert` で `videos` 台帳へ登録してから `watch_later` へ挿入し、`watch_later_list` は台帳との JOIN で表示メタを取る（FR-59、仕様決定 CJ）。
 `library_search` は履歴・お気に入り・プレイリスト項目・あとで見るの 4 区分をタイトルとチャンネル名の `%...%` 部分一致 LIKE（`history_list` の `query` と同じ退避規則）で横断検索する（FR-60、仕様決定 CK）。`query` の空・空白のみは 0 件を返す（暫定解釈）。同一動画が複数区分でヒットしたときは 1 件へまとめ、ヒットした区分の列を `sources` に履歴→お気に入り→プレイリスト→あとで見るの正準順で持つ。表示メタは区分をまたいだ先出の行を使い、空欄は後出の行で補完する。履歴区分は履歴行自身の列に加えて `videos` 台帳のメタでも照合する（履歴行の channel 列が未入力でも台帳にあれば拾う）。結果の並びは履歴の新しい順→お気に入りの新しい順→プレイリストの登録順→あとで見るの新しい順の先出順（暫定解釈）で、`limit` は統合後の件数上限。UI はライブラリ画面の「検索」タブに検索ボックスを置き、各行はヒット区分のバッジを付ける（検索 UI の置き場所は FR-60 が指定しないため、タブ構成に合わせた暫定解釈）。
+
+履歴・お気に入り・プレイリスト項目の削除は「元に戻す」で取り消せる（FR-54、仕様決定 CE）。
+ソフトデリート列は持たせず、`*_remove` 系コマンドが削除前の行全体をスナップショットとして返し、
+トーストの「元に戻す」アクションがそのまま `history_restore` / `favorite_restore` / `playlist_item_restore`
+へ渡して削除前の値で書き戻す。スナップショットはフロント側のメモリ内保持で永続化せず、
+トーストの表示時間（約 6 秒）が有効期限となる（暫定）。連続する削除は削除ごとに独立した
+トーストとスナップショットを持ち、それぞれ個別に取り消せる（暫定）。
+`history_restore` は手動削除による保存抑止（`history_suppressed`）も解除し、
+既存行がある場合はスナップショットで置き換える（暫定: 復元は削除直前の状態を正とする）。
+`favorite_restore` は登録日時（`added_at`）も削除前の値へ戻す。
+`playlist_item_restore` はスナップショットの `position` が空いていれば元位置へ、
+他項目に埋まっていれば末尾（`MAX(position)+1`）へ挿す（暫定: 削除と復元の間に
+並べ替えや末尾への追加が走った場合の収束先）。同一動画が既に登録済みなら既存行を返す冪等とする。
+お気に入りトグル（`VideoActions`）経由の解除も同じトーストで取り消せる。
 
 ### 3.2 イベント（Rust → フロント）
 
@@ -958,7 +975,7 @@ RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワ�
 | 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む） |
 | チャンネル一覧の補完 | `yt-dlp <channel_url> --flat-playlist --dump-json` |
 | プレイリスト取り込み | `yt-dlp <playlist_url> --flat-playlist --dump-single-json` |
-| チャンネルの過去動画（バックフィル） | `yt-dlp <channel>/videos` と `<channel>/streams` を `--flat-playlist` で区間取得（仕様決定 AN。1 回各タブ 100 件・暫定） |
+| チャンネルの過去動画（バックフィル） | `yt-dlp <channel>/videos`・`<channel>/streams`・`<channel>/shorts` を `--flat-playlist` で区間取得（仕様決定 AN。1 回各タブ 100 件・暫定。`/shorts` は FR-55・仕様決定 CF で追加） |
 
 運用面の決定を次に置く（Phase 1 確定事項）。
 
@@ -1078,7 +1095,8 @@ CREATE TABLE channels (
   rss_etag TEXT,
   rss_last_modified TEXT,
   backfill_videos_pos INTEGER NOT NULL DEFAULT 0,   -- /videos タブの取得済み件数（FR-21）
-  backfill_streams_pos INTEGER NOT NULL DEFAULT 0   -- /streams タブの取得済み件数（FR-21）
+  backfill_streams_pos INTEGER NOT NULL DEFAULT 0,  -- /streams タブの取得済み件数（FR-21）
+  backfill_shorts_pos INTEGER NOT NULL DEFAULT 0    -- /shorts タブの取得済み件数（FR-55、v19）
 );
 
 CREATE TABLE blocked_channels (

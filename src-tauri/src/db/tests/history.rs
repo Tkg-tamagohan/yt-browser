@@ -232,6 +232,59 @@ fn history_list_paginates_with_cursor() {
     assert_eq!(uniq.len(), ids.len());
 }
 
+/// DB-LD-15: 履歴削除のスナップショット復元（FR-54、仕様決定 CE）。
+/// `history_remove` は削除した行を返し、`history_restore` は全列を
+/// 削除前の値で書き戻して保存抑止も解除する（以後の進捗保存が再び効く）。
+#[test]
+fn history_remove_and_restore_snapshot() {
+    let db = Db::connect_in_memory().unwrap();
+    db.history_upsert("abc123def45").unwrap();
+    db.history_update_progress("abc123def45", "テスト動画", 120.7, Some(300), false)
+        .unwrap();
+    let before = db.history_get("abc123def45").unwrap().unwrap();
+
+    // 削除はスナップショット（削除時点の全列）を返す
+    let removed = db.history_remove("abc123def45").unwrap().unwrap();
+    assert_eq!(removed.video_id, before.video_id);
+    assert_eq!(removed.title, before.title);
+    assert_eq!(removed.position_sec, before.position_sec);
+    assert_eq!(removed.duration_sec, before.duration_sec);
+    assert_eq!(removed.last_watched_at, before.last_watched_at);
+    assert_eq!(removed.completed, before.completed);
+    assert!(db.history_get("abc123def45").unwrap().is_none());
+    // 対象行が無い削除はスナップショット無し
+    assert!(db.history_remove("abc123def45").unwrap().is_none());
+
+    // 復元は全列を削除前の値へ戻す
+    db.history_restore(&removed).unwrap();
+    let restored = db.history_get("abc123def45").unwrap().unwrap();
+    assert_eq!(restored.title, before.title);
+    assert_eq!(restored.position_sec, 120);
+    assert_eq!(restored.duration_sec, Some(300));
+    assert_eq!(restored.last_watched_at, before.last_watched_at);
+    assert!(!restored.completed);
+
+    // 復元で保存抑止は解除され、以後の進捗保存は通常どおり書き込まれる
+    db.history_update_progress("abc123def45", "テスト動画", 200.0, Some(300), false)
+        .unwrap();
+    assert_eq!(
+        db.history_get("abc123def45").unwrap().unwrap().position_sec,
+        200
+    );
+
+    // 削除→再生成→復元: スナップショットは削除直前の状態を正として
+    // 既存行を置き換える（暫定仕様）
+    db.history_remove("abc123def45").unwrap();
+    db.history_upsert("abc123def45").unwrap();
+    db.history_update_progress("abc123def45", "別タイトル", 5.0, Some(60), false)
+        .unwrap();
+    db.history_restore(&removed).unwrap();
+    let after = db.history_get("abc123def45").unwrap().unwrap();
+    assert_eq!(after.title, "テスト動画");
+    assert_eq!(after.position_sec, 120);
+    assert_eq!(after.last_watched_at, before.last_watched_at);
+}
+
 /// DB-LD-14: 履歴一覧の検索絞り込み（FR-61、仕様決定 CL）。
 /// タイトル・チャンネル名への部分一致で絞り、空・空白のみの検索語は
 /// 絞り込みなしとして扱う。`%`・`_` はワイルドカードではなく文字として探す。

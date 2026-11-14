@@ -55,6 +55,8 @@
     inserted: number;
     videosPos: number;
     streamsPos: number;
+    /// /shorts タブの次回取得開始位置（FR-55、仕様決定 CF）
+    shortsPos: number;
     errors: string[];
   }
 
@@ -411,7 +413,8 @@
     void loadItems();
   }
 
-  // 手動バックフィル。1 回で /videos・/streams の各 100 件（暫定、仕様決定 AN）。
+  // 手動バックフィル。1 回で /videos・/streams・/shorts の各 100 件
+  // （暫定、仕様決定 AN。/shorts は FR-55・仕様決定 CF で追加）。
   // 取得済み位置は DB に残るため再実行で続きを遡る。バックフィル分は
   // 既読で投入されるので「未読のみ」が外れているこの画面で見える
   async function backfill(): Promise<void> {

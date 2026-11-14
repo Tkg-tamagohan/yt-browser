@@ -344,7 +344,7 @@ fn playlist_create_appends_after_legacy_zero_rows() {
     );
 }
 
-/// DB-LD-15: 「あとで見る」の登録・一覧・解除（FR-59、仕様決定 CJ）。
+/// DB-LD-19: 「あとで見る」の登録・一覧・解除（FR-59、仕様決定 CJ）。
 /// 動画メタは videos 台帳から JOIN で取り、一覧は追加が新しい順。
 /// 重複登録は追加日時を変えない冪等、解除も冪等。
 #[test]
@@ -387,7 +387,7 @@ fn watch_later_roundtrip() {
     assert_eq!(db.watch_later_list().unwrap().len(), 1);
 }
 
-/// DB-LD-16: watch_later の表示メタは videos 台帳の JOIN で取る。
+/// DB-LD-20: watch_later の表示メタは videos 台帳の JOIN で取る。
 /// channel_id を持たない動画は NULLIF で None に見える。
 #[test]
 fn watch_later_list_uses_ledger_meta() {
@@ -402,7 +402,7 @@ fn watch_later_list_uses_ledger_meta() {
     assert_eq!(e.channel_title, None);
 }
 
-/// DB-LD-17: library_search は 4 区分を横断し、同一動画は 1 件へ
+/// DB-LD-21: library_search は 4 区分を横断し、同一動画は 1 件へ
 /// まとめてヒット区分を正準順で返す（FR-60、仕様決定 CK）。
 /// タイトルとチャンネル名の部分一致で、履歴は台帳メタでも照合する。
 #[test]
@@ -448,7 +448,8 @@ fn library_search_merges_sources() {
     let mut led = vref("ledgeronly0", "台帳だけの動画");
     led.channel_title = Some("特別CH".to_string());
     db.favorite_add(&led).unwrap();
-    db.favorite_remove("ledgeronly0").unwrap();
+    // Phase 63（FR-54）で解除はスナップショットを返すようになった
+    assert!(db.favorite_remove("ledgeronly0").unwrap().is_some());
     {
         let conn = db.lock().unwrap();
         conn.execute(
@@ -507,7 +508,7 @@ fn library_search_merges_sources() {
     assert_eq!(led_hits[0].channel_title.as_deref(), Some("特別CH"));
 }
 
-/// DB-LD-18: library_search の検索語はワイルドカードとして効かず、
+/// DB-LD-22: library_search の検索語はワイルドカードとして効かず、
 /// 空・空白のみは 0 件。limit は統合後の件数上限（FR-60、仕様決定 CK）。
 #[test]
 fn library_search_escapes_wildcards() {
@@ -533,4 +534,114 @@ fn library_search_escapes_wildcards() {
     assert!(ids("   ").is_empty());
     // limit は統合後の件数上限
     assert_eq!(db.library_search("100", 1).unwrap().len(), 1);
+}
+
+/// DB-LD-16: お気に入り解除のスナップショット復元（FR-54、仕様決定 CE）。
+/// `favorite_remove` は削除した行を返し、`favorite_restore` は
+/// `added_at` を含む削除前の値で書き戻す。videos 台帳の表示メタも
+/// スナップショットで補強される。
+#[test]
+fn favorite_remove_and_restore_snapshot() {
+    let db = Db::connect_in_memory().unwrap();
+    db.favorite_add(&vref("dQw4w9WgXcQ", "動画A")).unwrap();
+    let before = db.favorite_list().unwrap().remove(0);
+
+    let removed = db.favorite_remove("dQw4w9WgXcQ").unwrap().unwrap();
+    assert_eq!(removed.video_id, before.video_id);
+    assert_eq!(removed.title, before.title);
+    assert_eq!(removed.channel_id, before.channel_id);
+    assert_eq!(removed.added_at, before.added_at);
+    assert!(db.favorite_list().unwrap().is_empty());
+    // 対象行が無い解除はスナップショット無し
+    assert!(db.favorite_remove("dQw4w9WgXcQ").unwrap().is_none());
+
+    // 復元は登録日時（added_at）も削除前の値へ戻す
+    db.favorite_restore(&removed).unwrap();
+    let list = db.favorite_list().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].video_id, "dQw4w9WgXcQ");
+    assert_eq!(list[0].title, "動画A");
+    assert_eq!(list[0].added_at, before.added_at);
+
+    // 冪等: 既に登録済みでも復元は失敗せず行は 1 件のまま
+    db.favorite_restore(&removed).unwrap();
+    assert_eq!(db.favorite_list().unwrap().len(), 1);
+}
+
+/// DB-LD-17: プレイリスト項目削除のスナップショット復元
+/// （FR-54、仕様決定 CE）。`playlist_remove` は削除した行（元の
+/// position 付き）を返し、`playlist_item_restore` は元位置が空いて
+/// いれば元位置へ、埋まっていれば末尾へ挿す。
+#[test]
+fn playlist_remove_and_restore_snapshot() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl = db.playlist_create("復元").unwrap();
+    db.playlist_add_many(
+        pl.id,
+        &[
+            vref("aaaaaaaaaa1", "A"),
+            vref("bbbbbbbbbb2", "B"),
+            vref("cccccccccc3", "C"),
+        ],
+    )
+    .unwrap();
+
+    // 中間項目の削除はスナップショット（元の position 付き）を返す
+    let removed = db.playlist_remove(pl.id, "bbbbbbbbbb2").unwrap().unwrap();
+    assert_eq!(removed.video_id, "bbbbbbbbbb2");
+    assert_eq!(removed.position, 1);
+    assert_eq!(removed.title, "B");
+    // 対象行が無い削除はスナップショット無し
+    assert!(db.playlist_remove(pl.id, "bbbbbbbbbb2").unwrap().is_none());
+
+    // 元の position が空いていれば元位置へ復元される
+    let v = vref(&removed.video_id, &removed.title);
+    let restored = db
+        .playlist_item_restore(pl.id, &v, removed.position)
+        .unwrap();
+    assert_eq!(restored.position, 1);
+    let items = db.playlist_items(pl.id).unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3"]
+    );
+
+    // 削除と復元の間に並べ替えが走って元位置が埋まった場合は末尾へ
+    // 挿す（暫定: 途中削除の空き番を残したまま並べ替えると、
+    // reorder が 0..n-1 に振り直して元位置を占有する）
+    let removed2 = db.playlist_remove(pl.id, "bbbbbbbbbb2").unwrap().unwrap();
+    db.playlist_reorder(
+        pl.id,
+        &["aaaaaaaaaa1".to_string(), "cccccccccc3".to_string()],
+    )
+    .unwrap();
+    let v2 = vref(&removed2.video_id, &removed2.title);
+    let restored2 = db
+        .playlist_item_restore(pl.id, &v2, removed2.position)
+        .unwrap();
+    assert_eq!(restored2.position, 2);
+    let items = db.playlist_items(pl.id).unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|i| i.video_id.as_str())
+            .collect::<Vec<_>>(),
+        ["aaaaaaaaaa1", "cccccccccc3", "bbbbbbbbbb2"]
+    );
+
+    // 冪等: 同一動画が既に登録済みなら既存行をそのまま返す
+    let again = db
+        .playlist_item_restore(pl.id, &v2, removed2.position)
+        .unwrap();
+    assert_eq!(again.position, 2);
+    assert_eq!(db.playlist_items(pl.id).unwrap().len(), 3);
+
+    // 存在しないプレイリストへの復元は NotFound
+    assert!(matches!(
+        db.playlist_item_restore(999, &v2, 0),
+        Err(DbError::NotFound)
+    ));
 }

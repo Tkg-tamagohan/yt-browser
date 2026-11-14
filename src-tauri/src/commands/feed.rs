@@ -236,10 +236,21 @@ pub fn feed_refresh(
 /// バックフィルの 1 回あたりのタブ別取得件数（仕様決定 AN の暫定値）。
 const BACKFILL_BATCH: u32 = 100;
 
-/// `feed_backfill`（FR-21、仕様決定 AN）。購読チャンネルの `/videos`・`/streams`
-/// タブを yt-dlp flat-playlist で遡り、各タブ 100 件ずつ既読・投入済みで積む。
+/// バックフィルの取り込み対象タブ `(タブ名, videos.kind)` の一覧
+/// （FR-21、仕様決定 AN。`/shorts` は FR-55・仕様決定 CF で追加）。
+/// 並びは `channel_backfill_positions` の戻り値 `(videos, streams, shorts)`
+/// と同じ順で、位置の更新はインデックスで対応付ける。
+const BACKFILL_TABS: &[(&str, &str)] = &[
+    ("videos", "video"),
+    ("streams", "live"),
+    ("shorts", "short"),
+];
+
+/// `feed_backfill`（FR-21・FR-55、仕様決定 AN・CF）。購読チャンネルの
+/// `/videos`・`/streams`・`/shorts` タブを yt-dlp flat-playlist で遡り、
+/// 各タブ 100 件ずつ既読・投入済みで積む。
 /// 取得済み位置は `channels` のタブ別カラムに保持し、再呼び出しで続きを遡る。
-/// 片方のタブの取得失敗は `errors` に乗せて他タブの結果を維持する。
+/// 一部のタブの取得失敗は `errors` に乗せて他タブの結果を維持する。
 #[tauri::command]
 pub async fn feed_backfill(
     channel_id: String,
@@ -252,7 +263,8 @@ pub async fn feed_backfill(
         .channel_get(&channel_id)?
         .ok_or_else(|| UiError::invalid_input("購読していないチャンネルです"))?;
     let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
-    let (mut videos_pos, mut streams_pos) = db.channel_backfill_positions(&channel_id)?;
+    let (videos_pos, streams_pos, shorts_pos) = db.channel_backfill_positions(&channel_id)?;
+    let mut positions = [videos_pos, streams_pos, shorts_pos];
     // 取得中と失敗は feed://status で通知する（仕様決定 AN。
     // トーストはフロント側の feed://status 購読と BackfillOutcome 応答が担う）
     poller.emit_status(
@@ -262,10 +274,8 @@ pub async fn feed_backfill(
     );
     let mut inserted = 0usize;
     let mut errors = Vec::new();
-    for (tab, kind, pos) in [
-        ("videos", "video", videos_pos),
-        ("streams", "live", streams_pos),
-    ] {
+    for (i, (tab, kind)) in BACKFILL_TABS.iter().enumerate() {
+        let pos = positions[i];
         // 位置は DB の i64。実際に u32 を超える蓄積はないが丸めで安全側に倒す
         let start = (pos + 1).min(u32::MAX as i64) as u32;
         let end = (pos + BACKFILL_BATCH as i64).min(u32::MAX as i64) as u32;
@@ -287,10 +297,7 @@ pub async fn feed_backfill(
                 if let Some(n) = db.feed_backfill_ingest(&channel_id, &items)? {
                     inserted += n;
                 }
-                match tab {
-                    "videos" => videos_pos = pos + fetched,
-                    _ => streams_pos = pos + fetched,
-                }
+                positions[i] = pos + fetched;
             }
             Err(e) => {
                 let msg = format!("{tab} タブ: {e}");
@@ -299,11 +306,36 @@ pub async fn feed_backfill(
             }
         }
     }
-    db.channel_set_backfill_positions(&channel_id, videos_pos, streams_pos)?;
+    db.channel_set_backfill_positions(&channel_id, positions[0], positions[1], positions[2])?;
     Ok(BackfillOutcome {
         inserted,
-        videos_pos,
-        streams_pos,
+        videos_pos: positions[0],
+        streams_pos: positions[1],
+        shorts_pos: positions[2],
         errors,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BACKFILL_TABS;
+
+    /// バックフィルの取り込み対象タブ（FR-21・FR-55、仕様決定 AN・CF）。
+    /// `/shorts` タブを含み、kind の対応は videos→video・streams→live・
+    /// shorts→short とする。並びは `channel_backfill_positions` の
+    /// 戻り値 (videos, streams, shorts) と同じ順でなければならない。
+    #[test]
+    fn backfill_tabs_include_shorts() {
+        let tabs: Vec<(&str, &str)> = BACKFILL_TABS.to_vec();
+        assert_eq!(
+            tabs,
+            vec![
+                ("videos", "video"),
+                ("streams", "live"),
+                ("shorts", "short")
+            ]
+        );
+        // positions 配列の添字対応: videos=0, streams=1, shorts=2
+        assert_eq!(BACKFILL_TABS[2].0, "shorts");
+    }
 }

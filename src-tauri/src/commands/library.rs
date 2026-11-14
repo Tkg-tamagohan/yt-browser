@@ -41,10 +41,26 @@ pub fn history_list(
 }
 
 /// `history_remove`（FR-7、仕様決定 I の手動削除）。
+/// 削除した行のスナップショットを返す（FR-54、仕様決定 CE の
+/// トースト「元に戻す」→ `history_restore` の入力）。対象行が無ければ null。
 #[tauri::command]
-pub fn history_remove(video_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub fn history_remove(
+    video_id: String,
+    db: State<'_, Db>,
+) -> Result<Option<WatchHistory>, UiError> {
     let id = parse_video_id(&video_id)?;
     Ok(db.history_remove(&id)?)
+}
+
+/// `history_restore`（FR-54、仕様決定 CE）。
+/// `history_remove` が返したスナップショットをそのまま受け取り、
+/// 削除前の行（最終視聴日時・再生位置・視聴済みを含む全列）を復元する。
+#[tauri::command]
+pub fn history_restore(entry: WatchHistory, db: State<'_, Db>) -> Result<(), UiError> {
+    let id = parse_video_id(&entry.video_id)?;
+    let mut e = entry;
+    e.video_id = id;
+    Ok(db.history_restore(&e)?)
 }
 
 /// `VideoRef` の入力検証と動画 ID 正規化。
@@ -67,10 +83,29 @@ pub fn favorite_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
 }
 
 /// `favorite_remove`（FR-7）。
+/// 削除した行のスナップショットを返す（FR-54、仕様決定 CE の
+/// トースト「元に戻す」→ `favorite_restore` の入力）。対象行が無ければ null。
 #[tauri::command]
-pub fn favorite_remove(video_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub fn favorite_remove(
+    video_id: String,
+    db: State<'_, Db>,
+) -> Result<Option<FavoriteEntry>, UiError> {
     let id = parse_video_id(&video_id)?;
     Ok(db.favorite_remove(&id)?)
+}
+
+/// `favorite_restore`（FR-54、仕様決定 CE）。
+/// `favorite_remove` が返したスナップショットをそのまま受け取り、
+/// 登録日時（`added_at`）も含めて削除前の行を復元する。
+#[tauri::command]
+pub fn favorite_restore(entry: FavoriteEntry, db: State<'_, Db>) -> Result<(), UiError> {
+    if entry.title.chars().count() > MAX_VIDEO_FIELD_LEN {
+        return Err(UiError::invalid_input("タイトルが長すぎます"));
+    }
+    let id = parse_video_id(&entry.video_id)?;
+    let mut e = entry;
+    e.video_id = id;
+    Ok(db.favorite_restore(&e)?)
 }
 
 /// `favorite_list`（FR-7）。追加が新しい順。
@@ -198,17 +233,47 @@ pub fn playlist_add(playlist_id: i64, video: VideoRef, db: State<'_, Db>) -> Res
 }
 
 /// `playlist_remove`（FR-7）。
+/// 削除した行のスナップショット（元の `position` 付き）を返す
+/// （FR-54、仕様決定 CE のトースト「元に戻す」→ `playlist_item_restore`
+/// の入力）。対象行が無ければ null。
 #[tauri::command]
 pub fn playlist_remove(
     playlist_id: i64,
     video_id: String,
     db: State<'_, Db>,
-) -> Result<(), UiError> {
+) -> Result<Option<PlaylistEntry>, UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
     let id = parse_video_id(&video_id)?;
     Ok(db.playlist_remove(playlist_id, &id)?)
+}
+
+/// `playlist_item_restore`（FR-54、仕様決定 CE）。
+/// `playlist_remove` が返したスナップショットをそのまま受け取り、
+/// 元の `position` が空いていれば元位置へ、埋まっていれば末尾へ復元する。
+/// 戻り値は実際に登録された行（実効 `position` 付き）。
+#[tauri::command]
+pub fn playlist_item_restore(
+    playlist_id: i64,
+    entry: PlaylistEntry,
+    db: State<'_, Db>,
+) -> Result<PlaylistEntry, UiError> {
+    if playlist_id <= 0 {
+        return Err(UiError::invalid_input("playlist_id が不正です"));
+    }
+    if entry.title.chars().count() > MAX_VIDEO_FIELD_LEN {
+        return Err(UiError::invalid_input("タイトルが長すぎます"));
+    }
+    let id = parse_video_id(&entry.video_id)?;
+    let v = VideoRef {
+        video_id: id,
+        title: entry.title.clone(),
+        channel_id: entry.channel_id.clone(),
+        channel_title: entry.channel_title.clone(),
+        thumbnail_url: entry.thumbnail_url.clone(),
+    };
+    Ok(db.playlist_item_restore(playlist_id, &v, entry.position)?)
 }
 
 /// `playlist_import`（FR-10、仕様決定 R）。

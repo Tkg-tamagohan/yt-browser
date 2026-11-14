@@ -265,9 +265,38 @@ export function createLibraryPageState(opts: Options) {
 
   async function removeHistory(videoId: string): Promise<void> {
     try {
-      await invoke("history_remove", { videoId });
+      // 削除した行のスナップショットが返る（FR-54、仕様決定 CE）。
+      // トーストの「元に戻す」へ束縛するスナップショットはトースト表示中
+      // （約 6 秒）だけ有効なメモリ内保持で、永続化はしない。
+      // 連続削除は削除ごとに独立したトーストとスナップショットを持ち、
+      // それぞれ個別に取り消せる
+      const removed = await invoke<WatchHistory | null>("history_remove", {
+        videoId,
+      });
       history = history.filter((h) => h.videoId !== videoId);
-      notify(t("library.removed"));
+      if (removed === null) {
+        notify(t("library.removed"));
+        return;
+      }
+      notify(t("library.removed"), {
+        label: t("library.undo"),
+        run: () => {
+          void (async () => {
+            try {
+              await invoke("history_restore", { entry: removed });
+              // 並び順（lastWatchedAt 降順）のどこへ戻るかは
+              // スナップショット依存のため、先頭ページを取り直す
+              // （世代番号は loadHistory 内で進む）
+              await loadHistory();
+              notify(t("library.restored"));
+            } catch (e) {
+              notify(
+                t("library.restoreFailed", { message: asErrorMessage(e) }),
+              );
+            }
+          })();
+        },
+      });
     } catch (e) {
       notify(t("library.removeFailed", { message: asErrorMessage(e) }));
     }
@@ -275,9 +304,33 @@ export function createLibraryPageState(opts: Options) {
 
   async function removeFavorite(videoId: string): Promise<void> {
     try {
-      await invoke("favorite_remove", { videoId });
+      const removed = await invoke<FavoriteEntry | null>("favorite_remove", {
+        videoId,
+      });
       va.onFavChange(videoId, false);
-      notify(t("library.favorite.removed"));
+      if (removed === null) {
+        notify(t("library.favorite.removed"));
+        return;
+      }
+      // FR-54、仕様決定 CE の取り消し（スナップショットの扱いは
+      // removeHistory と同じ）。復元後は onFavChange(true) で
+      // favIds へ戻し、お気に入り一覧も取り直される
+      notify(t("library.favorite.removed"), {
+        label: t("library.undo"),
+        run: () => {
+          void (async () => {
+            try {
+              await invoke("favorite_restore", { entry: removed });
+              va.onFavChange(videoId, true);
+              notify(t("library.restored"));
+            } catch (e) {
+              notify(
+                t("library.restoreFailed", { message: asErrorMessage(e) }),
+              );
+            }
+          })();
+        },
+      });
     } catch (e) {
       notify(t("library.favorite.failed", { message: asErrorMessage(e) }));
     }
@@ -876,9 +929,12 @@ export function createLibraryPageState(opts: Options) {
 
   async function removeItem(entry: PlaylistEntry): Promise<void> {
     if (selectedId === null) return;
+    // 取り消し時に表示中プレイリストが変わっていても正しい先へ
+    // 復元できるよう、スナップショットは削除時点の playlistId に束縛する
+    const playlistId = selectedId;
     try {
-      await invoke("playlist_remove", {
-        playlistId: selectedId,
+      const removed = await invoke<PlaylistEntry | null>("playlist_remove", {
+        playlistId,
         videoId: entry.videoId,
       });
       // 件数が変わるので飛行中の一覧応答は無効化する
@@ -887,9 +943,56 @@ export function createLibraryPageState(opts: Options) {
         (i) => i.videoId !== entry.videoId,
       );
       va.playlists = va.playlists.map((p) =>
-        p.id === selectedId ? { ...p, itemCount: p.itemCount - 1 } : p,
+        p.id === playlistId ? { ...p, itemCount: p.itemCount - 1 } : p,
       );
-      notify(t("library.removed"));
+      if (removed === null) {
+        notify(t("library.removed"));
+        return;
+      }
+      // FR-54、仕様決定 CE の取り消し（スナップショットの扱いは
+      // removeHistory と同じ）。元の position が空いていれば元位置へ、
+      // 埋まっていれば末尾へ復元される（バックエンド側の暫定仕様）。
+      // 戻り値の実効 position でローカル一覧への挿入位置を決める
+      notify(t("library.removed"), {
+        label: t("library.undo"),
+        run: () => {
+          void (async () => {
+            try {
+              const restored = await invoke<PlaylistEntry>(
+                "playlist_item_restore",
+                { playlistId, entry: removed },
+              );
+              // 件数が変わるので飛行中の一覧応答は無効化する
+              ++listsReq;
+              // 表示中のプレイリストが変わっていなければ項目一覧へ
+              // 挿し直す（別プレイリスト表示中なら DB のみ復元済みで
+              // 一覧は次回選択時に取り直される）
+              if (selectedId === playlistId) {
+                const rest = playlistItems.filter(
+                  (i) => i.videoId !== restored.videoId,
+                );
+                const at = rest.findIndex(
+                  (i) => i.position > restored.position,
+                );
+                playlistItems =
+                  at < 0
+                    ? [...rest, restored]
+                    : [...rest.slice(0, at), restored, ...rest.slice(at)];
+              }
+              va.playlists = va.playlists.map((p) =>
+                p.id === playlistId
+                  ? { ...p, itemCount: p.itemCount + 1 }
+                  : p,
+              );
+              notify(t("library.restored"));
+            } catch (e) {
+              notify(
+                t("library.restoreFailed", { message: asErrorMessage(e) }),
+              );
+            }
+          })();
+        },
+      });
     } catch (e) {
       notify(t("library.removeFailed", { message: asErrorMessage(e) }));
     }

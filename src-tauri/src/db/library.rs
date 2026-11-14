@@ -46,10 +46,64 @@ impl Db {
         Ok(())
     }
 
-    pub fn favorite_remove(&self, video_id: &str) -> Result<(), DbError> {
+    /// お気に入り解除。戻り値は削除した行のスナップショット
+    /// （FR-54、仕様決定 CE の「元に戻す」復元用）。対象行が無ければ None。
+    pub fn favorite_remove(&self, video_id: &str) -> Result<Option<FavoriteEntry>, DbError> {
         let conn = self.lock()?;
+        let removed = Self::favorite_get_conn(&conn, video_id)?;
         conn.execute("DELETE FROM favorites WHERE video_id = ?1", [video_id])?;
+        Ok(removed)
+    }
+
+    /// `favorite_remove` で取得したスナップショットの復元
+    /// （FR-54、仕様決定 CE）。`added_at` も削除前の値へ戻す。
+    /// `videos` 台帳のメタは `favorite_add` と同じ規則で補強する。
+    /// 既存行がある場合はスナップショットで置き換える。
+    pub fn favorite_restore(&self, entry: &FavoriteEntry) -> Result<(), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        Self::video_upsert(
+            &tx,
+            &crate::model::VideoRef {
+                video_id: entry.video_id.clone(),
+                title: entry.title.clone(),
+                channel_id: entry.channel_id.clone(),
+                channel_title: entry.channel_title.clone(),
+                thumbnail_url: entry.thumbnail_url.clone(),
+            },
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO favorites (video_id, added_at) VALUES (?1, ?2)",
+            rusqlite::params![entry.video_id, entry.added_at],
+        )?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// お気に入り 1 件分（`favorite_remove` のスナップショット取得用）。
+    /// 表示メタは `favorite_list` と同じ JOIN で取る。
+    fn favorite_get_conn(
+        conn: &Connection,
+        video_id: &str,
+    ) -> Result<Option<FavoriteEntry>, DbError> {
+        let mut stmt = conn.prepare(
+            "SELECT f.video_id, v.title, NULLIF(v.channel_id, ''), v.channel_title,
+                    v.thumbnail_url, f.added_at
+             FROM favorites f JOIN videos v ON v.video_id = f.video_id
+             WHERE f.video_id = ?1",
+        )?;
+        let mut rows = stmt.query([video_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(FavoriteEntry {
+                video_id: row.get(0)?,
+                title: row.get(1)?,
+                channel_id: row.get(2)?,
+                channel_title: row.get(3)?,
+                thumbnail_url: row.get(4)?,
+                added_at: row.get(5)?,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// お気に入り一覧。追加が新しい順。
@@ -360,13 +414,100 @@ impl Db {
         Ok(())
     }
 
-    pub fn playlist_remove(&self, playlist_id: i64, video_id: &str) -> Result<(), DbError> {
+    /// プレイリスト項目の個別削除。戻り値は削除した行のスナップショット
+    /// （FR-54、仕様決定 CE の「元に戻す」復元用）。対象行が無ければ None。
+    /// 削除しても他項目の position は振り直さない（空き番は残る）。
+    pub fn playlist_remove(
+        &self,
+        playlist_id: i64,
+        video_id: &str,
+    ) -> Result<Option<PlaylistEntry>, DbError> {
         let conn = self.lock()?;
+        let removed = Self::playlist_item_get_conn(&conn, playlist_id, video_id)?;
         conn.execute(
             "DELETE FROM playlist_items WHERE playlist_id = ?1 AND video_id = ?2",
             rusqlite::params![playlist_id, video_id],
         )?;
-        Ok(())
+        Ok(removed)
+    }
+
+    /// `playlist_remove` で取得したスナップショットの復元
+    /// （FR-54、仕様決定 CE）。スナップショットの `position` が他項目に
+    /// 使われていなければ元位置へ、埋まっていれば末尾（MAX(position)+1）へ
+    /// 挿す（暫定: 削除と追加の間に並べ替えや末尾への追加が走った場合の
+    /// 収束先）。同一動画が既に登録済みなら既存行をそのまま返す（冪等）。
+    /// 戻り値は実際に登録された行（実効 position 付き）。
+    /// 存在しないプレイリストは `DbError::NotFound`。
+    pub fn playlist_item_restore(
+        &self,
+        playlist_id: i64,
+        v: &crate::model::VideoRef,
+        position: i64,
+    ) -> Result<PlaylistEntry, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
+            [playlist_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(DbError::NotFound);
+        }
+        Self::video_upsert(&tx, v)?;
+        let occupied: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playlist_items
+              WHERE playlist_id = ?1 AND position = ?2)",
+            rusqlite::params![playlist_id, position],
+            |r| r.get(0),
+        )?;
+        let target = if occupied {
+            tx.query_row(
+                "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_items
+                  WHERE playlist_id = ?1",
+                [playlist_id],
+                |r| r.get::<_, i64>(0),
+            )?
+        } else {
+            position
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id, position)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![playlist_id, v.video_id, target],
+        )?;
+        let entry = Self::playlist_item_get_conn(&tx, playlist_id, &v.video_id)?
+            .ok_or(DbError::NotFound)?;
+        tx.commit()?;
+        Ok(entry)
+    }
+
+    /// プレイリスト項目 1 件（削除スナップショットと復元結果の取得用）。
+    /// 表示メタは `playlist_items_page` と同じ JOIN で取る。
+    fn playlist_item_get_conn(
+        conn: &Connection,
+        playlist_id: i64,
+        video_id: &str,
+    ) -> Result<Option<PlaylistEntry>, DbError> {
+        let mut stmt = conn.prepare(
+            "SELECT i.position, i.video_id, v.title, NULLIF(v.channel_id, ''),
+                    v.channel_title, v.thumbnail_url, v.published_at
+             FROM playlist_items i JOIN videos v ON v.video_id = i.video_id
+             WHERE i.playlist_id = ?1 AND i.video_id = ?2",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![playlist_id, video_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(PlaylistEntry {
+                position: row.get(0)?,
+                video_id: row.get(1)?,
+                title: row.get(2)?,
+                channel_id: row.get(3)?,
+                channel_title: row.get(4)?,
+                thumbnail_url: row.get(5)?,
+                published_at: row.get(6)?,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// 「あとで見る」登録（FR-59、仕様決定 CJ）。`videos` 台帳への登録と

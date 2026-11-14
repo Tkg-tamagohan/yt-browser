@@ -430,11 +430,22 @@ pub const MIGRATIONS: &[Migration] = &[
               CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC);
               CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);",
     },
+    // Phase 63: バックフィルの /shorts タブ対応（FR-55、仕様決定 CF）。
+    // `/videos`・`/streams` と同じく `/shorts` タブの取得済み件数を保持する。
+    // （初版は v18 だったが、Phase 62 の v18 `videos_meta_resolve` との
+    // 番号衝突を避けて v19 に繰り上げた）
+    Migration {
+        version: 19,
+        name: "channels_backfill_shorts_pos",
+        sql: "ALTER TABLE channels ADD COLUMN backfill_shorts_pos INTEGER NOT NULL DEFAULT 0;",
+    },
     // Phase 64: 「あとで見る」（FR-59、仕様決定 CJ）。
     // favorites と同じく video_id 主キーと登録日時だけを持ち、
     // 表示メタは videos 台帳へ登録して一覧取得時に JOIN で取る。
+    // （初版は v19 だったが、Phase 63 の v19 `channels_backfill_shorts_pos`
+    // との番号衝突を避けて v20 に繰り上げた）
     Migration {
-        version: 19,
+        version: 20,
         name: "watch_later",
         sql: "CREATE TABLE watch_later (
                 video_id TEXT PRIMARY KEY,
