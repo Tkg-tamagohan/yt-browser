@@ -1,10 +1,11 @@
-//! 履歴・お気に入り・プレイリスト系コマンド（FR-7）。
+//! 履歴・お気に入り・プレイリスト・あとで見る・横断検索系コマンド（FR-7、FR-59、FR-60）。
 
 use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{
-    FavoriteEntry, HistoryCursor, HistoryPage, Playlist, PlaylistEntry, VideoRef, WatchHistory,
+    FavoriteEntry, HistoryCursor, HistoryPage, LibrarySearchItem, Playlist, PlaylistEntry,
+    VideoRef, WatchHistory, WatchLaterEntry,
 };
 use crate::yt::{self, YtDlpResolver};
 use tauri::{AppHandle, Emitter, State};
@@ -111,6 +112,48 @@ pub fn favorite_restore(entry: FavoriteEntry, db: State<'_, Db>) -> Result<(), U
 #[tauri::command]
 pub fn favorite_list(db: State<'_, Db>) -> Result<Vec<FavoriteEntry>, UiError> {
     Ok(db.favorite_list()?)
+}
+
+/// 「あとで見る」の登録上限の扱いは置かない（履歴の剪定対象でもない）。
+/// 横断検索の上限（統合後の件数）。
+const LIBRARY_SEARCH_LIMIT: u32 = 200;
+
+/// `watch_later_add`（FR-59、仕様決定 CJ）。
+/// 動画メタは `videos` 台帳へ登録され、同一動画の再登録は追加日時を
+/// 変えない（冪等）。
+#[tauri::command]
+pub fn watch_later_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
+    let id = validate_video_ref(&video)?;
+    let mut v = video;
+    v.video_id = id;
+    Ok(db.watch_later_add(&v)?)
+}
+
+/// `watch_later_remove`（FR-59）。未登録でも正常終了（冪等）。
+#[tauri::command]
+pub fn watch_later_remove(video_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+    let id = parse_video_id(&video_id)?;
+    Ok(db.watch_later_remove(&id)?)
+}
+
+/// `watch_later_list`（FR-59）。追加が新しい順。
+#[tauri::command]
+pub fn watch_later_list(db: State<'_, Db>) -> Result<Vec<WatchLaterEntry>, UiError> {
+    Ok(db.watch_later_list()?)
+}
+
+/// `library_search`（FR-60、仕様決定 CK）。
+/// 履歴・お気に入り・プレイリスト項目・あとで見るをタイトルとチャンネル名の
+/// 部分一致 LIKE で横断検索し、同一動画は `sources` に区分を持つ 1 件へ
+/// まとめる。`query` の空・空白のみは 0 件を返す（暫定解釈）。
+#[tauri::command]
+pub fn library_search(
+    query: String,
+    limit: Option<u32>,
+    db: State<'_, Db>,
+) -> Result<Vec<LibrarySearchItem>, UiError> {
+    let limit = limit.unwrap_or(LIBRARY_SEARCH_LIMIT).min(1000);
+    Ok(db.library_search(&query, limit)?)
 }
 
 /// `playlist_list`（FR-7）。件数集計付き。

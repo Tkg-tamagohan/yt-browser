@@ -100,6 +100,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_reorder_lists` | `playlist_ids`（プレイリスト全件の新しい表示順） | `Result<()>` |
 | `playlist_sort` | `playlist_id` | `Result<()>` |
 | `playlist_reverse` | `playlist_id` | `Result<()>` |
+| `watch_later_add` | `video`（`VideoRef`） | `Result<()>`（FR-59、仕様決定 CJ。同一動画の再登録は追加日時を変えない冪等） |
+| `watch_later_remove` | `video_id` | `Result<()>`（未登録でも正常終了） |
+| `watch_later_list` | なし | `Result<Vec<WatchLaterEntry>>`（追加が新しい順） |
+| `library_search` | `query`, `limit?`（既定 200、上限 1000） | `Result<Vec<LibrarySearchItem>>`（FR-60、仕様決定 CK。ライブラリ横断検索。同一動画は `sources` に区分を持つ 1 件へまとめる） |
 | `ytdlp_status` | なし | `Result<YtDlpStatus>`（`path` と `version`） |
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
@@ -178,6 +182,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
 `videos` 台帳の投稿日時・kind を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56、仕様決定 CD・CG、§4.18）。
 `history_list` のカーソルは末尾行の `(last_watched_at, rowid)` の対で、一覧の全順序（`last_watched_at` 降順、同時刻は rowid 降順）と同じ基準で「その行の次（より古い側）から」を取る（FR-52、仕様決定 CC。`history_prune` の保持対象とも同じ順序）。`next_cursor` の有無は `limit`+1 件の取得で確定し、末尾ちょうどのページでも空の次ページを要求しない。`query` はタイトルと `channel_title` への `%...%` 部分一致 LIKE で、`%`・`_`・`\` を退避して利用者入力のワイルドカードを無力化する（FR-61、仕様決定 CL。空・空白のみは絞り込みなし）。一覧取得のページングであり、保持上限 10000 件の剪定運用（仕様決定 AV）とは別物。
+`watch_later_add` は `favorite_add` と同じく `video_upsert` で `videos` 台帳へ登録してから `watch_later` へ挿入し、`watch_later_list` は台帳との JOIN で表示メタを取る（FR-59、仕様決定 CJ）。
+`library_search` は履歴・お気に入り・プレイリスト項目・あとで見るの 4 区分をタイトルとチャンネル名の `%...%` 部分一致 LIKE（`history_list` の `query` と同じ退避規則）で横断検索する（FR-60、仕様決定 CK）。`query` の空・空白のみは 0 件を返す（暫定解釈）。同一動画が複数区分でヒットしたときは 1 件へまとめ、ヒットした区分の列を `sources` に履歴→お気に入り→プレイリスト→あとで見るの正準順で持つ。表示メタは区分をまたいだ先出の行を使い、空欄は後出の行で補完する。履歴区分は履歴行自身の列に加えて `videos` 台帳のメタでも照合する（履歴行の channel 列が未入力でも台帳にあれば拾う）。結果の並びは履歴の新しい順→お気に入りの新しい順→プレイリストの登録順→あとで見るの新しい順の先出順（暫定解釈）で、`limit` は統合後の件数上限。UI はライブラリ画面の「検索」タブに検索ボックスを置き、各行はヒット区分のバッジを付ける（検索 UI の置き場所は FR-60 が指定しないため、タブ構成に合わせた暫定解釈）。
 
 履歴・お気に入り・プレイリスト項目の削除は「元に戻す」で取り消せる（FR-54、仕様決定 CE）。
 ソフトデリート列は持たせず、`*_remove` 系コマンドが削除前の行全体をスナップショットとして返し、
@@ -1145,6 +1151,11 @@ CREATE TABLE playlist_items (
   PRIMARY KEY (playlist_id, video_id)
 );
 
+CREATE TABLE watch_later (
+  video_id TEXT PRIMARY KEY,
+  added_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE filters (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   target TEXT NOT NULL CHECK (target IN
@@ -1225,6 +1236,7 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
 - `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v17 で単一行制約を外した）
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
 - `video_bookmarks` は動画内ブックマーク（FR-49、仕様決定 BZ、§4.17）。自動採番の `id` を個別削除・ラベル編集の対象 ID とし、UNIQUE (video_id, position_sec) で同位置の重複保存を抑止する（暫定解釈）。表示用タイトルは行に持たず、一覧取得時に `videos` 台帳 → `watch_history` の順で解決する（`video_meta_lookup` と同じ規則）
+- `watch_later` は「あとで見る」（FR-59、仕様決定 CJ）。`favorites` と同じく `video_id` 主キーと登録日時だけを持ち、表示メタは `videos` 台帳へ `watch_later_add` が登録して一覧取得時に JOIN で取る。同一動画の再登録は `INSERT OR IGNORE` で追加日時を変えない冪等とする
 
 ## 9. エラーハンドリングと変更耐性
 
@@ -1306,7 +1318,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic の各 .ts。対応する *.test.ts を併置）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoRow・SeekBar の各 .svelte）・i18n 基盤（i18n.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic の各 .ts。対応する *.test.ts を併置）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   package.json
 ```

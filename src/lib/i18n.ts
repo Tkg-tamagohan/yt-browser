@@ -419,6 +419,25 @@ const ja = {
   "library.restored": "元に戻しました",
   "library.restoreFailed": "復元に失敗: {message}",
 
+  // Phase 64: あとで見るとライブラリ横断検索（FR-59・FR-60、仕様決定 CJ・CK）
+  "library.tab.watchLater": "あとで見る",
+  "library.tab.search": "検索",
+  "library.watchLater.add": "あとで見る",
+  "library.watchLater.remove": "あとで見るを解除",
+  "library.watchLater.added": "あとで見るに登録しました",
+  "library.watchLater.removed": "あとで見るを解除しました",
+  "library.watchLater.failed": "あとで見る操作に失敗: {message}",
+  "library.watchLater.empty": "あとで見るはありません",
+  "library.search.placeholder":
+    "履歴・お気に入り・プレイリスト・あとで見るを検索",
+  "library.search.hint":
+    "タイトルやチャンネル名でライブラリ全体を検索できます",
+  "library.search.empty": "一致する項目はありません",
+  "library.search.source.history": "履歴",
+  "library.search.source.favorites": "お気に入り",
+  "library.search.source.playlists": "プレイリスト",
+  "library.search.source.watchLater": "あとで見る",
+
   // Phase 7: ホイール割り当て（決定記録: script-opts 注入のため次回再生から有効）
   "settings.wheel.title": "ホイール割り当て",
   "settings.wheel.desc":

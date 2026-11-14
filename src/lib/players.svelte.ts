@@ -167,6 +167,35 @@ export type PlaylistEntry = {
   publishedAt: string | null;
 };
 
+/// `watch_later_list` の 1 行（FR-59、仕様決定 CJ）。
+/// 動画メタは `videos` 台帳から JOIN で取る。
+export type WatchLaterEntry = {
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+  addedAt: string;
+};
+
+/// `library_search` の結果に付くヒット区分（FR-60、仕様決定 CK）。
+export type LibrarySource =
+  | "history"
+  | "favorites"
+  | "playlists"
+  | "watchLater";
+
+/// `library_search` の 1 件（FR-60）。同一動画は 1 行にまとめ、
+/// ヒットした区分を `sources` に持つ。
+export type LibrarySearchItem = {
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+  sources: LibrarySource[];
+};
+
 export type UiError = { code: string; message: string };
 
 /// invoke の失敗を通知表示用の文字列にする。UiError は message を持つので
