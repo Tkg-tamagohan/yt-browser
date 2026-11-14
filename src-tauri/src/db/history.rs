@@ -1,11 +1,17 @@
 //! watch_history テーブルと、手動削除による保存抑止。
 
 use super::*;
-use crate::model::{HistoryCursor, HistoryPage, WatchHistory};
+use crate::model::{
+    HistoryChannelStat, HistoryCursor, HistoryDayStat, HistoryPage, HistoryStats, WatchHistory,
+};
 
 /// `watch_history` の保持上限（仕様決定 AV）。
 /// 超過分は起動時剪定で最古から消す。一覧表示の limit とは別枠。
 const HISTORY_RETENTION_MAX: i64 = 10_000;
+
+/// `history_stats` のチャンネル別内訳の上限件数（暫定値）。
+/// 購読外チャンネルを含めて全件返すと統計タブが読みづらいため上位に絞る。
+const HISTORY_STATS_MAX_CHANNELS: i64 = 50;
 
 impl Db {
     /// 再生開始時に履歴行を確保する。既存行は位置や完了状態を壊さない。
@@ -162,6 +168,72 @@ impl Db {
             _ => None,
         };
         Ok(HistoryPage { items, next_cursor })
+    }
+
+    /// 視聴統計（FR-65、仕様決定 CP）。`watch_history` を集計して
+    /// 累計視聴時間・チャンネル別内訳・日別内訳を返す。
+    ///
+    /// 集計の暫定解釈（設計書 §3.1 の `history_stats` 項）:
+    /// - 1 行の視聴量は「completed=1 なら `COALESCE(duration_sec,
+    ///   position_sec)`、それ以外は `position_sec`」。完了行は位置が
+    ///   0 へ戻るため動画長で見積もり、再視聴の上乗せはしない。
+    /// - チャンネル別は `channel_id` 単位（未設定は NULL 側にまとめる）。
+    ///   `channel_id` が無い行は `channel_title` を併記してまとめる。
+    /// - 日別は `last_watched_at` の `date()`。履歴の日時は
+    ///   `datetime('now')`（UTC）で保存されるため UTC 基準の暦日とする。
+    pub fn history_stats(&self) -> Result<HistoryStats, DbError> {
+        // 行ごとの視聴量見積もりを共通表現にして 3 つの集計で共有する
+        const SEC_EXPR: &str =
+            "CASE WHEN completed <> 0 THEN COALESCE(duration_sec, position_sec) \
+                  ELSE position_sec END";
+        let conn = self.lock()?;
+        let (total_sec, entry_count) = conn.query_row(
+            &format!("SELECT COALESCE(SUM({SEC_EXPR}), 0), COUNT(*) FROM watch_history"),
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        let mut by_channel = Vec::new();
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT channel_id, MAX(channel_title), SUM({SEC_EXPR}), COUNT(*)
+                 FROM watch_history
+                 GROUP BY channel_id
+                 ORDER BY SUM({SEC_EXPR}) DESC, channel_id
+                 LIMIT ?1"
+            ))?;
+            let mut rows = stmt.query([HISTORY_STATS_MAX_CHANNELS])?;
+            while let Some(row) = rows.next()? {
+                by_channel.push(HistoryChannelStat {
+                    channel_id: row.get(0)?,
+                    channel_title: row.get(1)?,
+                    total_sec: row.get(2)?,
+                    entry_count: row.get(3)?,
+                });
+            }
+        }
+        let mut by_day = Vec::new();
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT date(last_watched_at), SUM({SEC_EXPR}), COUNT(*)
+                 FROM watch_history
+                 GROUP BY date(last_watched_at)
+                 ORDER BY date(last_watched_at) DESC"
+            ))?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                by_day.push(HistoryDayStat {
+                    day: row.get(0)?,
+                    total_sec: row.get(1)?,
+                    entry_count: row.get(2)?,
+                });
+            }
+        }
+        Ok(HistoryStats {
+            total_sec,
+            entry_count,
+            by_channel,
+            by_day,
+        })
     }
 
     /// 視聴履歴の個別削除（手動削除のみ、仕様決定 I）。

@@ -11,7 +11,12 @@ impl Db {
     /// フィード由来でない動画は channel_id を `VideoRef` の値（または空文字）で
     /// 登録する。空のチャンネル ID は `channels` に JOIN しないためフィードに
     /// 現れない。既存行は非空の値だけで上書きし、is_read は触らない。
-    fn video_upsert(conn: &Connection, v: &crate::model::VideoRef) -> Result<(), DbError> {
+    /// インポート（export.rs）の項目メタ補完でも同じ規則を使うため
+    /// `pub(crate)` で共有する。
+    pub(crate) fn video_upsert(
+        conn: &Connection,
+        v: &crate::model::VideoRef,
+    ) -> Result<(), DbError> {
         conn.execute(
             "INSERT INTO videos (video_id, channel_id, channel_title, title, thumbnail_url, kind)
              VALUES (?1, ?2, ?3, ?4, ?5, 'video')

@@ -5,11 +5,13 @@
 
 mod bookmark;
 mod channels;
+mod export;
 mod feed;
 mod filters;
 mod history;
 mod library;
 mod livewait;
+mod maintenance;
 mod migrations;
 mod queue;
 mod settings;
@@ -46,6 +48,9 @@ pub enum DbError {
     NotFound,
     #[error("並べ替え対象の項目集合が現在の内容と一致しない")]
     MismatchedItems,
+    /// インポートしたダンプの内容が受理できない（FR-62、仕様決定 CM）。
+    #[error("インポートデータの検証に失敗: {0}")]
+    Import(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
