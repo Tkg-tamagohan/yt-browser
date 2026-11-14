@@ -6057,7 +6057,7 @@ dependencies = [
 
 [[package]]
 name = "yt-browser"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "aho-corasick",
  "anyhow",
