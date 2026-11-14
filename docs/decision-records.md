@@ -318,3 +318,16 @@
 | DB サイズの定義 | `main` DB ファイル＋WAL/SHM サイドファイルの合計バイト数。ファイルを持たない接続では `page_count × page_size` の近似値（回帰テスト DB-LD-30） |
 | 孤児行の対象 | (1) `channels` に無いチャンネルの `videos` 行のうち favorites/playlist_items/watch_later/watch_history/queue_items/live_waits/video_bookmarks のどれにも参照されないもの。(2) `videos` 台帳に無い `video_id` を持つ playlist_items/favorites/watch_later の参照切れ行。`watch_history` は表示メタを自列に持つユーザーデータのため消さない。実行前にダイアログで確認する（回帰テスト DB-LD-29） |
 
+## Phase 68 で確定した事項
+
+仕様決定 CT・CU の実装で、決定記録に書かれていなかった細目を暫定解釈として定めた。
+
+| 項目 | 決定内容 |
+|------|----------|
+| highlight 種別の照合方式 | 部分一致（literal と同じ Aho-Corasick 照合）のみで、正規表現のハイライトは持たない。`kind` は照合方式の軸ではなく適用方法の軸として扱い、highlight は NG 用集合（literal / regex）とは別の照合集合で評価する |
+| highlight の適用対象 | NG 判定と同じフィールド解決（`chat_text` は本文、`chat_author` は投稿者名とチャンネル ID 双方）。動画系 target の highlight 行は登録できるが現行の評価経路では使わない（`video_desc` の「評価対象外」と同じ扱い） |
+| イベントへの乗せ方 | `ChatEvent` に `hl` フラグを追加し、`ng` と独立して送信する。`ng` と `hl` が両方立つ発言は `ng` 側の非表示を優先する。NG と同様に判定は新規受信イベントに対して行い、既表示行の再評価はしない |
+| 強調色 | 共有の ChatList で `.highlight` クラスを付け、黄土色系の背景（暫定色 `#4d4419`）で強調する。埋め込みパネルとポップアップ窓は同じ行構成のため双方へ効く |
+| NG ユーザー節の対象 | `chat_author` 行のうち NG 系種別（literal / regex）のみ一覧・解除の対象とする。highlight 種別の `chat_author` 行は発言を除去しないため NG ユーザーに含めず、NG フィルタ節側で管理する |
+| NG ユーザー節の追加操作 | 部分一致（literal）で固定登録する。正規表現の `chat_author` フィルタは NG フィルタ節から登録する |
+

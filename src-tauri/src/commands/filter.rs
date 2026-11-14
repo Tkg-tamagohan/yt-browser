@@ -31,8 +31,10 @@ pub fn blocked_channels(db: State<'_, Db>) -> Result<Vec<crate::model::BlockedCh
     Ok(db.blocked_list()?)
 }
 
-/// `filter_add`（設計書 §3.1、FR-9）。target/kind/pattern を検証して登録し、
-/// 稼働中の NG 評価器を作り直す。
+/// `filter_add`（設計書 §3.1、FR-9・FR-69）。target/kind/pattern を
+/// 検証して登録し、稼働中の NG 評価器を作り直す。
+/// kind は `literal` / `regex` / `highlight`。`highlight` はチャット発言の
+/// 強調表示に使う種別で、部分一致と同じ照合を専用集合で行う（仕様決定 CT）。
 #[tauri::command]
 pub fn filter_add(
     target: String,
@@ -50,7 +52,9 @@ pub fn filter_add(
         )));
     }
     if !crate::model::FILTER_KINDS.contains(&kind.as_str()) {
-        return Err(UiError::invalid_input("kind は literal または regex です"));
+        return Err(UiError::invalid_input(
+            "kind は literal / regex / highlight です",
+        ));
     }
     if pattern.is_empty() {
         return Err(UiError::invalid_input("pattern が空です"));

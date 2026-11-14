@@ -407,6 +407,9 @@ pub struct ChatEvent {
     pub amount_display: Option<String>,
     /// NG フィルタで非表示と判定されたか。送信はするが、UI は非表示にする。
     pub ng: bool,
+    /// ハイライト種別（FR-69、仕様決定 CT）のフィルタにマッチしたか。
+    /// `ng` と違って UI は除去せず、強調色で表示する。
+    pub hl: bool,
     /// リプレイの動画内時刻（`videoOffsetTimeMsec`、ms）。ライブでは None。
     /// UI への送出はリプレイペーサが再生位置と照合して行う（FR-24、仕様決定 AQ）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -440,7 +443,8 @@ pub struct Filter {
     /// 評価対象。`video_title` `video_desc` `channel_title` `channel_id`
     /// `chat_text` `chat_author` のいずれか。
     pub target: String,
-    /// `literal` または `regex`。
+    /// `literal` / `regex` / `highlight` のいずれか。
+    /// `highlight` はチャット発言の強調表示に使う（FR-69、仕様決定 CT）。
     pub kind: String,
     pub pattern: String,
     pub enabled: bool,
@@ -458,7 +462,9 @@ pub const FILTER_TARGETS: &[&str] = &[
 ];
 
 /// filters.kind の許容値（DDL の CHECK と一致）。
-pub const FILTER_KINDS: &[&str] = &["literal", "regex"];
+/// `highlight` は NG 判定とは別の照合集合で評価し、マッチした
+/// チャット発言を除去ではなく強調表示に使う（FR-69、仕様決定 CT）。
+pub const FILTER_KINDS: &[&str] = &["literal", "regex", "highlight"];
 
 /// `favorite_add` / `playlist_add` の動画参照。
 /// 検索・関連・フィード行のメタ情報をそのまま受け取り、`videos` 台帳へ登録する。

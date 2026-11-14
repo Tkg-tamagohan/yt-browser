@@ -281,6 +281,9 @@ export type ChatEvent = {
   amountDisplay: string | null;
   /// NG フィルタで非表示判定されたもの。送信されるが UI は出さない。
   ng: boolean;
+  /// ハイライト種別のフィルタにマッチしたもの。ng と違い、UI は
+  /// 除去せず強調色で表示する（FR-69、仕様決定 CT）。
+  hl: boolean;
   /// リプレイの動画内時刻（ms）。ライブでは未定義（FR-24）。
   videoOffsetMs?: number;
 };

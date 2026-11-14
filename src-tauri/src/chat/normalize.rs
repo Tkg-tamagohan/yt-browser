@@ -1,5 +1,5 @@
 //! `get_live_chat` 応答の actions[] を `ChatEvent` へ正規化し、
-//! 重複除去と NG 判定を行う（設計書 §6.3、FR-9）。
+//! 重複除去と NG・ハイライト判定を行う（設計書 §6.3、FR-9・FR-69）。
 
 use std::collections::{HashSet, VecDeque};
 
@@ -44,6 +44,7 @@ pub(crate) fn normalize_all(
             continue;
         }
         e.ng = is_ng(matcher, &e);
+        e.hl = is_hl(matcher, &e);
         out.push(e);
     }
     out
@@ -196,6 +197,7 @@ fn renderer_to_event(video_id: &str, item: &Value, offset_ms: Option<i64>) -> Op
             message,
             amount_display: amount,
             ng: false,
+            hl: false,
             video_offset_ms: offset_ms,
         });
     }
@@ -215,6 +217,7 @@ fn deleted_to_event(video_id: &str, target_id: &str, offset_ms: Option<i64>) -> 
         message: target_id.to_string(),
         amount_display: None,
         ng: false,
+        hl: false,
         video_offset_ms: offset_ms,
     }
 }
@@ -292,6 +295,26 @@ fn is_ng(matcher: &Matcher, e: &ChatEvent) -> bool {
         .flatten()
     {
         if matcher.is_blocked("chat_author", text) {
+            return true;
+        }
+    }
+    false
+}
+
+/// ChatEvent へのハイライト判定（FR-69、仕様決定 CT）。
+/// 適用対象は NG 判定と同じ（`chat_text` は本文、`chat_author` は
+/// 投稿者名とチャンネル ID 双方）で、照合は highlight 種別の
+/// 専用集合で行う。`ng` と独立に立ち、両方にマッチした発言は
+/// `ng` 側の非表示が優先される。
+fn is_hl(matcher: &Matcher, e: &ChatEvent) -> bool {
+    if matcher.is_highlighted("chat_text", &e.message) {
+        return true;
+    }
+    for text in [e.author_name.as_deref(), e.author_channel_id.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if matcher.is_highlighted("chat_author", text) {
             return true;
         }
     }
@@ -606,5 +629,82 @@ mod tests {
         assert_eq!(emoji_text(&custom), ":party:");
         let bare = json!({"emojiId": "UCabc/def"});
         assert_eq!(emoji_text(&bare), "[絵文字]");
+    }
+
+    /// CH-09: highlight 種別の chat_text / chat_author フィルタが
+    /// hl フラグを立て、ng は立てない（FR-69、仕様決定 CT）。
+    /// chat_author は投稿者名とチャンネル ID の双方にマッチする。
+    #[test]
+    fn highlight_filters_set_hl_not_ng() {
+        let m = Matcher::rebuild(&[
+            crate::model::Filter {
+                id: 0,
+                target: "chat_text".into(),
+                kind: "highlight".into(),
+                pattern: "初見".into(),
+                enabled: true,
+                created_at: String::new(),
+            },
+            crate::model::Filter {
+                id: 0,
+                target: "chat_author".into(),
+                kind: "highlight".into(),
+                pattern: "UChl".into(),
+                enabled: true,
+                created_at: String::new(),
+            },
+        ]);
+        let seen = HashSet::new();
+        let mut pending = HashSet::new();
+        // 本文マッチ
+        let a = text_action("h1", "@a", "UCa", "1700000000000006", "初見です");
+        let evs = normalize_all(&m, "v", &[a], &seen, &mut pending);
+        assert_eq!(evs.len(), 1);
+        assert!(evs[0].hl);
+        assert!(!evs[0].ng);
+        // 投稿者（チャンネル ID）マッチ
+        let a = text_action("h2", "@a", "UChlUser", "1700000000000006", "こんにちは");
+        let evs = normalize_all(&m, "v", &[a], &seen, &mut pending);
+        assert_eq!(evs.len(), 1);
+        assert!(evs[0].hl);
+        assert!(!evs[0].ng);
+        // どちらにもマッチしない
+        let a = text_action("h3", "@a", "UCa", "1700000000000006", "普通の発言");
+        let evs = normalize_all(&m, "v", &[a], &seen, &mut pending);
+        assert_eq!(evs.len(), 1);
+        assert!(!evs[0].hl);
+        assert!(!evs[0].ng);
+    }
+
+    /// CH-10: NG と highlight の双方にマッチする発言は ng と hl の
+    /// 両方が立つ。表示上の優先（ng の非表示）は UI 側の責務
+    /// （FR-69、仕様決定 CT）。
+    #[test]
+    fn ng_and_highlight_are_independent() {
+        let m = Matcher::rebuild(&[
+            crate::model::Filter {
+                id: 0,
+                target: "chat_text".into(),
+                kind: "literal".into(),
+                pattern: "宣伝".into(),
+                enabled: true,
+                created_at: String::new(),
+            },
+            crate::model::Filter {
+                id: 0,
+                target: "chat_text".into(),
+                kind: "highlight".into(),
+                pattern: "宣伝".into(),
+                enabled: true,
+                created_at: String::new(),
+            },
+        ]);
+        let seen = HashSet::new();
+        let mut pending = HashSet::new();
+        let a = text_action("n1", "@a", "UCa", "1700000000000007", "宣伝です");
+        let evs = normalize_all(&m, "v", &[a], &seen, &mut pending);
+        assert_eq!(evs.len(), 1);
+        assert!(evs[0].ng);
+        assert!(evs[0].hl);
     }
 }

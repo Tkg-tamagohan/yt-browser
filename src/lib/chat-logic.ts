@@ -9,7 +9,10 @@ import type { ChatEvent } from "$lib/players.svelte";
 export type ChatItem = ChatEvent & { deleted?: boolean };
 
 /// 既表示行へ新着イベントを併合する。削除イベントは既表示行の打消しに
-/// 使い、ng / other は表示しない。表示件数は直近 500 件に絞る
+/// 使い、ng / other は表示しない。hl フラグ付きは表示したまま
+/// ChatList が強調色を付ける（FR-69、仕様決定 CT）。ng と hl が
+/// 両方立つ行は ng 側の非表示を優先する。
+/// 表示件数は直近 500 件に絞る
 /// （決定記録『Phase 6 で確定した事項』の表示上限）
 const CHAT_CAP = 500;
 export function mergeChatItems(

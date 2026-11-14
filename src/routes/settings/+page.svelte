@@ -38,6 +38,7 @@
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
   import SettingsHdrSection from "$lib/SettingsHdrSection.svelte";
   import SettingsLiveWaitSection from "$lib/SettingsLiveWaitSection.svelte";
+  import SettingsNgUsersSection from "$lib/SettingsNgUsersSection.svelte";
   import SettingsOpsSection from "$lib/SettingsOpsSection.svelte";
   import SettingsPipSection from "$lib/SettingsPipSection.svelte";
   import SettingsPlayerSection from "$lib/SettingsPlayerSection.svelte";
@@ -784,6 +785,8 @@
   <SettingsBlockedSection {notify} />
 
   <SettingsFiltersSection {notify} />
+
+  <SettingsNgUsersSection {notify} />
 
   <SettingsOpsSection {notify} />
 
