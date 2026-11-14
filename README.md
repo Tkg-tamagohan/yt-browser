@@ -16,7 +16,7 @@ mpv による軽量な再生と、ローカル完結の購読、履歴、NG 管�
 - ライブチャット：リアルタイム表示、終了済み配信のリプレイ同期、別ウィンドウへのポップアップ
 - ライブラリ：視聴履歴（途中位置のレジューム）、お気に入り、プレイリスト（YouTube からの取り込みと並べ替え）
 - 調整：画質、PiP の位置とサイズ、起動ディスプレイ、HDR と mpv の引数、HW デコード、ウインドウごとの音声出力先
-- 外部連携：Chrome 拡張からの起動とキュー追加、`yt-browser://` スキーム、Native Messaging
+- 外部連携：ブラウザ拡張（Chrome や Edge などの Chromium 系）からの起動とキュー追加、`yt-browser://` スキーム、Native Messaging
 - 自動更新：AppImage と NSIS 版が GitHub Releases 経由で更新できる
 
 機能ごとの詳細と対応する要件とフェーズは [docs/features.md](docs/features.md) を参照。

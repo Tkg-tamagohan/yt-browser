@@ -396,9 +396,20 @@ sequenceDiagram
 - 登録：本体の setup で毎回、ホスト定義 JSON を書き、内容が同じなら書き換えない。
   JSON の `path` は実行中のバイナリの絶対パスとし、AppImage では `$APPIMAGE` を使う（マウント先の一時パスを登録しないため）。
   `allowed_origins` は拡張の固定 ID（`manifest.json` の `key` で固定する）の `chrome-extension://<ID>/` とする。
-  登録の失敗は警告ログに留め、起動は止めない
-  - Windows：JSON をアプリデータ配下の `native-messaging/<ホスト名>.json` に置き、`HKCU\Software\Google\Chrome\NativeMessagingHosts\<ホスト名>` の既定値にそのパスを書く
-  - Linux：`~/.config/google-chrome/NativeMessagingHosts/<ホスト名>.json` に書く（`XDG_CONFIG_HOME` があればその配下）
+  拡張 ID は `key` で固定されるためブラウザによらず同一で、Edge や Chromium 系でも同じ `allowed_origins` を使う。
+  登録の失敗は警告ログに留め、起動は止めない。
+  Phase 79 で登録先をブラウザ別の置き場へ拡張した（FR-88、仕様決定 DM）
+  - Windows：JSON をアプリデータ配下の `native-messaging/<ホスト名>.json` に置き、
+    `HKCU` 配下の各ブラウザの `NativeMessagingHosts\<ホスト名>` キーの既定値にそのパスを書く。
+    キーの起点は `Software\Google\Chrome`・`Software\Microsoft\Edge`・`Software\Chromium`。
+    ブラウザ導入の有無は判定せず全対象へ書く暫定解釈（未導入ブラウザの残存キーは無害と判断）。
+    `Software\Chromium` は仕様決定 DM の「Edge と Chrome」に対し、FR-88 の「Chromium 系」を
+    Windows の Chromium 系ブラウザにも広げた暫定解釈の追加対象
+  - Linux：`~/.config/google-chrome/NativeMessagingHosts/<ホスト名>.json` に加え、
+    `microsoft-edge`・`chromium` の設定ディレクトリ配下にも置く（`XDG_CONFIG_HOME` があればその配下）。
+    Edge と Chromium はブラウザの設定ディレクトリが既にあるときだけ書き込む暫定解釈
+    （未導入ブラウザの設定ディレクトリを新規作成しない。
+    後から導入した場合はブラウザの初回起動後の本体起動で登録される）
   - 開発ビルド（`pnpm tauri dev`）も同じ処理で登録するため、最後に起動したバイナリのパスが有効になる
 - 拡張側：`nativeMessaging` 権限を足し、`sendNativeMessage` の応答で分岐する。
   `chrome.runtime.lastError`（ホスト未登録など）か `ok: false` のときは、従来のスキーム方式でタブを**アクティブ**で開いてフォールバックし、バッジ `!` とツールチップに理由を出す。

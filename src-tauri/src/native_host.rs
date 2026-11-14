@@ -17,7 +17,8 @@
 //! - `list_playlists`：本体の DB を読み取り専用で開き、`playlists` 表を
 //!   `playlist_list` と同じ順（`ORDER BY sort_order, id`）で読む。
 //!   DB への書き込み経路は持たない（仕様決定 AX の方針を維持）
-//! - 登録：本体の setup で [`register`] を呼び、ホスト定義を冪等に書く
+//! - 登録：本体の setup で [`register`] を呼び、ブラウザ別の置き場へ
+//!   ホスト定義を冪等に書く（FR-88、仕様決定 DM）
 //!
 //! 標準出力はプロトコル専用なので、ホストモードではログを標準出力へ出さない。
 
@@ -373,11 +374,65 @@ pub fn write_if_changed(path: &Path, content: &str) -> io::Result<bool> {
     Ok(true)
 }
 
+/// Linux の登録対象（FR-88、仕様決定 DM）。`<config_dir>/<dir>` がブラウザの
+/// 設定ディレクトリ名で、その下の `NativeMessagingHosts/<ホスト名>.json` に置く。
+/// `installed_only` が真の対象は、設定ディレクトリが既にあるとき
+/// （ブラウザの初回起動済みとみなせるとき）だけ書き込む暫定解釈。
+/// 未導入ブラウザ向けに空の設定ディレクトリを新規作成しないためで、
+/// 後から導入した場合はブラウザの初回起動後の本体起動で登録される。
+/// Chrome は従来どおり無条件に書く（仕様決定 AH の既存挙動を維持）。
+#[cfg(target_os = "linux")]
+const LINUX_TARGETS: &[(&str, bool)] = &[
+    ("google-chrome", false),
+    ("microsoft-edge", true),
+    ("chromium", true),
+];
+
+/// Linux の登録先パス一覧。`installed_only` の対象は設定ディレクトリが
+/// 存在するものだけを返す（見つからないものはブラウザ未導入として飛ばす）。
+#[cfg(target_os = "linux")]
+fn linux_manifest_paths(config_dir: &Path) -> Vec<PathBuf> {
+    LINUX_TARGETS
+        .iter()
+        .filter(|(dir, installed_only)| !installed_only || config_dir.join(dir).is_dir())
+        .map(|(dir, _)| {
+            config_dir
+                .join(dir)
+                .join("NativeMessagingHosts")
+                .join(format!("{HOST_NAME}.json"))
+        })
+        .collect()
+}
+
+/// Windows の登録先レジストリキーの起点（HKCU からの相対パス）。
+/// `<起点>\NativeMessagingHosts\<ホスト名>` の既定値へマニフェストのパスを書く。
+/// ブラウザ導入の有無は判定せず全対象へ書く暫定解釈（Chrome の既存挙動を踏襲。
+/// 未導入ブラウザの残存キーは無害と判断）。`Software\Chromium` は
+/// 仕様決定 DM の「Edge と Chrome」に対し FR-88 の「Chromium 系」を
+/// Windows の Chromium 系ブラウザにも広げた暫定解釈の追加対象。
+#[cfg(windows)]
+const WINDOWS_REGISTRIES: &[&str] = &[
+    r"Software\Google\Chrome",
+    r"Software\Microsoft\Edge",
+    r"Software\Chromium",
+];
+
+/// Windows の登録先レジストリキー（HKCU からの相対パス）の一覧。
+#[cfg(windows)]
+fn windows_registry_subkeys() -> Vec<String> {
+    WINDOWS_REGISTRIES
+        .iter()
+        .map(|root| format!(r"{root}\NativeMessagingHosts\{HOST_NAME}"))
+        .collect()
+}
+
 /// 本体の setup から呼ぶ自己登録。失敗は警告ログに留め、起動は止めない。
+/// 対象ブラウザの置き場は [`linux_manifest_paths`]（Linux）と
+/// [`windows_registry_subkeys`]（Windows）が列挙する（FR-88、仕様決定 DM）。
 ///
-/// - Linux：`<config_dir>/google-chrome/NativeMessagingHosts/<ホスト名>.json`
+/// - Linux：`<config_dir>/<ブラウザ設定名>/NativeMessagingHosts/<ホスト名>.json`
 /// - Windows：JSON を `<app_data>/native-messaging/` に置き、
-///   `HKCU\Software\Google\Chrome\NativeMessagingHosts\<ホスト名>` の既定値にそのパスを書く
+///   各ブラウザの `HKCU\<起点>\NativeMessagingHosts\<ホスト名>` の既定値にそのパスを書く
 #[allow(unused_variables)]
 pub fn register(config_dir: Option<PathBuf>, app_data_dir: &Path) {
     let exe = match std::env::current_exe() {
@@ -397,11 +452,9 @@ pub fn register(config_dir: Option<PathBuf>, app_data_dir: &Path) {
             tracing::warn!("Native Messaging ホスト登録: 設定ディレクトリを取得できない");
             return;
         };
-        let path = config_dir
-            .join("google-chrome")
-            .join("NativeMessagingHosts")
-            .join(format!("{HOST_NAME}.json"));
-        report_write(&path, write_if_changed(&path, &manifest));
+        for path in linux_manifest_paths(&config_dir) {
+            report_write(&path, write_if_changed(&path, &manifest));
+        }
     }
 
     #[cfg(windows)]
@@ -413,9 +466,7 @@ pub fn register(config_dir: Option<PathBuf>, app_data_dir: &Path) {
         let ok = written.is_ok();
         report_write(&path, written);
         if ok {
-            if let Err(e) = register_windows_key(&path) {
-                tracing::warn!(error = %e, "Native Messaging ホスト登録: レジストリを書けない");
-            }
+            register_windows_keys(&path);
         }
     }
 }
@@ -433,15 +484,26 @@ fn report_write(path: &Path, result: io::Result<bool>) {
     }
 }
 
+/// Windows 側の登録。対象ブラウザの `NativeMessagingHosts` キーそれぞれの
+/// 既定値へマニフェストのパスを書く。1 キーの失敗で他への登録は止めない。
 #[cfg(windows)]
-fn register_windows_key(manifest_path: &Path) -> windows_registry::Result<()> {
-    let subkey = format!(r"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}");
+fn register_windows_keys(manifest_path: &Path) {
     let value = manifest_path.to_string_lossy().into_owned();
-    let key = windows_registry::CURRENT_USER.create(&subkey)?;
+    for subkey in windows_registry_subkeys() {
+        if let Err(e) = write_windows_key(&subkey, &value) {
+            tracing::warn!(key = %subkey, error = %e, "Native Messaging ホスト登録: レジストリを書けない");
+        }
+    }
+}
+
+/// `subkey` の既定値へ `value` を冪等に書く。内容が同じなら書き換えない。
+#[cfg(windows)]
+fn write_windows_key(subkey: &str, value: &str) -> windows_registry::Result<()> {
+    let key = windows_registry::CURRENT_USER.create(subkey)?;
     if key.get_string("").is_ok_and(|cur| cur == value) {
         return Ok(());
     }
-    key.set_string("", &value)?;
+    key.set_string("", value)?;
     tracing::info!(key = %subkey, "Native Messaging ホストのレジストリを更新");
     Ok(())
 }
@@ -842,6 +904,61 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&back).unwrap(),
             json!({ "ok": true })
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    /// DB-NM-15: Linux の登録先一覧（FR-88、仕様決定 DM）。
+    /// Chrome は従来どおり無条件に置き場を返し、Edge・Chromium は
+    /// ブラウザの設定ディレクトリが既にあるときだけ列挙する暫定解釈を確かめる。
+    /// 各置き場は `<config_dir>/<設定名>/NativeMessagingHosts/<ホスト名>.json` の形。
+    #[test]
+    fn linux_manifest_paths_cover_browsers() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path();
+        let manifest_name = format!("{HOST_NAME}.json");
+        // ブラウザ設定ディレクトリが何も無い環境では Chrome のみ
+        assert_eq!(
+            linux_manifest_paths(config),
+            vec![config
+                .join("google-chrome")
+                .join("NativeMessagingHosts")
+                .join(&manifest_name)]
+        );
+        // Edge の設定ディレクトリがあれば Edge も対象になる
+        std::fs::create_dir_all(config.join("microsoft-edge")).unwrap();
+        let paths = linux_manifest_paths(config);
+        assert_eq!(
+            paths,
+            vec![
+                config
+                    .join("google-chrome")
+                    .join("NativeMessagingHosts")
+                    .join(&manifest_name),
+                config
+                    .join("microsoft-edge")
+                    .join("NativeMessagingHosts")
+                    .join(&manifest_name),
+            ]
+        );
+        // Chromium も同様に設定ディレクトリの存在で対象になる
+        std::fs::create_dir_all(config.join("chromium")).unwrap();
+        assert_eq!(linux_manifest_paths(config).len(), 3);
+    }
+
+    #[cfg(windows)]
+    /// DB-NM-16: Windows の登録先レジストリキー一覧（FR-88、仕様決定 DM）。
+    /// HKCU 相対パスの `<起点>\NativeMessagingHosts\<ホスト名>` の形で、
+    /// Chrome・Edge・Chromium の 3 置き場を列挙する。
+    #[test]
+    fn windows_registry_subkeys_cover_browsers() {
+        assert_eq!(
+            windows_registry_subkeys(),
+            vec![
+                format!(r"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}"),
+                format!(r"Software\Microsoft\Edge\NativeMessagingHosts\{HOST_NAME}"),
+                format!(r"Software\Chromium\NativeMessagingHosts\{HOST_NAME}"),
+            ]
         );
     }
 }
