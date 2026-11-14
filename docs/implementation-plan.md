@@ -620,79 +620,79 @@ BG-6 は設定 1 か所の変更で 3 か所の並べ替えに効く見込みの
 
 ### Phase 70：設定と依存診断の拡充（FR-72・FR-73・FR-74・FR-75、仕様決定 CW・CX・CY・CZ）
 
-- [ ] 設定 `ytdlp.path` を設定画面の依存節の入力欄で設定できるようにする
-- [ ] 設定画面上部に絞り込み入力を設け、ラベル文字列から節をフィルタする
-- [ ] mpv、yt-dlp、deno の検出状況、バージョン、解決パスを設定画面の診断節に一覧する
-- [ ] 初回起動時に依存検出画面を表示して誘導する
-- [ ] 依存検出と節フィルタを Rust テストと Vitest で検証する
-- [ ] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：パス入力、節フィルタ、診断一覧、初回誘導が動くことを実機で確認する
+- [x] 設定 `ytdlp.path` を設定画面の依存節の入力欄で設定できるようにする
+- [x] 設定画面上部に絞り込み入力を設け、ラベル文字列から節をフィルタする
+- [x] mpv、yt-dlp、deno の検出状況、バージョン、解決パスを設定画面の診断節に一覧する
+- [x] 初回起動時に依存検出画面を表示して誘導する
+- [x] 依存検出と節フィルタを Rust テストと Vitest で検証する
+- [x] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：パス入力、節フィルタ、診断一覧、初回誘導が動くことを実機で確認する（実機検証は未実施）
 
 ### Phase 71：テーマと表示密度（FR-76・FR-77、仕様決定 DA・DB）
 
-- [ ] 色を CSS 変数化し、設定 `ui.theme`（`dark`/`light`/`system`、既定 `dark`）を新設する
-- [ ] 設定 `ui.density`（`comfortable`/`compact`）を新設し、`compact` で一覧の行高とサムネイルを縮小する
-- [ ] テーマと密度の適用を Vitest で検証する
-- [ ] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：テーマと密度の設定が表示へ反映されることを実機で確認する
+- [x] 色を CSS 変数化し、設定 `ui.theme`（`dark`/`light`/`system`、既定 `dark`）を新設する
+- [x] 設定 `ui.density`（`comfortable`/`compact`）を新設し、`compact` で一覧の行高とサムネイルを縮小する
+- [x] テーマと密度の適用を Vitest で検証する
+- [x] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：テーマと密度の設定が表示へ反映されることを実機で確認する（実機検証は未実施）
 
 ### Phase 72：コンテキストメニューとショートカット（FR-78・FR-79、仕様決定 DC・DD）
 
-- [ ] VideoActions のメニューを動画行の右クリックでも開けるようにする（メニュー部品を共用）
-- [ ] 一覧とキューの操作の既定キーマップと、ショートカットの有効化設定を実装する
-- [ ] コンテキストメニューの起動とキーマップの解決を Vitest で検証する
-- [ ] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：右クリックでメニューが開き、既定キーで一覧とキューの操作が行えることを実機で確認する
+- [x] VideoActions のメニューを動画行の右クリックでも開けるようにする（メニュー部品を共用）
+- [x] 一覧とキューの操作の既定キーマップと、ショートカットの有効化設定を実装する
+- [x] コンテキストメニューの起動とキーマップの解決を Vitest で検証する
+- [x] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：右クリックでメニューが開き、既定キーで一覧とキューの操作が行えることを実機で確認する（実機検証は未実施）
 
 ### Phase 73：WebKitGTK ヒットずれの恒久対策（FR-80、仕様決定 DE）
 
-- [ ] リマウント回避（常時マウント化）の対象をパネルの開閉と一覧の再描画にも拡大する
-- [ ] 対象を拡大した要素の構成をテストで検証する
-- [ ] `docs/design.md`（§9.4 周辺）、`docs/user-guide.md` を更新する
-- [ ] 受け入れ：パネルの開閉や一覧の再描画でヒットずれが発生しないことを実機で確認する
+- [x] リマウント回避（常時マウント化）の対象をパネルの開閉と一覧の再描画にも拡大する
+- [x] 対象を拡大した要素の構成をテストで検証する
+- [x] `docs/design.md`（§9.4 周辺）、`docs/user-guide.md` を更新する
+- [ ] 受け入れ：パネルの開閉や一覧の再描画でヒットずれが発生しないことを実機で確認する（実機検証は未実施）
 
 ### Phase 74：英語 UI リソース（FR-81、仕様決定 DF）
 
-- [ ] i18n に en リソースを追加し、設定 `ui.language`（`ja`/`en`、既定 `ja`）を新設する
-- [ ] リソースキーの網羅をテストで検証する
-- [ ] `docs/design.md`、`docs/user-guide.md` を更新する
-- [ ] 受け入れ：`ui.language=en` で UI が英語表示になることを実機で確認する
+- [x] i18n に en リソースを追加し、設定 `ui.language`（`ja`/`en`、既定 `ja`）を新設する
+- [x] リソースキーの網羅をテストで検証する
+- [x] `docs/design.md`、`docs/user-guide.md` を更新する
+- [ ] 受け入れ：`ui.language=en` で UI が英語表示になることを実機で確認する（実機検証は未実施）
 
 ### Phase 75：診断出力と通知履歴（FR-82・FR-83、仕様決定 DG・DH）
 
-- [ ] ログ、設定、環境情報を zip で一括出力し、署名 URL などをマスクする
-- [ ] 通知を履歴として保持し一覧で閲覧できるようにする
-- [ ] エクスポートのマスクと通知履歴を Rust テストと Vitest で検証する
-- [ ] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：zip に各情報が含まれ秘匿情報がマスクされること、通知が履歴一覧に残ることを実機で確認する
+- [x] ログ、設定、環境情報を zip で一括出力し、署名 URL などをマスクする
+- [x] 通知を履歴として保持し一覧で閲覧できるようにする
+- [x] エクスポートのマスクと通知履歴を Rust テストと Vitest で検証する
+- [x] `docs/design.md`、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：zip に各情報が含まれ秘匿情報がマスクされること、通知が履歴一覧に残ることを実機で確認する（実機検証は未実施）
 
 ### Phase 76：video_desc フィルタの評価対象化（FR-85、仕様決定 DJ）
 
 FR-53・FR-56 の遅延解決基盤（Phase 62）の完成後に実施する。
 
-- [ ] InnerTube `player` 応答の `videoDetails.shortDescription` を `videos` の説明列へ遅延解決で保存し、`video_desc` フィルタの評価対象に加える
-- [ ] 説明列の保存とフィルタ評価を Rust テストで検証する
-- [ ] `docs/design.md`、`docs/user-guide.md` を更新する
-- [ ] 受け入れ：説明文を持つ項目で `video_desc` フィルタが評価されることを実機で確認する
+- [x] InnerTube `player` 応答の `videoDetails.shortDescription` を `videos` の説明列へ遅延解決で保存し、`video_desc` フィルタの評価対象に加える
+- [x] 説明列の保存とフィルタ評価を Rust テストで検証する
+- [x] `docs/design.md`、`docs/user-guide.md` を更新する
+- [ ] 受け入れ：説明文を持つ項目で `video_desc` フィルタが評価されることを実機で確認する（実機検証は未実施）
 
 ### Phase 77：PO Token の伝達（FR-86、仕様決定 DK）
 
-- [ ] 設定 `ytdlp.po_token`（空は未設定）を新設し、yt-dlp 呼び出しの `--extractor-args` を自動構成する
-- [ ] `--extractor-args` の構成を Rust テストで検証する
-- [ ] `docs/design.md`（設定キー表、yt-dlp 呼び出し）、`docs/user-guide.md`、i18n を更新する
-- [ ] 受け入れ：設定した PO Token が yt-dlp 呼び出しへ伝達されることを実機で確認する
+- [x] 設定 `ytdlp.po_token`（空は未設定）を新設し、yt-dlp 呼び出しの `--extractor-args` を自動構成する
+- [x] `--extractor-args` の構成を Rust テストで検証する
+- [x] `docs/design.md`（設定キー表、yt-dlp 呼び出し）、`docs/user-guide.md`、i18n を更新する
+- [ ] 受け入れ：設定した PO Token が yt-dlp 呼び出しへ伝達されることを実機で確認する（実機検証は未実施）
 
 ### Phase 78：CI actions の追従（FR-87、仕様決定 DL）
 
-- [ ] `actions/checkout`・`actions/setup-node`・`pnpm/action-setup` を Node 24 対応版へ更新する
-- [ ] 受け入れ：更新後の CI が Node.js 20 対象の非推奨警告なしに動作することを確認する
+- [x] `actions/checkout`・`actions/setup-node`・`pnpm/action-setup` を Node 24 対応版へ更新する
+- [x] 受け入れ：更新後の CI が Node.js 20 対象の非推奨警告なしに動作することを確認する（main 上の CI 実行で全ジョブ success・annotations 0 件を確認済み）
 
 ### Phase 79：Edge と Chromium 系へのホスト登録（FR-88、仕様決定 DM）
 
-- [ ] Native Messaging のホスト登録をブラウザ別の置き場へ対応する（Windows は Edge と Chrome のレジストリ、Linux は各ブラウザの config 配下）
-- [ ] 登録先の解決を Rust テストで検証する
-- [ ] `docs/design.md`（§3.4.1 周辺）、`docs/user-guide.md`（Chrome 拡張節）を更新する
-- [ ] 受け入れ：Edge からの Native Messaging 経路で yt-browser が起動することを実機で確認する
+- [x] Native Messaging のホスト登録をブラウザ別の置き場へ対応する（Windows は Edge と Chrome のレジストリ、Linux は各ブラウザの config 配下）
+- [x] 登録先の解決を Rust テストで検証する
+- [x] `docs/design.md`（§3.4.1 周辺）、`docs/user-guide.md`（Chrome 拡張節）を更新する
+- [ ] 受け入れ：Edge からの Native Messaging 経路で yt-browser が起動することを実機で確認する（実機検証は未実施）
 
 FR-84（E2E テスト基盤、仕様決定 DI）は継続検証系の独立作業とし、Phase 80 相当として本節のフェーズには含めず別途実施する。
 
