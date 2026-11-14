@@ -50,6 +50,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§4.16） |
+| `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
@@ -175,6 +176,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタと `uid`（項目のユニーク ID、BG-10、仕様決定 BK）付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
 `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
 `video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
+`videos` 台帳の投稿日時・kind を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56、仕様決定 CD・CG、§4.18）。
 `history_list` のカーソルは末尾行の `(last_watched_at, rowid)` の対で、一覧の全順序（`last_watched_at` 降順、同時刻は rowid 降順）と同じ基準で「その行の次（より古い側）から」を取る（FR-52、仕様決定 CC。`history_prune` の保持対象とも同じ順序）。`next_cursor` の有無は `limit`+1 件の取得で確定し、末尾ちょうどのページでも空の次ページを要求しない。`query` はタイトルと `channel_title` への `%...%` 部分一致 LIKE で、`%`・`_`・`\` を退避して利用者入力のワイルドカードを無力化する（FR-61、仕様決定 CL。空・空白のみは絞り込みなし）。一覧取得のページングであり、保持上限 10000 件の剪定運用（仕様決定 AV）とは別物。
 
 履歴・お気に入り・プレイリスト項目の削除は「元に戻す」で取り消せる（FR-54、仕様決定 CE）。
@@ -200,7 +202,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
-| `feed://kind_updated` | `{ count }` | shorts 非同期判定で `videos.kind` が更新された（一覧の再読込を促す） |
+| `feed://kind_updated` | `{ count }` | shorts 非同期判定またはメタの遅延解決で `videos.kind` / `published_at` が更新された（一覧の再読込を促す。§4.18） |
 | `feed://status` | `{ channelId?, level, message }` | 取得失敗と復帰 |
 | `chat://message` | `Vec<ChatEvent>` | ポーリング応答 1 回分を 1 バッチとして送出 |
 | `chat://status` | `{ videoId?, level, message }` | ポーラーの劣化と停止（フィルタ再構築の失敗通知など `videoId` が null の全体通知もある） |
@@ -912,6 +914,51 @@ eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定
   限られるため、呼び出し側が成功後に `bookmark_list` で取り直す
   （暫定解釈。`livewait://changed` のようなバックエンド発の変更経路が無い）
 
+### 4.18 メタの遅延解決基盤（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH）
+
+`videos` 行のうち RSS・ローカル記録に欠けた投稿日時（`published_at`）と、
+RSS・バックフィルの推定に留まる種別（`kind`）を、常駐ワーカー（`metaresolve`
+モジュール、設計書 §2）が InnerTube `player` 応答で後から埋める。
+`player` の 1 応答から投稿日時・放送状態（`liveBroadcastDetails`・
+`videoDetails.isUpcoming`）・再生状態（`playabilityStatus`）・
+`isLiveContent` をまとめて取り、手動解決の `video_meta_resolve` と同じ
+経路を共用する（仕様決定 CD・CG）。
+
+- 対象選出: `kind_state` が 0（未確定）または 2（直近の試行が失敗）の行と、
+  `published_at` が NULL で `meta_checked=0`（InnerTube メタ応答を未試行）
+  の行を `first_seen_at` 降順で選ぶ。1 サイクルは最大 20 件、巡回間隔は
+  60 秒として処理量を上限化する（仕様決定 CD）。フィードの新規投入時には
+  `spawn_kind_detection` から `wake` で即時起こされる
+- 投稿日時: `playerMicroformatRenderer.publishDate`（無ければ `uploadDate`）を
+  UTC の ISO 表記へ正規化し、NULL の行だけに書き込む（FR-53、仕様決定 CD）。
+  応答を得た時点で `meta_checked=1` を立て、publishDate を持たない応答への
+  繰り返し問い合わせは抑止する（kind の再試行とは独立した記録）
+- kind 分類: `isLiveNow` 真は `live`（`isLiveContent` 偽は `premiere`）、
+  放送詳細あり・終了時刻なしまたは `isUpcoming` 真は `upcoming`、
+  終了時刻ありは `isLiveContent` 真なら `live`（ライブのアーカイブ）、
+  それ以外は `premiere` と分類する（FR-56、仕様決定 CG）。放送詳細を持たない
+  応答でも `isLiveContent` 真は `live`、`playabilityStatus` が
+  `LIVE_STREAM_OFFLINE` は `upcoming` と見なす暫定解釈を取る。
+  いずれにも当てはまらない応答は「放送系でない」と見なし、`kind='video'`
+  の行だけ従来の shorts 判定（`youtube.com/shorts/<id>` へのリダイレクト
+  非追跡 HEAD、仕様決定 V）を試して `short` または `video` に確定する
+- `kind='short'` の行は遅延解決側でも確定済み（`kind_state=1`）として扱い、
+  InnerTube の結果で kind を上書きしない（仕様決定 CG の既存経路の保持）
+- 試行失敗は `kind_state=2` として残し、未確定・失敗の行だけを定期再試行
+  する（FR-57、仕様決定 CH）。同一行の連続失敗が 1 起動内で 5 回を超えたら
+  その起動中は対象から外し、次回起動で再び対象に戻す（恒久に失敗する行が
+  選出順を占有しないための暫定解釈）
+- `kind` の値が変わった、または `published_at` を埋めた件数の合計が
+  1 件以上で `feed://kind_updated` を出し、一覧の再読込を促す
+- バックフィルのタブ由来など `video` 以外の推定 kind が付いた行へ
+  「放送系でない」応答が返ったときは、由来の kind を残したまま確定する
+  （放送予定が応答へ載る前の誤確定を避ける暫定解釈）
+- ライブラリ由来のプレースホルダ行（`ingested=0`）を RSS・バックフィル投入で
+  本文へ昇格するとき、`kind_state=1` の行は既に確定した kind を優先し、
+  投入側の暫定値では上書きしない（解決済みの判定を守る暫定解釈）
+- フィードの種別フィルタ `live` は放送系の傘として `live`・`upcoming`・
+  `premiere` をまとめて拾う（暫定解釈）
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1043,7 +1090,7 @@ CREATE TABLE channels (
   rss_last_modified TEXT,
   backfill_videos_pos INTEGER NOT NULL DEFAULT 0,   -- /videos タブの取得済み件数（FR-21）
   backfill_streams_pos INTEGER NOT NULL DEFAULT 0,  -- /streams タブの取得済み件数（FR-21）
-  backfill_shorts_pos INTEGER NOT NULL DEFAULT 0    -- /shorts タブの取得済み件数（FR-55、v18）
+  backfill_shorts_pos INTEGER NOT NULL DEFAULT 0    -- /shorts タブの取得済み件数（FR-55、v19）
 );
 
 CREATE TABLE blocked_channels (
@@ -1061,10 +1108,12 @@ CREATE TABLE videos (
   published_at TEXT,
   duration_sec INTEGER,
   kind TEXT NOT NULL DEFAULT 'video'
-    CHECK (kind IN ('video','short','live','upcoming')),
+    CHECK (kind IN ('video','short','live','upcoming','premiere')),
   is_read INTEGER NOT NULL DEFAULT 1,      -- フィード由来の新着のみ 0 で入る
+  first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
   ingested INTEGER NOT NULL DEFAULT 0,     -- 0=ライブラリ由来のプレースホルダ、1=フィード投入済み
-  first_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+  kind_state INTEGER NOT NULL DEFAULT 0,   -- kind の判定状態: 0=未確定, 1=確定, 2=直近の試行が失敗
+  meta_checked INTEGER NOT NULL DEFAULT 0  -- InnerTube メタ応答の試行済み印（投稿日時解決の重複抑止）
 );
 
 CREATE TABLE watch_history (
@@ -1169,7 +1218,9 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
   検索や関連の結果は揮発データとして DB に積まない。
   `ingested` は 0 がライブラリ由来のプレースホルダ（フィードには表示せず、初回の RSS 到達またはバックフィル投入で本文を補完する）、1 がフィード投入済みを表す。
   バックフィル投入（`feed_backfill`）は RSS とは別経路で、新規行を既読・投入済みで挿入し、プレースホルダは既読のまま `ingested=1` に確定する。投入済みの既存行は投稿日・既読を含めて書き換えない（FR-21、仕様決定 AN）。
-  `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。判定失敗は 'video' のまま残し、初版ではリトライしない。
+  `kind` の shorts は RSS が種別を持たないため、新規投入時に `youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD で非同期判定して書き戻す（仕様決定 V）。
+  判定の失敗・未確定はメタの遅延解決基盤が定期的に再試行し、投稿日時の欠落と放送系 kind（`live`/`upcoming`/`premiere`）も同じ経路で後から埋める（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH、§4.18）。
+  `kind_state` は kind の判定状態（0=未確定 / 1=確定 / 2=直近の試行が失敗）、`meta_checked` は投稿日時解決のための InnerTube メタ応答の試行済み印（§4.18）。
 - 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）
 - `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v17 で単一行制約を外した）
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
@@ -1242,6 +1293,7 @@ yt-browser/
       chat/           # get_live_chat ポーラー・正規化
       feed/           # RSS ポーラー
       livewait/       # ライブ配信待機のポーラー（§4.16）
+      metaresolve/    # メタの遅延解決ワーカー（§4.18）
       sponsor/        # SponsorBlock
       filter/         # NG エンジン
       db/             # rusqlite・マイグレーション
