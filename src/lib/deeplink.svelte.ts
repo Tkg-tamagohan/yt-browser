@@ -123,7 +123,8 @@ export function parseTimeParam(parsed: URL): number | null {
 }
 
 /// 対象を実行する。動画はその場で再生、プレイリストは取り込み、
-/// キューは一時キューの末尾へ追加する（再生は開始しない）
+/// キューは選択中キュー（未選択・消滅済みなら一時キュー）の末尾へ
+/// 追加する（再生は開始しない。FR-45、仕様決定 BV）
 async function dispatch(target: OpenTarget): Promise<void> {
   if (target.kind === "queue") {
     // 動画 ID しか判明しないため、台帳・履歴から表示メタを補完する

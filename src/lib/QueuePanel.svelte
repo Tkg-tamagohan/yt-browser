@@ -1,9 +1,11 @@
 <script lang="ts">
-  // キューパネル（FR-20・FR-26、仕様決定 AM・AS）。
+  // キューパネル（FR-20・FR-26・FR-46、仕様決定 AM・AS・BW）。
   // 上部のタブで表示対象キュー（一時キュー＋存在するプレイリストキュー）を
   // 切り替え、選択中キューの一覧・並べ替え（上下ボタンと DnD）・個別削除・
-  // 全消去・再生開始を提供する。停止中のプレイリストキューは「再生」で
-  // 保存位置から再開する。ナビ入口とキューを背負うカードから同じパネルを開く。
+  // 残りシャッフル・全消去・再生開始を提供する。停止中のプレイリストキューは
+  // 「再生」で保存位置から再開する。ナビ入口とキューを背負うカードから
+  // 同じパネルを開く。タブ選択は「キューに追加」の追加先指定でもある
+  // （FR-45、仕様決定 BV）
   // 項目メタ（タイトル・チャンネル）はセッション内メモリのみ
   import { goto } from "$app/navigation";
   import { t } from "$lib/i18n";
@@ -34,6 +36,7 @@
     queueMove,
     queuePlayStart,
     queueRemoveAt,
+    queueShuffleRest,
     queueStop,
     type QueueKey,
   } from "$lib/queue.svelte";
@@ -246,6 +249,15 @@
         {t("library.playlist.queueStop")}
       </button>
     {/if}
+    <!-- 残りをシャッフル（FR-46、仕様決定 BW）。現在位置より後の項目を
+         ランダムに並べ替える。残りが 2 項目未満なら意味を持たないので無効化 -->
+    <button
+      class="link"
+      disabled={sel === undefined || sel.items.length - sel.index - 1 < 2}
+      onclick={() => queueShuffleRest(selKey)}
+    >
+      {t("queue.shuffle")}
+    </button>
     <button
       class="link danger"
       disabled={(sel?.items.length ?? 0) === 0}

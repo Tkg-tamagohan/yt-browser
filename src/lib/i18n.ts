@@ -399,6 +399,7 @@ const ja = {
   "queue.panel.title": "キュー",
   "queue.play": "再生",
   "queue.clear": "全消去",
+  "queue.shuffle": "残りをシャッフル",
   "queue.empty": "キューは空です",
   "queue.startFailed": "キューの再生開始に失敗: {message}",
   "queue.persistFailed": "キューの保存に失敗しました: {message}",
