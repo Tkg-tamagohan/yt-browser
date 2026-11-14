@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { AbEntry } from "./ab-logic";
 
 export type PlayStatus = "idle" | "playing" | "paused" | "buffering" | "ended";
 
@@ -212,7 +213,11 @@ export type PlayerAction =
   | { type: "frame_back_step" }
   | { type: "pip"; enabled: boolean }
   // 音声出力先の切替（FR-32、仕様決定 BA）。値は audio_device_list の name
-  | { type: "audio_device"; device: string };
+  | { type: "audio_device"; device: string }
+  // A-B リピートの 3 状態巡回に対応する mpv 操作（FR-37、仕様決定 BM）
+  | { type: "ab_loop_set_a" }
+  | { type: "ab_loop_set_b" }
+  | { type: "ab_loop_clear" };
 
 export const playerStates = $state<{
   list: Map<number, PlayerState>;
@@ -227,6 +232,24 @@ export const sponsorSegments = $state<{
 /// シークバーへの SponsorBlock 区間帯の表示（`sponsor.show_segments`、FR-36）。
 /// 既定・読み取り失敗は on。
 export const sponsorShowSegments = $state({ enabled: true });
+
+/// インスタンス別の A-B リピート状態（FR-37、仕様決定 BM）。セッション内のみ
+/// 有効で DB には保存しない。エントリは動画 ID に束ね、再生中動画と一致し
+/// ないものは表示側が off として扱う（ab-logic.ts の abStateFor）。
+/// mpv 側のループ解除は loadfile 経路（load_video）とプロセス差し替えが担う。
+export const abLoops = $state<{ list: Map<number, AbEntry> }>({
+  list: new Map(),
+});
+
+/// インスタンス終了・mpv 再起動・動画切替での A-B ループ状態の片付け。
+/// ended では継続の有無に関わらず呼ぶ（連続再生・同一動画の読み替えでも
+/// mpv 側は load_video でループを解除するため、残すと次動画へ誤表示が乗る）。
+export function dropAbLoop(instanceId: number): void {
+  if (!abLoops.list.has(instanceId)) return;
+  const next = new Map(abLoops.list);
+  next.delete(instanceId);
+  abLoops.list = next;
+}
 
 /// instanceId の区間エントリを外す（終了・クローズ・動画遷移時の片付け）。
 function dropSponsorSegments(instanceId: number): void {
@@ -280,6 +303,8 @@ export function initPlayerEvents(): Promise<void> {
         // 継続・非継続を問わずこの動画の区間表示は終わる。継続先の区間は
         // 次動画分の sponsor://segments で届くまで無しとする
         dropSponsorSegments(ev.payload.instanceId);
+        // A-B ループも動画の切替で mpv 側が解除するため表示状態を畳む
+        dropAbLoop(ev.payload.instanceId);
         // 連続再生で次項目へ進んだインスタンスは稼働中のまま残す
         // （FR-10、仕様決定 S。カードが消えずに新しい状態へ移行する）
         // continuedVideoId は実際に読み込みが始まった項目なので、
@@ -313,6 +338,7 @@ export function initPlayerEvents(): Promise<void> {
         playerStates.list = next;
         formatOverrides.delete(ev.payload.instanceId);
         dropSponsorSegments(ev.payload.instanceId);
+        dropAbLoop(ev.payload.instanceId);
       });
       // sponsor.show_segments（FR-36、仕様決定 BI）。画面外の変更は
       // settings://changed で追従する。未設定・その他の値は on

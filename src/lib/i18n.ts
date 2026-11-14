@@ -80,6 +80,20 @@ const ja = {
   "player.loop.hint":
     "ループ再生の切り替え。押すたび なし → 全体 → 1 項目 の順に変わります",
 
+  // Phase 51: A-B リピート（FR-37、仕様決定 BM）
+  "player.ab.off": "A-B: なし",
+  "player.ab.a": "A-B: A 点",
+  "player.ab.loop": "A-B: ループ中",
+  "player.ab.hint":
+    "A-B リピート。押すたび A 点設定 → B 点設定（ループ開始）→ 解除の順に変わります",
+
+  // Phase 51: スクリーンショット（FR-38、仕様決定 BN）
+  "player.screenshot": "スクリーンショット",
+  "player.screenshot.hint": "再生中のフレームを字幕込みの PNG で保存します",
+  "player.screenshot.saved": "スクリーンショットを保存しました: {path}",
+  "player.screenshot.failed": "スクリーンショットの保存に失敗: {message}",
+  "player.screenshot.openFolder": "フォルダを開く",
+
   "ytdlp.checking": "yt-dlp を確認中…",
   "ytdlp.ok": "yt-dlp {version}（{path}）",
   "ytdlp.missing":

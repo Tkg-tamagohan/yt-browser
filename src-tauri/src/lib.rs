@@ -187,6 +187,7 @@ pub fn run() {
             commands::audio_device_list,
             commands::player_set_queue,
             commands::player_switch,
+            commands::player_screenshot,
             commands::history_get,
             commands::history_list,
             commands::history_remove,
