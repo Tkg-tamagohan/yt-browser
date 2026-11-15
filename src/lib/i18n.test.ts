@@ -28,6 +28,21 @@ describe("LN-01 en リソースの網羅", () => {
       expect(resolved.trim(), `${key} の en 文言`).not.toBe("");
     }
   });
+
+  test("ja と en で埋め込みプレースホルダー名が一致する", () => {
+    const extractPlaceholders = (msg: string): string[] => {
+      const names = new Set<string>();
+      for (const m of msg.matchAll(/\{(\w+)\}/g)) {
+        names.add(m[1]);
+      }
+      return Array.from(names).sort();
+    };
+    for (const key of messageKeys()) {
+      const jaPh = extractPlaceholders(resolveMessage("ja", key));
+      const enPh = extractPlaceholders(resolveMessage("en", key));
+      expect(enPh, `${key} のプレースホルダーが ja と一致しない`).toEqual(jaPh);
+    }
+  });
 });
 
 describe("LN-02 resolveMessage の解決", () => {

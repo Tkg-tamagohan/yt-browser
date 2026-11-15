@@ -83,13 +83,7 @@ pub(crate) fn feed_auto_read_days(value: Option<String>) -> i64 {
 /// on/off 系設定値の共有解釈。`on` / `true` / `1` / `yes`
 /// （大小文字・前後空白を許容）だけが true で、それ以外と未設定は false。
 fn on_off_enabled(value: Option<String>) -> bool {
-    match value {
-        Some(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "on" | "true" | "1" | "yes"
-        ),
-        None => false,
-    }
+    crate::util::setting_on_enabled(value)
 }
 
 #[derive(Debug, Error)]

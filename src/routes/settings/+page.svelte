@@ -27,8 +27,8 @@
     asErrorMessage,
     formatOverrides,
     initPlayerEvents,
+    isUiErrorCode,
     playerStates,
-    type UiError,
   } from "$lib/players.svelte";
   import {
     CUSTOM,
@@ -601,8 +601,7 @@
           // - mpv_no_instance … エントリが既に消えている
           // - 共有マップに無い … player://ended が届いて終了を反映済み
           // それ以外の IPC エラーは稼働中インスタンスへの適用失敗として記録する
-          const code = (e as UiError)?.code;
-          if (code !== "mpv_no_instance" && playerStates.list.has(id)) {
+          if (!isUiErrorCode(e, "mpv_no_instance") && playerStates.list.has(id)) {
             failed.push(id);
           }
         }

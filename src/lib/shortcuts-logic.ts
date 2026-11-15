@@ -9,6 +9,8 @@
 //   - 有効化設定 ui.shortcuts の既定は off
 //   - キューパネル内の項目編集（並べ替え・削除など）は対象外
 
+import { onOffEnabled } from "./feed-settings";
+
 /// ショートカットが引き起こす操作の識別子。
 /// 名前は DOM やページ実装から独立させ、配線側で行の実ボタンへ写像する
 export type ShortcutAction =
@@ -35,9 +37,7 @@ export const DEFAULT_KEYMAP: Readonly<Record<string, ShortcutAction>> = {
 /// "on" 系の文字列だけを true とみなす。値の読み方は feed-settings.ts
 /// のオプトイン形式と同じに揃える
 export function shortcutsEnabled(raw: string | null | undefined): boolean {
-  if (raw === null || raw === undefined) return false;
-  const v = raw.trim().toLowerCase();
-  return v === "on" || v === "true" || v === "1" || v === "yes";
+  return onOffEnabled(raw);
 }
 
 /// キーイベントを操作へ解決する。Ctrl/Alt/Meta を伴う打鍵は

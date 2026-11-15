@@ -4,15 +4,15 @@
 // `popup_show_author_enabled` / `popup_font_size` / `popup_opacity`）にあり、
 // ここにあるのは UI 側の同一解釈（pip.ts と mpv/mod.rs の関係と同じ型）。
 
+import { onOffEnabled } from "./feed-settings";
+
 /// `chat.popup_show_author` の保存値を表示用の boolean に解釈する
 /// （FR-68、仕様決定 CS）。on 系（on/true/1/yes、大小文字・前後空白を
 /// 許容）のみ投稿者名を表示し、未設定・その他は従来どおり非表示。
 /// 受理集合は `player.close_on_eof`・`feed.show_shorts` と同一で、
 /// Rust 側 `popup_show_author_enabled`（src-tauri/src/chat/popup.rs）と同じ。
 export function popupShowAuthorEnabled(raw: string | null): boolean {
-  return (
-    raw !== null && ["on", "true", "1", "yes"].includes(raw.trim().toLowerCase())
-  );
+  return onOffEnabled(raw);
 }
 
 // Rust の f64::from_str が受理する形式だけを通す数値パース。

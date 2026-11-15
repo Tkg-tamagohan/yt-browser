@@ -6,6 +6,8 @@
 // 値は使われるたびに Rust 側でも再検証される（geometry の不正値は既定値へ
 // フォールバック）。
 
+import { offDisabledEnabled } from "./feed-settings";
+
 /// 設定が無い・不正なときの既定値（Rust 側の既定と同じ値）。右下寄せの 480x270。
 export const PIP_GEOMETRY_DEFAULT = "480x270-40-40";
 
@@ -22,9 +24,7 @@ export function isValidPipGeometry(s: string): boolean {
 /// 未設定・その他は PiP 既定。Rust 側 `pip_default_enabled`
 /// （src-tauri/src/mpv/mod.rs）と同じ受理集合。
 export function pipDefaultEnabled(raw: string | null): boolean {
-  return (
-    raw === null || !["off", "false", "0", "no"].includes(raw.trim().toLowerCase())
-  );
+  return offDisabledEnabled(raw);
 }
 
 /// `pip.fit_aspect` の保存値を表示用の boolean に解釈する（仕様決定 AL）。
