@@ -279,24 +279,39 @@ async function handleItem(item: OpenUrlItem): Promise<void> {
 /// （先に drain すると Rust 側の ready が立ち、リスナー不在のまま
 /// emit だけになった URL が失われる）
 export function initDeepLinks(): () => void {
+  let disposed = false;
   let unlisten: (() => void) | undefined;
   void (async () => {
     try {
       // イベント名はリテラルで書く（docs 整合チェックが emit/listen の
       // イベント名引数を設計書 §3.2 と照合するため定数化しない）
-      unlisten = await listen<OpenUrlItem>("app://open_url", (ev) => {
+      const u = await listen<OpenUrlItem>("app://open_url", (ev) => {
         void handleItem(ev.payload);
       });
+      if (disposed) {
+        u();
+        return;
+      }
+      unlisten = u;
     } catch (e) {
+      if (disposed) return;
       // リスナー登録に失敗しても保留分だけは回収を試みる
       notify(t("deeplink.playFailed", { message: asErrorMessage(e) }));
     }
+    if (disposed) return;
     try {
       const items = await invoke<OpenUrlItem[]>("take_open_urls");
+      if (disposed) return;
       for (const item of items) void handleItem(item);
     } catch (e) {
-      notify(t("deeplink.playFailed", { message: asErrorMessage(e) }));
+      if (!disposed) {
+        notify(t("deeplink.playFailed", { message: asErrorMessage(e) }));
+      }
     }
   })();
-  return () => unlisten?.();
+  return () => {
+    disposed = true;
+    unlisten?.();
+    unlisten = undefined;
+  };
 }

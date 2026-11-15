@@ -329,7 +329,10 @@ impl LiveWaitPoller {
             None
         };
         let ytdl_format = crate::yt::resolve_launch_format(None, pip, pip_format, global);
-        let players = self.app.state::<crate::mpv::PlayerManager>();
+        let players = self
+            .app
+            .try_state::<crate::mpv::PlayerManager>()
+            .ok_or(crate::mpv::MpvError::NoSuchInstance(0))?;
         players
             .play(&wait.video_id, 0.0, ytdl_format, pip)
             .await

@@ -37,19 +37,24 @@
 
   // 画面外からのプレイリスト変更通知（library://playlists_changed、
   // 設計書 §3.2）の購読解除関数。マウント中だけ listen する
+  let disposed = false;
   let unlistens: UnlistenFn[] = [];
 
   onMount(async () => {
     // 購読の失敗で初回ロードまで止めないよう、独立して試す
     try {
-      unlistens.push(
-        await listen<Playlist>("library://playlists_changed", (ev) => {
-          void lib.onPlaylistsChanged(ev.payload);
-        }),
-      );
+      const u = await listen<Playlist>("library://playlists_changed", (ev) => {
+        if (!disposed) void lib.onPlaylistsChanged(ev.payload);
+      });
+      if (disposed) {
+        u();
+      } else {
+        unlistens.push(u);
+      }
     } catch (e) {
-      notify(t("library.failed", { message: asErrorMessage(e) }));
+      if (!disposed) notify(t("library.failed", { message: asErrorMessage(e) }));
     }
+    if (disposed) return;
     try {
       await Promise.all([
         lib.loadHistory(),
@@ -57,12 +62,14 @@
         lib.loadWatchLater(),
       ]);
     } catch (e) {
-      notify(t("library.failed", { message: asErrorMessage(e) }));
+      if (!disposed) notify(t("library.failed", { message: asErrorMessage(e) }));
     }
   });
 
   onDestroy(() => {
+    disposed = true;
     unlistens.forEach((u) => u());
+    unlistens = [];
   });
 </script>
 

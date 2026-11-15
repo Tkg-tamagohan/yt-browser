@@ -7,7 +7,7 @@
 // 行アクションの待機中の印・待機タブの双方がこの共有状態を参照する。
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { t } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
 import { asErrorMessage, type VideoRef } from "$lib/players.svelte";
@@ -30,13 +30,15 @@ export function isWaiting(videoId: string): boolean {
 }
 
 /// 一覧の取り直し。`livewait://changed` を受けて呼ぶ。
-async function refresh(): Promise<void> {
+async function refresh(): Promise<boolean> {
   try {
     const list = await invoke<LiveWait[]>("live_wait_list");
     liveWaits.list = list.sort(liveWaitCompare);
+    return true;
   } catch (e) {
     // 取り直しに失敗しても直前の表示を維持する（空に潰さない）
     notify(t("livewait.listFailed", { message: asErrorMessage(e) }));
+    return false;
   }
 }
 
@@ -83,18 +85,34 @@ let initPromise: Promise<void> | null = null;
 /// 待機の登録・解除はコマンド経由のため競合しない
 export function initLiveWaits(): Promise<void> {
   if (!initPromise) {
-    initPromise = (async () => {
-      // 待機集合の変化は一覧を取り直して同期する
-      await listen<WaitChanged>("livewait://changed", () => {
-        void refresh();
-      });
-      // 開始検出（notify 動作・自動再生の成否）・終了・自動解除・
-      // 状態確認の劣化/復帰をトーストへ流す
-      await listen<WaitStatusEvent>("livewait://status", (ev) => {
-        notify(t("livewait.status", { message: ev.payload.message }));
-      });
-      await refresh();
+    const unlistens: UnlistenFn[] = [];
+    let pending: Promise<void> | undefined;
+    pending = (async () => {
+      try {
+        // 待機集合の変化は一覧を取り直して同期する
+        unlistens.push(
+          await listen<WaitChanged>("livewait://changed", () => {
+            void refresh();
+          }),
+        );
+        // 開始検出（notify 動作・自動再生の成否）・終了・自動解除・
+        // 状態確認の劣化/復帰をトーストへ流す
+        unlistens.push(
+          await listen<WaitStatusEvent>("livewait://status", (ev) => {
+            notify(t("livewait.status", { message: ev.payload.message }));
+          }),
+        );
+        if (!(await refresh())) {
+          for (const u of unlistens) u();
+          if (initPromise === pending) initPromise = null;
+        }
+      } catch (err) {
+        for (const u of unlistens) u();
+        if (initPromise === pending) initPromise = null;
+        throw err;
+      }
     })();
+    initPromise = pending;
   }
   return initPromise;
 }

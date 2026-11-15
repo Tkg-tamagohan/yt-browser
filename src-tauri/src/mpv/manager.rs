@@ -434,11 +434,20 @@ impl PlayerManager {
     /// アプリ終了時のクリーンアップ。全インスタンスを止める。
     pub async fn close_all(&self) {
         let entries: Vec<PlayerEntry> = lock(&self.players).drain().map(|(_, e)| e).collect();
+        let mut closing = tokio::task::JoinSet::new();
         for PlayerEntry { player, emitter } in entries {
-            emitter.abort();
-            player.abort_pump().await;
-            self.persist_history(&player, player.terminal_completed());
-            player.shutdown().await;
+            let db = self.db.clone();
+            closing.spawn(async move {
+                emitter.abort();
+                player.abort_pump().await;
+                persist_now(&db, &player, player.terminal_completed());
+                player.shutdown().await;
+            });
+        }
+        while let Some(res) = closing.join_next().await {
+            if let Err(e) = res {
+                tracing::warn!(error = %e, "プレイヤー終了タスクが失敗");
+            }
         }
     }
 

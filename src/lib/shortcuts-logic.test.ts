@@ -7,11 +7,13 @@
 // KS-04: 入力要素（input/textarea/select/contenteditable）のガード
 // KS-05: 一覧選択の遷移（未選択からの出入り・端でのクランプ・空一覧）
 // KS-06: ボタン・リンク上の Enter は要素の既定起動を優先する
+// KS-07: 非表示タブ・非表示要素配下の行は選択対象から除外する
 import { describe, expect, test } from "vitest";
 import {
   DEFAULT_KEYMAP,
   isActivateTarget,
   isEditableTarget,
+  isVisibleRow,
   moveIndex,
   resolveShortcut,
   shortcutsEnabled,
@@ -121,5 +123,37 @@ describe("KS-06 Enter 既定起動の保護", () => {
     expect(isActivateTarget({ tagName: "DIV" })).toBe(false);
     expect(isActivateTarget({ tagName: "SPAN" })).toBe(false);
     expect(isActivateTarget(null)).toBe(false);
+  });
+});
+
+describe("KS-07 非表示行の除外", () => {
+  test("可視な要素は対象になる", () => {
+    const visible = {
+      closest: () => null,
+      getClientRects: () => ({ length: 1 }),
+    };
+    expect(isVisibleRow(visible)).toBe(true);
+  });
+
+  test(".hidden または [hidden] 配下の要素は除外する", () => {
+    const inHiddenTab = {
+      closest: (sel: string) => (sel.includes(".hidden") ? {} : null),
+      getClientRects: () => ({ length: 1 }),
+    };
+    expect(isVisibleRow(inHiddenTab)).toBe(false);
+  });
+
+  test("レイアウトボックスを持たない（getClientRects 空）要素は除外する", () => {
+    const collapsed = {
+      closest: () => null,
+      getClientRects: () => ({ length: 0 }),
+    };
+    expect(isVisibleRow(collapsed)).toBe(false);
+  });
+
+  test("null や非オブジェクトは除外する", () => {
+    expect(isVisibleRow(null)).toBe(false);
+    expect(isVisibleRow(undefined)).toBe(false);
+    expect(isVisibleRow("li")).toBe(false);
   });
 });

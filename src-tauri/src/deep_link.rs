@@ -26,6 +26,8 @@ use std::sync::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::util::lock;
+
 /// フロントへ届ける 1 配送。`seq` はプロセス内で単調増加する配送識別子で、
 /// 初期ドレインとイベントで同じ配送が二度届いたときの重複除去に使う。
 #[derive(Clone, Serialize)]
@@ -64,7 +66,7 @@ impl PendingOpenUrls {
     /// 以後の URL はバッファへ積まず emit だけで届ける。
     /// ロック内で ready 切替と drain を一括で行う。
     pub fn drain(&self) -> Vec<OpenUrlItem> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = lock(&self.inner);
         inner.ready = true;
         std::mem::take(&mut inner.items)
     }
@@ -83,18 +85,16 @@ pub fn handle_open_url(app: &AppHandle, url: &str) {
     if !is_app_url(url) {
         return;
     }
+    let Some(pending) = app.try_state::<PendingOpenUrls>() else {
+        tracing::warn!("PendingOpenUrls 未管理のため deep link を無視: {url}");
+        return;
+    };
     let item = OpenUrlItem {
-        // PendingOpenUrls は setup 内で manage 済み（single-instance の
-        // コールバックが呼ばれるのも setup 完了後）なので state() で取る
-        seq: app
-            .state::<PendingOpenUrls>()
-            .next_seq
-            .fetch_add(1, Ordering::Relaxed),
+        seq: pending.next_seq.fetch_add(1, Ordering::Relaxed),
         url: url.to_string(),
     };
-    let pending = app.state::<PendingOpenUrls>();
     {
-        let mut inner = pending.inner.lock().unwrap();
+        let mut inner = lock(&pending.inner);
         if !inner.ready {
             inner.items.push(item.clone());
         }
@@ -106,5 +106,49 @@ pub fn handle_open_url(app: &AppHandle, url: &str) {
 pub fn handle_argv(app: &AppHandle, argv: &[String]) {
     for arg in argv {
         handle_open_url(app, arg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn drain_marks_ready_and_empties_buffer() {
+        let pending = PendingOpenUrls::new();
+        {
+            let mut inner = lock(&pending.inner);
+            inner.items.push(OpenUrlItem {
+                seq: 1,
+                url: "yt-browser://open?url=a".to_string(),
+            });
+        }
+        let first = pending.drain();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].seq, 1);
+        assert!(lock(&pending.inner).ready);
+        assert!(pending.drain().is_empty());
+    }
+
+    #[test]
+    fn drain_recovers_from_poisoned_mutex() {
+        let pending = Arc::new(PendingOpenUrls::new());
+        {
+            let mut inner = lock(&pending.inner);
+            inner.items.push(OpenUrlItem {
+                seq: 7,
+                url: "yt-browser://open?url=b".to_string(),
+            });
+        }
+        let cloned = Arc::clone(&pending);
+        let _ = std::thread::spawn(move || {
+            let _guard = cloned.inner.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        let items = pending.drain();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].seq, 7);
     }
 }

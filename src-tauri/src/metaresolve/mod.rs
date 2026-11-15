@@ -231,8 +231,7 @@ impl MetaResolver {
             None
         };
 
-        if t.needs_kind {
-            let s = snap.as_ref().expect("needs_kind ならメタ応答は取得済み");
+        if let (true, Some(s)) = (t.needs_kind, snap.as_ref()) {
             match classify_kind(s) {
                 Some(kind) => {
                     // 'short' は既存の値を守り、それ以外は確定値へ置き換える

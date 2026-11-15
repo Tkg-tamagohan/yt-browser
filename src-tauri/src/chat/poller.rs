@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::filter::NgMatcher;
 use crate::innertube::InnerTube;
 use crate::model::{ChatEvent, ChatKind, ChatReset, ChatStatus};
+use crate::util::lock;
 
 use super::normalize::{commit_pending, normalize_all};
 
@@ -71,9 +72,7 @@ impl ChatPoller {
     /// 既に同じ動画のセッションがある場合はそちらの同期先が維持される
     /// （セッションは動画 ID ごとに 1 本。仕様決定 AQ の制約として明記）
     pub fn acquire(self: &Arc<Self>, video_id: &str, consumer: &str, instance_id: Option<u32>) {
-        self.consumers
-            .lock()
-            .unwrap()
+        lock(&self.consumers)
             .entry(video_id.to_string())
             .or_default()
             .insert(consumer.to_string());
@@ -85,7 +84,7 @@ impl ChatPoller {
         // consumers ロックを保持したまま止める。こうすると、解除と並行した
         // acquire が consumers ロック待ちになり、新しい利用者を登録した直後に
         // その新セッションがここの abort に巻き込まれる競合を避けられる
-        let mut consumers = self.consumers.lock().unwrap();
+        let mut consumers = lock(&self.consumers);
         let empty = if let Some(set) = consumers.get_mut(video_id) {
             set.remove(consumer);
             if set.is_empty() {
@@ -98,7 +97,7 @@ impl ChatPoller {
             false
         };
         if empty {
-            if let Some(h) = self.sessions.lock().unwrap().remove(video_id) {
+            if let Some(h) = lock(&self.sessions).remove(video_id) {
                 h.abort();
             }
         }
@@ -111,10 +110,10 @@ impl ChatPoller {
     fn start(self: &Arc<Self>, video_id: &str, instance_id: Option<u32>) {
         // 利用者登録なしでは動かさない。acquire と stop の競合で
         // 利用者なしのセッションが残らないようにするためのガード
-        if !self.consumers.lock().unwrap().contains_key(video_id) {
+        if !lock(&self.consumers).contains_key(video_id) {
             return;
         }
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = lock(&self.sessions);
         if sessions.contains_key(video_id) {
             return;
         }
@@ -129,14 +128,8 @@ impl ChatPoller {
 
     /// 全セッションを止めて利用者登録も消す（アプリ終了時）。
     pub fn stop_all(&self) {
-        let handles: Vec<_> = self
-            .sessions
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, h)| h)
-            .collect();
-        self.consumers.lock().unwrap().clear();
+        let handles: Vec<_> = lock(&self.sessions).drain().map(|(_, h)| h).collect();
+        lock(&self.consumers).clear();
         for h in handles {
             h.abort();
         }
@@ -166,7 +159,7 @@ impl ChatPoller {
                     "error",
                     &format!("watch ページの取得に失敗: {e}"),
                 );
-                self.sessions.lock().unwrap().remove(video_id);
+                lock(&self.sessions).remove(video_id);
                 return;
             }
         };
@@ -193,7 +186,7 @@ impl ChatPoller {
                 );
             }
         }
-        self.sessions.lock().unwrap().remove(video_id);
+        lock(&self.sessions).remove(video_id);
     }
 
     /// リプレイ同期用の再生位置（ms）。パネル起票のインスタンスが指定

@@ -2,7 +2,7 @@
 // 複数ページ（再生・設定）で同じマップを参照するため、イベント購読は一度だけ初期化する。
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AbEntry } from "./ab-logic";
 
 export type PlayStatus = "idle" | "playing" | "paused" | "buffering" | "ended";
@@ -395,106 +395,125 @@ let initPromise: Promise<void> | null = null;
 /// ページをまたいで利用するため、最初の onMount で一度だけ登録する。
 export function initPlayerEvents(): Promise<void> {
   if (!initPromise) {
-    initPromise = (async () => {
-      // player_list の応答を待つ間に届いたイベントの instanceId を記録する。
-      // スナップショットは取得時点の値なので、飛行中に更新・終了が起きた
-      // インスタンスはイベント側を優先し、古い値で上書きしない。
-      const inFlight = new Set<number>();
-      await listen<PlayerState>("player://state", (ev) => {
-        inFlight.add(ev.payload.instanceId);
-        const next = new Map(playerStates.list);
-        next.set(ev.payload.instanceId, ev.payload);
-        playerStates.list = next;
-      });
-      // SponsorBlock 区間の表示用データ（FR-36、仕様決定 BI）。
-      // 前動画の区間が残らないよう ended/closed で削除し、
-      // 区間なし・取得失敗は空列で届く
-      await listen<SponsorSegmentsPayload>("sponsor://segments", (ev) => {
-        const next = new Map(sponsorSegments.list);
-        next.set(ev.payload.instanceId, {
-          videoId: ev.payload.videoId,
-          segments: ev.payload.segments,
-        });
-        sponsorSegments.list = next;
-      });
-      await listen<PlayerEnded>("player://ended", (ev) => {
-        inFlight.add(ev.payload.instanceId);
-        // close_on_eof=off の eof 終端ではインスタンスと動画が残るため
-        // カード・区間・AB ループ・画質上書きをいずれも畳まない
-        // （FR-43、仕様決定 BS）
-        if (!ev.payload.continued && ev.payload.closed === false) {
-          return;
-        }
-        // 継続・畳まれた非継続を問わずこの動画の区間表示は終わる。
-        // 継続先の区間は次動画分の sponsor://segments で届くまで無しとする
-        dropSponsorSegments(ev.payload.instanceId);
-        // A-B ループも動画の切替で mpv 側が解除するため表示状態を畳む
-        dropAbLoop(ev.payload.instanceId);
-        // 連続再生で次項目へ進んだインスタンスは稼働中のまま残す
-        // （FR-10、仕様決定 S。カードが消えずに新しい状態へ移行する）
-        // continuedVideoId は実際に読み込みが始まった項目なので、
-        // 定期の状態イベントを待たずに再生中項目だけはここで同期する
-        // （遷移直後の操作が古い項目を拾わないように）
-        if (ev.payload.continued) {
-          const cur = playerStates.list.get(ev.payload.instanceId);
-          if (cur && ev.payload.continuedVideoId) {
-            const next = new Map(playerStates.list);
-            next.set(ev.payload.instanceId, {
-              ...cur,
-              videoId: ev.payload.continuedVideoId,
-            });
-            playerStates.list = next;
-          }
-          return;
-        }
-        const next = new Map(playerStates.list);
-        next.delete(ev.payload.instanceId);
-        playerStates.list = next;
-        formatOverrides.delete(ev.payload.instanceId);
-      });
-      // 手動 close は emitter が先に止まるため player://ended が来ない。
-      // 代わりにバックエンドが出す player://closed で管理表から外す
-      // （チャットポップアップ窓は自分で閉じる導線を持たないため、
-      // このイベントだけがインスタンス消滅の検知手段になる。FR-27）
-      await listen<{ instanceId: number }>("player://closed", (ev) => {
-        inFlight.add(ev.payload.instanceId);
-        const next = new Map(playerStates.list);
-        next.delete(ev.payload.instanceId);
-        playerStates.list = next;
-        formatOverrides.delete(ev.payload.instanceId);
-        dropSponsorSegments(ev.payload.instanceId);
-        dropAbLoop(ev.payload.instanceId);
-      });
-      // sponsor.show_segments（FR-36、仕様決定 BI）。画面外の変更は
-      // settings://changed で追従する。未設定・その他の値は on
-      let showSegChanged = false;
-      await listen<{ key: string; value: string }>(
-        "settings://changed",
-        (ev) => {
-          if (ev.payload.key !== "sponsor.show_segments") return;
-          showSegChanged = true;
-          sponsorShowSegments.enabled = ev.payload.value !== "off";
-        },
-      );
+    const unlistens: UnlistenFn[] = [];
+    let pending: Promise<void> | undefined;
+    pending = (async () => {
       try {
-        const raw = await invoke<string | null>("settings_get", {
-          key: "sponsor.show_segments",
-        });
-        if (!showSegChanged) {
-          sponsorShowSegments.enabled = raw !== "off";
+        // player_list の応答を待つ間に届いたイベントの instanceId を記録する。
+        // スナップショットは取得時点の値なので、飛行中に更新・終了が起きた
+        // インスタンスはイベント側を優先し、古い値で上書きしない。
+        const inFlight = new Set<number>();
+        unlistens.push(
+          await listen<PlayerState>("player://state", (ev) => {
+            inFlight.add(ev.payload.instanceId);
+            const next = new Map(playerStates.list);
+            next.set(ev.payload.instanceId, ev.payload);
+            playerStates.list = next;
+          }),
+        );
+        // SponsorBlock 区間の表示用データ（FR-36、仕様決定 BI）。
+        // 前動画の区間が残らないよう ended/closed で削除し、
+        // 区間なし・取得失敗は空列で届く
+        unlistens.push(
+          await listen<SponsorSegmentsPayload>("sponsor://segments", (ev) => {
+            const next = new Map(sponsorSegments.list);
+            next.set(ev.payload.instanceId, {
+              videoId: ev.payload.videoId,
+              segments: ev.payload.segments,
+            });
+            sponsorSegments.list = next;
+          }),
+        );
+        unlistens.push(
+          await listen<PlayerEnded>("player://ended", (ev) => {
+            inFlight.add(ev.payload.instanceId);
+            // close_on_eof=off の eof 終端ではインスタンスと動画が残るため
+            // カード・区間・AB ループ・画質上書きをいずれも畳まない
+            // （FR-43、仕様決定 BS）
+            if (!ev.payload.continued && ev.payload.closed === false) {
+              return;
+            }
+            // 継続・畳まれた非継続を問わずこの動画の区間表示は終わる。
+            // 継続先の区間は次動画分の sponsor://segments で届くまで無しとする
+            dropSponsorSegments(ev.payload.instanceId);
+            // A-B ループも動画の切替で mpv 側が解除するため表示状態を畳む
+            dropAbLoop(ev.payload.instanceId);
+            // 連続再生で次項目へ進んだインスタンスは稼働中のまま残す
+            // （FR-10、仕様決定 S。カードが消えずに新しい状態へ移行する）
+            // continuedVideoId は実際に読み込みが始まった項目なので、
+            // 定期の状態イベントを待たずに再生中項目だけはここで同期する
+            // （遷移直後の操作が古い項目を拾わないように）
+            if (ev.payload.continued) {
+              const cur = playerStates.list.get(ev.payload.instanceId);
+              if (cur && ev.payload.continuedVideoId) {
+                const next = new Map(playerStates.list);
+                next.set(ev.payload.instanceId, {
+                  ...cur,
+                  videoId: ev.payload.continuedVideoId,
+                });
+                playerStates.list = next;
+              }
+              return;
+            }
+            const next = new Map(playerStates.list);
+            next.delete(ev.payload.instanceId);
+            playerStates.list = next;
+            formatOverrides.delete(ev.payload.instanceId);
+          }),
+        );
+        // 手動 close は emitter が先に止まるため player://ended が来ない。
+        // 代わりにバックエンドが出す player://closed で管理表から外す
+        // （チャットポップアップ窓は自分で閉じる導線を持たないため、
+        // このイベントだけがインスタンス消滅の検知手段になる。FR-27）
+        unlistens.push(
+          await listen<{ instanceId: number }>("player://closed", (ev) => {
+            inFlight.add(ev.payload.instanceId);
+            const next = new Map(playerStates.list);
+            next.delete(ev.payload.instanceId);
+            playerStates.list = next;
+            formatOverrides.delete(ev.payload.instanceId);
+            dropSponsorSegments(ev.payload.instanceId);
+            dropAbLoop(ev.payload.instanceId);
+          }),
+        );
+        // sponsor.show_segments（FR-36、仕様決定 BI）。画面外の変更は
+        // settings://changed で追従する。未設定・その他の値は on
+        let showSegChanged = false;
+        unlistens.push(
+          await listen<{ key: string; value: string }>(
+            "settings://changed",
+            (ev) => {
+              if (ev.payload.key !== "sponsor.show_segments") return;
+              showSegChanged = true;
+              sponsorShowSegments.enabled = ev.payload.value !== "off";
+            },
+          ),
+        );
+        try {
+          const raw = await invoke<string | null>("settings_get", {
+            key: "sponsor.show_segments",
+          });
+          if (!showSegChanged) {
+            sponsorShowSegments.enabled = raw !== "off";
+          }
+        } catch {
+          // 読み取り失敗は既定 on のままにする
         }
-      } catch {
-        // 読み取り失敗は既定 on のままにする
+        // リロード後はイベントが来ない一時停止中インスタンスがあるため、
+        // 登録直後に一覧を取得してカードを復元する。
+        const snapshot = await invoke<PlayerState[]>("player_list");
+        const next = new Map(playerStates.list);
+        for (const s of snapshot) {
+          if (!inFlight.has(s.instanceId)) next.set(s.instanceId, s);
+        }
+        playerStates.list = next;
+      } catch (err) {
+        for (const u of unlistens) u();
+        if (initPromise === pending) initPromise = null;
+        throw err;
       }
-      // リロード後はイベントが来ない一時停止中インスタンスがあるため、
-      // 登録直後に一覧を取得してカードを復元する。
-      const snapshot = await invoke<PlayerState[]>("player_list");
-      const next = new Map(playerStates.list);
-      for (const s of snapshot) {
-        if (!inFlight.has(s.instanceId)) next.set(s.instanceId, s);
-      }
-      playerStates.list = next;
     })();
+    initPromise = pending;
   }
   return initPromise;
 }

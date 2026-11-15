@@ -26,7 +26,7 @@ pub(crate) async fn launch(
         return Err(e);
     }
 
-    let (ev_tx, ev_rx) = mpsc::channel(64);
+    let (ev_tx, ev_rx) = mpsc::channel(256);
     let ipc = match IpcClient::connect(socket_path, ev_tx).await {
         Ok(ipc) => ipc,
         Err(e) => {
@@ -160,6 +160,7 @@ pub(crate) async fn wait_for_socket(
 /// 起動途中で失敗した mpv を掃除する。kill で確実に回収し、ソケット残骸を消す。
 pub(crate) async fn cleanup_failed_spawn(child: &mut tokio::process::Child, socket_path: &Path) {
     let _ = child.kill().await;
+    let _ = child.wait().await;
     let _ = tokio::fs::remove_file(socket_path).await;
 }
 

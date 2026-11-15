@@ -709,6 +709,18 @@ FR-53・FR-56 の遅延解決基盤（Phase 62）の完成後に実施する。
 - [x] docs/design.md（§3.4 周辺）を更新する
 - [x] 受け入れ：単体テストと整合チェックがすべて通過することを確認する
 
+### Phase 82：監査対応の安定化とリーク解消（Step 1）
+
+- [x] `PlayerCards.svelte` の `control()` が `Promise<boolean>` を返すように改め、音声出力や字幕、画質変更失敗時に `<select>` 表示を元へ戻し、`formatOverrides` の誤登録を防ぐ
+- [x] `PlayerCards.svelte`、`chat/+page.svelte`、`deeplink.svelte.ts`、`shortcuts.svelte.ts`、`feed/+page.svelte`、`library/+page.svelte`、`+page.svelte`、`ui-prefs.ts` に破棄後の遅延解決ガードとタイマーおよびイベント購読解除を入れる
+- [x] `shortcuts.svelte.ts` の一覧選択から非表示要素配下の行を除外する（`shortcuts-logic.ts` へ `isVisibleRow` を切り出し、`KS-07` テストを追加する）
+- [x] `bookmark.svelte.ts`、`livewait.svelte.ts`、`chat.svelte.ts`、`players.svelte.ts`、`queue.svelte.ts` の初期化失敗時に途中登録済みの購読を解除して `initPromise` をリセットし、次回呼び出し時の再試行を可能にする（`init-retry.test.ts` を追加する）
+- [x] Rust 側の非テストコードから生の `.lock().unwrap()`、`.state()` 直参照、`snap.as_ref().expect()`、および `InnerTube::post_json` の `unreachable!()` を排し、`crate::util::lock` と `try_state` 等へ統一する
+- [x] `mpv/devices.rs` に 5 秒タイムアウトと `kill_on_drop`、`innertube/mod.rs` に HTTP タイムアウトと `ytcfg` 取得の直列化ガードを追加し、`deep_link.rs`、`innertube/tests.rs`、`devices.rs` に回帰テストを追加する
+- [x] `mpv/player.rs`、`spawn.rs`、`ipc.rs`、`manager.rs` で `shutdown` および `cleanup_failed_spawn` の子プロセス回収、`IpcClient` リーダー終了、並列 `close_all`、`event_pump` からの PiP 再適用および SponsorBlock スキップ切り出し、`Full` 溢れ警告とチャネル拡張を入れる
+- [x] 開発ビルドの Native Messaging 登録制御を `YB_DEV_NO_NM=1` 環境変数へ移し、`scripts/e2e_dev.py` の `lib.rs` 書き換えと `.e2e-backup` 退避を廃止する
+- [x] 受け入れ：単体テスト、ビルド、整合チェックがすべて通過することを確認する
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

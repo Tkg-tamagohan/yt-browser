@@ -20,7 +20,7 @@
 //! を正として複製しない）。起動時はどちらも停止状態として復元する。
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   playerStates,
   type PlayerEnded,
@@ -407,19 +407,26 @@ let initPromise: Promise<void> | null = null;
 /// 仕様決定 AX）
 export function initQueue(): Promise<void> {
   if (!initPromise) {
-    initPromise = (async () => {
+    let pending: Promise<void> | undefined;
+    pending = (async () => {
       try {
-        await restoreTempQueue();
-      } catch (e) {
-        notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
+        try {
+          await restoreTempQueue();
+        } catch (e) {
+          notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
+        }
+        try {
+          await restorePlaylistQueues();
+        } catch (e) {
+          notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
+        }
+        await initQueueEvents();
+      } catch (err) {
+        if (initPromise === pending) initPromise = null;
+        throw err;
       }
-      try {
-        await restorePlaylistQueues();
-      } catch (e) {
-        notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
-      }
-      await initQueueEvents();
     })();
+    initPromise = pending;
   }
   return initPromise;
 }
@@ -867,107 +874,120 @@ let eventsPromise: Promise<void> | null = null;
 /// （queueEndOutcome）。一時キューは理由に関わらず畳む
 export function initQueueEvents(): Promise<void> {
   if (!eventsPromise) {
-    eventsPromise = (async () => {
-      // フォールバック表示のキュー項目を、再生で届いた実タイトルで更新する
-      // （仕様決定 BD）。media-title の URL 形式値は未取得フォールバック
-      // として sanitize で弾く（copy-link-logic と同じ判定）
-      await listen<PlayerState>("player://state", (ev) => {
-        const title = sanitizeMediaTitle(ev.payload.mediaTitle);
-        if (title === "") return;
-        const cur = queueMeta.list.get(ev.payload.videoId);
-        if (
-          cur === undefined ||
-          !isFallbackTitle(cur.title, ev.payload.videoId)
-        ) {
-          return;
-        }
-        rememberMeta({
-          videoId: ev.payload.videoId,
-          title,
-          channelId: null,
-          channelTitle: null,
-          thumbnailUrl: null,
-        });
-      });
-      await listen<PlayerEnded>("player://ended", (ev) => {
-        const p = ev.payload;
-        // 観測世代を更新してから各分岐で使う
-        armedSeqs.set(p.instanceId, p.armedSeq);
-        const key = queueKeyOfInstance(p.instanceId);
-        const q = key !== undefined ? queues.list.get(key) : undefined;
-        if (!p.continued) {
-          // 終端（末尾・途中失敗・手動停止・プロセス消失）: 寿命ルールに
-          // 従ってキューを残すか畳むかを決め、ループ状態を外す。
-          // キューの消費完了判定はインスタンス存否と独立に適用する
-          // （close_on_eof=off の eof 終端で残されたインスタンスでも
-          // キュー消化の事実は変わらない。FR-43、仕様決定 BS）
-          if (q !== undefined && key !== undefined) {
+    const unlistens: UnlistenFn[] = [];
+    let pending: Promise<void> | undefined;
+    pending = (async () => {
+      try {
+        // フォールバック表示のキュー項目を、再生で届いた実タイトルで更新する
+        // （仕様決定 BD）。media-title の URL 形式値は未取得フォールバック
+        // として sanitize で弾く（copy-link-logic と同じ判定）
+        unlistens.push(
+          await listen<PlayerState>("player://state", (ev) => {
+            const title = sanitizeMediaTitle(ev.payload.mediaTitle);
+            if (title === "") return;
+            const cur = queueMeta.list.get(ev.payload.videoId);
             if (
-              queueEndOutcome(
-                q.playlistId,
-                p.reason,
-                q.items,
-                q.index,
-                p.videoId,
-              ) === "reset"
+              cur === undefined ||
+              !isFallbackTitle(cur.title, ev.payload.videoId)
             ) {
-              // 消費完了: インスタンスは既に無い。位置を先頭に戻して残す
-              q.instanceId = null;
-              q.index = 0;
-              q.playingCurrent = true;
-              // 残したキューの新しい位置も永続化へ反映する
-              // （reset が返るのはプレイリストキューのみ）
-              persistPlaylistQueue(q);
-            } else {
-              discardQueue(key);
+              return;
             }
-          }
-          // インスタンスが畳まれたときだけ紐付け状態を掃除する。
-          // close_on_eof=off で残ったインスタンスはループ切替や再武装が
-          // まだ使えるため、観測世代と保留意図を維持する
-          if (p.closed !== false) {
-            clearLoop(p.instanceId);
-            armedSeqs.delete(p.instanceId);
-            rearmPending.delete(p.instanceId);
-          }
-          return;
-        }
-        if (q !== undefined) {
-          // 実際に読み込みが始まった項目の uid で位置を照合する
-          // （BG-10、仕様決定 BK）
-          q.index = reconcileIndex(q.items, q.index, p.continuedUid);
-          // 読み込まれた項目が index 位置と一致すれば再生中扱いに戻す。
-          // 照合失敗（編集で消えた武装項目など）では現状を維持する:
-          // この時点で index の項目は消費済みかもしれず、一律 false に
-          // すると再武装で再生済みの項目を意図せず再登録してしまうため。
-          // 未再生扱いへの遷移は queueRemoveAt（削除経路）だけが行う
-          if (
-            p.continuedUid !== null &&
-            q.items[q.index]?.uid === p.continuedUid
-          ) {
-            q.playingCurrent = true;
-          }
-          if (key === null) persistTempQueue();
-          else persistPlaylistQueue(q);
-          // 意図の変更が世代ずれで backend に拒否されていたときだけ
-          // 最新世代で再適用する。通常の遷移では deque を置き換えない
-          // （古い置換が消費済み項目を復活させるのを防ぐ、仕様決定 AD）
-          if (rearmPending.has(p.instanceId)) void armQueue(q);
-          return;
-        }
-        // キュー外インスタンス。継続は backend の巡回が担うので、
-        // 未反映の意図があるときだけ再適用する（遷移中のキュー畳みや
-        // モード変更が世代ずれで省かれたケース。実際に読まれた項目で張り直す）
-        if (rearmPending.has(p.instanceId)) {
-          const vid = p.continuedVideoId ?? p.videoId;
-          void enqueueArm(p.instanceId, () =>
-            loopMode(p.instanceId) === "none"
-              ? { items: [], loop: false }
-              : { items: [newQueueEntry(vid)], loop: true },
-          ).catch(() => clearLoop(p.instanceId));
-        }
-      });
+            rememberMeta({
+              videoId: ev.payload.videoId,
+              title,
+              channelId: null,
+              channelTitle: null,
+              thumbnailUrl: null,
+            });
+          }),
+        );
+        unlistens.push(
+          await listen<PlayerEnded>("player://ended", (ev) => {
+            const p = ev.payload;
+            // 観測世代を更新してから各分岐で使う
+            armedSeqs.set(p.instanceId, p.armedSeq);
+            const key = queueKeyOfInstance(p.instanceId);
+            const q = key !== undefined ? queues.list.get(key) : undefined;
+            if (!p.continued) {
+              // 終端（末尾・途中失敗・手動停止・プロセス消失）: 寿命ルールに
+              // 従ってキューを残すか畳むかを決め、ループ状態を外す。
+              // キューの消費完了判定はインスタンス存否と独立に適用する
+              // （close_on_eof=off の eof 終端で残されたインスタンスでも
+              // キュー消化の事実は変わらない。FR-43、仕様決定 BS）
+              if (q !== undefined && key !== undefined) {
+                if (
+                  queueEndOutcome(
+                    q.playlistId,
+                    p.reason,
+                    q.items,
+                    q.index,
+                    p.videoId,
+                  ) === "reset"
+                ) {
+                  // 消費完了: インスタンスは既に無い。位置を先頭に戻して残す
+                  q.instanceId = null;
+                  q.index = 0;
+                  q.playingCurrent = true;
+                  // 残したキューの新しい位置も永続化へ反映する
+                  // （reset が返るのはプレイリストキューのみ）
+                  persistPlaylistQueue(q);
+                } else {
+                  discardQueue(key);
+                }
+              }
+              // インスタンスが畳まれたときだけ紐付け状態を掃除する。
+              // close_on_eof=off で残ったインスタンスはループ切替や再武装が
+              // まだ使えるため、観測世代と保留意図を維持する
+              if (p.closed !== false) {
+                clearLoop(p.instanceId);
+                armedSeqs.delete(p.instanceId);
+                rearmPending.delete(p.instanceId);
+              }
+              return;
+            }
+            if (q !== undefined) {
+              // 実際に読み込みが始まった項目の uid で位置を照合する
+              // （BG-10、仕様決定 BK）
+              q.index = reconcileIndex(q.items, q.index, p.continuedUid);
+              // 読み込まれた項目が index 位置と一致すれば再生中扱いに戻す。
+              // 照合失敗（編集で消えた武装項目など）では現状を維持する:
+              // この時点で index の項目は消費済みかもしれず、一律 false に
+              // すると再武装で再生済みの項目を意図せず再登録してしまうため。
+              // 未再生扱いへの遷移は queueRemoveAt（削除経路）だけが行う
+              if (
+                p.continuedUid !== null &&
+                q.items[q.index]?.uid === p.continuedUid
+              ) {
+                q.playingCurrent = true;
+              }
+              if (key === null) persistTempQueue();
+              else persistPlaylistQueue(q);
+              // 意図の変更が世代ずれで backend に拒否されていたときだけ
+              // 最新世代で再適用する。通常の遷移では deque を置き換えない
+              // （古い置換が消費済み項目を復活させるのを防ぐ、仕様決定 AD）
+              if (rearmPending.has(p.instanceId)) void armQueue(q);
+              return;
+            }
+            // キュー外インスタンス。継続は backend の巡回が担うので、
+            // 未反映の意図があるときだけ再適用する（遷移中のキュー畳みや
+            // モード変更が世代ずれで省かれたケース。実際に読まれた項目で張り直す）
+            if (rearmPending.has(p.instanceId)) {
+              const vid = p.continuedVideoId ?? p.videoId;
+              void enqueueArm(p.instanceId, () =>
+                loopMode(p.instanceId) === "none"
+                  ? { items: [], loop: false }
+                  : { items: [newQueueEntry(vid)], loop: true },
+              ).catch(() => clearLoop(p.instanceId));
+            }
+          }),
+        );
+      } catch (err) {
+        for (const u of unlistens) u();
+        if (eventsPromise === pending) eventsPromise = null;
+        throw err;
+      }
     })();
+    eventsPromise = pending;
   }
   return eventsPromise;
 }

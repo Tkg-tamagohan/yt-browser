@@ -4,12 +4,17 @@
 //! Phase 5 では関連動画取得（`next`）が、Phase 6 のチャットポーラーがこれを共用する。
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use reqwest::Client;
 use serde_json::{json, Value};
 use thiserror::Error;
 
 use crate::model::{SearchResult, VideoRef};
+use crate::util::lock;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// ytcfg の取得元。どの watch ページでも同じ値が入るため固定動画で取得する。
 const YTCFG_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
@@ -37,14 +42,73 @@ struct YtCfg {
 pub struct InnerTube {
     client: Client,
     cfg: Mutex<Option<YtCfg>>,
+    /// `ytcfg` 取得を直列化し、未キャッシュ時の並列呼び出しでの重複 GET を防ぐ。
+    cfg_fetch: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    ytcfg_url: String,
+    #[cfg(test)]
+    api_base: String,
 }
 
 impl InnerTube {
     pub fn new() -> Self {
+        let client = Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "InnerTube HTTP クライアントの生成に失敗");
+                Client::new()
+            });
         Self {
-            client: Client::new(),
+            client,
             cfg: Mutex::new(None),
+            cfg_fetch: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            ytcfg_url: YTCFG_URL.to_string(),
+            #[cfg(test)]
+            api_base: API_BASE.to_string(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_urls(
+        ytcfg_url: impl Into<String>,
+        api_base: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
+        let client = Client::builder()
+            .connect_timeout(timeout)
+            .timeout(timeout)
+            .build()
+            .expect("test client");
+        Self {
+            client,
+            cfg: Mutex::new(None),
+            cfg_fetch: tokio::sync::Mutex::new(()),
+            ytcfg_url: ytcfg_url.into(),
+            api_base: api_base.into(),
+        }
+    }
+
+    #[cfg(not(test))]
+    fn ytcfg_url(&self) -> &str {
+        YTCFG_URL
+    }
+
+    #[cfg(test)]
+    fn ytcfg_url(&self) -> &str {
+        &self.ytcfg_url
+    }
+
+    #[cfg(not(test))]
+    fn api_base(&self) -> &str {
+        API_BASE
+    }
+
+    #[cfg(test)]
+    fn api_base(&self) -> &str {
+        &self.api_base
     }
 
     /// watch ページ HTML の `ytcfg` からキー群を抽出する。
@@ -63,39 +127,50 @@ impl InnerTube {
 
     /// ytcfg を取得してキャッシュする。既にキャッシュ済みならそれを返す。
     async fn cfg(&self) -> Result<YtCfg, InnerTubeError> {
-        if let Some(c) = self.cfg.lock().unwrap().clone() {
+        if let Some(c) = lock(&self.cfg).clone() {
             return Ok(c);
         }
-        let html = self.client.get(YTCFG_URL).send().await?.text().await?;
+        let _guard = self.cfg_fetch.lock().await;
+        if let Some(c) = lock(&self.cfg).clone() {
+            return Ok(c);
+        }
+        let html = self
+            .client
+            .get(self.ytcfg_url())
+            .send()
+            .await?
+            .text()
+            .await?;
         let cfg = Self::extract_cfg(&html)?;
-        *self.cfg.lock().unwrap() = Some(cfg.clone());
+        *lock(&self.cfg) = Some(cfg.clone());
         Ok(cfg)
     }
 
     /// InnerTube エンドポイントへの POST。403/401 時は ytcfg を破棄して 1 回だけ再取得する。
     async fn post_json(&self, endpoint: &str, mut body: Value) -> Result<Value, InnerTubeError> {
-        for attempt in 0..2 {
+        let mut retried = false;
+        loop {
             let cfg = self.cfg().await?;
             body["context"]["client"]["clientName"] = json!("WEB");
             body["context"]["client"]["clientVersion"] = json!(cfg.client_version);
             body["context"]["client"]["visitorData"] = json!(cfg.visitor_data);
-            let url = format!("{API_BASE}/{endpoint}?key={}", cfg.api_key);
+            let url = format!("{}/{endpoint}?key={}", self.api_base(), cfg.api_key);
             let res = self.client.post(&url).json(&body).send().await?;
             if res.status().is_success() {
                 return Ok(res.json::<Value>().await?);
             }
             let status = res.status();
             // 認証系の失敗はキャッシュが腐った可能性があるので一度だけ再取得
-            if attempt == 0
+            if !retried
                 && (status == reqwest::StatusCode::FORBIDDEN
                     || status == reqwest::StatusCode::UNAUTHORIZED)
             {
-                *self.cfg.lock().unwrap() = None;
+                *lock(&self.cfg) = None;
+                retried = true;
                 continue;
             }
             return Err(InnerTubeError::Status(status));
         }
-        unreachable!()
     }
 
     /// `next` エンドポイントで関連動画を取得する（設計書 §6.1）。

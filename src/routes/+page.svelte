@@ -76,14 +76,17 @@
     }
   }
 
+  let disposed = false;
+
   async function refreshYtDlp(): Promise<void> {
     ytdlpChecking = true;
     try {
-      ytdlp = await invoke<YtDlpStatus>("ytdlp_status");
+      const status = await invoke<YtDlpStatus>("ytdlp_status");
+      if (!disposed) ytdlp = status;
     } catch {
-      ytdlp = null;
+      if (!disposed) ytdlp = null;
     }
-    ytdlpChecking = false;
+    if (!disposed) ytdlpChecking = false;
   }
 
   async function updateYtDlp(): Promise<void> {
@@ -109,7 +112,7 @@
     const unlistenPromise = listen<{ key: string; value: string }>(
       "settings://changed",
       (ev) => {
-        if (ev.payload.key !== "pip.default") return;
+        if (disposed || ev.payload.key !== "pip.default") return;
         pipChanged = true;
         pipDefault = pipDefaultEnabled(ev.payload.value);
       },
@@ -121,19 +124,22 @@
         key: "pip.default",
       });
       // 購読中に届いたイベントの値を正とし、初期読み取りの遅延解決で戻さない
-      if (!pipChanged) pipDefault = pipDefaultEnabled(raw);
+      if (!disposed && !pipChanged) pipDefault = pipDefaultEnabled(raw);
     } catch {
       // 読み取り失敗時は PiP 既定のままにする
     }
+    if (disposed) return;
     try {
-      dbStatus = await invoke<DbStatus>("db_status");
+      const status = await invoke<DbStatus>("db_status");
+      if (!disposed) dbStatus = status;
     } catch (e) {
-      dbError = asErrorMessage(e);
+      if (!disposed) dbError = asErrorMessage(e);
     }
-    await refreshYtDlp();
+    if (!disposed) await refreshYtDlp();
   });
 
   onDestroy(() => {
+    disposed = true;
     playbackHooks.delete(refreshResumeHint);
     unlistenSettings?.();
     unlistenSettings = undefined;

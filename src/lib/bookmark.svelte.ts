@@ -19,13 +19,15 @@ import {
 export const bookmarks = $state<{ list: VideoBookmark[] }>({ list: [] });
 
 /// 一覧の取り直し。各ミューテーションの成功後に呼ぶ。
-async function refresh(): Promise<void> {
+async function refresh(): Promise<boolean> {
   try {
     const list = await invoke<VideoBookmark[]>("bookmark_list");
     bookmarks.list = list.sort(bookmarkCompare);
+    return true;
   } catch (e) {
     // 取り直しに失敗しても直前の表示を維持する（空に潰さない）
     notify(t("bookmark.listFailed", { message: asErrorMessage(e) }));
+    return false;
   }
 }
 
@@ -99,7 +101,19 @@ let initPromise: Promise<void> | null = null;
 /// 初期一覧の取得。レイアウト（非ポップアップ窓）で一度だけ呼ぶ
 export function initBookmarks(): Promise<void> {
   if (!initPromise) {
-    initPromise = refresh();
+    let pending: Promise<void> | undefined;
+    pending = (async () => {
+      try {
+        const ok = await refresh();
+        if (!ok && initPromise === pending) {
+          initPromise = null;
+        }
+      } catch (err) {
+        if (initPromise === pending) initPromise = null;
+        throw err;
+      }
+    })();
+    initPromise = pending;
   }
   return initPromise;
 }

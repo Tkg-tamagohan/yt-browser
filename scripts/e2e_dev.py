@@ -5,12 +5,12 @@
 を起動する。
 
 1. Native Messaging ホスト登録の抑制
-   `src-tauri/src/lib.rs` の `native_host::register(...)` 呼び出しを
-   一時的にコメント化する。開発ビルドも通常どおり自己登録を行うため
-   （設計書 §3.4.1「最後に起動したバイナリのパスが有効になる」）、
-   抑制しないとホスト定義が dev バイナリを指して本番側の拡張連携を
-   壊す。元の内容は `src-tauri/src/lib.rs.e2e-backup` に退避し、
-   終了時に必ず復元する。
+   開発ビルドも既定では起動時に Native Messaging ホスト定義を
+   自己登録する（設計書 §3.4.1「最後に起動したバイナリのパスが
+   有効になる」）。抑制しないとホスト定義が dev バイナリを指して
+   本番側の拡張連携を壊すため、デバッグビルド限定で環境変数
+   `YB_DEV_NO_NM=1` を渡して登録処理をスキップする（ソースファイルは
+   書き換えない）。
 
 2. identifier の分離
    `tauri dev --config <一時 JSON>` で identifier を
@@ -30,9 +30,7 @@
     python3 scripts/e2e_dev.py --no-suppress-nm  # NM 登録抑制を掛けない
 
 起動したら別ターミナルで `python3 scripts/e2e_smoke.py --port <port>`。
-Ctrl+C で dev プロセスを止めると lib.rs は自動復元される。
-スクリプトが強制終了された場合は `git checkout -- src-tauri/src/lib.rs`
-か `lib.rs.e2e-backup` から手で戻す。
+Ctrl+C で dev プロセスを停止する。
 
 依存は Python 3.10+ の標準ライブラリのみ。
 
@@ -59,16 +57,9 @@ from pathlib import Path
 from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parent.parent
-LIB_RS = ROOT / "src-tauri" / "src" / "lib.rs"
-BACKUP = LIB_RS.with_name("lib.rs.e2e-backup")
 
 DEFAULT_PORT = 9222
 DEFAULT_DEV_IDENTIFIER = "io.github.tkg-tamagohan.yt-browser-dev"
-
-# 抑制対象の呼び出し（src-tauri/src/lib.rs の setup 内）。
-# この 1 文を丸ごとコメント化する。接頭のコメントを目印に二重適用を防ぐ。
-NM_REGISTER_ANCHOR = "native_host::register(app.path().config_dir().ok(), &dir);"
-NM_PATCH_MARK = "[e2e_dev]"
 
 
 def fail(msg: str, code: int = 1) -> NoReturn:
@@ -84,41 +75,6 @@ def port_responds(port: int) -> bool:
             return r.status == 200
     except OSError:
         return False
-
-
-def apply_nm_patch() -> None:
-    """lib.rs の register 呼び出しをコメント化し、退避ファイルを作る。"""
-    text = LIB_RS.read_text(encoding="utf-8")
-    if NM_PATCH_MARK in text:
-        fail(
-            f"{LIB_RS.relative_to(ROOT)} には既に e2e_dev の抑制が掛かっている。"
-            "前回の終了処理が走っていない可能性があるため、バックアップか"
-            " git checkout で戻してからやり直す"
-        )
-    if text.count(NM_REGISTER_ANCHOR) != 1:
-        fail(
-            f"{LIB_RS.relative_to(ROOT)} から抑制対象の"
-            f" `{NM_REGISTER_ANCHOR}` が 1 箇所だけ見つからない"
-            "（lib.rs の構成が変わった可能性。--no-suppress-nm で回避できるが"
-            "ホスト定義の上書きには注意）"
-        )
-    BACKUP.write_text(text, encoding="utf-8")
-    patched = text.replace(
-        NM_REGISTER_ANCHOR,
-        f"// {NM_PATCH_MARK} 一時抑制（e2e_dev 終了時に自動復元）\n"
-        f"            // {NM_REGISTER_ANCHOR}",
-    )
-    LIB_RS.write_text(patched, encoding="utf-8")
-    print(f"[e2e_dev] NM 登録を一時抑制: {LIB_RS.relative_to(ROOT)}"
-          f"（退避: {BACKUP.name}）")
-
-
-def restore_nm_patch() -> None:
-    """退避ファイルがあれば lib.rs を元の内容へ戻す。"""
-    if BACKUP.is_file():
-        LIB_RS.write_text(BACKUP.read_text(encoding="utf-8"), encoding="utf-8")
-        BACKUP.unlink()
-        print(f"[e2e_dev] {LIB_RS.relative_to(ROOT)} を復元した")
 
 
 def pnpm_invocation(tail: list[str]) -> tuple[list[str] | str, bool]:
@@ -211,14 +167,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not LIB_RS.is_file():
-        fail(f"{LIB_RS.relative_to(ROOT)} が見つからない")
-
     print("[e2e_dev] 実施内容:")
-    suppress = "あり（lib.rs を一時コメント化）"
+    suppress = "あり（YB_DEV_NO_NM=1）"
     if args.no_suppress_nm:
         suppress = "なし（--no-suppress-nm）"
-    print(f"  - NM 登録抑制パッチ: {suppress}")
+    print(f"  - NM 登録抑制: {suppress}")
     print(f"  - identifier 差し替え: {args.identifier}")
     print(
         "  - WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS +="
@@ -243,6 +196,8 @@ def main() -> int:
     env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"{existing} {extra}".strip()
     )
+    if not args.no_suppress_nm:
+        env["YB_DEV_NO_NM"] = "1"
 
     cfg: Path | None = None
     proc: subprocess.Popen | None = None
@@ -251,8 +206,6 @@ def main() -> int:
         cmd, use_shell = pnpm_invocation(
             ["tauri", "dev", "--config", str(cfg)]
         )
-        if not args.no_suppress_nm:
-            apply_nm_patch()
         proc = subprocess.Popen(cmd, cwd=ROOT, env=env, shell=use_shell)
         print(f"[e2e_dev] dev を起動した（pid {proc.pid}）。CDP 応答を待つ…")
 
@@ -275,7 +228,6 @@ def main() -> int:
     finally:
         if proc is not None:
             kill_tree(proc)
-        restore_nm_patch()
         if cfg is not None:
             cfg.unlink(missing_ok=True)
 

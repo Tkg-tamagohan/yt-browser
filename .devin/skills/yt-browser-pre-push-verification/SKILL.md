@@ -41,13 +41,13 @@ Windows の python 出力は cp932 で文字化けするため `PYTHONUTF8=1` �
 
 ## 実機検証用の一時変更の安全な戻し方
 
-CDP/dev ビルド検証では `scripts/e2e_dev.py` が `src-tauri/src/lib.rs` の Native Messaging 登録呼び出しを一時コメント化し、`src-tauri/src/lib.rs.e2e-backup` へ退避したうえで終了時に自動復元する（`yt-browser-windows-cdp-testing` スキル参照）。
+CDP/dev ビルド検証では `scripts/e2e_dev.py` が環境変数 `YB_DEV_NO_NM=1` で Native Messaging 登録を抑止するため、ソースファイルの書き換えや退避ファイル作成は行わない（`yt-browser-windows-cdp-testing` スキル参照）。
 スクリプト外で一時変更を加えた場合は、次の手順で安全に戻す。
 
 - 一時変更は実装と同じファイルにできるだけ混在させない。
   Phase 38 では `lib.rs` の identifier 一時変更と `generate_handler!` のコマンド登録が同居し、`git checkout -- src-tauri/src/lib.rs` の広範囲 revert で登録行ごと消えて consistency ジョブが赤になった
-- `e2e_dev.py` を強制終了したときは `lib.rs.e2e-backup` の書き戻し、または edit ツールや `git checkout -p` で一時変更の行だけを戻す（`git checkout -- <file>` のまとめ戻しは避ける）
-- 戻した直後に `git status` と `git diff` を目視し、一時変更や `lib.rs.e2e-backup` が消えて実装変更だけが残っていることを確認する
+- 一時変更を戻すときは、edit ツールや `git checkout -p` で一時変更の行だけを狙って戻す（`git checkout -- <file>` のまとめ戻しは避ける）
+- 戻した直後に `git status` と `git diff` を目視し、一時変更が残っておらず実装変更だけになっていることを確認する
 - 戻したあとは必ず検証ゲートを回し直す。
   前回検証を通した状態とは別物になっている
 

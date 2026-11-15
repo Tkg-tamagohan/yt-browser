@@ -11,7 +11,7 @@ use crate::util::lock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -169,6 +169,11 @@ pub(crate) struct MpvPlayer {
     /// set_pip の遷移を直列化する。並行呼び出しが state.pip のチェックを
     /// 同時に通過して保存値や mpv プロパティを競合させるのを防ぐ
     pip_op: tokio::sync::Mutex<()>,
+    /// event_pump から逃がした PiP geometry 再適用の世代番号（連打時は最新だけ適用する）。
+    pip_reapply_seq: AtomicU64,
+    /// SponsorBlock 状態世代。動画切替・再起動でインクリメントし、飛行中の seek が
+    /// 切替後の動画へ副作用を及ぼさないようにする。
+    sponsor_gen: AtomicU64,
     /// wheel.lua（ホイール・コマ送り無音化スクリプト）を mpv に読み込ませたか。
     /// 書き出し失敗で未搭載のとき、UI のコマ送りは無音化なしの
     /// `frame-step` 直送信へ縮退する（無応答にならないためのフォールバック）。
@@ -480,6 +485,8 @@ impl MpvPlayer {
             // PiP 起動時は --geometry で適用済みの値を記録しておく
             pip_sent: Mutex::new(opts.pip_geometry.clone()),
             pip_op: tokio::sync::Mutex::new(()),
+            pip_reapply_seq: AtomicU64::new(0),
+            sponsor_gen: AtomicU64::new(0),
             armed: Mutex::new(ArmedQueue::default()),
             has_wheel_script: opts.wheel_script.is_some(),
         });
@@ -750,6 +757,7 @@ impl MpvPlayer {
         // 再起動カウンタが毎回リセットされるため、ここで消す
         self.terminal.reset();
         *lock(&self.last_healthy) = None;
+        self.sponsor_gen.fetch_add(1, Ordering::Relaxed);
         *lock(&self.sponsor) = SponsorState::default();
         *lock(&self.video_aspect) = None;
         // PiP 起動時は --geometry で適用済みの値を記録する（spawn と同じ要領）
@@ -824,6 +832,7 @@ impl MpvPlayer {
             st.sub_tracks.clear();
             st.sid = "auto".to_string();
         }
+        self.sponsor_gen.fetch_add(1, Ordering::Relaxed);
         *lock(&self.sponsor) = SponsorState::default();
         Ok(())
     }
@@ -1227,12 +1236,17 @@ impl MpvPlayer {
 
     /// mpv を終了させる。quit を送り、猶予後に生きていれば kill する。
     pub(crate) async fn shutdown(&self) {
-        let _ = self.ipc.read().await.command(vec![json!("quit")]).await;
+        let _ = tokio::time::timeout(QUIT_GRACE, async {
+            let ipc = self.ipc.read().await;
+            ipc.command(vec![json!("quit")]).await
+        })
+        .await;
         let mut child = self.child.lock().await;
         tokio::select! {
             _ = child.wait() => {}
             _ = tokio::time::sleep(QUIT_GRACE) => {
                 let _ = child.kill().await;
+                let _ = child.wait().await;
             }
         }
         drop(child);
@@ -1442,13 +1456,21 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                         && lock(&player.state).pip
                         && *lock(&player.pip_fit)
                     {
-                        if let Err(e) = player.reapply_pip_geometry().await {
-                            tracing::warn!(
-                                instance_id = player.instance_id(),
-                                error = %e,
-                                "PiP 窓のアスペクト追従に失敗"
-                            );
-                        }
+                        let seq = player.pip_reapply_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                        let p = Arc::clone(&player);
+                        tokio::spawn(async move {
+                            // 後続の video-params が既に来ていれば最新側のタスクに譲る
+                            if p.pip_reapply_seq.load(Ordering::Relaxed) != seq {
+                                return;
+                            }
+                            if let Err(e) = p.reapply_pip_geometry().await {
+                                tracing::warn!(
+                                    instance_id = p.instance_id(),
+                                    error = %e,
+                                    "PiP 窓のアスペクト追従に失敗"
+                                );
+                            }
+                        });
                     }
                 }
                 let pos = if name == "time-pos" {
@@ -1458,7 +1480,7 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                 };
                 player.apply_property(&name, data);
                 if let Some(pos) = pos {
-                    sponsor_check(&player, pos).await;
+                    sponsor_check(&player, pos);
                 }
             }
             IpcEvent::Event { name, data } => match name.as_str() {
@@ -1517,52 +1539,79 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
 
 /// スキップの seek に失敗した区間を再試行するまでの間隔。
 const SPONSOR_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+/// 非同期 seek 実行中に後続の time-pos ティックで同じ区間を多重発火させないための仮バックオフ。
+/// IPC コマンドタイムアウト（10 秒）より長めに取り、完了時に明示的に解除する。
+const SPONSOR_INFLIGHT_GUARD: Duration = Duration::from_secs(12);
 
-/// time-pos が SponsorBlock 区間に入ったときの処理（設計書 §4.4）。
-/// Skip は区間末尾へ seek して `sponsor://skipped`、Notify は同イベントを通知だけ送る。
-/// 各区間は再生ごとに 1 回だけ発火する（戻って再侵入しても再発火しない）。
-/// 発火済み区間とバックオフ中の区間は `next_candidate` が除外するので、
-/// 区間が重なっていても未発火の候補に到達できる。
-async fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
-    let picked = {
-        let mut sp = lock(&player.sponsor);
-        crate::sponsor::next_candidate(&sp.segments, &sp.fired, &sp.backoff, pos).map(|i| {
-            // Notify は IPC を伴わないので、この時点で消化済みにしてよい
-            if sp.segments[i].action == crate::sponsor::CategoryAction::Notify {
-                sp.fired.insert(i);
-            }
-            (i, sp.segments[i].clone())
-        })
-    };
-    let Some((i, seg)) = picked else { return };
-    if seg.action == crate::sponsor::CategoryAction::Skip {
-        match player
-            .control(&PlayerAction::Seek { seconds: seg.end })
-            .await
-        {
-            Ok(()) => {
-                lock(&player.sponsor).fired.insert(i);
-            }
-            Err(e) => {
-                // 失敗時は発火済みにせず通知も出さない。短いバックオフ後に再試行する
-                tracing::warn!(error = %e, "SponsorBlock スキップの seek に失敗");
-                lock(&player.sponsor)
-                    .backoff
-                    .insert(i, Instant::now() + SPONSOR_RETRY_BACKOFF);
-                return;
-            }
-        }
-    }
+fn emit_sponsor_skipped(player: &MpvPlayer, seg: &crate::sponsor::ActiveSegment) {
     let payload = crate::sponsor::SkippedPayload {
         instance_id: player.instance_id(),
         video_id: player.video_id(),
-        category: seg.category,
+        category: seg.category.clone(),
         segment: [seg.start, seg.end],
         action: crate::sponsor::action_name(seg.action),
     };
     if let Err(e) = player.app.emit("sponsor://skipped", payload) {
         tracing::warn!(error = %e, "sponsor://skipped の送出に失敗");
     }
+}
+
+/// time-pos が SponsorBlock 区間に入ったときの処理（設計書 §4.4）。
+/// Skip は区間末尾への seek をバックグラウンドで実行して `sponsor://skipped`、
+/// Notify は同イベントを即時に通知だけ送る。
+/// 各区間は再生ごとに 1 回だけ発火する（戻って再侵入しても再発火しない）。
+/// 発火済み区間とバックオフ中の区間は `next_candidate` が除外するので、
+/// 区間が重なっていても未発火の候補に到達できる。
+fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
+    let gen = player.sponsor_gen.load(Ordering::Relaxed);
+    let picked = {
+        let mut sp = lock(&player.sponsor);
+        crate::sponsor::next_candidate(&sp.segments, &sp.fired, &sp.backoff, pos).map(|i| {
+            match sp.segments[i].action {
+                crate::sponsor::CategoryAction::Notify => {
+                    sp.fired.insert(i);
+                }
+                crate::sponsor::CategoryAction::Skip => {
+                    // seek IPC 応答を event_pump 上で待たず、並行発火も防ぐ
+                    sp.backoff
+                        .insert(i, Instant::now() + SPONSOR_INFLIGHT_GUARD);
+                }
+                crate::sponsor::CategoryAction::Off => {}
+            }
+            (i, sp.segments[i].clone())
+        })
+    };
+    let Some((i, seg)) = picked else { return };
+    if seg.action == crate::sponsor::CategoryAction::Skip {
+        let p = Arc::clone(player);
+        tokio::spawn(async move {
+            match p.control(&PlayerAction::Seek { seconds: seg.end }).await {
+                Ok(()) => {
+                    if p.sponsor_gen.load(Ordering::Relaxed) != gen {
+                        return;
+                    }
+                    {
+                        let mut sp = lock(&p.sponsor);
+                        sp.backoff.remove(&i);
+                        sp.fired.insert(i);
+                    }
+                    emit_sponsor_skipped(&p, &seg);
+                }
+                Err(e) => {
+                    if p.sponsor_gen.load(Ordering::Relaxed) != gen {
+                        return;
+                    }
+                    // 失敗時は発火済みにせず通知も出さない。短いバックオフ後に再試行する
+                    tracing::warn!(error = %e, "SponsorBlock スキップの seek に失敗");
+                    lock(&p.sponsor)
+                        .backoff
+                        .insert(i, Instant::now() + SPONSOR_RETRY_BACKOFF);
+                }
+            }
+        });
+        return;
+    }
+    emit_sponsor_skipped(player, &seg);
 }
 
 #[cfg(test)]

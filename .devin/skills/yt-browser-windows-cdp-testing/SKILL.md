@@ -20,11 +20,10 @@ dev ビルドをそのまま起動すると同一 identifier の single-instance
 - `src-tauri/src/lib.rs` の `native_host::register` は Chrome の Native Messaging 登録キーが identifier に依らず共通（HOST_NAME `io.github.tkg_tamagohan.yt_browser` は固定値）のため、dev exe のパスで本番登録を上書きしうる。
   具体的には dev 起動時に `%APPDATA%\<identifier>-dev\native-messaging\` 配下へ書いたマニフェストのパスで `HKCU\Software\Google\Chrome\NativeMessagingHosts\<HOST_NAME>` の値を更新する。
   dev アプリデータを後で削除するとそのパスは実在しなくなり、拡張からの NM 呼び出しが本番側で失敗しうる。
-  `e2e_dev.py` は起動前に `lib.rs` の `native_host::register(...)` 呼び出しをコメント化し、原文を `src-tauri/src/lib.rs.e2e-backup` に退避して終了時に自動復元する（`--no-suppress-nm` で無効化可）。
+  `e2e_dev.py` は起動時の子プロセスへ環境変数 `YB_DEV_NO_NM=1` を渡し、デバッグビルド限定で `native_host::register(...)` をスキップさせるため、`src-tauri/src/lib.rs` は書き換えない（`--no-suppress-nm` で無効化可）。
 - スキームのレジストリ登録はインストーラが行い、dev 起動では上書きされない（現行コードは `deep_link().register` を呼ばず `get_current()` で読むだけ）。
   将来コードに `register` 呼び出しが入るとこの前提が崩れるため、その場合は再確認する。
   検証後に `reg query "HKCU\Software\Classes\yt-browser\shell\open\command"` で本番 exe のままかを確認するとよい。
-- 強制終了などで `e2e_dev.py` の終了処理が走らなかった場合は、検証後に `lib.rs.e2e-backup` または `git checkout -- src-tauri/src/lib.rs` で復元する。
 
 ## 隔離インスタンスの起動
 

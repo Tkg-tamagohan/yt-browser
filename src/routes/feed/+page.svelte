@@ -439,26 +439,54 @@
     }
   }
 
+  let disposed = false;
+
   onMount(async () => {
-    await refreshAll();
+    const registerUnlisten = (u: UnlistenFn): void => {
+      if (disposed) {
+        u();
+      } else {
+        unlistens.push(u);
+      }
+    };
+    // 初期ロードとイベント購読を独立して保護し、一方の失敗や破棄後の遅延解決でリークさせない
+    try {
+      await refreshAll();
+    } catch (e) {
+      if (!disposed) notify(t("feed.failed", { message: asErrorMessage(e) }));
+    }
+    if (disposed) return;
     void va.refresh();
-    unlistens.push(
-      await listen<FeedNewItems>("feed://new_items", (ev) => {
-        notify(t("feed.newItems", { count: ev.payload.count }));
-        void loadItems();
-      }),
-      await listen<FeedStatus>("feed://status", (ev) => {
-        notify(t("feed.statusEvent", { message: ev.payload.message }));
-      }),
+    try {
+      registerUnlisten(
+        await listen<FeedNewItems>("feed://new_items", (ev) => {
+          if (disposed) return;
+          notify(t("feed.newItems", { count: ev.payload.count }));
+          void loadItems();
+        }),
+      );
+      registerUnlisten(
+        await listen<FeedStatus>("feed://status", (ev) => {
+          if (disposed) return;
+          notify(t("feed.statusEvent", { message: ev.payload.message }));
+        }),
+      );
       // shorts の非同期判定で kind が確定した（トーストなしで静かに再取得）
-      await listen<FeedNewItems>("feed://kind_updated", () => {
-        void loadItems();
-      }),
-    );
+      registerUnlisten(
+        await listen<FeedNewItems>("feed://kind_updated", () => {
+          if (disposed) return;
+          void loadItems();
+        }),
+      );
+    } catch (e) {
+      if (!disposed) notify(t("feed.failed", { message: asErrorMessage(e) }));
+    }
   });
 
   onDestroy(() => {
+    disposed = true;
     unlistens.forEach((u) => u());
+    unlistens = [];
   });
 </script>
 

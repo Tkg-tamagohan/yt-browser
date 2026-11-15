@@ -3,6 +3,9 @@
 
 use super::MpvError;
 use crate::model::AudioDevice;
+use std::time::Duration;
+
+const AUDIO_DEVICE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `mpv --audio-device=help` の出力を `{name, description}` 列へパースする。
 /// 形式は ``  'name' (description)  `` の行のみを拾う（バナー行や空行は無視）。
@@ -43,20 +46,37 @@ pub(crate) fn parse_audio_device_list(output: &str) -> Vec<AudioDevice> {
 
 /// `mpv --audio-device=help` を実行してデバイス列を返す。
 /// mpv が見つからない場合は MpvError::Spawn、非零終了や出力が空なら空列。
+async fn collect_command_stdout(
+    mut cmd: tokio::process::Command,
+    limit: Duration,
+) -> Result<Option<Vec<u8>>, MpvError> {
+    cmd.kill_on_drop(true);
+    match tokio::time::timeout(limit, cmd.output()).await {
+        Ok(res) => {
+            let output = res.map_err(MpvError::Spawn)?;
+            if !output.status.success() {
+                return Ok(None);
+            }
+            Ok(Some(output.stdout))
+        }
+        Err(_) => {
+            tracing::warn!("mpv オーディオデバイス列挙がタイムアウト");
+            Err(MpvError::SocketTimeout)
+        }
+    }
+}
+
 pub(crate) async fn list_audio_devices() -> Result<Vec<AudioDevice>, MpvError> {
     let mut cmd = tokio::process::Command::new("mpv");
     cmd.arg("--audio-device=help");
     #[cfg(windows)]
     cmd.creation_flags(crate::CREATE_NO_WINDOW);
-    let output = cmd.output().await.map_err(MpvError::Spawn)?;
-    if !output.status.success() {
+    let Some(stdout) = collect_command_stdout(cmd, AUDIO_DEVICE_TIMEOUT).await? else {
         return Ok(Vec::new());
-    }
+    };
     // mpv は UTF-8 で出力する。壊れたバイト列は lossy で読み、
     // パースできない行は parse 側が捨てる
-    Ok(parse_audio_device_list(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    Ok(parse_audio_device_list(&String::from_utf8_lossy(&stdout)))
 }
 
 #[cfg(test)]
@@ -108,5 +128,29 @@ mod tests {
         // `trailing` は `(...)` 形でないため description なし
         assert_eq!(devs[2].name, "dev");
         assert_eq!(devs[2].description, "");
+    }
+
+    #[tokio::test]
+    async fn slow_command_times_out_with_socket_timeout() {
+        #[cfg(windows)]
+        let cmd = {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args(["/C", "ping -n 6 127.0.0.1 >NUL"]);
+            c.creation_flags(crate::CREATE_NO_WINDOW);
+            c
+        };
+        #[cfg(not(windows))]
+        let cmd = {
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", "sleep 5"]);
+            c
+        };
+
+        let start = std::time::Instant::now();
+        let err = super::collect_command_stdout(cmd, super::Duration::from_millis(80))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, super::MpvError::SocketTimeout));
+        assert!(start.elapsed() < super::Duration::from_secs(2));
     }
 }

@@ -442,3 +442,84 @@ fn parse_meta_snapshot_state_fields() {
     }));
     assert_eq!(s.description, "概要\n2 行目");
 }
+
+#[tokio::test]
+async fn cfg_single_flight_and_poison_recovery() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_srv = Arc::clone(&hits);
+    let srv = tokio::spawn(async move {
+        let html = r#"<script>ytcfg.set({"INNERTUBE_API_KEY":"k1","INNERTUBE_CONTEXT_CLIENT_VERSION":"v1","VISITOR_DATA":"vd1"});</script>"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            html.len(),
+            html
+        );
+        while let Ok((mut stream, _)) = listener.accept().await {
+            hits_srv.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 512];
+            let _ = stream.read(&mut buf).await;
+            // 少し遅延させて並行呼び出しが cfg_fetch ロックで合流することを確かめる
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = stream.write_all(resp.as_bytes()).await;
+        }
+    });
+
+    let tube = Arc::new(InnerTube::with_test_urls(
+        format!("http://{addr}/watch"),
+        format!("http://{addr}/api"),
+        Duration::from_secs(5),
+    ));
+
+    // 毒化された Mutex からもパニックせず取得へ進めることを検証する
+    let tube_poison = Arc::clone(&tube);
+    let _ = std::thread::spawn(move || {
+        let _g = tube_poison.cfg.lock().unwrap();
+        panic!("intentional cfg mutex poison");
+    })
+    .join();
+
+    let (r1, r2, r3) = tokio::join!(tube.cfg(), tube.cfg(), tube.cfg());
+    assert_eq!(r1.unwrap().api_key, "k1");
+    assert_eq!(r2.unwrap().api_key, "k1");
+    assert_eq!(r3.unwrap().api_key, "k1");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn cfg_request_times_out_when_server_stalls() {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = tokio::spawn(async move {
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut buf = [0u8; 512];
+            let _ = stream.read(&mut buf).await;
+            // 応答を返さず保持し続ける
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
+
+    let tube = InnerTube::with_test_urls(
+        format!("http://{addr}/watch"),
+        format!("http://{addr}/api"),
+        Duration::from_millis(80),
+    );
+    let err = tube.cfg().await.unwrap_err();
+    match err {
+        InnerTubeError::Http(e) => assert!(e.is_timeout()),
+        other => panic!("expected Http timeout, got {other:?}"),
+    }
+
+    srv.abort();
+}
