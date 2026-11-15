@@ -3,7 +3,7 @@
 mpv による軽量な再生と、ローカル完結の購読、履歴、NG 管理を一体化した YouTube 専用ブラウザ（専ブラ）。
 対応 OS は Linux と Windows で、macOS は対象外。
 
-[実装計画](docs/implementation-plan.md)の全フェーズ（Phase 0〜82）が実装済み（実機検証系の受け入れは一部未検証として残る）。
+[実装計画](docs/implementation-plan.md)および[実装履歴](docs/implementation-history.md)の全フェーズ（Phase 0〜85）が実装済み（実機検証系の受け入れは一部未検証として残る）。
 残る制限と観察メモは実装計画の「残課題」節にまとめている。
 
 ## 主な機能
@@ -65,7 +65,8 @@ pnpm test         # Vitest 単体テスト
 | [docs/requirements-definition.md](docs/requirements-definition.md) | 要件定義書。仕様の正 |
 | [docs/decision-records.md](docs/decision-records.md) | 協議で確定した判断の記録（仕様決定 A 以降） |
 | [docs/design.md](docs/design.md) | 概要設計と詳細設計（アーキテクチャ、IPC、DB、チャット、NG、エラー方針） |
-| [docs/implementation-plan.md](docs/implementation-plan.md) | フェーズ別の実装計画と引き継ぎ手順 |
+| [docs/implementation-plan.md](docs/implementation-plan.md) | 現行フェーズ別の実装計画と引き継ぎ手順 |
+| [docs/implementation-history.md](docs/implementation-history.md) | Phase 0〜81 の完了済み実装履歴 |
 | [docs/updater-runbook.md](docs/updater-runbook.md) | 自動更新の運用手順 |
 
 ## ライセンス

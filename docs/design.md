@@ -364,18 +364,24 @@ YouTube ページ上のアクション実行とリンク右クリックメニュ
 
 Phase 19 の拡張は `yt-browser://open?url=` を非アクティブの新規タブで開いていた。
 Chrome の外部アプリ確認はそのタブ上に出るため、利用者は毎回タブを移動して承認する必要があった。
-Phase 23 では拡張からの受け渡しを Native Messaging に切り替え、Chrome を経由せずに OS からスキームを開く。
+Phase 23 で拡張からの受け渡しを Native Messaging に切り替え、さらに Phase 85 でローカル IPC への直接配送と本体バイナリの直接起動フォールバックを導入した。
 
 ```mermaid
 sequenceDiagram
     participant Ext as 拡張（background.js）
     participant Host as yt-browser（ホストモード）
-    participant OS as OS の既定ハンドラ
     participant App as yt-browser（本体）
-    Ext->>Host: sendNativeMessage {url, action?}
-    Host->>OS: yt-browser://<action>?url=<encoded> を開く
+    participant OS as OS 既定ハンドラ（最終フォールバック）
+    Ext->>Host: sendNativeMessage {url, action?, playlist_id?}
+    alt 本体起動中（ローカル IPC 接続成功）
+        Host->>App: Pipe / Unix socket でスキーム URL を 1 行送信
+    else 本体未起動（直接 spawn 成功）
+        Host->>App: host_binary_path を Stdio::null() 付きで直接 spawn
+    else 直接 spawn も失敗
+        Host->>OS: open::that_detached で yt-browser://<action>?url=...
+        OS->>App: 既定ハンドラ経由で起動
+    end
     Host-->>Ext: {ok: true}
-    OS->>App: 新規起動、または single-instance で起動中へ転送
 ```
 
 - ホスト名：`io.github.tkg_tamagohan.yt_browser`（Native Messaging のホスト名は英小文字、数字、`_`、`.` に限られるため、識別子のハイフンを `_` に置き換える）
@@ -390,11 +396,13 @@ sequenceDiagram
   `{"ok": true, "playlists": [{"id": <数値>, "name": "<名前>"}]}` を返す。
   エラーコードは `invalid_message`（長さ付き JSON として読めない、`url` が文字列でない、
   必須フィールドが欠けた・形が不正）、`invalid_url`（http(s) の URL でない）、
-  `invalid_action`（`action` が受理集合外）、`open_failed`（OS の既定ハンドラで開けない）、
+  `invalid_action`（`action` が受理集合外）、`open_failed`（ローカル IPC・直接起動・OS の既定ハンドラのいずれでも配送できない）、
   `db_unavailable`（`list_playlists` で本体の DB を開けない・読めない）の 5 種で、受け取る要求の長さは 64KiB までとする。
   ホストは `url` が http(s) の URL として解析できることだけを確かめ、動画とプレイリストの振り分けは従来どおり本体の `deeplink.svelte.ts` が行う
-- 起動：ホストは `yt-browser://<action>?url=<encoded>` を OS の既定ハンドラで開く（Windows は ShellExecute 相当、Linux は xdg-open 相当）。`action` が `queue` のときは `yt-browser://queue?url=`、`playlist_add` のときは `yt-browser://playlist_add?url=<encoded>&playlist_id=<id>` を使う（仕様決定 AX・CA）。
-  既存の deep link 受信経路（未起動なら `get_current()`、起動中なら single-instance）をそのまま通るので、本体側の受信処理は変えない
+- 起動：ホストは組み立てたスキーム URL（`open` は `yt-browser://open?url=<encoded>`、`queue` は `yt-browser://queue?url=<encoded>`、`playlist_add` は `yt-browser://playlist_add?url=<encoded>&playlist_id=<id>`、仕様決定 AX・CA）を以下の 3 段階で配送する
+  1. **ローカル IPC 直接送信（最優先）**：本体が `PendingOpenUrls` 登録後に `start_ipc_listener` で待ち受けるエンドポイント（Windows は名前付きパイプ `\\.\pipe\io.github.tkg-tamagohan.yt-browser-nm-ipc`、Linux は `<アプリデータ>/native-ipc.sock`）へ 1 行（`writeln!`）で直接送る。Windows で `ERROR_PIPE_BUSY` の場合は最大 500ms（25ms 間隔）リトライし、Unix ソケットの書き込みタイムアウトは 2 秒とする。本体側は 1 行を受信して `deep_link::handle_open_url` へそのまま渡す
+  2. **本体バイナリ直接 `spawn`（未起動時フォールバック）**：ローカル IPC へ接続できないときは、`host_binary_path`（AppImage 環境では `$APPIMAGE`、通常は `current_exe()`）にスキーム URL を引数として渡し、`stdin` / `stdout` / `stderr` をすべて `Stdio::null()` へ切り離したうえで直接 `spawn` する（Native Messaging の標準出力パイプを子プロセスが継承して Chrome 側が終了待ちでハングするのを防ぐため）
+  3. **OS 既定ハンドラ（最終フォールバック）**：直接 `spawn` も失敗した場合のみ、従来どおり `open::that_detached`（Windows は ShellExecute 相当、Linux は xdg-open 相当）でスキーム URL を開き、既存の deep link 受信経路（`get_current()` / single-instance）へ流す
 - 一覧要求：`list_playlists` はスキームを組まず、本体の DB（`<アプリデータ>/yt-browser.db`）を
   読み取り専用で開き、`playlists` 表を `playlist_list` と同じ `ORDER BY sort_order, id` で読む。
   ホストモードでは Tauri の PathResolver を組めないため、データディレクトリは
@@ -1577,7 +1585,7 @@ WebKitGTK 環境で今後同じ症状が観測された場合も、同じ方針�
 ```text
 yt-browser/
   AGENTS.md / README.md / LICENSE
-  docs/
+  docs/               # 要件定義・設計書・決定記録・実装計画・実装履歴・利用手引
   src-tauri/
     Cargo.toml
     tauri.conf.json
@@ -1600,7 +1608,7 @@ yt-browser/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
       deps.rs         # 依存コマンド（mpv・yt-dlp・deno）の検出と初回セットアップ判定（§5）
       diag.rs         # 診断情報の zip エクスポートと秘匿マスク（§4.21）
-      native_host.rs  # Native Messaging のホストモードとホスト定義の自己登録
+      native_host.rs  # Native Messaging のホストモード・ローカル IPC・ホスト定義の自己登録
       error.rs        # UiError { code, message } への直列化と各エラー型からの変換
       ui.rs           # ui.* 表示設定の解釈の正（FR-76・FR-77・FR-81、§3.3）
       util.rs
@@ -1608,7 +1616,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   scripts/            # 開発・リリース補助（docs 整合チェック・バージョン更新・latest.json 生成）と CDP 検証基盤（FR-84。cdp_client/e2e_dev/e2e_smoke と README.md の手順書）
   package.json
