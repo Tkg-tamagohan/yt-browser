@@ -1,4 +1,8 @@
 <script lang="ts">
+  import {
+    finishPlaylistAdd,
+    type PlaylistAddCallbackSet,
+  } from "$lib/context-menu-logic";
   // VideoActions のプレイリスト追加メニュー部品（FR-78、仕様決定 DC）。
   // 行アクションの「＋」ボタンが開くメニューと、動画行の右クリックで
   // 開くコンテキストメニュー（VideoContextMenu）で共用する。
@@ -35,12 +39,27 @@
 
   let newName = $state("");
 
-  async function addTo(pl: Playlist): Promise<void> {
+  function captureContext() {
+    return {
+      targetVideo: video,
+      callbacks: { onclose, onplaylistadd } satisfies PlaylistAddCallbackSet,
+      notifyCreated: onplaylistcreated,
+    };
+  }
+
+  async function addTo(
+    pl: Playlist,
+    captured = captureContext(),
+  ): Promise<void> {
+    // onclose?.() 実行時に親のコンテキスト状態が null 化され、リアクティブな props が
+    // undefined になるのを防ぐため、await 前に参照を確保しておく
     try {
-      await invoke("playlist_add", { playlistId: pl.id, video });
+      await invoke("playlist_add", {
+        playlistId: pl.id,
+        video: captured.targetVideo,
+      });
       notify(t("library.playlist.added", { name: pl.name }));
-      onclose?.();
-      onplaylistadd?.(pl.id);
+      finishPlaylistAdd(pl.id, captured.callbacks);
     } catch (e) {
       notify(t("library.playlist.addFailed", { message: asErrorMessage(e) }));
     }
@@ -49,11 +68,12 @@
   async function createAndAdd(): Promise<void> {
     const name = newName.trim();
     if (!name) return;
+    const captured = captureContext();
     try {
       const pl = await invoke<Playlist>("playlist_create", { name });
-      onplaylistcreated?.(pl);
+      captured.notifyCreated?.(pl);
       newName = "";
-      await addTo(pl);
+      await addTo(pl, captured);
     } catch (e) {
       notify(t("library.playlist.createFailed", { message: asErrorMessage(e) }));
     }
@@ -103,9 +123,16 @@
     box-shadow: 0 4px 16px var(--shadow);
   }
 
-  /* コンテキストメニューでは呼び出し側の固定配置コンテナへ追従する */
+  /* コンテキストメニューでは呼び出し側の固定配置コンテナへ追従し、溢れた項目は内側でスクロールさせる */
   .vact-menu.floating {
     position: static;
+    max-height: var(--vctx-max-h, calc(100vh - 8px));
+    overflow-y: auto;
+    box-sizing: border-box;
+  }
+
+  .vact-menu.floating > * {
+    flex-shrink: 0;
   }
 
   .vact-item {

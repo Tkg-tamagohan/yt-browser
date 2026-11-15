@@ -101,6 +101,9 @@ impl Db {
 
     fn init_pragmas(&self) -> Result<(), DbError> {
         let conn = self.lock()?;
+        // 並行接続（Native Messaging 読み取りやバックグラウンドワーカー）との競合時に
+        // 即座に SQLITE_BUSY で失敗しないよう待機時間を設ける
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(())

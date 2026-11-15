@@ -325,15 +325,22 @@ impl Db {
         if !exists {
             return Err(DbError::NotFound);
         }
+        // ループ内の MAX(position) 再計算を避け、現在の末尾位置を 1 回だけ引いて進める
+        let mut next_pos: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_items WHERE playlist_id = ?1",
+            [playlist_id],
+            |r| r.get(0),
+        )?;
         for v in items {
             Self::video_upsert(&tx, v)?;
-            tx.execute(
+            let inserted = tx.execute(
                 "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id, position)
-                 VALUES (?1, ?2,
-                         COALESCE((SELECT MAX(position) + 1 FROM playlist_items
-                                   WHERE playlist_id = ?1), 0))",
-                rusqlite::params![playlist_id, v.video_id],
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![playlist_id, v.video_id, next_pos],
             )?;
+            if inserted > 0 {
+                next_pos += 1;
+            }
         }
         tx.commit()?;
         Ok(())

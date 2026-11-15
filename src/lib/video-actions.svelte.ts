@@ -116,23 +116,27 @@ export function createVideoActionState(opts: Options = {}) {
 /// コンテキストメニューは開いた側ページの 1 インスタンスを借用する
 export type VideoActionState = ReturnType<typeof createVideoActionState>;
 
-/// コンテキストメニュー（FR-78、仕様決定 DC）の開く対象。
+/// コンテキストメニュー（FR-78、仕様決定 DC）および行「＋」メニューの共有開く対象。
 /// video は対象行の VideoRef、va は開いた側の行アクション状態
 /// （プレイリスト一覧と作成コールバックをそのまま使う）。
-/// onplaylistadd はページ固有の追加通知（ライブラリは件数・項目の
-/// 読み直しに使う）で、無いページでは省略する
+/// VideoActions 行ボタンから開く場合は playlists / onPlaylistCreated / triggerEl を
+/// 直接渡して全行で 1 つのメニューインスタンスを共用する
 export type VideoContextMenuTarget = {
   video: VideoRef;
-  /// メニューを出すクリック位置（clientX/clientY）
+  /// メニューを出す位置（clientX/clientY 相当）
   x: number;
   y: number;
-  va: VideoActionState;
+  va?: VideoActionState;
+  playlists?: Playlist[];
+  onPlaylistCreated?: (pl: Playlist) => void;
   onplaylistadd?: (playlistId: number) => void;
+  /// 行「＋」ボタンから開いた場合のアンカー要素（再クリックでトグル閉じするため保持）
+  triggerEl?: HTMLElement | null;
 };
 
 /// 開いているコンテキストメニューの対象。レイアウトに 1 つだけ
 /// マウントされた VideoContextMenu がここを読んで表示する。
-/// 同時に開けるメニューは 1 つで、別行での右クリックは開き直しになる
+/// 同時に開けるメニューは 1 つで、別行での右クリックや別ボタンは開き直しになる
 export const videoContextMenu = $state<{
   current: VideoContextMenuTarget | null;
 }>({ current: null });
@@ -148,6 +152,33 @@ export function openVideoContextMenu(
 ): void {
   e.preventDefault();
   videoContextMenu.current = { video, va, onplaylistadd, x: e.clientX, y: e.clientY };
+}
+
+/// 行「＋」ボタンから共有のプレイリスト追加メニューをトグル開閉する。
+/// 同一ボタンの再クリック時は閉じ、別行・別ボタンならボタン直下へ開き直す
+export function toggleVideoActionsMenu(
+  triggerEl: HTMLElement,
+  opts: {
+    video: VideoRef;
+    playlists: Playlist[];
+    onPlaylistCreated?: (pl: Playlist) => void;
+    onplaylistadd?: (playlistId: number) => void;
+  },
+): void {
+  if (videoContextMenu.current?.triggerEl === triggerEl) {
+    closeVideoContextMenu();
+    return;
+  }
+  const rect = triggerEl.getBoundingClientRect();
+  videoContextMenu.current = {
+    video: opts.video,
+    x: rect.left,
+    y: rect.bottom + 2,
+    playlists: opts.playlists,
+    onPlaylistCreated: opts.onPlaylistCreated,
+    onplaylistadd: opts.onplaylistadd,
+    triggerEl,
+  };
 }
 
 /// コンテキストメニューを閉じる。メニュー外の操作・Escape・画面遷移で畳む

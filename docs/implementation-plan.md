@@ -721,6 +721,15 @@ FR-53・FR-56 の遅延解決基盤（Phase 62）の完成後に実施する。
 - [x] 開発ビルドの Native Messaging 登録制御を `YB_DEV_NO_NM=1` 環境変数へ移し、`scripts/e2e_dev.py` の `lib.rs` 書き換えと `.e2e-backup` 退避を廃止する
 - [x] 受け入れ：単体テスト、ビルド、整合チェックがすべて通過することを確認する
 
+### Phase 83：応答性改善、DB ロック競合対策、拡張の耐障害性強化（Step 2a）
+
+- [x] `db/mod.rs` と `native_host.rs` の読み取り専用接続へ SQLite `busy_timeout(5000ms)` を設定し、マイグレーション `v23`（`idx_videos_meta_resolve`）を追加して `docs/design.md` §8 と同期する
+- [x] `playlist_add_many` の挿入位置採番を 1 回取得の加算（$O(N)$）へ改め、`channel_delete`・`videos_set_kind`・`videos_mark_read`・`feed_auto_read` をトランザクション化する
+- [x] `data_export`・`data_import`・`db_vacuum`・`db_cleanup_orphans`・`history_stats`・`library_search`・`playlist_import`（DB 部分）・`diag::export_bundle` の同期重い処理を `tokio::task::spawn_blocking` へ逃がす
+- [x] `VideoActions.svelte` の行ごと `<VideoActionsMenu>` 描画を廃止してレイアウト常時マウントの `VideoContextMenu` へ統合し、`settings/+page.svelte` の初期読み込みを `Promise.all` 並列化＋一部失敗通知に改め、検索デバウンス（`library-page.svelte.ts` / `+page.svelte`）と通知重複排除・タイマー掃除を入れる
+- [x] Chrome 拡張の Native Messaging 呼び出しへ 5 秒タイムアウトと `settled` ガード、タブ単位失敗バッジ、`popup` の直近失敗理由表示、`tabs.onUpdated` のイベント絞り込みを入れる
+- [x] 受け入れ：単体テスト、ビルド、整合チェックがすべて通過することを確認する
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

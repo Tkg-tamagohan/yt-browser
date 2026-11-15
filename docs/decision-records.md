@@ -119,6 +119,7 @@
 | DL | CI actions の追従（FR-87） | FR-87。`actions/checkout`・`actions/setup-node`・`pnpm/action-setup` を Node 24 対応版へ更新する |
 | DM | Edge と Chromium 系へのホスト登録（FR-88） | FR-88。Native Messaging のホスト登録をブラウザ別の置き場へ対応する（Windows は Edge と Chrome のレジストリ、Linux は各ブラウザの config 配下。仕様決定 AH の「Edge と Chromium 系は残課題」を改訂） |
 | DN | Chrome 拡張の初期状態、再生位置取得、境界判定の修復と整理（BG-11） | BG-11。(1) アクションの既定状態を `chrome.action.disable()` で無効にし、`onInstalled`・`onStartup`・ワーカー起動時に既存タブを走査して対象 URL のタブのみ有効化する。タブ消失時の `tabs.get`・`action.enable`/`disable`・フォールバックタブの `tabs.remove` の未処理エラーを捕捉し、`invoke` メッセージには `{ ok: true }` を応答する。`contextMenus.create` の前に `removeAll` を行う。(2) `content.js` の動画要素選択は `#movie_player.ad-showing` の広告再生中を `null` とし、`#movie_player video.html5-main-video` とアクティブな Shorts リール（`ytd-reel-video-renderer[is-active] video`）を優先してから既存の汎用探索へフォールバックする。(3) ポップアップの「再生位置を引き継いで開く」はクリック時にも `video_position` を再取得して最新秒数で URL を組み立て、失敗時は開口時の取得値を使う。(4) `/shorts/<id>` と `/live/<id>` の ID 判定は末尾境界（`/` または文字列終端）を必須とし、拡張と本体の双方で 12 文字以上のセグメントを弾く。(5) `manifest.json` の `background` に `"type": "module"` を指定し、`classifyKind`・`classify`・`schemePrefix` を `shared.js` へ移して `background.js` と `popup.js` から共用し Vitest の単体テスト対象にする（`popup.js` の `classify` メッセージ往復は廃止）。(6) `release.yml` の拡張 zip 作成で `*.test.js` を除外し、`manifest.json` と `background.js` の `*://*.youtube.com/*` に包含される `*://music.youtube.com/*` の重複指定を整理する |
+| DO | Chrome 拡張の失敗バッジとツールチップのタブ単位表示 | 失敗表示（バッジ `!` とツールチップ）と次回成功時の解除は、操作元の `tabId` が指定されている場合はそのタブ単位で行い、`tabId` が無い全体操作では拡張全体に表示して全タブ分と全体表示をまとめて解除する（`failedTabIds` で管理。Phase 23 確定事項の「タブ単位ではなく拡張全体に出す」を改訂） |
 
 ## 技術方針
 
@@ -291,7 +292,7 @@
 | スキーム URL の開き方 | `open` クレートの `that_detached` を使う。Linux では xdg-open 系を二重 fork と `setsid` で切り離して起動し、標準入出力を閉じるので、起動したプロセスは Chrome との標準出力に書き込まない。Chrome がホストを終了させる際に本体が巻き込まれないかは実機で確かめる（Windows は Phase 23 の実機確認項目）。Windows では `ShellExecuteExW` を使う（`shellexecute-on-windows` は tauri-plugin-opener が既に有効にしている機能） |
 | Windows のレジストリ書き込み | tauri-plugin-deep-link が依存している `windows-registry` クレートを使い、既定値が同じなら書き換えない |
 | フォールバックのタブ | 従来方式どおり 5 秒後に閉じる挙動は変えず、`active: true` で開く点だけを変える |
-| 失敗表示 | バッジ `!` とツールチップはタブ単位ではなく拡張全体に出し、次回の成功時に消す |
+| 失敗表示 | バッジ `!` とツールチップはタブ単位ではなく拡張全体に出し、次回の成功時に消す（仕様決定 DO で改訂。現在は操作元の `tabId` が指定されている場合はそのタブ単位で表示と解除を行い、未指定時のみ拡張全体へ作用する） |
 
 ## Phase 24 で確定した事項
 
@@ -330,4 +331,13 @@
 | 強調色 | 共有の ChatList で `.highlight` クラスを付け、黄土色系の背景（暫定色 `#4d4419`）で強調する。埋め込みパネルとポップアップ窓は同じ行構成のため双方へ効く |
 | NG ユーザー節の対象 | `chat_author` 行のうち NG 系種別（literal / regex）のみ一覧・解除の対象とする。highlight 種別の `chat_author` 行は発言を除去しないため NG ユーザーに含めず、NG フィルタ節側で管理する |
 | NG ユーザー節の追加操作 | 部分一致（literal）で固定登録する。正規表現の `chat_author` フィルタは NG フィルタ節から登録する |
+
+## Phase 83 で確定した事項
+
+仕様決定 DO に基づく、Chrome 拡張機能の失敗バッジとツールチップの制御細目。
+
+| 項目 | 決定内容 |
+|------|----------|
+| 失敗バッジのスコープ | `tabId` が渡された操作の失敗では該当タブにのみバッジ `!` と失敗理由ツールチップを出し、`failedTabIds` にタブ ID を記録する。`tabId` を伴わない操作の失敗では拡張全体に表示する |
+| 成功時のバッジ解除 | `tabId` 指定ありの成功では該当タブのみバッジを消して `failedTabIds` から除く。`tabId` 指定なしの成功では拡張全体と `failedTabIds` に残る全タブのバッジを消し、すでに閉じられたタブは無視する |
 

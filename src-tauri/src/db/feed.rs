@@ -307,14 +307,18 @@ impl Db {
         if video_ids.is_empty() {
             return Ok(());
         }
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare(
-            "UPDATE videos SET kind = ?2, kind_state = 1
-               WHERE video_id = ?1 AND kind = 'video'",
-        )?;
-        for id in video_ids {
-            stmt.execute(rusqlite::params![id, kind])?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE videos SET kind = ?2, kind_state = 1
+                   WHERE video_id = ?1 AND kind = 'video'",
+            )?;
+            for id in video_ids {
+                stmt.execute(rusqlite::params![id, kind])?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -458,11 +462,15 @@ impl Db {
         if video_ids.is_empty() {
             return Ok(());
         }
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare("UPDATE videos SET is_read = 1 WHERE video_id = ?1")?;
-        for id in video_ids {
-            stmt.execute([id])?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE videos SET is_read = 1 WHERE video_id = ?1")?;
+            for id in video_ids {
+                stmt.execute([id])?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -484,10 +492,14 @@ impl Db {
     ///
     /// 両ルールとも `ingested=0` のプレースホルダは対象外（一覧に出ないため）。
     pub fn feed_auto_read(&self, played: bool, days: i64) -> Result<u64, DbError> {
-        let conn = self.lock()?;
+        if !played && days <= 0 {
+            return Ok(0);
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
         let mut total = 0u64;
         if played {
-            total += conn.execute(
+            total += tx.execute(
                 "UPDATE videos SET is_read = 1
                  WHERE is_read = 0 AND ingested = 1
                    AND video_id IN (SELECT video_id FROM watch_history)",
@@ -495,7 +507,7 @@ impl Db {
             )? as u64;
         }
         if days > 0 {
-            total += conn.execute(
+            total += tx.execute(
                 "UPDATE videos SET is_read = 1
                  WHERE is_read = 0 AND ingested = 1
                    AND datetime(COALESCE(published_at, first_seen_at))
@@ -503,6 +515,7 @@ impl Db {
                 [days],
             )? as u64;
         }
+        tx.commit()?;
         Ok(total)
     }
 }

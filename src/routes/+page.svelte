@@ -26,15 +26,31 @@
   let ytdlp = $state<YtDlpStatus | null>(null);
   let ytdlpChecking = $state(true);
   let ytdlpUpdating = $state(false);
+  let disposed = false;
+  let resumeReq = 0;
+  let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+  const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function notify(msg: string): void {
-    notices = [...notices.slice(-4), msg];
-    setTimeout(() => {
-      notices = notices.filter((n) => n !== msg);
+    if (disposed) return;
+    const prevTimer = noticeTimers.get(msg);
+    if (prevTimer !== undefined) clearTimeout(prevTimer);
+    if (!notices.includes(msg)) {
+      notices = [...notices.slice(-4), msg];
+    }
+    const timer = setTimeout(() => {
+      noticeTimers.delete(msg);
+      if (!disposed) {
+        notices = notices.filter((n) => n !== msg);
+      }
     }, 6000);
+    noticeTimers.set(msg, timer);
   }
 
   async function refreshResumeHint(): Promise<void> {
+    clearTimeout(resumeTimer);
+    resumeTimer = undefined;
+    const req = ++resumeReq;
     const query = input.trim();
     resumeHint = null;
     if (!query) return;
@@ -43,11 +59,23 @@
         videoId: query,
       });
       // 応答が返るまでに入力が変わっていたら結果は捨てる
-      if (input.trim() !== query) return;
+      if (disposed || req !== resumeReq || input.trim() !== query) return;
       if (h && !h.completed && h.positionSec > 0) resumeHint = h;
     } catch {
       // 入力が URL として解釈できない段階では黙って無視する
     }
+  }
+
+  function scheduleResumeHint(): void {
+    clearTimeout(resumeTimer);
+    if (!input.trim()) {
+      resumeReq += 1;
+      resumeHint = null;
+      return;
+    }
+    resumeTimer = setTimeout(() => {
+      if (!disposed) void refreshResumeHint();
+    }, 150);
   }
 
   // pip を省略して呼ぶとバックエンドが設定 `pip.default` で解決する
@@ -75,8 +103,6 @@
       notify(t("player.error", { message: asErrorMessage(e) }));
     }
   }
-
-  let disposed = false;
 
   async function refreshYtDlp(): Promise<void> {
     ytdlpChecking = true;
@@ -140,6 +166,9 @@
 
   onDestroy(() => {
     disposed = true;
+    clearTimeout(resumeTimer);
+    for (const timer of noticeTimers.values()) clearTimeout(timer);
+    noticeTimers.clear();
     playbackHooks.delete(refreshResumeHint);
     unlistenSettings?.();
     unlistenSettings = undefined;
@@ -155,7 +184,7 @@
       type="text"
       placeholder={t("player.input.placeholder")}
       bind:value={input}
-      oninput={refreshResumeHint}
+      oninput={scheduleResumeHint}
     />
     <button onclick={() => play(false)} disabled={!input.trim()}>
       {t("player.play")}

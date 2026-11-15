@@ -67,8 +67,11 @@ pub fn history_restore(entry: WatchHistory, db: State<'_, Db>) -> Result<(), UiE
 /// 累計視聴時間とチャンネル別・日別の内訳を返す
 /// （ライブラリの統計タブが表示用にそのまま使う）。
 #[tauri::command]
-pub fn history_stats(db: State<'_, Db>) -> Result<HistoryStats, UiError> {
-    Ok(db.history_stats()?)
+pub async fn history_stats(db: State<'_, Db>) -> Result<HistoryStats, UiError> {
+    let db = db.inner().clone();
+    Ok(tokio::task::spawn_blocking(move || db.history_stats())
+        .await
+        .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??)
 }
 
 /// `VideoRef` の入力検証と動画 ID 正規化。
@@ -155,13 +158,18 @@ pub fn watch_later_list(db: State<'_, Db>) -> Result<Vec<WatchLaterEntry>, UiErr
 /// 部分一致 LIKE で横断検索し、同一動画は `sources` に区分を持つ 1 件へ
 /// まとめる。`query` の空・空白のみは 0 件を返す（暫定解釈）。
 #[tauri::command]
-pub fn library_search(
+pub async fn library_search(
     query: String,
     limit: Option<u32>,
     db: State<'_, Db>,
 ) -> Result<Vec<LibrarySearchItem>, UiError> {
     let limit = limit.unwrap_or(LIBRARY_SEARCH_LIMIT).min(1000);
-    Ok(db.library_search(&query, limit)?)
+    let db = db.inner().clone();
+    Ok(
+        tokio::task::spawn_blocking(move || db.library_search(&query, limit))
+            .await
+            .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??,
+    )
 }
 
 /// `playlist_list`（FR-7）。件数集計付き。
@@ -341,14 +349,20 @@ pub async fn playlist_import(
             }
         }
     };
-    let mut playlist = db.playlist_create(&name)?;
-    if let Err(e) = db.playlist_add_many(playlist.id, &items) {
-        // 項目登録の失敗で空の一覧を残さない
-        let _ = db.playlist_delete(playlist.id);
-        return Err(e.into());
-    }
-    // INSERT OR IGNORE で既存項目は位置維持されるため実件数を取り直す
-    playlist.item_count = db.playlist_items(playlist.id)?.len() as i64;
+    let db = db.inner().clone();
+    let playlist = tokio::task::spawn_blocking(move || -> Result<Playlist, UiError> {
+        let mut playlist = db.playlist_create(&name)?;
+        if let Err(e) = db.playlist_add_many(playlist.id, &items) {
+            // 項目登録の失敗で空の一覧を残さない
+            let _ = db.playlist_delete(playlist.id);
+            return Err(e.into());
+        }
+        // INSERT OR IGNORE で既存項目は位置維持されるため実件数を取り直す
+        playlist.item_count = db.playlist_items(playlist.id)?.len() as i64;
+        Ok(playlist)
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??;
     let _ = app.emit("library://playlists_changed", &playlist);
     Ok(playlist)
 }

@@ -71,3 +71,27 @@ export function withTimeParam(url, seconds) {
   u.searchParams.set("t", String(Math.floor(seconds)));
   return u.toString();
 }
+
+/**
+ * 非同期コールバック呼び出しへタイムアウトと二重確定防止（settled ガード）を付ける。
+ * 期限までに完了しなければタイムアウトエラーで 1 回だけ onDone を呼び、
+ * その後遅れて到着した応答は無視する
+ */
+export function runWithTimeout(invokeFn, timeoutMs, onDone) {
+  let settled = false;
+  const finish = (err, response) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    onDone(err, response);
+  };
+  const timer = setTimeout(() => {
+    finish(
+      new Error(`Native Messaging ホストの応答がタイムアウトしました（${timeoutMs}ms）`),
+      null,
+    );
+  }, timeoutMs);
+  invokeFn((response, err) => {
+    finish(err ?? null, response);
+  });
+}

@@ -420,9 +420,10 @@ sequenceDiagram
     後から導入した場合はブラウザの初回起動後の本体起動で登録される）
   - 開発ビルド（`pnpm tauri dev`）も同じ処理で登録するため、最後に起動したバイナリのパスが有効になる
 - 拡張側：`nativeMessaging` 権限を足し、`sendNativeMessage` の応答で分岐する。
-  `chrome.runtime.lastError`（ホスト未登録など）か `ok: false` のときは、従来のスキーム方式でタブを**アクティブ**で開いてフォールバックし、バッジ `!` とツールチップに理由を出す。
+  `chrome.runtime.lastError`（ホスト未登録など）か `ok: false` のときは、従来のスキーム方式でタブを**アクティブ**で開いてフォールバックし、操作元の `tabId` が指定されている場合はそのタブ単位（未指定の全体操作時は拡張全体）でバッジ `!` とツールチップに理由を出す（仕様決定 DO）。
   フォールバックのスキーム URL も要求と同じ action で組み立てる（`queue` 操作は `yt-browser://queue?url=`、`playlist_add` 操作は `playlist_id` を付けた `yt-browser://playlist_add?url=`）。
-  成功時はバッジを消す。アクション実行はポップアップ（「yt-browser で開く」「再生位置を引き継いで開く」「キューに追加」「プレイリストへ追加」）になり、
+  成功時は該当タブのバッジを消し、`tabId` 指定のない操作の成功時は記録済みの全タブと拡張全体のバッジを消す。
+  アクション実行はポップアップ（「yt-browser で開く」「再生位置を引き継いで開く」「キューに追加」「プレイリストへ追加」）になり、
   プレイリスト単体のページではキュー追加・プレイリスト追加を無効化する（FR-29・FR-50、仕様決定 AX・CA）。
   ポップアップのプレイリスト選択肢は `list_playlists` の応答で埋め、失敗時は選択肢を無効のままにする
 
@@ -1478,6 +1479,9 @@ CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);
 CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
 CREATE UNIQUE INDEX idx_queue_state_playlist
   ON queue_state(playlist_id) WHERE playlist_id IS NOT NULL;
+CREATE INDEX idx_videos_meta_resolve
+  ON videos (first_seen_at DESC, video_id)
+  WHERE kind_state <> 1 OR (published_at IS NULL AND meta_checked = 0) OR description IS NULL;
 ```
 
 設計上の注意を二点置く。

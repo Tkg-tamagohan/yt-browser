@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t, TONE_MAPPING_MPV } from "$lib/i18n";
   import {
@@ -182,12 +182,30 @@
     selected === CUSTOM ? customFormat.trim() : selected,
   );
 
+  let disposed = false;
+  const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   function notify(msg: string): void {
-    notices = [...notices.slice(-4), msg];
-    setTimeout(() => {
-      notices = notices.filter((n) => n !== msg);
+    if (disposed) return;
+    const prevTimer = noticeTimers.get(msg);
+    if (prevTimer !== undefined) clearTimeout(prevTimer);
+    if (!notices.includes(msg)) {
+      notices = [...notices.slice(-4), msg];
+    }
+    const timer = setTimeout(() => {
+      noticeTimers.delete(msg);
+      if (!disposed) {
+        notices = notices.filter((n) => n !== msg);
+      }
     }, 6000);
+    noticeTimers.set(msg, timer);
   }
+
+  onDestroy(() => {
+    disposed = true;
+    for (const timer of noticeTimers.values()) clearTimeout(timer);
+    noticeTimers.clear();
+  });
 
   async function save(): Promise<void> {
     // 画質式が前回保存値から変わったときだけ適用する（カテゴリだけの保存で
@@ -609,219 +627,202 @@
     }
   }
 
+  const SETTING_KEYS = [
+    "quality.format",
+    "sponsor.categories",
+    "sponsor.show_segments",
+    "wheel.volume_delta",
+    "pip.default",
+    "pip.fit_aspect",
+    "pip.geometry",
+    "pip.quality.format",
+    "feed.show_shorts",
+    "feed.notify_new",
+    "feed.auto_read_played",
+    "feed.auto_read_days",
+    "live_wait.action",
+    "ui.shortcuts",
+    "chat.popup_show_author",
+    "chat.popup_font_size",
+    "chat.popup_opacity",
+    "player.initial_speed",
+    "player.initial_volume",
+    "window.screen",
+    "player.close_on_eof",
+    "ui.theme",
+    "ui.density",
+    "ui.language",
+    "hdr.tone_mapping",
+    "hdr.compute_peak",
+    "mpv.extra_args",
+    "mpv.network_timeout_ms",
+    "mpv.hwdec",
+    "ytdlp.path",
+    "ytdlp.po_token",
+  ] as const;
+
   onMount(async () => {
     await initPlayerEvents();
-    // モニター列挙は設定読み取りと独立して行う（失敗しても他設定を読む）
-    try {
-      monitors = await invoke<MonitorInfo[]>("monitor_list");
-    } catch {
-      monitors = [];
-    }
-    try {
-      const stored = await invoke<string | null>("settings_get", {
-        key: "quality.format",
-      });
-      if (stored) {
-        if (PRESETS.some((p) => p.format === stored)) {
-          selected = stored;
-        } else {
-          selected = CUSTOM;
-          customFormat = stored;
-        }
-      }
-      const sponsorRaw = await invoke<string | null>("settings_get", {
-        key: "sponsor.categories",
-      });
-      const sponsorShowRaw = await invoke<string | null>("settings_get", {
-        key: "sponsor.show_segments",
-      });
-      const wheelRaw = await invoke<string | null>("settings_get", {
-        key: "wheel.volume_delta",
-      });
-      const pipDefaultRaw = await invoke<string | null>("settings_get", {
-        key: "pip.default",
-      });
-      pipDefault = pipDefaultEnabled(pipDefaultRaw);
-      const pipFitAspectRaw = await invoke<string | null>("settings_get", {
-        key: "pip.fit_aspect",
-      });
-      pipFitAspect = pipFitAspectEnabled(pipFitAspectRaw);
-      const pipGeoRaw = await invoke<string | null>("settings_get", {
-        key: "pip.geometry",
-      });
-      if (pipGeoRaw !== null && isValidPipGeometry(pipGeoRaw.trim())) {
-        pipGeometry = pipGeoRaw.trim();
-      }
-      const pipQualityRaw = await invoke<string | null>("settings_get", {
-        key: "pip.quality.format",
-      });
-      if (pipQualityRaw !== null) {
-        pipQuality = pipQualityRaw.trim();
-      }
-      const feedShortsRaw = await invoke<string | null>("settings_get", {
-        key: "feed.show_shorts",
-      });
-      feedShowShorts = feedShowShortsEnabled(feedShortsRaw);
-      // feed.notify_new / feed.auto_read_*（FR-58・FR-64、仕様決定 CI・CO）。
-      // 解釈は Rust 側と同じで、未設定・その他の値は既定（off / 0=無効）
-      const notifyNewRaw = await invoke<string | null>("settings_get", {
-        key: "feed.notify_new",
-      });
-      feedNotifyNew = feedNotifyNewEnabled(notifyNewRaw);
-      const autoReadPlayedRaw = await invoke<string | null>("settings_get", {
-        key: "feed.auto_read_played",
-      });
-      feedAutoReadPlayed = feedAutoReadPlayedEnabled(autoReadPlayedRaw);
-      const autoReadDaysRaw = await invoke<string | null>("settings_get", {
-        key: "feed.auto_read_days",
-      });
-      feedAutoReadDays = parseFeedAutoReadDays(autoReadDaysRaw);
-      const liveWaitRaw = await invoke<string | null>("settings_get", {
-        key: "live_wait.action",
-      });
-      // 未設定・その他の値は play（仕様決定 BT(3) の既定）
-      liveWaitAction = liveWaitRaw?.trim() === "notify" ? "notify" : "play";
-      // ui.shortcuts（FR-79、仕様決定 DD）。解釈は feed.* 系の on/off と同じ
-      const shortcutsRaw = await invoke<string | null>("settings_get", {
-        key: "ui.shortcuts",
-      });
-      shortcutsOn = parseShortcutsEnabled(shortcutsRaw);
-      // chat.popup_*（FR-68、仕様決定 CS）。投稿者名は on 系のみ表示、
-      // 文字サイズ・不透明度は保存文字列をそのまま欄に戻す
-      const chatAuthorRaw = await invoke<string | null>("settings_get", {
-        key: "chat.popup_show_author",
-      });
-      chatShowAuthor = popupShowAuthorEnabled(chatAuthorRaw);
-      const chatFontRaw = await invoke<string | null>("settings_get", {
-        key: "chat.popup_font_size",
-      });
-      if (chatFontRaw !== null) {
-        chatFontSize = chatFontRaw.trim();
-      }
-      const chatOpacityRaw = await invoke<string | null>("settings_get", {
-        key: "chat.popup_opacity",
-      });
-      if (chatOpacityRaw !== null) {
-        chatOpacity = chatOpacityRaw.trim();
-      }
-      const initialSpeedRaw = await invoke<string | null>("settings_get", {
-        key: "player.initial_speed",
-      });
-      if (initialSpeedRaw !== null) {
-        initialSpeed = initialSpeedRaw.trim();
-      }
-      const initialVolumeRaw = await invoke<string | null>("settings_get", {
-        key: "player.initial_volume",
-      });
-      if (initialVolumeRaw !== null) {
-        initialVolume = initialVolumeRaw.trim();
-      }
-      const screenRaw = await invoke<string | null>("settings_get", {
-        key: "window.screen",
-      });
-      if (screenRaw !== null) {
-        windowScreen = screenRaw.trim();
-      }
-      // player.close_on_eof（FR-43、仕様決定 BS）。解釈は Rust 側と同じ
-      // 明示的な on 系値のみで、未設定・その他は off（既定）
-      const closeEofRaw = await invoke<string | null>("settings_get", {
-        key: "player.close_on_eof",
-      });
-      closeOnEof = closeOnEofEnabled(closeEofRaw);
-      // ui.theme / ui.density / ui.language（FR-76・FR-77・FR-81、
-      // 仕様決定 DA・DB・DF）。未設定・その他の値は既定（dark / comfortable / ja）
-      const uiThemeRaw = await invoke<string | null>("settings_get", {
-        key: "ui.theme",
-      });
-      uiTheme = parseUiTheme(uiThemeRaw);
-      const uiDensityRaw = await invoke<string | null>("settings_get", {
-        key: "ui.density",
-      });
-      uiDensity = parseUiDensity(uiDensityRaw);
-      const uiLanguageRaw = await invoke<string | null>("settings_get", {
-        key: "ui.language",
-      });
-      uiLanguage = parseUiLanguage(uiLanguageRaw);
-      const toneRaw = await invoke<string | null>("settings_get", {
-        key: "hdr.tone_mapping",
-      });
-      if (toneRaw !== null) {
-        const v = toneRaw.trim();
-        // DB には mpv の値（bt.2390 等）が入るので、選択肢 ID へ逆引きする
-        const id = Object.entries(TONE_MAPPING_MPV).find(
-          ([, mpv]) => mpv === v,
-        )?.[0];
-        if (TONE_MAPPINGS.includes(v)) {
-          toneMapping = v;
-        } else if (id) {
-          toneMapping = id;
-        }
-      }
-      const peakRaw = await invoke<string | null>("settings_get", {
-        key: "hdr.compute_peak",
-      });
-      if (peakRaw !== null && ["auto", "yes", "no"].includes(peakRaw.trim())) {
-        computePeak = peakRaw.trim();
-      }
-      const extraRaw = await invoke<string | null>("settings_get", {
-        key: "mpv.extra_args",
-      });
-      if (extraRaw !== null) {
-        mpvExtraArgs = extraRaw;
-      }
-      const ntRaw = await invoke<string | null>("settings_get", {
-        key: "mpv.network_timeout_ms",
-      });
-      if (ntRaw !== null) {
-        mpvNetworkTimeout = ntRaw.trim();
-      }
-      const hwRaw = await invoke<string | null>("settings_get", {
-        key: "mpv.hwdec",
-      });
-      if (
-        hwRaw !== null &&
-        (HWDEC_MODES as readonly string[]).includes(hwRaw.trim())
-      ) {
-        mpvHwdec = hwRaw.trim();
-      }
-      // ytdlp.path（FR-72、仕様決定 CW）。空・未設定は自動検出
-      const ytdlpPathRaw = await invoke<string | null>("settings_get", {
-        key: "ytdlp.path",
-      });
-      if (ytdlpPathRaw !== null) {
-        ytdlpPath = ytdlpPathRaw.trim();
-      }
-      // ytdlp.po_token（FR-86、仕様決定 DK）。空・未設定は未設定
-      const poTokenRaw = await invoke<string | null>("settings_get", {
-        key: "ytdlp.po_token",
-      });
-      if (poTokenRaw !== null) {
-        poToken = poTokenRaw.trim();
-      }
-      if (wheelRaw !== null) {
-        const n = Number(wheelRaw);
-        if (Number.isFinite(n)) wheelDelta = n;
-      }
-      // 未設定・その他の値は on（仕様決定 BI）
-      sponsorShowSegments = sponsorShowRaw !== "off";
-      if (sponsorRaw) {
+    let readFailed = 0;
+    const values = new Map<(typeof SETTING_KEYS)[number], string | null>();
+    // モニター列挙と全設定キーの読み取りを並列化し、起動待ちを短縮する
+    await Promise.all([
+      invoke<MonitorInfo[]>("monitor_list")
+        .then((list) => {
+          if (!disposed) monitors = list;
+        })
+        .catch(() => {
+          if (!disposed) monitors = [];
+        }),
+      ...SETTING_KEYS.map(async (key) => {
         try {
-          const parsed = JSON.parse(sponsorRaw) as Record<string, string>;
-          sponsorActions = {
-            ...sponsorActions,
-            ...Object.fromEntries(
-              SPONSOR_CATEGORIES.filter((c) => c in parsed).map((c) => [
-                c,
-                parsed[c],
-              ]),
-            ),
-          };
+          const val = await invoke<string | null>("settings_get", { key });
+          values.set(key, val);
         } catch {
-          // JSON 壊れは既定のままにする
+          readFailed += 1;
+          values.set(key, null);
         }
+      }),
+    ]);
+    if (disposed) return;
+
+    const raw = (key: (typeof SETTING_KEYS)[number]): string | null =>
+      values.get(key) ?? null;
+
+    const stored = raw("quality.format");
+    if (stored) {
+      if (PRESETS.some((p) => p.format === stored)) {
+        selected = stored;
+      } else {
+        selected = CUSTOM;
+        customFormat = stored;
       }
-    } catch {
-      // 読み取り失敗時はプリセット既定のままにする
+    }
+    const sponsorRaw = raw("sponsor.categories");
+    const sponsorShowRaw = raw("sponsor.show_segments");
+    const wheelRaw = raw("wheel.volume_delta");
+    pipDefault = pipDefaultEnabled(raw("pip.default"));
+    pipFitAspect = pipFitAspectEnabled(raw("pip.fit_aspect"));
+    const pipGeoRaw = raw("pip.geometry");
+    if (pipGeoRaw !== null && isValidPipGeometry(pipGeoRaw.trim())) {
+      pipGeometry = pipGeoRaw.trim();
+    }
+    const pipQualityRaw = raw("pip.quality.format");
+    if (pipQualityRaw !== null) {
+      pipQuality = pipQualityRaw.trim();
+    }
+    feedShowShorts = feedShowShortsEnabled(raw("feed.show_shorts"));
+    // feed.notify_new / feed.auto_read_*（FR-58・FR-64、仕様決定 CI・CO）。
+    // 解釈は Rust 側と同じで、未設定・その他の値は既定（off / 0=無効）
+    feedNotifyNew = feedNotifyNewEnabled(raw("feed.notify_new"));
+    feedAutoReadPlayed = feedAutoReadPlayedEnabled(raw("feed.auto_read_played"));
+    feedAutoReadDays = parseFeedAutoReadDays(raw("feed.auto_read_days"));
+    const liveWaitRaw = raw("live_wait.action");
+    // 未設定・その他の値は play（仕様決定 BT(3) の既定）
+    liveWaitAction = liveWaitRaw?.trim() === "notify" ? "notify" : "play";
+    // ui.shortcuts（FR-79、仕様決定 DD）。解釈は feed.* 系の on/off と同じ
+    shortcutsOn = parseShortcutsEnabled(raw("ui.shortcuts"));
+    // chat.popup_*（FR-68、仕様決定 CS）。投稿者名は on 系のみ表示、
+    // 文字サイズ・不透明度は保存文字列をそのまま欄に戻す
+    chatShowAuthor = popupShowAuthorEnabled(raw("chat.popup_show_author"));
+    const chatFontRaw = raw("chat.popup_font_size");
+    if (chatFontRaw !== null) {
+      chatFontSize = chatFontRaw.trim();
+    }
+    const chatOpacityRaw = raw("chat.popup_opacity");
+    if (chatOpacityRaw !== null) {
+      chatOpacity = chatOpacityRaw.trim();
+    }
+    const initialSpeedRaw = raw("player.initial_speed");
+    if (initialSpeedRaw !== null) {
+      initialSpeed = initialSpeedRaw.trim();
+    }
+    const initialVolumeRaw = raw("player.initial_volume");
+    if (initialVolumeRaw !== null) {
+      initialVolume = initialVolumeRaw.trim();
+    }
+    const screenRaw = raw("window.screen");
+    if (screenRaw !== null) {
+      windowScreen = screenRaw.trim();
+    }
+    // player.close_on_eof（FR-43、仕様決定 BS）。解釈は Rust 側と同じ
+    // 明示的な on 系値のみで、未設定・その他は off（既定）
+    closeOnEof = closeOnEofEnabled(raw("player.close_on_eof"));
+    // ui.theme / ui.density / ui.language（FR-76・FR-77・FR-81、
+    // 仕様決定 DA・DB・DF）。未設定・その他の値は既定（dark / comfortable / ja）
+    uiTheme = parseUiTheme(raw("ui.theme"));
+    uiDensity = parseUiDensity(raw("ui.density"));
+    uiLanguage = parseUiLanguage(raw("ui.language"));
+    const toneRaw = raw("hdr.tone_mapping");
+    if (toneRaw !== null) {
+      const v = toneRaw.trim();
+      // DB には mpv の値（bt.2390 等）が入るので、選択肢 ID へ逆引きする
+      const id = Object.entries(TONE_MAPPING_MPV).find(
+        ([, mpv]) => mpv === v,
+      )?.[0];
+      if (TONE_MAPPINGS.includes(v)) {
+        toneMapping = v;
+      } else if (id) {
+        toneMapping = id;
+      }
+    }
+    const peakRaw = raw("hdr.compute_peak");
+    if (peakRaw !== null && ["auto", "yes", "no"].includes(peakRaw.trim())) {
+      computePeak = peakRaw.trim();
+    }
+    const extraRaw = raw("mpv.extra_args");
+    if (extraRaw !== null) {
+      mpvExtraArgs = extraRaw;
+    }
+    const ntRaw = raw("mpv.network_timeout_ms");
+    if (ntRaw !== null) {
+      mpvNetworkTimeout = ntRaw.trim();
+    }
+    const hwRaw = raw("mpv.hwdec");
+    if (
+      hwRaw !== null &&
+      (HWDEC_MODES as readonly string[]).includes(hwRaw.trim())
+    ) {
+      mpvHwdec = hwRaw.trim();
+    }
+    // ytdlp.path（FR-72、仕様決定 CW）。空・未設定は自動検出
+    const ytdlpPathRaw = raw("ytdlp.path");
+    if (ytdlpPathRaw !== null) {
+      ytdlpPath = ytdlpPathRaw.trim();
+    }
+    // ytdlp.po_token（FR-86、仕様決定 DK）。空・未設定は未設定
+    const poTokenRaw = raw("ytdlp.po_token");
+    if (poTokenRaw !== null) {
+      poToken = poTokenRaw.trim();
+    }
+    if (wheelRaw !== null) {
+      const n = Number(wheelRaw);
+      if (Number.isFinite(n)) wheelDelta = n;
+    }
+    // 未設定・その他の値は on（仕様決定 BI）
+    sponsorShowSegments = sponsorShowRaw !== "off";
+    if (sponsorRaw) {
+      try {
+        const parsed = JSON.parse(sponsorRaw) as Record<string, string>;
+        sponsorActions = {
+          ...sponsorActions,
+          ...Object.fromEntries(
+            SPONSOR_CATEGORIES.filter((c) => c in parsed).map((c) => [
+              c,
+              parsed[c],
+            ]),
+          ),
+        };
+      } catch {
+        // JSON 壊れは既定のままにする
+      }
+    }
+    if (readFailed > 0) {
+      notify(
+        t("settings.failed", {
+          message: `設定の読み取りに一部失敗しました（${readFailed} 件）`,
+        }),
+      );
     }
     persistedFormat =
       selected === CUSTOM ? customFormat.trim() : selected;

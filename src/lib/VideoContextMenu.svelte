@@ -5,7 +5,10 @@
   // メニューを出す。メニュー部品は行アクション「＋」と同じ
   // VideoActionsMenu をそのまま使う（メニュー部品の共用）
   import { page } from "$app/state";
-  import { contextMenuPos } from "$lib/context-menu-logic";
+  import {
+    contextMenuMaxHeight,
+    contextMenuPos,
+  } from "$lib/context-menu-logic";
   import {
     closeVideoContextMenu,
     videoContextMenu,
@@ -15,25 +18,50 @@
 
   let menuEl = $state<HTMLElement | null>(null);
 
+  let resizeTick = $state(0);
+  $effect(() => {
+    if (videoContextMenu.current === null) return;
+    const onResize = () => {
+      resizeTick += 1;
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  });
+
   // ビューポートの右端・下端をはみ出す場合は内側へ折り返す
   // （概算寸法で決める。context-menu-logic.ts、VC-NN 系テスト）
-  let pos = $derived(
-    videoContextMenu.current === null
-      ? { x: 0, y: 0 }
-      : contextMenuPos(
-          videoContextMenu.current.x,
-          videoContextMenu.current.y,
-          window.innerWidth,
-          window.innerHeight,
-        ),
-  );
+  let pos = $derived.by(() => {
+    void resizeTick;
+    if (videoContextMenu.current === null) return { x: 0, y: 0 };
+    return contextMenuPos(
+      videoContextMenu.current.x,
+      videoContextMenu.current.y,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  });
+
+  let maxHeight = $derived.by(() => {
+    void resizeTick;
+    if (videoContextMenu.current === null) return 0;
+    return contextMenuMaxHeight(pos.y, window.innerHeight);
+  });
 
   // メニュー外のポインタ操作（左クリック・右クリックどちらでも）で閉じる。
   // キャプチャ相で拾い、行の右クリックハンドラより先に判定しても
-  // メニュー内のイベントは閉じ対象にしない
+  // メニュー内や開いたトリガーボタンのイベントは閉じ対象にしない
   function onPointerDown(e: PointerEvent): void {
-    if (menuEl !== null && e.target instanceof Node && menuEl.contains(e.target)) {
-      return;
+    const target = e.target;
+    if (target instanceof Node) {
+      if (menuEl !== null && menuEl.contains(target)) {
+        return;
+      }
+      if (
+        videoContextMenu.current?.triggerEl != null &&
+        videoContextMenu.current.triggerEl.contains(target)
+      ) {
+        return;
+      }
     }
     closeVideoContextMenu();
   }
@@ -73,14 +101,28 @@
 <div
   class="vctx"
   class:hidden={videoContextMenu.current === null}
-  style="left: {pos.x}px; top: {pos.y}px;"
+  style="left: {pos.x}px; top: {pos.y}px; --vctx-max-h: {maxHeight}px;"
   bind:this={menuEl}
 >
   <VideoActionsMenu
     video={videoContextMenu.current?.video ?? emptyVideo}
-    playlists={videoContextMenu.current?.va.playlists ?? []}
+    playlists={videoContextMenu.current?.va
+      ? videoContextMenu.current.va.playlists
+      : (videoContextMenu.current?.playlists ?? [])}
     floating
-    onplaylistcreated={videoContextMenu.current?.va.onPlaylistCreated}
+    onplaylistcreated={(pl) => {
+      if (videoContextMenu.current?.va) {
+        videoContextMenu.current.va.onPlaylistCreated(pl);
+      } else {
+        if (videoContextMenu.current?.playlists) {
+          videoContextMenu.current.playlists = [
+            ...videoContextMenu.current.playlists,
+            pl,
+          ];
+        }
+        videoContextMenu.current?.onPlaylistCreated?.(pl);
+      }
+    }}
     onplaylistadd={videoContextMenu.current?.onplaylistadd}
     onclose={closeVideoContextMenu}
   />

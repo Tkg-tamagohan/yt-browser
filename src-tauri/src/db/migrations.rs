@@ -488,4 +488,13 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "videos_description",
         sql: "ALTER TABLE videos ADD COLUMN description TEXT;",
     },
+    // Step 2a: meta_resolve_targets が参照する未解決動画抽出の部分インデックス。
+    // WHERE 条件を固定して動画台帳の肥大化後もインデックス走査に収める
+    Migration {
+        version: 23,
+        name: "videos_meta_resolve_idx",
+        sql: "CREATE INDEX idx_videos_meta_resolve
+  ON videos (first_seen_at DESC, video_id)
+  WHERE kind_state <> 1 OR (published_at IS NULL AND meta_checked = 0) OR description IS NULL;",
+    },
 ];
