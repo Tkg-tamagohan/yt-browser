@@ -174,6 +174,9 @@ pub(crate) struct MpvPlayer {
     /// SponsorBlock 状態世代。動画切替・再起動でインクリメントし、飛行中の seek が
     /// 切替後の動画へ副作用を及ぼさないようにする。
     sponsor_gen: AtomicU64,
+    /// 動画切替（`load_video` / `respawn`）と SponsorBlock 予約シークの境界を
+    /// 直列化し、切替後の次動画へ旧動画のスキップシークが送られないようにする。
+    video_switch_op: tokio::sync::Mutex<()>,
     /// wheel.lua（ホイール・コマ送り無音化スクリプト）を mpv に読み込ませたか。
     /// 書き出し失敗で未搭載のとき、UI のコマ送りは無音化なしの
     /// `frame-step` 直送信へ縮退する（無応答にならないためのフォールバック）。
@@ -487,6 +490,7 @@ impl MpvPlayer {
             pip_op: tokio::sync::Mutex::new(()),
             pip_reapply_seq: AtomicU64::new(0),
             sponsor_gen: AtomicU64::new(0),
+            video_switch_op: tokio::sync::Mutex::new(()),
             armed: Mutex::new(ArmedQueue::default()),
             has_wheel_script: opts.wheel_script.is_some(),
         });
@@ -719,6 +723,8 @@ impl MpvPlayer {
     /// 失敗時は呼び出し側が打ち切り（終端 reason=error 経路）を決める。
     pub(crate) async fn respawn(self: &Arc<Self>) -> Result<(), MpvError> {
         let _op = self.respawn_op.lock().await;
+        // 旧プロセスの wedge IPC を切る前に SponsorBlock 予約を無効化しておく
+        self.sponsor_gen.fetch_add(1, Ordering::SeqCst);
         // 先に旧ポンプを止める: kill で上がる Disconnected を本物の終端に
         // しないため。ended_tx は保持するので emitter の購読は維持される
         self.abort_pump().await;
@@ -747,6 +753,7 @@ impl MpvPlayer {
         );
 
         let (child, ipc, ev_rx) = launch(&self.socket_path, &args, OBSERVED_PROPERTIES).await?;
+        let _switch = self.video_switch_op.lock().await;
         *self.ipc.write().await = ipc;
         *self.child.lock().await = child;
         *self.pump.lock().await = Some(tokio::spawn(event_pump(self.clone(), ev_rx)));
@@ -757,7 +764,6 @@ impl MpvPlayer {
         // 再起動カウンタが毎回リセットされるため、ここで消す
         self.terminal.reset();
         *lock(&self.last_healthy) = None;
-        self.sponsor_gen.fetch_add(1, Ordering::Relaxed);
         *lock(&self.sponsor) = SponsorState::default();
         *lock(&self.video_aspect) = None;
         // PiP 起動時は --geometry で適用済みの値を記録する（spawn と同じ要領）
@@ -800,6 +806,11 @@ impl MpvPlayer {
     /// 呼び出し側が begin_replace で抑止する前提で、ここでは張らない。
     /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
     pub(crate) async fn load_video(&self, video_id: &str, start_sec: f64) -> Result<(), MpvError> {
+        // 旧動画の SponsorBlock 予約シークが次動画へ誤発火しないよう即座に無効化し、
+        // 実行中のスキップシークがあれば完了を待ってから loadfile を発行する。
+        self.sponsor_gen.fetch_add(1, Ordering::SeqCst);
+        let _switch = self.video_switch_op.lock().await;
+        *lock(&self.sponsor) = SponsorState::default();
         let url = format!("https://www.youtube.com/watch?v={video_id}");
         let options = json!({ "start": format!("{start_sec}") });
         self.arm_load(&url, options.clone());
@@ -832,8 +843,6 @@ impl MpvPlayer {
             st.sub_tracks.clear();
             st.sid = "auto".to_string();
         }
-        self.sponsor_gen.fetch_add(1, Ordering::Relaxed);
-        *lock(&self.sponsor) = SponsorState::default();
         Ok(())
     }
 
@@ -1556,6 +1565,58 @@ fn emit_sponsor_skipped(player: &MpvPlayer, seg: &crate::sponsor::ActiveSegment)
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SponsorSkipOutcome {
+    Stale,
+    Applied,
+    Failed,
+}
+
+/// 動画切替ロック（`video_switch_op`）と世代番号（`sponsor_gen`）を照合したうえで
+/// SponsorBlock のスキップシークを実行し、切替後動画への誤シークと状態汚染を防ぐ。
+async fn execute_sponsor_skip<F, Fut, E>(
+    sponsor: &Mutex<SponsorState>,
+    sponsor_gen: &AtomicU64,
+    video_switch_op: &tokio::sync::Mutex<()>,
+    gen: u64,
+    seg_idx: usize,
+    send_seek: F,
+) -> SponsorSkipOutcome
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
+    let _switch = video_switch_op.lock().await;
+    if sponsor_gen.load(Ordering::Acquire) != gen {
+        return SponsorSkipOutcome::Stale;
+    }
+    match send_seek().await {
+        Ok(()) => {
+            if sponsor_gen.load(Ordering::Acquire) != gen {
+                return SponsorSkipOutcome::Stale;
+            }
+            {
+                let mut sp = lock(sponsor);
+                sp.backoff.remove(&seg_idx);
+                sp.fired.insert(seg_idx);
+            }
+            SponsorSkipOutcome::Applied
+        }
+        Err(e) => {
+            if sponsor_gen.load(Ordering::Acquire) != gen {
+                return SponsorSkipOutcome::Stale;
+            }
+            // 失敗時は発火済みにせず通知も出さない。短いバックオフ後に再試行する
+            tracing::warn!(error = %e, "SponsorBlock スキップの seek に失敗");
+            lock(sponsor)
+                .backoff
+                .insert(seg_idx, Instant::now() + SPONSOR_RETRY_BACKOFF);
+            SponsorSkipOutcome::Failed
+        }
+    }
+}
+
 /// time-pos が SponsorBlock 区間に入ったときの処理（設計書 §4.4）。
 /// Skip は区間末尾への seek をバックグラウンドで実行して `sponsor://skipped`、
 /// Notify は同イベントを即時に通知だけ送る。
@@ -1563,9 +1624,9 @@ fn emit_sponsor_skipped(player: &MpvPlayer, seg: &crate::sponsor::ActiveSegment)
 /// 発火済み区間とバックオフ中の区間は `next_candidate` が除外するので、
 /// 区間が重なっていても未発火の候補に到達できる。
 fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
-    let gen = player.sponsor_gen.load(Ordering::Relaxed);
     let picked = {
         let mut sp = lock(&player.sponsor);
+        let gen = player.sponsor_gen.load(Ordering::Acquire);
         crate::sponsor::next_candidate(&sp.segments, &sp.fired, &sp.backoff, pos).map(|i| {
             match sp.segments[i].action {
                 crate::sponsor::CategoryAction::Notify => {
@@ -1578,35 +1639,24 @@ fn sponsor_check(player: &Arc<MpvPlayer>, pos: f64) {
                 }
                 crate::sponsor::CategoryAction::Off => {}
             }
-            (i, sp.segments[i].clone())
+            (gen, i, sp.segments[i].clone())
         })
     };
-    let Some((i, seg)) = picked else { return };
+    let Some((gen, i, seg)) = picked else { return };
     if seg.action == crate::sponsor::CategoryAction::Skip {
         let p = Arc::clone(player);
         tokio::spawn(async move {
-            match p.control(&PlayerAction::Seek { seconds: seg.end }).await {
-                Ok(()) => {
-                    if p.sponsor_gen.load(Ordering::Relaxed) != gen {
-                        return;
-                    }
-                    {
-                        let mut sp = lock(&p.sponsor);
-                        sp.backoff.remove(&i);
-                        sp.fired.insert(i);
-                    }
-                    emit_sponsor_skipped(&p, &seg);
-                }
-                Err(e) => {
-                    if p.sponsor_gen.load(Ordering::Relaxed) != gen {
-                        return;
-                    }
-                    // 失敗時は発火済みにせず通知も出さない。短いバックオフ後に再試行する
-                    tracing::warn!(error = %e, "SponsorBlock スキップの seek に失敗");
-                    lock(&p.sponsor)
-                        .backoff
-                        .insert(i, Instant::now() + SPONSOR_RETRY_BACKOFF);
-                }
+            let outcome = execute_sponsor_skip(
+                &p.sponsor,
+                &p.sponsor_gen,
+                &p.video_switch_op,
+                gen,
+                i,
+                || async { p.control(&PlayerAction::Seek { seconds: seg.end }).await },
+            )
+            .await;
+            if outcome == SponsorSkipOutcome::Applied {
+                emit_sponsor_skipped(&p, &seg);
             }
         });
         return;
@@ -1833,5 +1883,120 @@ mod tests {
             let args = mpv_args(&opts, socket, None);
             assert!(args.iter().all(|a| !a.starts_with("--ytdl-raw-options=")));
         }
+    }
+
+    /// SponsorBlock シーク: EOF 直前に予約されたスキップが load_video による切替後に
+    /// 実行機会を得た場合、世代不一致でシーク送信を抑止する。
+    #[tokio::test]
+    async fn sponsor_skip_aborts_after_eof_video_switch() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let sponsor = Arc::new(Mutex::new(super::SponsorState::default()));
+        let sponsor_gen = Arc::new(AtomicU64::new(0));
+        let switch_op = Arc::new(tokio::sync::Mutex::new(()));
+
+        // 切替開始（load_video 相当）が先に世代を進め、ロックを保持している状態を作る
+        let switch_guard = switch_op.lock().await;
+        sponsor_gen.fetch_add(1, Ordering::SeqCst);
+
+        let seek_sent = Arc::new(AtomicBool::new(false));
+        let skip_task = {
+            let sponsor = Arc::clone(&sponsor);
+            let sponsor_gen = Arc::clone(&sponsor_gen);
+            let switch_op = Arc::clone(&switch_op);
+            let seek_sent = Arc::clone(&seek_sent);
+            tokio::spawn(async move {
+                super::execute_sponsor_skip(
+                    &sponsor,
+                    &sponsor_gen,
+                    &switch_op,
+                    0,
+                    0,
+                    || async move {
+                        seek_sent.store(true, Ordering::SeqCst);
+                        Ok::<(), &'static str>(())
+                    },
+                )
+                .await
+            })
+        };
+
+        // 切替を完了してロックを解放したあと、予約済みスキップは stale 終了する
+        *super::lock(&sponsor) = super::SponsorState::default();
+        drop(switch_guard);
+
+        let outcome = skip_task.await.unwrap();
+        assert_eq!(outcome, super::SponsorSkipOutcome::Stale);
+        assert!(!seek_sent.load(Ordering::SeqCst));
+        assert!(super::lock(&sponsor).fired.is_empty());
+    }
+
+    /// SponsorBlock シーク: 先行してシーク IPC 送信に入ったスキップがある場合、
+    /// load_video の loadfile 相当処理はスキップシーク完了まで待機する。
+    #[tokio::test]
+    async fn sponsor_skip_inflight_finishes_before_video_switch_load() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let sponsor = Arc::new(Mutex::new(super::SponsorState::default()));
+        let sponsor_gen = Arc::new(AtomicU64::new(0));
+        let switch_op = Arc::new(tokio::sync::Mutex::new(()));
+
+        let seek_entered = Arc::new(tokio::sync::Notify::new());
+        let allow_seek_finish = Arc::new(tokio::sync::Notify::new());
+        let loadfile_ran = Arc::new(AtomicBool::new(false));
+        let seek_finished_before_load = Arc::new(AtomicBool::new(false));
+
+        let skip_task = {
+            let sponsor = Arc::clone(&sponsor);
+            let sponsor_gen = Arc::clone(&sponsor_gen);
+            let switch_op = Arc::clone(&switch_op);
+            let seek_entered = Arc::clone(&seek_entered);
+            let allow_seek_finish = Arc::clone(&allow_seek_finish);
+            let loadfile_ran = Arc::clone(&loadfile_ran);
+            let seek_finished_before_load = Arc::clone(&seek_finished_before_load);
+            tokio::spawn(async move {
+                super::execute_sponsor_skip(
+                    &sponsor,
+                    &sponsor_gen,
+                    &switch_op,
+                    0,
+                    0,
+                    || async move {
+                        seek_entered.notify_one();
+                        allow_seek_finish.notified().await;
+                        seek_finished_before_load
+                            .store(!loadfile_ran.load(Ordering::SeqCst), Ordering::SeqCst);
+                        Ok::<(), &'static str>(())
+                    },
+                )
+                .await
+            })
+        };
+
+        seek_entered.notified().await;
+
+        let switch_task = {
+            let sponsor_gen = Arc::clone(&sponsor_gen);
+            let switch_op = Arc::clone(&switch_op);
+            let loadfile_ran = Arc::clone(&loadfile_ran);
+            tokio::spawn(async move {
+                sponsor_gen.fetch_add(1, Ordering::SeqCst);
+                let _g = switch_op.lock().await;
+                loadfile_ran.store(true, Ordering::SeqCst);
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!loadfile_ran.load(Ordering::SeqCst));
+
+        allow_seek_finish.notify_one();
+        let outcome = skip_task.await.unwrap();
+        switch_task.await.unwrap();
+
+        assert!(seek_finished_before_load.load(Ordering::SeqCst));
+        assert!(loadfile_ran.load(Ordering::SeqCst));
+        assert_eq!(outcome, super::SponsorSkipOutcome::Stale);
     }
 }
