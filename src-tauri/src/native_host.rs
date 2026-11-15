@@ -11,9 +11,12 @@
 //!   URL を取らない `{"action": "list_playlists"}`（拡張側の選択肢表示用）。
 //!   応答は `{"ok": true}` か `{"ok": false, "error": "<コード>"}` で、
 //!   `list_playlists` だけは `{"ok": true, "playlists": [{"id","name"}]}` を返す
-//! - 起動：`yt-browser://<action>?url=<encoded>` を OS の既定ハンドラで開く。
-//!   以降は既存の deep link 受信経路（未起動なら起動、起動中なら
-//!   single-instance で転送）に乗る
+//! - 起動：まず起動中の本体が待つローカル IPC（Windows は名前付きパイプ
+//!   `\\.\pipe\io.github.tkg-tamagohan.yt-browser-nm-ipc`、Linux は
+//!   `<app_data_dir>/native-ipc.sock`）へ `yt-browser://<action>?url=<encoded>`
+//!   を直接送る。未起動等で失敗したときは本体バイナリを直接起動し、
+//!   それも失敗したときだけ OS の既定ハンドラ（`open::that_detached`）へ
+//!   フォールバックする
 //! - `list_playlists`：本体の DB を読み取り専用で開き、`playlists` 表を
 //!   `playlist_list` と同じ順（`ORDER BY sort_order, id`）で読む。
 //!   DB への書き込み経路は持たない（仕様決定 AX の方針を維持）
@@ -38,6 +41,16 @@ pub const EXTENSION_ID: &str = "hmfhiknpeefgjdmkjoofahdpkflfnkdl";
 
 /// 受け取るメッセージの上限。要求は URL 1 本なので小さく抑える。
 const MAX_MESSAGE_LEN: u32 = 64 * 1024;
+
+/// 本体プロセスとのローカル IPC に使うエンドポイント名（Windows 名前付きパイプ）。
+#[cfg(windows)]
+pub const LOCAL_IPC_PIPE: &str = r"\\.\pipe\io.github.tkg-tamagohan.yt-browser-nm-ipc";
+
+/// 本体プロセスとのローカル IPC に使う Unix ドメインソケットのパス。
+#[cfg(unix)]
+pub fn local_ipc_socket_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("native-ipc.sock")
+}
 
 /// スキームアクション（FR-29、仕様決定 AX）。`open` は再生・取り込み、
 /// `queue` は一時キューへの追加（再生しない）、`playlist_add` はプレイリスト
@@ -91,11 +104,7 @@ pub fn run_host() -> i32 {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let response = match read_message(&mut stdin.lock()) {
-        Ok(body) => handle_request(
-            &body,
-            |url| open::that_detached(url),
-            read_playlists_default,
-        ),
+        Ok(body) => handle_request(&body, deliver_scheme_url, read_playlists_default),
         Err(e) => {
             eprintln!("yt-browser native host: 要求を読めません: {e}");
             Response::Error(ErrorCode::InvalidMessage)
@@ -111,6 +120,287 @@ pub fn run_host() -> i32 {
         return 1;
     }
     code
+}
+
+/// スキーム URL を「1) ローカル IPC 直接送信 → 2) 本体バイナリ直接 spawn →
+/// 3) OS 既定ハンドラ」の順で配送する（単体検証用に各段階を差し替え可能）。
+pub fn deliver_scheme_url_with<I, S, O>(
+    scheme_url: &str,
+    try_ipc: I,
+    try_spawn: S,
+    try_open: O,
+) -> io::Result<()>
+where
+    I: FnOnce(&str) -> io::Result<()>,
+    S: FnOnce(&str) -> io::Result<()>,
+    O: FnOnce(&str) -> io::Result<()>,
+{
+    if try_ipc(scheme_url).is_ok() {
+        return Ok(());
+    }
+    if try_spawn(scheme_url).is_ok() {
+        return Ok(());
+    }
+    try_open(scheme_url)
+}
+
+fn deliver_scheme_url(scheme_url: &str) -> io::Result<()> {
+    deliver_scheme_url_with(scheme_url, try_send_local_ipc, try_spawn_binary, |url| {
+        open::that_detached(url)
+    })
+}
+
+/// Windows 名前付きパイプへ 1 行のスキーム URL を送る。
+/// `ERROR_PIPE_BUSY`（231）のときは最大 500ms（25ms 間隔）まで待機して再試行する。
+#[cfg(windows)]
+pub fn send_local_ipc_windows(pipe_name: &str, scheme_url: &str) -> io::Result<()> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let mut file = loop {
+        match std::fs::OpenOptions::new().write(true).open(pipe_name) {
+            Ok(f) => break f,
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    writeln!(file, "{scheme_url}")?;
+    file.flush()
+}
+
+/// Unix ドメインソケットへ 1 行のスキーム URL を送る。
+#[cfg(unix)]
+pub fn send_local_ipc_unix(sock_path: &Path, scheme_url: &str) -> io::Result<()> {
+    let mut stream = std::os::unix::net::UnixStream::connect(sock_path)?;
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+    writeln!(stream, "{scheme_url}")?;
+    stream.flush()
+}
+
+fn try_send_local_ipc(scheme_url: &str) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        send_local_ipc_windows(LOCAL_IPC_PIPE, scheme_url)
+    }
+    #[cfg(unix)]
+    {
+        let sock_path = app_data_dir()
+            .map(|d| local_ipc_socket_path(&d))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "データディレクトリを解決できない")
+            })?;
+        send_local_ipc_unix(&sock_path, scheme_url)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = scheme_url;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "ローカル IPC 未対応環境",
+        ))
+    }
+}
+
+fn try_spawn_binary(scheme_url: &str) -> io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let appimage = std::env::var("APPIMAGE").ok();
+    let binary = host_binary_path(appimage.as_deref(), exe);
+    // Native Messaging の stdout パイプを子プロセスが継承すると Chrome 側の
+    // read が閉じずハングするため stdio を明示的に /dev/null 相当へ切り離す
+    std::process::Command::new(binary)
+        .arg(scheme_url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
+type BoxFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type IpcSpawner = std::sync::Arc<dyn Fn(BoxFuture) + Send + Sync>;
+type IpcUrlHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+
+enum IpcEndpoint {
+    #[cfg(windows)]
+    WindowsPipe(String),
+    #[cfg(unix)]
+    UnixSocket(PathBuf),
+    #[cfg(not(any(windows, unix)))]
+    Unsupported,
+}
+
+impl IpcEndpoint {
+    fn default_for(app_data_dir: &Path) -> Self {
+        #[cfg(windows)]
+        {
+            let _ = app_data_dir;
+            Self::WindowsPipe(LOCAL_IPC_PIPE.to_owned())
+        }
+        #[cfg(unix)]
+        {
+            Self::UnixSocket(local_ipc_socket_path(app_data_dir))
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = app_data_dir;
+            Self::Unsupported
+        }
+    }
+}
+
+async fn handle_ipc_client<R>(reader: R, on_url: IpcUrlHandler)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    let mut limited = BufReader::new(reader.take(u64::from(MAX_MESSAGE_LEN)));
+    let mut line = String::new();
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        limited.read_line(&mut line),
+    )
+    .await;
+    if let Ok(Ok(n)) = res {
+        if n > 0 {
+            let trimmed = line.trim();
+            if crate::deep_link::is_app_url(trimmed) {
+                on_url(trimmed.to_owned());
+            }
+        }
+    }
+}
+
+async fn run_ipc_listener(
+    endpoint: IpcEndpoint,
+    spawn: IpcSpawner,
+    on_url: IpcUrlHandler,
+    ready: Option<tokio::sync::oneshot::Sender<io::Result<()>>>,
+) {
+    match endpoint {
+        #[cfg(windows)]
+        IpcEndpoint::WindowsPipe(pipe_name) => {
+            use tokio::net::windows::named_pipe::ServerOptions;
+            let mut server = match ServerOptions::new().create(&pipe_name) {
+                Ok(s) => {
+                    if let Some(tx) = ready {
+                        let _ = tx.send(Ok(()));
+                    }
+                    s
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        pipe = %pipe_name,
+                        "ローカル IPC パイプを作成できない"
+                    );
+                    if let Some(tx) = ready {
+                        let _ = tx.send(Err(e));
+                    }
+                    return;
+                }
+            };
+            loop {
+                if let Err(e) = server.connect().await {
+                    tracing::warn!(error = %e, "ローカル IPC パイプの接続待機に失敗");
+                    break;
+                }
+                let connected = server;
+                let client_url = on_url.clone();
+                server = match ServerOptions::new().create(&pipe_name) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        spawn(Box::pin(handle_ipc_client(connected, client_url)));
+                        tracing::warn!(error = %e, "ローカル IPC 次インスタンスを作成できない");
+                        break;
+                    }
+                };
+                spawn(Box::pin(handle_ipc_client(connected, client_url)));
+            }
+        }
+        #[cfg(unix)]
+        IpcEndpoint::UnixSocket(sock_path) => {
+            let _ = std::fs::remove_file(&sock_path);
+            let listener = match tokio::net::UnixListener::bind(&sock_path) {
+                Ok(l) => {
+                    if let Some(tx) = ready {
+                        let _ = tx.send(Ok(()));
+                    }
+                    l
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %sock_path.display(),
+                        "ローカル IPC ソケットを作成できない"
+                    );
+                    if let Some(tx) = ready {
+                        let _ = tx.send(Err(e));
+                    }
+                    return;
+                }
+            };
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _addr)) => {
+                        let client_url = on_url.clone();
+                        spawn(Box::pin(handle_ipc_client(stream, client_url)));
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ローカル IPC ソケットの接続待機に失敗");
+                        break;
+                    }
+                }
+            }
+        }
+        #[cfg(not(any(windows, unix)))]
+        IpcEndpoint::Unsupported => {
+            let _ = (spawn, on_url);
+            if let Some(tx) = ready {
+                let _ = tx.send(Ok(()));
+            }
+        }
+    }
+}
+
+fn start_ipc_listener_with(
+    endpoint: IpcEndpoint,
+    spawn: IpcSpawner,
+    on_url: IpcUrlHandler,
+    ready: Option<tokio::sync::oneshot::Sender<io::Result<()>>>,
+) {
+    let listener_spawn = spawn.clone();
+    spawn(Box::pin(run_ipc_listener(
+        endpoint,
+        listener_spawn,
+        on_url,
+        ready,
+    )));
+}
+
+/// 本体起動時にローカル IPC（名前付きパイプ / Unix ソケット）を待ち受け、
+/// Native Messaging ホストから直接届いた `yt-browser://` URL を
+/// `deep_link::handle_open_url` へ渡す。作成失敗は警告に留め起動は止めない。
+///
+/// 注意: Tauri の `setup` フックは Tokio ランタイム外で同期実行されるため、
+/// `ServerOptions::create` / `UnixListener::bind` も `spawn` した非同期タスク内で実行する。
+pub fn start_ipc_listener(app: tauri::AppHandle, app_data_dir: &Path) {
+    let spawner: IpcSpawner = std::sync::Arc::new(|fut| {
+        tauri::async_runtime::spawn(fut);
+    });
+    let on_url: IpcUrlHandler = std::sync::Arc::new(move |url| {
+        crate::deep_link::handle_open_url(&app, &url);
+    });
+    start_ipc_listener_with(
+        IpcEndpoint::default_for(app_data_dir),
+        spawner,
+        on_url,
+        None,
+    );
 }
 
 /// 応答のエラーコード。拡張はコードをツールチップの理由表示に使う。
@@ -962,5 +1252,154 @@ mod tests {
                 format!(r"Software\Chromium\NativeMessagingHosts\{HOST_NAME}"),
             ]
         );
+    }
+
+    /// DB-NM-17: スキーム URL 配送の 3 段フォールバック。
+    /// ローカル IPC → 本体バイナリ直接 spawn → OS 既定ハンドラの順で試行し、
+    /// 先行段階が成功したら後続段階を呼ばない。
+    #[test]
+    fn deliver_scheme_url_fallback_order() {
+        let url = "yt-browser://open?url=https%3A%2F%2Fyoutu.be%2FdQw4w9WgXcQ";
+        // 1 段目（IPC）が成功すれば spawn / open は呼ばれない
+        let res = deliver_scheme_url_with(
+            url,
+            |u| {
+                assert_eq!(u, url);
+                Ok(())
+            },
+            |_| panic!("IPC 成功時は spawn を呼ばない"),
+            |_| panic!("IPC 成功時は open を呼ばない"),
+        );
+        assert!(res.is_ok());
+
+        // 1 段目失敗・2 段目（spawn）成功なら open は呼ばれない
+        let res = deliver_scheme_url_with(
+            url,
+            |_| Err(io::Error::new(io::ErrorKind::ConnectionRefused, "no ipc")),
+            |u| {
+                assert_eq!(u, url);
+                Ok(())
+            },
+            |_| panic!("spawn 成功時は open を呼ばない"),
+        );
+        assert!(res.is_ok());
+
+        // 1・2 段目失敗時は 3 段目（open）へフォールバックし、その結果を返す
+        let res = deliver_scheme_url_with(
+            url,
+            |_| Err(io::Error::other("ipc failed")),
+            |_| Err(io::Error::other("spawn failed")),
+            |u| {
+                assert_eq!(u, url);
+                Ok(())
+            },
+        );
+        assert!(res.is_ok());
+
+        let err = deliver_scheme_url_with(
+            url,
+            |_| Err(io::Error::other("ipc failed")),
+            |_| Err(io::Error::other("spawn failed")),
+            |_| Err(io::Error::other("open failed")),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "open failed");
+    }
+
+    /// DB-NM-18: ローカル IPC 転送の往復。
+    /// Windows 名前付きパイプ / Unix ソケット経由で送信した 1 行のスキーム URL が受信できる。
+    #[tokio::test]
+    async fn local_ipc_transfers_scheme_url() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let target = "yt-browser://queue?url=https%3A%2F%2Fyoutu.be%2FdQw4w9WgXcQ";
+        #[cfg(windows)]
+        {
+            use tokio::net::windows::named_pipe::ServerOptions;
+            let pipe = format!(r"\\.\pipe\yt-browser-test-nm-ipc-{}", std::process::id());
+            let server = ServerOptions::new().create(&pipe).unwrap();
+            let pipe_client = pipe.clone();
+            let client =
+                tokio::task::spawn_blocking(move || send_local_ipc_windows(&pipe_client, target));
+            server.connect().await.unwrap();
+            let mut reader = BufReader::new(server);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            client.await.unwrap().unwrap();
+            assert_eq!(line.trim(), target);
+        }
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let sock = local_ipc_socket_path(dir.path());
+            let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+            let sock_client = sock.clone();
+            let client =
+                tokio::task::spawn_blocking(move || send_local_ipc_unix(&sock_client, target));
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            client.await.unwrap().unwrap();
+            assert_eq!(line.trim(), target);
+        }
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn ipc_listener_starts_from_non_tokio_thread() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt.handle().clone();
+
+        #[cfg(windows)]
+        let (endpoint, pipe_client, _dir) = {
+            let pipe = format!(
+                r"\\.\pipe\yt-browser-test-nm-listener-{}",
+                std::process::id()
+            );
+            (IpcEndpoint::WindowsPipe(pipe.clone()), pipe, ())
+        };
+        #[cfg(unix)]
+        let (endpoint, sock_client, _dir) = {
+            let dir = tempfile::tempdir().unwrap();
+            let sock = local_ipc_socket_path(dir.path());
+            (IpcEndpoint::UnixSocket(sock.clone()), sock, dir)
+        };
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (got_tx, got_rx) = std::sync::mpsc::channel();
+        let spawner: IpcSpawner = std::sync::Arc::new(move |fut| {
+            handle.spawn(fut);
+        });
+        let on_url: IpcUrlHandler = std::sync::Arc::new(move |url| {
+            let _ = got_tx.send(url);
+        });
+
+        // Tokio ランタイム外の純粋な別スレッドから同期起動してもリアクタ不在でパニックしないこと
+        let start_res = std::thread::spawn(move || {
+            start_ipc_listener_with(endpoint, spawner, on_url, Some(ready_tx));
+        })
+        .join();
+        assert!(
+            start_res.is_ok(),
+            "Tokio 外スレッドからの起動でパニックしない"
+        );
+
+        rt.block_on(async {
+            ready_rx.await.unwrap().unwrap();
+        });
+
+        let target = "yt-browser://queue?url=https%3A%2F%2Fyoutu.be%2FdQw4w9WgXcQ";
+        #[cfg(windows)]
+        send_local_ipc_windows(&pipe_client, target).unwrap();
+        #[cfg(unix)]
+        send_local_ipc_unix(&sock_client, target).unwrap();
+
+        let received = got_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("ローカル IPC リスナー経由で URL を受信できる");
+        assert_eq!(received, target);
+
+        rt.shutdown_timeout(std::time::Duration::from_millis(200));
     }
 }

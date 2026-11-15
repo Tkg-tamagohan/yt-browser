@@ -205,8 +205,10 @@ pub fn run() {
             tauri::async_runtime::spawn(live_wait.run());
 
             // deep link の保留バッファと cold start 分の取り込み。
-            // 起動中への転送は single-instance のコールバック側が担う
+            // 起動中への転送は single-instance のコールバック側が担う。
+            // PendingOpenUrls 登録後に Native Messaging 向けローカル IPC を待ち受ける
             app.manage(deep_link::PendingOpenUrls::new());
+            native_host::start_ipc_listener(app.handle().clone(), &dir);
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
                     deep_link::handle_open_url(app.handle(), url.as_str());

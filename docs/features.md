@@ -2,7 +2,7 @@
 
 実装済みの機能を領域ごとにまとめた一覧。
 操作方法は [user-guide.md](user-guide.md)、要件は [requirements-definition.md](requirements-definition.md) の FR-1 以降、個別の判断は [decision-records.md](decision-records.md) の仕様決定を参照。
-実装の内訳は [implementation-plan.md](implementation-plan.md) の Phase 0〜81 に対応する。
+実装の内訳は [implementation-history.md](implementation-history.md)（Phase 0〜81）と [implementation-plan.md](implementation-plan.md)（Phase 82 以降）に対応する。
 
 ## 動画再生
 

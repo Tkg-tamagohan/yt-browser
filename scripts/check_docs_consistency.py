@@ -1323,6 +1323,63 @@ def check_decision_tables() -> Findings:
 
 
 # ---------------------------------------------------------------------------
+# チェック 17: 実装計画・実装履歴のフェーズ連番整合
+# ---------------------------------------------------------------------------
+
+IMPL_PLAN_MD = DOCS_DIR / "implementation-plan.md"
+IMPL_HISTORY_MD = DOCS_DIR / "implementation-history.md"
+PHASE_HEADING_RE = re.compile(r"^###\s+Phase\s+(\d+)：", re.M)
+
+
+def check_implementation_phases() -> Findings:
+    f = Findings([])
+    if not IMPL_HISTORY_MD.is_file():
+        f.error(f"{IMPL_HISTORY_MD.relative_to(ROOT)} が見つからない")
+        return f
+    if not IMPL_PLAN_MD.is_file():
+        f.error(f"{IMPL_PLAN_MD.relative_to(ROOT)} が見つからない")
+        return f
+
+    history_nums = [int(n) for n in PHASE_HEADING_RE.findall(read_text(IMPL_HISTORY_MD))]
+    plan_nums = [int(n) for n in PHASE_HEADING_RE.findall(read_text(IMPL_PLAN_MD))]
+
+    if not history_nums:
+        f.error("implementation-history.md に `### Phase N：` 見出しが無い")
+        return f
+    if not plan_nums:
+        f.error("implementation-plan.md に `### Phase N：` 見出しが無い")
+        return f
+
+    counts: dict[int, list[str]] = {}
+    for n in history_nums:
+        counts.setdefault(n, []).append("implementation-history.md")
+    for n in plan_nums:
+        counts.setdefault(n, []).append("implementation-plan.md")
+    for n, locs in sorted(counts.items()):
+        if len(locs) > 1:
+            f.error(f"Phase {n} の見出しが重複している（{', '.join(locs)}）")
+
+    all_nums = sorted(counts)
+    expected = list(range(0, all_nums[-1] + 1))
+    missing = sorted(set(expected) - set(all_nums))
+    if missing:
+        f.error(f"Phase 見出しに連番の抜けがある: {missing}")
+
+    if history_nums[-1] >= plan_nums[0]:
+        f.error(
+            f"implementation-history.md の末尾 Phase {history_nums[-1]} と "
+            f"implementation-plan.md の先頭 Phase {plan_nums[0]} の境界が逆転している"
+        )
+
+    if f.worst() == OK:
+        f.ok(
+            f"Phase 0〜{all_nums[-1]}（履歴 0〜{history_nums[-1]} / "
+            f"計画 {plan_nums[0]}〜{plan_nums[-1]}）が重複・欠番なく一致"
+        )
+    return f
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -1345,6 +1402,7 @@ def main() -> int:
     checks.append(("check 14: docs 間リンク", check_doc_links()))
     checks.append(("check 15: リポジトリ構成ツリー", check_repo_tree()))
     checks.append(("check 16: 決定記録表構文", check_decision_tables()))
+    checks.append(("check 17: 実装計画フェーズ番号", check_implementation_phases()))
     # チェック 3（§8 DDL ↔ 適用後スキーマ）は src-tauri の
     # ddl_matches_design_section8 テストが担う
 
