@@ -548,9 +548,34 @@ impl MpvPlayer {
         self.terminal.rearm_after_eof();
     }
 
-    /// バックグラウンドで取得した SponsorBlock 区間を差し込む（設計書 §4.4）。
-    pub(crate) fn set_sponsor_segments(&self, segments: Vec<crate::sponsor::ActiveSegment>) {
-        lock(&self.sponsor).segments = segments;
+    /// SponsorBlock 状態・シークの現在世代番号を返す。
+    pub(crate) fn sponsor_generation(&self) -> u64 {
+        self.sponsor_gen.load(Ordering::Acquire)
+    }
+
+    fn reset_sponsor_state(&self) {
+        let mut sp = lock(&self.sponsor);
+        // 初期化直前にも世代を進め、並行取得がロック待ちをしていた場合でも旧区間の混入を防ぐ
+        self.sponsor_gen.fetch_add(1, Ordering::SeqCst);
+        *sp = SponsorState::default();
+    }
+
+    /// 取得要求時の世代・動画 ID が現在と一致する場合のみ SponsorBlock 区間を差し込む（設計書 §4.4）。
+    pub(crate) fn set_sponsor_segments_if_current(
+        &self,
+        expected_gen: u64,
+        expected_video_id: &str,
+        segments: Vec<crate::sponsor::ActiveSegment>,
+    ) -> bool {
+        let current_video = self.video_id();
+        apply_sponsor_segments_if_current(
+            &self.sponsor,
+            &self.sponsor_gen,
+            &current_video,
+            expected_gen,
+            expected_video_id,
+            segments,
+        )
     }
 
     /// 連続再生の武装を登録する（`player_set_queue` 経路）。
@@ -764,7 +789,7 @@ impl MpvPlayer {
         // 再起動カウンタが毎回リセットされるため、ここで消す
         self.terminal.reset();
         *lock(&self.last_healthy) = None;
-        *lock(&self.sponsor) = SponsorState::default();
+        self.reset_sponsor_state();
         *lock(&self.video_aspect) = None;
         // PiP 起動時は --geometry で適用済みの値を記録する（spawn と同じ要領）
         *lock(&self.pip_sent) = opts.pip_geometry.clone();
@@ -810,7 +835,7 @@ impl MpvPlayer {
         // 実行中のスキップシークがあれば完了を待ってから loadfile を発行する。
         self.sponsor_gen.fetch_add(1, Ordering::SeqCst);
         let _switch = self.video_switch_op.lock().await;
-        *lock(&self.sponsor) = SponsorState::default();
+        self.reset_sponsor_state();
         let url = format!("https://www.youtube.com/watch?v={video_id}");
         let options = json!({ "start": format!("{start_sec}") });
         self.arm_load(&url, options.clone());
@@ -1572,6 +1597,23 @@ enum SponsorSkipOutcome {
     Failed,
 }
 
+fn apply_sponsor_segments_if_current(
+    sponsor: &Mutex<SponsorState>,
+    sponsor_gen: &AtomicU64,
+    current_video_id: &str,
+    expected_gen: u64,
+    expected_video_id: &str,
+    segments: Vec<crate::sponsor::ActiveSegment>,
+) -> bool {
+    let mut sp = lock(sponsor);
+    if sponsor_gen.load(Ordering::Acquire) != expected_gen || current_video_id != expected_video_id
+    {
+        return false;
+    }
+    sp.segments = segments;
+    true
+}
+
 /// 動画切替ロック（`video_switch_op`）と世代番号（`sponsor_gen`）を照合したうえで
 /// SponsorBlock のスキップシークを実行し、切替後動画への誤シークと状態汚染を防ぐ。
 async fn execute_sponsor_skip<F, Fut, E>(
@@ -1998,5 +2040,74 @@ mod tests {
         assert!(seek_finished_before_load.load(Ordering::SeqCst));
         assert!(loadfile_ran.load(Ordering::SeqCst));
         assert_eq!(outcome, super::SponsorSkipOutcome::Stale);
+    }
+
+    /// SponsorBlock 取得: 動画切替中は `video_id` 更新前でも世代不一致により
+    /// 旧動画の取得結果が `SponsorState` へ混入しない（ループで同 ID に戻った場合も弾く）。
+    #[test]
+    fn sponsor_fetch_rejected_while_video_switch_in_progress() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Mutex;
+
+        let sponsor = Mutex::new(super::SponsorState::default());
+        let sponsor_gen = AtomicU64::new(0);
+        let gen_old = sponsor_gen.load(Ordering::Acquire);
+
+        // load_video("vid_new") が sponsor 初期化・世代更新まで進め、
+        // loadfile_replace().await 待機中で video_id はまだ "vid_old" の状態
+        sponsor_gen.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut sp = super::lock(&sponsor);
+            sponsor_gen.fetch_add(1, Ordering::SeqCst);
+            *sp = super::SponsorState::default();
+        }
+        let gen_new = sponsor_gen.load(Ordering::Acquire);
+
+        let old_seg = vec![crate::sponsor::ActiveSegment {
+            category: "sponsor".to_string(),
+            start: 10.0,
+            end: 20.0,
+            action: crate::sponsor::CategoryAction::Skip,
+        }];
+        let new_seg = vec![crate::sponsor::ActiveSegment {
+            category: "sponsor".to_string(),
+            start: 30.0,
+            end: 40.0,
+            action: crate::sponsor::CategoryAction::Skip,
+        }];
+
+        // video_id がまだ旧動画でも、世代不一致で旧取得結果は拒否される
+        assert!(!super::apply_sponsor_segments_if_current(
+            &sponsor,
+            &sponsor_gen,
+            "vid_old",
+            gen_old,
+            "vid_old",
+            old_seg.clone(),
+        ));
+        assert!(super::lock(&sponsor).segments.is_empty());
+
+        // 切替後の正しい動画・世代では反映される
+        assert!(super::apply_sponsor_segments_if_current(
+            &sponsor,
+            &sponsor_gen,
+            "vid_new",
+            gen_new,
+            "vid_new",
+            new_seg,
+        ));
+        assert_eq!(super::lock(&sponsor).segments.len(), 1);
+        assert_eq!(super::lock(&sponsor).segments[0].start, 30.0);
+
+        // ループ等で再度 "vid_old" へ戻った場合でも古い gen_old の取得結果は拒否される
+        assert!(!super::apply_sponsor_segments_if_current(
+            &sponsor,
+            &sponsor_gen,
+            "vid_old",
+            gen_old,
+            "vid_old",
+            old_seg,
+        ));
+        assert_eq!(super::lock(&sponsor).segments[0].start, 30.0);
     }
 }
