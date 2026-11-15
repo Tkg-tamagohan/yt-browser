@@ -88,5 +88,6 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 
 - 進捗はこのファイルのチェックリスト（`[ ]` / `[x]`）で管理し、マージ時に更新する
 - 作業再開時は「マージ済み Phase」「現在ブランチ」「未決事項」の三点を確認する
+- 実機と手動の検証を後続の Devin や手元環境へ引き継ぐ手順は [verification-runbook.md](verification-runbook.md) を参照する
 - ブランチは `devin/<エポック秒>-<短いスラッグ>`、変更は必ず PR 経由
 - Windows 依存の作業は Windows 子セッションに切り出す（MSI ビルド検証は PR #12 で完了、Windows CI は PR #13 で常設化済み）

@@ -67,6 +67,7 @@ pnpm test         # Vitest 単体テスト
 | [docs/design.md](docs/design.md) | 概要設計と詳細設計（アーキテクチャ、IPC、DB、チャット、NG、エラー方針） |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | 現行フェーズ別の実装計画と引き継ぎ手順 |
 | [docs/implementation-history.md](docs/implementation-history.md) | Phase 0〜81 の完了済み実装履歴 |
+| [docs/verification-runbook.md](docs/verification-runbook.md) | Phase 82〜85 の実機と手動の検証手順および Devin 引き継ぎ手順 |
 | [docs/updater-runbook.md](docs/updater-runbook.md) | 自動更新の運用手順 |
 
 ## ライセンス

@@ -1585,7 +1585,7 @@ WebKitGTK 環境で今後同じ症状が観測された場合も、同じ方針�
 ```text
 yt-browser/
   AGENTS.md / README.md / LICENSE
-  docs/               # 要件定義・設計書・決定記録・実装計画・実装履歴・利用手引
+  docs/               # 要件定義・設計書・決定記録・実装計画・実装履歴・検証手順・利用手引
   src-tauri/
     Cargo.toml
     tauri.conf.json
