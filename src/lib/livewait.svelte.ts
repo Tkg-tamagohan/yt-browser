@@ -78,13 +78,14 @@ export async function liveWaitRemove(videoId: string): Promise<void> {
   }
 }
 
-let initPromise: Promise<void> | null = null;
+let listenPromise: Promise<void> | null = null;
+let loaded = false;
+let refreshPromise: Promise<void> | null = null;
 
-/// 待機イベントの購読と初期一覧の取得。レイアウト（非ポップアップ窓）で
-/// 一度だけ呼ぶ。複数窓では窓ごとの JS コンテキストで購読されるが、
-/// 待機の登録・解除はコマンド経由のため競合しない
-export function initLiveWaits(): Promise<void> {
-  if (!initPromise) {
+/// 待機イベントの購読だけを登録する。購読途中で失敗したときは途中登録分を解除し、
+/// 次回呼び出しで再試行できるようにする（初期一覧の成否とは分離する）。
+function ensureListeners(): Promise<void> {
+  if (!listenPromise) {
     const unlistens: UnlistenFn[] = [];
     let pending: Promise<void> | undefined;
     pending = (async () => {
@@ -102,17 +103,37 @@ export function initLiveWaits(): Promise<void> {
             notify(t("livewait.status", { message: ev.payload.message }));
           }),
         );
-        if (!(await refresh())) {
-          for (const u of unlistens) u();
-          if (initPromise === pending) initPromise = null;
-        }
       } catch (err) {
         for (const u of unlistens) u();
-        if (initPromise === pending) initPromise = null;
+        if (listenPromise === pending) listenPromise = null;
         throw err;
       }
     })();
-    initPromise = pending;
+    listenPromise = pending;
   }
-  return initPromise;
+  return listenPromise;
+}
+
+/// 待機イベントの購読と初期一覧の取得。レイアウト（非ポップアップ窓）で
+/// 一度だけ呼ぶ。複数窓では窓ごとの JS コンテキストで購読されるが、
+/// 待機の登録・解除はコマンド経由のため競合しない。
+/// 購読成功後に初期一覧の取得だけが一時失敗しても購読自体は維持し、
+/// 後続の `livewait://changed` / `livewait://status` と再試行の双方を受けられるようにする
+export async function initLiveWaits(): Promise<void> {
+  await ensureListeners();
+  if (loaded) return;
+  if (!refreshPromise) {
+    let pending: Promise<void> | undefined;
+    pending = (async () => {
+      try {
+        if (await refresh()) {
+          loaded = true;
+        }
+      } finally {
+        if (refreshPromise === pending) refreshPromise = null;
+      }
+    })();
+    refreshPromise = pending;
+  }
+  await refreshPromise;
 }
