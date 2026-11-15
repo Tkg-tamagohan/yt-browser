@@ -29,6 +29,7 @@ import { bookmarks, initBookmarks } from "./bookmark.svelte";
 import { initChatEvents } from "./chat.svelte";
 import { initDeepLinks } from "./deeplink.svelte";
 import { initLiveWaits, liveWaits } from "./livewait.svelte";
+import { appNotices } from "./notices.svelte";
 import { initPlayerEvents } from "./players.svelte";
 import { initQueue } from "./queue.svelte";
 import { initShortcuts } from "./shortcuts.svelte";
@@ -73,8 +74,8 @@ describe("IR-01 initBookmarks の再試行", () => {
   });
 });
 
-describe("IR-02 initLiveWaits のクリーンアップと再試行", () => {
-  test("購読途中の失敗と refresh 失敗の両方で既登録リスナーを解除し再試行できる", async () => {
+describe("IR-02 initLiveWaits のクリーンアップと購読維持", () => {
+  test("購読登録失敗は部分購読を解除して再試行でき、refresh 失敗時は購読を維持する", async () => {
     const u1 = vi.fn();
     listenMock
       .mockResolvedValueOnce(u1)
@@ -82,21 +83,52 @@ describe("IR-02 initLiveWaits のクリーンアップと再試行", () => {
     await expect(initLiveWaits()).rejects.toThrow("listen failed");
     expect(u1).toHaveBeenCalledTimes(1);
 
+    const handlers = new Map<string, (ev: { payload: unknown }) => void>();
     const u2a = vi.fn();
     const u2b = vi.fn();
-    listenMock.mockResolvedValueOnce(u2a).mockResolvedValueOnce(u2b);
+    listenMock.mockImplementationOnce((ev, cb) => {
+      handlers.set(ev, cb);
+      return Promise.resolve(u2a);
+    });
+    listenMock.mockImplementationOnce((ev, cb) => {
+      handlers.set(ev, cb);
+      return Promise.resolve(u2b);
+    });
     invokeMock.mockRejectedValueOnce(new Error("list failed"));
     await initLiveWaits();
-    expect(u2a).toHaveBeenCalledTimes(1);
-    expect(u2b).toHaveBeenCalledTimes(1);
+    // 初回取得だけが一時失敗しても正常登録されたイベント購読は解除しない
+    expect(u2a).not.toHaveBeenCalled();
+    expect(u2b).not.toHaveBeenCalled();
+    expect(listenMock).toHaveBeenCalledTimes(4);
 
-    const u3a = vi.fn();
-    const u3b = vi.fn();
-    listenMock.mockResolvedValueOnce(u3a).mockResolvedValueOnce(u3b);
+    // そのまま状態イベントが届けば通知が出る
+    const beforeNotices = appNotices.length;
+    handlers.get("livewait://status")?.({
+      payload: { videoId: "vid1", kind: "info", message: "待機状態通知" },
+    });
+    expect(appNotices.length).toBeGreaterThan(beforeNotices);
+    expect(appNotices.at(-1)?.msg).toContain("待機状態通知");
+
+    // 変更イベント経由の一覧再取得も動作する
+    const sample = {
+      videoId: "vid1",
+      channelId: "UC123",
+      title: "Live Stream",
+      channelTitle: "Ch",
+      thumbnailUrl: null,
+      scheduledStartAt: null,
+      addedAt: "2026-11-15T00:00:00Z",
+    };
+    invokeMock.mockResolvedValueOnce([sample]);
+    handlers.get("livewait://changed")?.({ payload: { videoId: "vid1" } });
+    await flushMicrotasks();
+    expect(liveWaits.list).toHaveLength(1);
+    expect(liveWaits.list[0].videoId).toBe("vid1");
+
+    // 明示的な再呼び出しでも購読を重複登録せず初回取得を再試行できる
     invokeMock.mockResolvedValueOnce([]);
     await initLiveWaits();
-    expect(u3a).not.toHaveBeenCalled();
-    expect(u3b).not.toHaveBeenCalled();
+    expect(listenMock).toHaveBeenCalledTimes(4);
     expect(liveWaits.list).toEqual([]);
   });
 });

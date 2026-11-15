@@ -28,6 +28,29 @@ export function contextMenuPos(
   };
 }
 
+/** 配置済みの上端座標 y からビューポート下端までに収まる最大高さを返す */
+export function contextMenuMaxHeight(topY: number, vh: number): number {
+  return Math.max(0, vh - topY - CTX_MENU_MARGIN);
+}
+
+export interface PlaylistAddCallbackSet {
+  onclose?: () => void;
+  onplaylistadd?: (playlistId: number) => void;
+}
+
+/**
+ * メニュー終了時にリアクティブな状態が null 化されても
+ * 追加後コールバックが欠落しないよう先に参照を確保してから呼び出す
+ */
+export function finishPlaylistAdd(
+  playlistId: number,
+  callbacks: PlaylistAddCallbackSet,
+): void {
+  const { onclose, onplaylistadd } = callbacks;
+  onclose?.();
+  onplaylistadd?.(playlistId);
+}
+
 /// 1 軸分のクランプ。start に置くと end を超える場合だけ内側へ畳む
 function clampEdge(start: number, view: number, size: number): number {
   if (start + size + CTX_MENU_MARGIN <= view) return start;
