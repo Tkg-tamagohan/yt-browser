@@ -730,6 +730,15 @@ FR-53・FR-56 の遅延解決基盤（Phase 62）の完成後に実施する。
 - [x] Chrome 拡張の Native Messaging 呼び出しへ 5 秒タイムアウトと `settled` ガード、タブ単位失敗バッジ、`popup` の直近失敗理由表示、`tabs.onUpdated` のイベント絞り込みを入れる
 - [x] 受け入れ：単体テスト、ビルド、整合チェックがすべて通過することを確認する
 
+### Phase 84：構造整理、共通ヘルパー集約、スクリプト堅牢化（Step 2b）
+
+- [x] Rust 側のオン/オフ設定値パーサを `crate::util::{setting_on_enabled, setting_off_disabled}` へ集約し、`deps.rs`・`feed/mod.rs`・`mpv/mod.rs`・`chat/popup.rs` から委譲する
+- [x] `yt/mod.rs` の `yt-dlp` 実行コマンド呼び出し 7 箇所を終了ステータス検査付きの共通ヘルパー `run_checked` へ統合する
+- [x] フロントエンド側の設定値パーサを `feed-settings.ts` の `onOffEnabled` / `offDisabledEnabled` へ集約し、`pip.ts`・`eof-logic.ts`・`chat-popup-logic.ts`・`shortcuts-logic.ts` から委譲する
+- [x] `players.svelte.ts` に `isUiErrorCode` を追加して `settings/+page.svelte` のエラーコード判定を置き換え、`i18n.test.ts`（`LN-01`）へ `ja` / `en` の `{placeholder}` 一致検証を追加する
+- [x] `scripts/make_latest_json.py` に複数成果物・空署名・空バージョン拒否および UTF-8 読み込みを入れ、`scripts/bump_version.py` に `replace_cargo_lock_version` フォールバックと CRLF/LF 両対応の `Cargo.lock` 一致処理を入れる
+- [x] 受け入れ：単体テスト、ビルド、整合チェックがすべて通過することを確認する
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

@@ -179,13 +179,7 @@ impl PopupGeomTracker {
 /// フロント側の `chat-popup-logic.ts` が同一解釈を持つ（テストで検証）。
 #[allow(dead_code)]
 pub(crate) fn popup_show_author_enabled(value: Option<String>) -> bool {
-    match value {
-        Some(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "on" | "true" | "1" | "yes"
-        ),
-        None => false,
-    }
+    crate::util::setting_on_enabled(value)
 }
 
 /// `chat.popup_font_size` の既定値（px、暫定）。既存の行高

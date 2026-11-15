@@ -20,13 +20,7 @@ pub const SETTING_SETUP_DEPS_SHOWN: &str = "setup.deps_shown";
 /// on 系（on/true/1/yes、大小文字・前後空白を許容）のみ「表示済み」とし、
 /// 未設定・その他の値は未表示として扱う（受理集合は feed.show_shorts 系と同一）。
 pub fn setup_deps_shown_enabled(value: Option<String>) -> bool {
-    match value {
-        Some(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "on" | "true" | "1" | "yes"
-        ),
-        None => false,
-    }
+    crate::util::setting_on_enabled(value)
 }
 
 /// `<cmd> --version` の検出待ち上限。応答しない実行ファイルに

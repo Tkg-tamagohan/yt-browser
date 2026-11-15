@@ -89,13 +89,7 @@ pub(crate) fn is_valid_pip_geometry(s: &str) -> bool {
 /// 通常窓既定（false）で、それ以外と未設定は PiP 既定（true）を返す。
 /// フロント側の同一解釈は `src/lib/pip.ts` の `pipDefaultEnabled`。
 pub(crate) fn pip_default_enabled(value: Option<String>) -> bool {
-    match value {
-        Some(v) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "off" | "false" | "0" | "no"
-        ),
-        None => true,
-    }
+    crate::util::setting_off_disabled(value)
 }
 
 /// `pip.fit_aspect` の保存値を解釈する（仕様決定 AL）。
@@ -273,13 +267,7 @@ pub fn windowing_system() -> &'static str {
 /// 受理集合は `feed.show_shorts` と同じく明示的な on 系値のみ。
 /// 未設定・その他の値は off（既定）として false を返す。
 pub(crate) fn close_on_eof_enabled(value: Option<String>) -> bool {
-    match value {
-        Some(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "on" | "true" | "1" | "yes"
-        ),
-        None => false,
-    }
+    crate::util::setting_on_enabled(value)
 }
 
 /// 終端イベント後にインスタンスを畳む（mpv 窓とカードを閉じる）かの判定

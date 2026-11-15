@@ -46,6 +46,31 @@ def fail(msg: str) -> None:
     sys.exit(f"bump_version 失敗: {msg}")
 
 
+CARGO_LOCK_PKG_RE = re.compile(
+    r'(\[\[package\]\]\r?\nname = "yt-browser"\r?\nversion = )"([^"]*)"'
+)
+
+
+def current_versions_lock(lock_path: Path) -> str | None:
+    """Cargo.lock から yt-browser パッケージの現行バージョンを読む。"""
+    lock_text = lock_path.read_text(encoding="utf-8")
+    m = CARGO_LOCK_PKG_RE.search(lock_text)
+    return m.group(2) if m else None
+
+
+def replace_cargo_lock_version(lock_path: Path, version: str) -> None:
+    """cargo update が使えない環境向けに Cargo.lock 内の yt-browser バージョンを書き換える。"""
+    with lock_path.open("r", encoding="utf-8", newline="") as f:
+        text = f.read()
+    new_text, count = CARGO_LOCK_PKG_RE.subn(rf'\g<1>"{version}"', text)
+    if count != 1:
+        fail(
+            f"Cargo.lock 内の yt-browser エントリが一意に見つかりません（一致数: {count}）"
+        )
+    with lock_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_text)
+
+
 def current_versions() -> dict[str, str | None]:
     """4 箇所の現行バージョンを読む。"""
     conf = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
@@ -56,11 +81,7 @@ def current_versions() -> dict[str, str | None]:
         if m:
             cargo = m.group(1)
             break
-    lock = None
-    lock_text = (ROOT / "src-tauri/Cargo.lock").read_text(encoding="utf-8")
-    m = re.search(r'\[\[package\]\]\nname = "yt-browser"\nversion = "([^"]*)"', lock_text)
-    if m:
-        lock = m.group(1)
+    lock = current_versions_lock(ROOT / "src-tauri/Cargo.lock")
     return {
         "tauri.conf.json": conf.get("version"),
         "package.json": pkg.get("version"),
@@ -69,49 +90,62 @@ def current_versions() -> dict[str, str | None]:
     }
 
 
-def update_lock() -> None:
-    """Cargo.lock を cargo で再生成する。オフラインが失敗したら通常モードへフォールバック。"""
+def update_lock(version: str) -> None:
+    """Cargo.lock を cargo で再生成する。失敗・cargo 不在時は yt-browser 行だけ直接書き換える。"""
     # yt-browser はワークスペースのローカルパッケージだが、依存解決には
     # crates.io の索引・クレートが要るため、キャッシュの無い新規環境では
-    # --offline が失敗する。失敗したらネットワークありで再試行する
-    # （通常環境では --offline で完結しネットワークは不要）
+    # --offline が失敗する。失敗したらネットワークありで再試行し、
+    # それも通らない環境では yt-browser 自体の version 行だけを直接書き換える
+    last_err = ""
     for extra in (["--offline"], []):
-        r = subprocess.run(
-            ["cargo", "update", *extra, "-p", "yt-browser"],
-            cwd=ROOT / "src-tauri",
-            capture_output=True,
-            text=True,
-        )
+        try:
+            r = subprocess.run(
+                ["cargo", "update", *extra, "-p", "yt-browser"],
+                cwd=ROOT / "src-tauri",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        except FileNotFoundError as e:
+            last_err = str(e)
+            break
         if r.returncode == 0:
             return
-    fail(
-        "Cargo.lock の更新に失敗しました（cargo が無い環境では "
-        "Cargo.lock 内 yt-browser エントリの version を手で書き換えてください）\n"
-        + (r.stderr or r.stdout)
+        last_err = r.stderr or r.stdout
+    print(
+        f"警告: cargo update に失敗したため Cargo.lock を直接更新します: {last_err.strip()}",
+        file=sys.stderr,
     )
+    replace_cargo_lock_version(ROOT / "src-tauri/Cargo.lock", version)
 
 
 def bump(version: str) -> None:
-    # 途中失敗で不整合を残さないよう、先に全ファイルの原文を退避する
-    originals = {p: p.read_text(encoding="utf-8") for p, _ in TEXT_TARGETS}
+    # 途中失敗で不整合を残さないよう、先に全ファイルの原文を改行コードごと退避する
+    originals: dict[Path, str] = {}
+    for p, _ in TEXT_TARGETS:
+        with p.open("r", encoding="utf-8", newline="") as f:
+            originals[p] = f.read()
     try:
         for path, pattern in TEXT_TARGETS:
             lines = originals[path].splitlines(keepends=True)
             for i, line in enumerate(lines):
                 m = pattern.match(line)
                 if m:
+                    eol = "\r\n" if line.endswith("\r\n") else "\n"
                     if path.name == "Cargo.toml":
-                        lines[i] = f'{m.group(1)}{version}"\n'
+                        lines[i] = f'{m.group(1)}{version}"{eol}'
                     else:
-                        lines[i] = f'{m.group(1)}"version": "{version}",\n'
+                        lines[i] = f'{m.group(1)}"version": "{version}",{eol}'
                     break
             else:
                 fail(f"version 行が見つかりません: {path.relative_to(ROOT)}")
-            path.write_text("".join(lines), encoding="utf-8")
-        update_lock()
+            with path.open("w", encoding="utf-8", newline="") as f:
+                f.write("".join(lines))
+        update_lock(version)
     except SystemExit:
         for path, text in originals.items():
-            path.write_text(text, encoding="utf-8")
+            with path.open("w", encoding="utf-8", newline="") as f:
+                f.write(text)
         raise
 
 

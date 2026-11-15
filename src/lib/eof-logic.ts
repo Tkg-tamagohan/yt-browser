@@ -4,14 +4,13 @@
 // イベント側の畳み判定で、実際の窓・カードの存否はバックエンドが送る
 // `player://ended` の `closed` が決める。
 
+import { onOffEnabled } from "./feed-settings";
+
 /// `player.close_on_eof` の保存値を表示用の boolean に解釈する（仕様決定 BS）。
 /// on 系（on/true/1/yes、大小文字・前後空白を許容）のみ有効で、
 /// 未設定・その他の値は既定の off（残す）。`feed.show_shorts` と同じ受理集合
 export function closeOnEofEnabled(raw: string | null): boolean {
-  return (
-    raw !== null &&
-    ["on", "true", "1", "yes"].includes(raw.trim().toLowerCase())
-  );
+  return onOffEnabled(raw);
 }
 
 /// `player://ended` の終端でインスタンスを畳むかの判定（FR-43、仕様決定 BS）。

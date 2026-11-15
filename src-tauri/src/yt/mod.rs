@@ -160,13 +160,7 @@ impl YtDlpResolver {
 
 /// `yt-dlp --version` を実行してバージョン文字列を返す。
 pub async fn version(path: &str) -> Result<String, YtError> {
-    let out = run_with_timeout(Command::new(path).arg("--version")).await?;
-    if !out.status.success() {
-        return Err(YtError::Exit {
-            code: out.status.code().unwrap_or(-1),
-            stderr: combined_output(&out),
-        });
-    }
+    let out = run_checked(Command::new(path).arg("--version")).await?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -177,13 +171,7 @@ pub async fn update(path: &str) -> Result<String, YtError> {
     // --no-cookies: ユーザーの yt-dlp config で --cookies が指定されていると
     // 起動時に読み込み・終了時に保存を試み、書き込み不可なら save_cookies の
     // PermissionError で -U 自体が失敗扱いになるため、更新経路では無効化する
-    let out = run_with_timeout(Command::new(path).arg("-U").arg("--no-cookies")).await?;
-    if !out.status.success() {
-        return Err(YtError::Exit {
-            code: out.status.code().unwrap_or(-1),
-            stderr: combined_output(&out),
-        });
-    }
+    let out = run_checked(Command::new(path).arg("-U").arg("--no-cookies")).await?;
     Ok(combined_output(&out))
 }
 
@@ -210,7 +198,7 @@ fn combined_output(out: &std::process::Output) -> String {
 /// 返される JSON の `channel_id` を読む（プレイリスト型応答を想定）。
 /// `po_token` は設定 `ytdlp.po_token` の値（FR-86、仕様決定 DK）。
 pub async fn channel_id(path: &str, url: &str, po_token: Option<&str>) -> Result<String, YtError> {
-    let out = run_with_timeout(
+    let out = run_checked(
         Command::new(path)
             .arg(url)
             .arg("--flat-playlist")
@@ -220,12 +208,6 @@ pub async fn channel_id(path: &str, url: &str, po_token: Option<&str>) -> Result
             .args(po_token_args(po_token)),
     )
     .await?;
-    if !out.status.success() {
-        return Err(YtError::Exit {
-            code: out.status.code().unwrap_or(-1),
-            stderr: combined_output(&out),
-        });
-    }
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     v.get("channel_id")
         .and_then(|c| c.as_str())
@@ -244,7 +226,7 @@ pub async fn video_channel_ref(
     po_token: Option<&str>,
 ) -> Result<Vec<String>, YtError> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let out = run_with_timeout(
+    let out = run_checked(
         Command::new(path)
             .arg(&url)
             .arg("--flat-playlist")
@@ -252,12 +234,6 @@ pub async fn video_channel_ref(
             .args(po_token_args(po_token)),
     )
     .await?;
-    if !out.status.success() {
-        return Err(YtError::Exit {
-            code: out.status.code().unwrap_or(-1),
-            stderr: combined_output(&out),
-        });
-    }
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     // 単一動画ではトップレベルにメタが来る。プレイリスト形で返る場合は
     // entries[0] を同じ優先順で見る
@@ -321,7 +297,7 @@ pub async fn channel_tab_entries(
     po_token: Option<&str>,
 ) -> Result<Vec<(String, String, Option<String>)>, YtError> {
     let url = format!("https://www.youtube.com/channel/{channel_id}/{tab}");
-    let out = run_with_timeout(
+    let out = run_checked(
         Command::new(path)
             .arg(&url)
             .arg("--flat-playlist")
@@ -333,12 +309,6 @@ pub async fn channel_tab_entries(
             .args(po_token_args(po_token)),
     )
     .await?;
-    if !out.status.success() {
-        return Err(YtError::Exit {
-            code: out.status.code().unwrap_or(-1),
-            stderr: combined_output(&out),
-        });
-    }
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     parse_channel_tab(&v)
 }
@@ -384,7 +354,7 @@ pub async fn playlist_meta(
     url: &str,
     po_token: Option<&str>,
 ) -> Result<(Option<String>, Vec<crate::model::VideoRef>), YtError> {
-    let out = run_with_timeout(
+    let out = run_checked(
         Command::new(path)
             .arg(url)
             .arg("--flat-playlist")
@@ -392,12 +362,6 @@ pub async fn playlist_meta(
             .args(po_token_args(po_token)),
     )
     .await?;
-    if !out.status.success() {
-        return Err(YtError::Exit {
-            code: out.status.code().unwrap_or(-1),
-            stderr: combined_output(&out),
-        });
-    }
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     Ok(parse_playlist_meta(&v))
 }
@@ -467,6 +431,18 @@ async fn run_with_timeout(cmd: &mut Command) -> Result<std::process::Output, YtE
     }
 }
 
+/// `run_with_timeout` を実行し、終了コードが非 0 なら `YtError::Exit` を返す。
+async fn run_checked(cmd: &mut Command) -> Result<std::process::Output, YtError> {
+    let out = run_with_timeout(cmd).await?;
+    if !out.status.success() {
+        return Err(YtError::Exit {
+            code: out.status.code().unwrap_or(-1),
+            stderr: combined_output(&out),
+        });
+    }
+    Ok(out)
+}
+
 /// `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist` による検索（設計書 §5）。
 /// flat エントリはチャンネル一覧表示と同等の軽量メタだけを持つ。
 /// `limit` は取得する最大件数。
@@ -477,7 +453,7 @@ pub async fn search(
     limit: u32,
     po_token: Option<&str>,
 ) -> Result<Vec<crate::model::SearchResult>, YtError> {
-    let out = run_with_timeout(
+    let out = run_checked(
         Command::new(path)
             .arg(format!("ytsearch{limit}:{query}"))
             .arg("--dump-json")
@@ -486,12 +462,6 @@ pub async fn search(
             .args(po_token_args(po_token)),
     )
     .await?;
-    if !out.status.success() {
-        return Err(YtError::Exit {
-            code: out.status.code().unwrap_or(-1),
-            stderr: combined_output(&out),
-        });
-    }
     Ok(parse_search_jsonl(&out.stdout))
 }
 

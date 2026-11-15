@@ -46,11 +46,18 @@ def main() -> None:
     if not dist.is_dir():
         fail(f"成果物ディレクトリがありません: {dist}")
 
+    version = tag.removeprefix("v").strip()
+    if not version:
+        fail(f"タグからバージョンを取得できません: {tag!r}")
+
     platforms = {}
     for key, pattern in PLATFORMS.items():
         bundles = sorted(dist.glob(pattern))
         if not bundles:
             fail(f"{key} の成果物が見つかりません: {pattern}")
+        if len(bundles) > 1:
+            names = ", ".join(b.name for b in bundles)
+            fail(f"{key} の成果物が複数見つかりました: {names}")
         bundle = bundles[0]
         sig = bundle.with_name(bundle.name + ".sig")
         if not sig.is_file():
@@ -58,8 +65,11 @@ def main() -> None:
                 f"署名ファイルがありません: {sig.name}"
                 "（TAURI_SIGNING_PRIVATE_KEY 未設定または署名失敗）"
             )
+        signature = sig.read_text(encoding="utf-8").strip()
+        if not signature:
+            fail(f"署名ファイルが空です: {sig.name}")
         platforms[key] = {
-            "signature": sig.read_text().strip(),
+            "signature": signature,
             "url": (
                 f"https://github.com/{repo}/releases/download/{tag}/"
                 f"{urllib.parse.quote(bundle.name)}"
@@ -68,7 +78,7 @@ def main() -> None:
 
     manifest = {
         # updater が比較するバージョンは semver なのでタグの v 接頭辞を外す
-        "version": tag.removeprefix("v"),
+        "version": version,
         "notes": "",
         "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platforms": platforms,

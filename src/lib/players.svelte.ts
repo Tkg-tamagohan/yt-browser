@@ -236,6 +236,16 @@ export type DbSize = {
 
 export type UiError = { code: string; message: string };
 
+/// invoke エラーが指定の UiError コードに一致するか判定する。
+export function isUiErrorCode(e: unknown, code: string): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "code" in e &&
+    (e as UiError).code === code
+  );
+}
+
 /// invoke の失敗を通知表示用の文字列にする。UiError は message を持つので
 /// それを取り出し、それ以外は文字列化する。
 export function asErrorMessage(e: unknown): string {

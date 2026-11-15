@@ -7,10 +7,23 @@
 /// on/off 系設定値の共有解釈。
 /// on 系（on/true/1/yes、大小文字・前後空白を許容）のみ true で、
 /// 未設定・その他の値は既定の false。
-function onOffEnabled(raw: string | null): boolean {
+/// 明示的なオン系値（`on` / `true` / `1` / `yes`、前後空白・大小文字許容）のときだけ true を返す。
+/// 未設定（null / undefined）・その他の値は false。
+export function onOffEnabled(raw: string | null | undefined): boolean {
   return (
     raw !== null &&
+    raw !== undefined &&
     ["on", "true", "1", "yes"].includes(raw.trim().toLowerCase())
+  );
+}
+
+/// 未設定（null / undefined）時は true（既定オン）とし、明示的なオフ系値
+/// （`off` / `false` / `0` / `no`、前後空白・大文字小文字許容）のときだけ false を返す。
+export function offDisabledEnabled(raw: string | null | undefined): boolean {
+  return (
+    raw === null ||
+    raw === undefined ||
+    !["off", "false", "0", "no"].includes(raw.trim().toLowerCase())
   );
 }
 
