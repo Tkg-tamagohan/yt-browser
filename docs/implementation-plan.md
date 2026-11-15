@@ -49,12 +49,12 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] `native_host.rs` と `lib.rs` に本体側ローカル IPC 待受（Windows 名前付きパイプ `\\.\pipe\io.github.tkg-tamagohan.yt-browser-nm-ipc` / Linux Unix ソケット `<app_data_dir>/native-ipc.sock`）を追加し、ホストモードに 3 段配送（ローカル IPC → 本体直接 `spawn` → `open::that_detached` フォールバック）を実装する（`DB-NM-17`・`DB-NM-18`）
 - [x] `docs/implementation-plan.md` から Phase 0〜81 を `docs/implementation-history.md` へ分離し、解消済みの残課題重複記述を整理する
 - [x] `docs/design.md`（§3.4.1・§11）・`README.md`・`docs/features.md`・`scripts/check_docs_consistency.py`（Phase 見出し連番整合検証を含む）を更新する
-- [ ] 受け入れ：Chrome / Edge 拡張からのローカル IPC 起動と未起動時直接 `spawn` が実機で動作することを確認する（`DB-NM-17`・`DB-NM-18` の自動テスト・ビルド・整合チェックはすべて通過、実機検証は未実施）
+- [x] 受け入れ：Chrome / Edge 拡張からのローカル IPC 起動と未起動時直接 `spawn` が実機で動作することを確認する（`DB-NM-17`・`DB-NM-18` の自動テスト・ビルド・整合チェックはすべて通過。Windows 上の Edge 拡張から起動中インスタンスへ名前付きパイプ経由で `open` / `queue` / `playlist_add` が配信され（`list_playlists` はホストが本体 DB を直接読む経路として確認）、未起動時はホストが本体バイナリを直接 `spawn` して動画再生まで到達することを実機で確認）
 
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。
-実機未検証の残りは、拡張のホスト未登録時フォールバック（新規タブと確認ダイアログを伴う従来スキーム経路）および[実装履歴](implementation-history.md)・本計画の各フェーズ節で「実機検証は未実施」と記した受け入れ項目である。
+実機未検証の残りは、拡張のホスト未登録時フォールバックのうち OS 確認ダイアログの表示確認（`yt-browser://` スキームへのタブ遷移までは Edge で実機確認済み）および[実装履歴](implementation-history.md)・本計画の各フェーズ節で「実機検証は未実施」と記した受け入れ項目である。
 
 ### 動作上の制限
 
@@ -77,7 +77,7 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 
 ### 先送りの拡張
 
-- **拡張ストア版の `allowed_origins` 追加**：Edge と Chromium 系ブラウザへのホスト登録は Phase 79（FR-88・仕様決定 DM）で実装済み（実機検証は未実施）であり、将来ストア公開する際はストア版の拡張 ID を `allowed_origins` へ追加する必要がある
+- **拡張ストア版の `allowed_origins` 追加**：Edge と Chromium 系ブラウザへのホスト登録は Phase 79（FR-88・仕様決定 DM）で実装済み（Edge は実機確認済み、Chrome は未検証）であり、将来ストア公開する際はストア版の拡張 ID を `allowed_origins` へ追加する必要がある
 - **yt-dlp の同梱**：`YtDlpResolver` の解決順は対応済みで、同梱配布は今後の選択肢として残す
 
 ### CI 環境の観察
