@@ -49,7 +49,7 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] `native_host.rs` と `lib.rs` に本体側ローカル IPC 待受（Windows 名前付きパイプ `\\.\pipe\io.github.tkg-tamagohan.yt-browser-nm-ipc` / Linux Unix ソケット `<app_data_dir>/native-ipc.sock`）を追加し、ホストモードに 3 段配送（ローカル IPC → 本体直接 `spawn` → `open::that_detached` フォールバック）を実装する（`DB-NM-17`・`DB-NM-18`）
 - [x] `docs/implementation-plan.md` から Phase 0〜81 を `docs/implementation-history.md` へ分離し、解消済みの残課題重複記述を整理する
 - [x] `docs/design.md`（§3.4.1・§11）・`README.md`・`docs/features.md`・`scripts/check_docs_consistency.py`（Phase 見出し連番整合検証を含む）を更新する
-- [x] 受け入れ：Chrome / Edge 拡張からのローカル IPC 起動と未起動時直接 `spawn` が実機で動作することを確認する（`DB-NM-17`・`DB-NM-18` の自動テスト・ビルド・整合チェックはすべて通過。Windows 上の Edge 拡張から起動中インスタンスへ名前付きパイプ経由で `open` / `queue` / `playlist_add` / `list_playlists` が配信され、未起動時はホストが本体バイナリを直接 `spawn` して動画再生まで到達することを実機で確認）
+- [x] 受け入れ：Chrome / Edge 拡張からのローカル IPC 起動と未起動時直接 `spawn` が実機で動作することを確認する（`DB-NM-17`・`DB-NM-18` の自動テスト・ビルド・整合チェックはすべて通過。Windows 上の Edge 拡張から起動中インスタンスへ名前付きパイプ経由で `open` / `queue` / `playlist_add` が配信され（`list_playlists` はホストが本体 DB を直接読む経路として確認）、未起動時はホストが本体バイナリを直接 `spawn` して動画再生まで到達することを実機で確認）
 
 ## 残課題（既知の制限と観察メモ）
 
