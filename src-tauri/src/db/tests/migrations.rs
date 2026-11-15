@@ -462,3 +462,21 @@ fn migrate_v21_extends_filters_kind_check() {
         )
         .is_err());
 }
+
+/// v23 マイグレーション: meta_resolve_targets 向け部分インデックス
+/// `idx_videos_meta_resolve` が作成され、最新バージョンが 23 になる。
+#[test]
+fn migrate_v23_creates_meta_resolve_index() {
+    let db = Db::connect_in_memory().unwrap();
+    assert_eq!(db.schema_version().unwrap(), 23);
+    let conn = db.lock().unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+              WHERE type = 'index' AND name = 'idx_videos_meta_resolve'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}

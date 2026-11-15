@@ -158,34 +158,44 @@ pub fn setup_deps_pending(db: State<'_, Db>) -> Result<bool, UiError> {
 /// `playlists`（＋項目）を JSON ダンプして `path` へ書き出す。
 /// `path` はフロント側の保存ダイアログで選ばせた値をそのまま受け取る。
 #[tauri::command]
-pub fn data_export(path: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn data_export(path: String, db: State<'_, Db>) -> Result<(), UiError> {
     let path = path.trim().to_string();
     if path.is_empty() {
         return Err(UiError::invalid_input("保存先パスが空です"));
     }
-    let dump = db.export_dump()?;
-    let json = serde_json::to_string_pretty(&dump)
-        .map_err(|e| UiError::internal(format!("ダンプの直列化に失敗: {e}")))?;
-    std::fs::write(&path, json)
-        .map_err(|e| UiError::internal(format!("エクスポートファイルの書き込みに失敗: {e}")))?;
-    Ok(())
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), UiError> {
+        let dump = db.export_dump()?;
+        let json = serde_json::to_string_pretty(&dump)
+            .map_err(|e| UiError::internal(format!("ダンプの直列化に失敗: {e}")))?;
+        std::fs::write(&path, json)
+            .map_err(|e| UiError::internal(format!("エクスポートファイルの書き込みに失敗: {e}")))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
 /// `data_import`（FR-62、仕様決定 CM）。`data_export` が書き出した JSON を
 /// 読み込み、対象テーブルをダンプ内容で置き換える。
 /// ファイルの読み取り・形式検証に失敗した場合は DB を変更しない。
 #[tauri::command]
-pub fn data_import(path: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn data_import(path: String, db: State<'_, Db>) -> Result<(), UiError> {
     let path = path.trim().to_string();
     if path.is_empty() {
         return Err(UiError::invalid_input("読み込み元パスが空です"));
     }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| UiError::invalid_input(format!("インポートファイルを読めません: {e}")))?;
-    let dump: ExportDump = serde_json::from_str(&text)
-        .map_err(|e| UiError::invalid_input(format!("インポート形式が不正です: {e}")))?;
-    db.import_dump(&dump)?;
-    Ok(())
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), UiError> {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| UiError::invalid_input(format!("インポートファイルを読めません: {e}")))?;
+        let dump: ExportDump = serde_json::from_str(&text)
+            .map_err(|e| UiError::invalid_input(format!("インポート形式が不正です: {e}")))?;
+        db.import_dump(&dump)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
 /// `db_size`（FR-66、仕様決定 CQ）。DB 本体と WAL/SHM サイドファイルの
@@ -197,8 +207,11 @@ pub fn db_size(db: State<'_, Db>) -> Result<DbSize, UiError> {
 
 /// `db_vacuum`（FR-66、仕様決定 CQ）。`VACUUM` で DB ファイルを再構築する。
 #[tauri::command]
-pub fn db_vacuum(db: State<'_, Db>) -> Result<(), UiError> {
-    db.db_vacuum()?;
+pub async fn db_vacuum(db: State<'_, Db>) -> Result<(), UiError> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || db.db_vacuum())
+        .await
+        .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??;
     Ok(())
 }
 
@@ -206,6 +219,9 @@ pub fn db_vacuum(db: State<'_, Db>) -> Result<(), UiError> {
 /// videos / playlist_items / favorites / watch_later）を削除する。
 /// 戻り値は削除した行数。
 #[tauri::command]
-pub fn db_cleanup_orphans(db: State<'_, Db>) -> Result<u64, UiError> {
-    Ok(db.db_cleanup_orphans()?)
+pub async fn db_cleanup_orphans(db: State<'_, Db>) -> Result<u64, UiError> {
+    let db = db.inner().clone();
+    Ok(tokio::task::spawn_blocking(move || db.db_cleanup_orphans())
+        .await
+        .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??)
 }

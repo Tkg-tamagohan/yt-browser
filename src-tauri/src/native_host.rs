@@ -322,6 +322,8 @@ fn read_playlists(path: &Path) -> io::Result<Vec<PlaylistSummary>> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(io::Error::other)?;
+    // WAL チェックポイントや書込トランザクションと重なっても即座に BUSY で失敗しないよう待機する
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
     let mut stmt = conn
         .prepare("SELECT id, name FROM playlists ORDER BY sort_order, id")
         .map_err(io::Error::other)?;

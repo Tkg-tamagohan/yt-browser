@@ -10,7 +10,10 @@
   import LiveWaitButton from "$lib/LiveWaitButton.svelte";
   import { notify } from "$lib/notices.svelte";
   import QueueButtons from "$lib/QueueButtons.svelte";
-  import VideoActionsMenu from "$lib/VideoActionsMenu.svelte";
+  import {
+    toggleVideoActionsMenu,
+    videoContextMenu,
+  } from "$lib/video-actions.svelte";
   import {
     asErrorMessage,
     type FavoriteEntry,
@@ -46,7 +49,7 @@
     onwatchlaterchange,
   }: Props = $props();
 
-  let menuOpen = $state(false);
+  let moreBtn = $state<HTMLElement | null>(null);
 
   async function toggleFav(): Promise<void> {
     try {
@@ -117,9 +120,20 @@
   </button>
   <button
     class="icon"
+    bind:this={moreBtn}
     title={t("library.playlist.addTo")}
     aria-label={t("library.playlist.addTo")}
-    onclick={() => (menuOpen = !menuOpen)}
+    aria-expanded={moreBtn !== null &&
+      videoContextMenu.current?.triggerEl === moreBtn}
+    onclick={(e) => {
+      e.stopPropagation();
+      toggleVideoActionsMenu(e.currentTarget as HTMLElement, {
+        video,
+        playlists,
+        onPlaylistCreated: onplaylistcreated,
+        onplaylistadd,
+      });
+    }}
   >
     ＋
   </button>
@@ -140,18 +154,6 @@
   {#if livewait}
     <LiveWaitButton {video} />
   {/if}
-  <!-- プレイリスト追加メニュー（部品は VideoContextMenu と共用の
-       VideoActionsMenu）。開閉ごとのリマウントを避けるため常時マウントし
-       hidden で切り替える（webkit2gtk のヒットずれ対策、FR-80・仕様決定 DE） -->
-  <div class:hidden={!menuOpen}>
-    <VideoActionsMenu
-      {video}
-      {playlists}
-      {onplaylistcreated}
-      {onplaylistadd}
-      onclose={() => (menuOpen = false)}
-    />
-  </div>
 </span>
 
 <style>

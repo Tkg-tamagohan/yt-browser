@@ -68,6 +68,7 @@
 
   onDestroy(() => {
     disposed = true;
+    lib.dispose();
     unlistens.forEach((u) => u());
     unlistens = [];
   });

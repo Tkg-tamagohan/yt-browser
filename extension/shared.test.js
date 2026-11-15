@@ -2,11 +2,12 @@
 // CB-01: withTimeParam — t= の付与・既存 t= の上書き・他クエリの温存
 // CB-02: hasUsablePosition — t= を付ける意味がある再生位置の判定
 // CB-03: classifyKind / classify / schemePrefix — URL 種別判定と末尾境界
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   classify,
   classifyKind,
   hasUsablePosition,
+  runWithTimeout,
   schemePrefix,
   withTimeParam,
 } from "./shared.js";
@@ -101,5 +102,47 @@ describe("CB-03 classifyKind / classify / schemePrefix", () => {
     expect(schemePrefix("open")).toBe("yt-browser://open?url=");
     expect(schemePrefix("queue")).toBe("yt-browser://queue?url=");
     expect(schemePrefix("playlist_add")).toBe("yt-browser://playlist_add?url=");
+  });
+});
+
+describe("runWithTimeout", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("期限前に完了した場合は応答を 1 回返し、その後のタイムアウトを発火させない", () => {
+    vi.useFakeTimers();
+    const calls = [];
+    runWithTimeout(
+      (done) => {
+        setTimeout(() => done({ ok: true }, null), 100);
+      },
+      5000,
+      (err, res) => calls.push({ err, res }),
+    );
+    vi.advanceTimersByTime(100);
+    expect(calls).toEqual([{ err: null, res: { ok: true } }]);
+    vi.advanceTimersByTime(5000);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("期限内に応答しない場合はタイムアウトで確定し、遅延到着した応答を無視する", () => {
+    vi.useFakeTimers();
+    const calls = [];
+    let lateDone = null;
+    runWithTimeout(
+      (done) => {
+        lateDone = done;
+      },
+      5000,
+      (err, res) => calls.push({ err, res }),
+    );
+    vi.advanceTimersByTime(5000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].err).toBeInstanceOf(Error);
+    expect(calls[0].res).toBeNull();
+
+    lateDone?.({ ok: true }, null);
+    expect(calls).toHaveLength(1);
   });
 });

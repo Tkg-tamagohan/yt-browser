@@ -88,12 +88,14 @@ impl Db {
     /// 購読解除。チャンネル行を消し、そのチャンネルの未読フィードを既読にする
     /// （購読管理の対象外になった動画が未読一覧に残らないようにする暫定仕様）。
     pub fn channel_delete(&self, channel_id: &str) -> Result<(), DbError> {
-        let conn = self.lock()?;
-        conn.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
-        conn.execute(
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
+        tx.execute(
             "UPDATE videos SET is_read = 1 WHERE channel_id = ?1 AND is_read = 0",
             [channel_id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

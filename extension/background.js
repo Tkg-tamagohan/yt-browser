@@ -21,30 +21,44 @@
 //   同じ action のスキーム方式でタブをアクティブで開き、バッジ「!」と
 //   ツールチップで理由を示す
 
-import { classify, classifyKind, schemePrefix } from "./shared.js";
+import { classify, classifyKind, runWithTimeout, schemePrefix } from "./shared.js";
 
 const HOST_NAME = "io.github.tkg_tamagohan.yt_browser";
+const NATIVE_TIMEOUT_MS = 5000;
 
 const DEFAULT_TITLE = "yt-browser で開く";
 
+function sendNativeWithTimeout(message, callback) {
+  runWithTimeout(
+    (done) => {
+      chrome.runtime.sendNativeMessage(HOST_NAME, message, (response) => {
+        const err = chrome.runtime.lastError;
+        done(response, err ? new Error(err.message) : null);
+      });
+    },
+    NATIVE_TIMEOUT_MS,
+    (err, response) => callback(response, err),
+  );
+}
+
 // Native Messaging で本体のホストへ URL と action を渡す。応答が ok
 // でなければ同じ action のスキーム方式へフォールバックする。
-// `extra.playlistId` は playlist_add のときだけ要求へ載せる
+// `extra.playlistId` は playlist_add のときだけ要求へ載せる。
+// `extra.tabId` があれば失敗バッジをそのタブ単位で表示する
 function sendToApp(targetUrl, action, extra = {}) {
   const message = { url: targetUrl, action };
   if (Number.isInteger(extra.playlistId)) {
     message.playlist_id = extra.playlistId;
   }
-  chrome.runtime.sendNativeMessage(HOST_NAME, message, (response) => {
-    const err = chrome.runtime.lastError;
+  sendNativeWithTimeout(message, (response, err) => {
     if (!err && response && response.ok === true) {
-      void setIndicator(null);
+      void setIndicator(null, extra.tabId);
       return;
     }
     const reason = err
       ? `アプリに接続できません（${err.message}）。yt-browser を一度起動すると登録されます`
       : `アプリが失敗を返しました（${response?.error ?? "unknown"}）`;
-    void setIndicator(reason);
+    void setIndicator(reason, extra.tabId);
     openViaScheme(targetUrl, action, extra);
   });
 }
@@ -76,24 +90,54 @@ function openViaScheme(targetUrl, action, extra = {}) {
 // 応答が重なっても表示が最後の結果に収束するよう、更新を 1 本の
 // Promise 連鎖で直列化する（途中で別の更新が割り込まない）
 let indicatorChain = Promise.resolve();
+// ポップアップへの失敗理由表示に使う直近エラー（成功でクリア）
+let lastFailureReason = null;
+const failedTabIds = new Set();
 
 // reason が null なら失敗表示を消し、文字列なら失敗表示にする
-function setIndicator(reason) {
+function setIndicator(reason, tabId) {
   indicatorChain = indicatorChain
-    .then(() => (reason === null ? clearFailure() : showFailure(reason)))
+    .then(() => (reason === null ? clearFailure(tabId) : showFailure(reason, tabId)))
     .catch((e) => console.warn("yt-browser opener: 表示を更新できません", e));
   return indicatorChain;
 }
 
-async function showFailure(reason) {
-  await chrome.action.setBadgeText({ text: "!" });
-  await chrome.action.setBadgeBackgroundColor({ color: "#d93025" });
-  await chrome.action.setTitle({ title: `${DEFAULT_TITLE}\n前回の失敗: ${reason}` });
+async function showFailure(reason, tabId) {
+  lastFailureReason = reason;
+  if (typeof tabId === "number") {
+    failedTabIds.add(tabId);
+    await chrome.action.setBadgeText({ text: "!", tabId });
+    await chrome.action.setBadgeBackgroundColor({ color: "#d93025", tabId });
+    await chrome.action.setTitle({
+      title: `${DEFAULT_TITLE}\n前回の失敗: ${reason}`,
+      tabId,
+    });
+  } else {
+    await chrome.action.setBadgeText({ text: "!" });
+    await chrome.action.setBadgeBackgroundColor({ color: "#d93025" });
+    await chrome.action.setTitle({ title: `${DEFAULT_TITLE}\n前回の失敗: ${reason}` });
+  }
 }
 
-async function clearFailure() {
-  await chrome.action.setBadgeText({ text: "" });
-  await chrome.action.setTitle({ title: DEFAULT_TITLE });
+async function clearFailure(tabId) {
+  lastFailureReason = null;
+  if (typeof tabId === "number") {
+    failedTabIds.delete(tabId);
+    await chrome.action.setBadgeText({ text: "", tabId });
+    await chrome.action.setTitle({ title: DEFAULT_TITLE, tabId });
+  } else {
+    await chrome.action.setBadgeText({ text: "" });
+    await chrome.action.setTitle({ title: DEFAULT_TITLE });
+    for (const id of failedTabIds) {
+      try {
+        await chrome.action.setBadgeText({ text: "", tabId: id });
+        await chrome.action.setTitle({ title: DEFAULT_TITLE, tabId: id });
+      } catch {
+        // すでに閉じられたタブは無視する
+      }
+    }
+    failedTabIds.clear();
+  }
 }
 
 // --- アクション（対象ページでのみ有効。本体の起動はポップアップが担う） ---
@@ -126,8 +170,14 @@ async function syncActionStates() {
   }
 }
 
-chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
-  void updateActionState(tabId, tab.url);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // タイトルやアイコン等の無関係な更新ではアクション状態を書き直さない
+  if (changeInfo.url === undefined && changeInfo.status !== "complete") return;
+  void updateActionState(tabId, changeInfo.url ?? tab.url);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  failedTabIds.delete(tabId);
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
@@ -139,47 +189,50 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   }
 });
 
-// --- ポップアップからの要求。プレイリスト一覧の中継と起動委譲を返す ---
+// --- ポップアップからの要求。プレイリスト一覧の中継・直近状態・起動委譲を返す ---
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "classify" && typeof msg.url === "string") {
     sendResponse({ kind: classifyKind(msg.url) });
+    return;
+  }
+  if (msg?.type === "get_status") {
+    sendResponse({ lastError: lastFailureReason });
     return;
   }
   // ポップアップのプレイリスト選択肢。ホストへそのまま中継し、
   // 応答の { playlists: [{id,name}] } を返す。失敗は null を返して
   // ポップアップ側で選択肢を無効化する（FR-50、仕様決定 CA）
   if (msg?.type === "list_playlists") {
-    chrome.runtime.sendNativeMessage(
-      HOST_NAME,
-      { action: "list_playlists" },
-      (response) => {
-        const err = chrome.runtime.lastError;
-        if (!err && response && response.ok === true) {
-          sendResponse({
-            playlists: Array.isArray(response.playlists)
-              ? response.playlists
-              : [],
-          });
-        } else {
-          sendResponse({ playlists: null });
-        }
-      },
-    );
+    sendNativeWithTimeout({ action: "list_playlists" }, (response, err) => {
+      if (!err && response && response.ok === true) {
+        sendResponse({
+          playlists: Array.isArray(response.playlists)
+            ? response.playlists
+            : [],
+        });
+      } else {
+        const reason = err
+          ? `アプリに接続できません（${err.message}）。yt-browser を一度起動すると登録されます`
+          : `アプリが失敗を返しました（${response?.error ?? "unknown"}）`;
+        sendResponse({ playlists: null, error: reason });
+      }
+    });
     // 非同期応答を使うので true を返してポートを開いたままにする
     return true;
   }
   if (msg?.type === "invoke" && typeof msg.url === "string") {
+    const tabId = typeof msg.tabId === "number" ? msg.tabId : undefined;
     if (msg.action === "open" && classify(msg.url)) {
-      sendToApp(msg.url, "open");
+      sendToApp(msg.url, "open", { tabId });
     } else if (msg.action === "queue" && classifyKind(msg.url) === "video") {
-      sendToApp(msg.url, "queue");
+      sendToApp(msg.url, "queue", { tabId });
     } else if (
       msg.action === "playlist_add" &&
       classifyKind(msg.url) === "video" &&
       Number.isInteger(msg.playlistId) &&
       msg.playlistId > 0
     ) {
-      sendToApp(msg.url, "playlist_add", { playlistId: msg.playlistId });
+      sendToApp(msg.url, "playlist_add", { playlistId: msg.playlistId, tabId });
     }
     sendResponse({ ok: true });
   }
@@ -223,10 +276,11 @@ chrome.runtime.onStartup.addListener(() => {
 
 void syncActionStates();
 
-chrome.contextMenus.onClicked.addListener((info) => {
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const extra = typeof tab?.id === "number" ? { tabId: tab.id } : {};
   if (info.menuItemId === "open-in-yt-browser" && info.linkUrl) {
-    if (classify(info.linkUrl)) sendToApp(info.linkUrl, "open");
+    if (classify(info.linkUrl)) sendToApp(info.linkUrl, "open", extra);
   } else if (info.menuItemId === "queue-in-yt-browser" && info.linkUrl) {
-    if (classifyKind(info.linkUrl) === "video") sendToApp(info.linkUrl, "queue");
+    if (classifyKind(info.linkUrl) === "video") sendToApp(info.linkUrl, "queue", extra);
   }
 });

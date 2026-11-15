@@ -1478,6 +1478,9 @@ CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC);
 CREATE INDEX idx_history_recent ON watch_history(last_watched_at DESC);
 CREATE UNIQUE INDEX idx_queue_state_playlist
   ON queue_state(playlist_id) WHERE playlist_id IS NOT NULL;
+CREATE INDEX idx_videos_meta_resolve
+  ON videos (first_seen_at DESC, video_id)
+  WHERE kind_state <> 1 OR (published_at IS NULL AND meta_checked = 0) OR description IS NULL;
 ```
 
 設計上の注意を二点置く。

@@ -67,29 +67,38 @@ struct ZipEntry {
 /// 既存ファイルは上書きする（保存ダイアログで選ばれたパス）。
 pub async fn export_bundle(dest: &Path, ctx: &DiagContext<'_>) -> Result<(), DiagError> {
     let masker = Masker::from_context(ctx);
+    let env_body = environment_json(ctx, &masker).await?.into_bytes();
+    let settings_body = settings_json(ctx, &masker)?.into_bytes();
+    let log_dir = ctx.log_dir.clone();
+    let dest = dest.to_path_buf();
 
-    let mut entries = vec![
-        ZipEntry {
-            name: "README.txt".to_string(),
-            body: README.as_bytes().to_vec(),
-        },
-        ZipEntry {
-            name: "environment.json".to_string(),
-            body: environment_json(ctx, &masker).await?.into_bytes(),
-        },
-        ZipEntry {
-            name: "settings.json".to_string(),
-            body: settings_json(ctx, &masker)?.into_bytes(),
-        },
-    ];
-    for (name, bytes) in collect_logs(ctx.log_dir.as_deref()) {
-        entries.push(ZipEntry {
-            name: format!("logs/{name}"),
-            body: masker.mask_bytes(&bytes).into_bytes(),
-        });
-    }
+    // ログ収集・正規表現マスク・zip 圧縮は同期ブロッキング処理のため専用スレッドへ逃がす
+    tokio::task::spawn_blocking(move || -> Result<(), DiagError> {
+        let mut entries = vec![
+            ZipEntry {
+                name: "README.txt".to_string(),
+                body: README.as_bytes().to_vec(),
+            },
+            ZipEntry {
+                name: "environment.json".to_string(),
+                body: env_body,
+            },
+            ZipEntry {
+                name: "settings.json".to_string(),
+                body: settings_body,
+            },
+        ];
+        for (name, bytes) in collect_logs(log_dir.as_deref()) {
+            entries.push(ZipEntry {
+                name: format!("logs/{name}"),
+                body: masker.mask_bytes(&bytes).into_bytes(),
+            });
+        }
 
-    write_zip(dest, &entries)?;
+        write_zip(&dest, &entries)
+    })
+    .await
+    .map_err(|e| DiagError::Io(std::io::Error::other(e.to_string())))??;
     Ok(())
 }
 

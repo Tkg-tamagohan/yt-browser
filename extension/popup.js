@@ -16,6 +16,13 @@ const openTimeBtn = document.getElementById("openWithTime");
 const queueBtn = document.getElementById("queue");
 const plSelect = document.getElementById("plSelect");
 const plAddBtn = document.getElementById("plAdd");
+const statusMsg = document.getElementById("statusMsg");
+
+function showStatus(text) {
+  if (!text) return;
+  statusMsg.textContent = text;
+  statusMsg.hidden = false;
+}
 
 // 位置引き継ぎ用の状態。「再生位置を引き継いで開く」が有効な間だけ timedUrl が値を持つ
 let activeTabId;
@@ -26,17 +33,25 @@ function invoke(action, extra = {}) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     // 位置引き継ぎでは t= 付きの URL を使い、それ以外は現在タブの URL
     const url = extra.url ?? tabs[0]?.url;
+    const tabId = tabs[0]?.id ?? activeTabId;
     if (typeof url !== "string") {
       window.close();
       return;
     }
     // sendMessage の送出を待たずに popup が閉じるとメッセージが
     // 落ちうるため、コールバックで閉じる
-    chrome.runtime.sendMessage({ type: "invoke", url, action, ...extra }, () =>
-      window.close(),
+    chrome.runtime.sendMessage(
+      { type: "invoke", url, action, tabId, ...extra },
+      () => window.close(),
     );
   });
 }
+
+chrome.runtime.sendMessage({ type: "get_status" }, (st) => {
+  if (!chrome.runtime.lastError && st?.lastError) {
+    showStatus(st.lastError);
+  }
+});
 
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const url = tabs[0]?.url;
@@ -75,6 +90,12 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
           ? "プレイリストを取得できません"
           : "プレイリストがありません";
       plSelect.append(opt);
+      if (list === null && statusMsg.hidden) {
+        showStatus(
+          pl.error ??
+            "本体アプリに接続できません。yt-browser を一度起動してください",
+        );
+      }
       return;
     }
     for (const p of list) {

@@ -30,10 +30,19 @@
 
   // メニュー外のポインタ操作（左クリック・右クリックどちらでも）で閉じる。
   // キャプチャ相で拾い、行の右クリックハンドラより先に判定しても
-  // メニュー内のイベントは閉じ対象にしない
+  // メニュー内や開いたトリガーボタンのイベントは閉じ対象にしない
   function onPointerDown(e: PointerEvent): void {
-    if (menuEl !== null && e.target instanceof Node && menuEl.contains(e.target)) {
-      return;
+    const target = e.target;
+    if (target instanceof Node) {
+      if (menuEl !== null && menuEl.contains(target)) {
+        return;
+      }
+      if (
+        videoContextMenu.current?.triggerEl != null &&
+        videoContextMenu.current.triggerEl.contains(target)
+      ) {
+        return;
+      }
     }
     closeVideoContextMenu();
   }
@@ -78,9 +87,23 @@
 >
   <VideoActionsMenu
     video={videoContextMenu.current?.video ?? emptyVideo}
-    playlists={videoContextMenu.current?.va.playlists ?? []}
+    playlists={videoContextMenu.current?.va
+      ? videoContextMenu.current.va.playlists
+      : (videoContextMenu.current?.playlists ?? [])}
     floating
-    onplaylistcreated={videoContextMenu.current?.va.onPlaylistCreated}
+    onplaylistcreated={(pl) => {
+      if (videoContextMenu.current?.va) {
+        videoContextMenu.current.va.onPlaylistCreated(pl);
+      } else {
+        if (videoContextMenu.current?.playlists) {
+          videoContextMenu.current.playlists = [
+            ...videoContextMenu.current.playlists,
+            pl,
+          ];
+        }
+        videoContextMenu.current?.onPlaylistCreated?.(pl);
+      }
+    }}
     onplaylistadd={videoContextMenu.current?.onplaylistadd}
     onclose={closeVideoContextMenu}
   />

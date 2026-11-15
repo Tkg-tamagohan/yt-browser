@@ -53,6 +53,7 @@ export function createLibraryPageState(opts: Options) {
   let historyLoadingMore = $state(false);
   let historyQuery = $state("");
   let historyReq = 0;
+  let historyDebounce: ReturnType<typeof setTimeout> | undefined;
   const HISTORY_PAGE = 500;
   let favorites = $state<FavoriteEntry[]>([]);
 
@@ -67,6 +68,8 @@ export function createLibraryPageState(opts: Options) {
   let searchQuery = $state("");
   let searchItems = $state<LibrarySearchItem[]>([]);
   let searchReq = 0;
+  let searchDebounce: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
   const SEARCH_LIMIT = 200;
 
   // 選択中プレイリストとその中身。reqId は選択ごとに進み、
@@ -150,30 +153,44 @@ export function createLibraryPageState(opts: Options) {
   /// 履歴の先頭ページを取り直す（初回ロードと検索語の変更で使う）。
   /// historyQuery は呼び出し時点の値を送る（検索中は同じ条件の一覧に
   /// カーソルページングが効く。FR-52・FR-61、仕様決定 CC・CL）
-  async function loadHistory(): Promise<void> {
-    const req = ++historyReq;
+  async function loadHistory(expectedReq?: number): Promise<void> {
+    const req = expectedReq ?? ++historyReq;
     const page = await invoke<HistoryPage>("history_list", {
       cursor: null,
       query: historyQuery,
       limit: HISTORY_PAGE,
     });
-    if (req !== historyReq) return;
+    if (disposed || req !== historyReq) return;
     history = page.items;
     historyCursor = page.nextCursor;
     historyHasMore = page.nextCursor !== null;
   }
 
   /// 検索ボックスの入力（FR-61、仕様決定 CL）。
-  /// 入力ごとに先頭ページを取り直し、取り直し中の追記は世代違いで捨てる。
-  /// 旧条件のカーソルは即座に無効化する（古いカーソルと新しい検索語が
-  /// 組み合わさった追記を防ぐ）
+  /// 連続タイプ中の無駄な IPC を避けるため非空入力を 180ms デバウンスし、
+  /// 世代番号で旧条件の応答やページング追記を無効化する
   function setHistoryQuery(value: string): void {
     historyQuery = value;
     historyCursor = null;
     historyHasMore = false;
-    void loadHistory().catch((e) => {
-      notify(t("library.failed", { message: asErrorMessage(e) }));
-    });
+    clearTimeout(historyDebounce);
+    const req = ++historyReq;
+    if (value.trim() === "") {
+      void loadHistory(req).catch((e) => {
+        if (!disposed && req === historyReq) {
+          notify(t("library.failed", { message: asErrorMessage(e) }));
+        }
+      });
+      return;
+    }
+    historyDebounce = setTimeout(() => {
+      if (disposed || req !== historyReq) return;
+      void loadHistory(req).catch((e) => {
+        if (!disposed && req === historyReq) {
+          notify(t("library.failed", { message: asErrorMessage(e) }));
+        }
+      });
+    }, 180);
   }
 
   /// 履歴一覧の次ページを末尾へ追記する（FR-52、仕様決定 CC）。
@@ -229,29 +246,39 @@ export function createLibraryPageState(opts: Options) {
   }
 
   /// 横断検索ボックスの入力（FR-60、仕様決定 CK）。
-  /// 入力ごとに取り直し、遅れて返る旧条件の応答は世代違いで捨てる。
-  /// 空・空白のみは結果を空にする（バックエンドも 0 件を返す暫定解釈）
+  /// 連続タイプ中の無駄な IPC を避けるため非空入力を 180ms デバウンスし、
+  /// 遅れて返る旧条件の応答は世代違いで捨てる。空・空白のみは結果を即空にする
   function setSearchQuery(value: string): void {
     searchQuery = value;
+    clearTimeout(searchDebounce);
     const req = ++searchReq;
     const q = normalizeSearchQuery(value);
     if (!q) {
       searchItems = [];
       return;
     }
-    void invoke<LibrarySearchItem[]>("library_search", {
-      query: q,
-      limit: SEARCH_LIMIT,
-    })
-      .then((items) => {
-        if (req !== searchReq) return;
-        searchItems = items;
+    searchDebounce = setTimeout(() => {
+      if (disposed || req !== searchReq) return;
+      void invoke<LibrarySearchItem[]>("library_search", {
+        query: q,
+        limit: SEARCH_LIMIT,
       })
-      .catch((e) => {
-        if (req !== searchReq) return;
-        searchItems = [];
-        notify(t("library.failed", { message: asErrorMessage(e) }));
-      });
+        .then((items) => {
+          if (disposed || req !== searchReq) return;
+          searchItems = items;
+        })
+        .catch((e) => {
+          if (disposed || req !== searchReq) return;
+          searchItems = [];
+          notify(t("library.failed", { message: asErrorMessage(e) }));
+        });
+    }, 180);
+  }
+
+  function dispose(): void {
+    disposed = true;
+    clearTimeout(historyDebounce);
+    clearTimeout(searchDebounce);
   }
 
   async function play(videoId: string, resume: boolean): Promise<void> {
@@ -1158,5 +1185,6 @@ export function createLibraryPageState(opts: Options) {
     reverseItems,
     playQueue,
     removeItem,
+    dispose,
   };
 }
