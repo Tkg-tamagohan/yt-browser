@@ -205,6 +205,7 @@ impl PlayerManager {
         video_id: String,
     ) {
         let http = http.clone();
+        let gen = player.sponsor_generation();
         let categories = db
             .setting_get(crate::sponsor::SETTING_CATEGORIES)
             .ok()
@@ -218,12 +219,14 @@ impl PlayerManager {
                     Vec::new()
                 }
             };
-            // 応答が遅れて再生中動画が変わっていたら、前動画の区間を
-            // 判定・表示へ混ぜないよう反映も送出もしない
-            if player.video_id() != video_id {
+            // 応答が遅れて動画切替や再起動（世代変化）・別動画再生に入っていたら、
+            // video_id 更新前であっても旧動画の区間を反映・送出しない
+            if !player.set_sponsor_segments_if_current(gen, &video_id, segments.clone()) {
                 return;
             }
-            player.set_sponsor_segments(segments.clone());
+            if player.sponsor_generation() != gen || player.video_id() != video_id {
+                return;
+            }
             let payload =
                 crate::sponsor::segments_payload(player.instance_id(), &video_id, &segments);
             if let Err(e) = player.app().emit("sponsor://segments", payload) {
@@ -434,11 +437,20 @@ impl PlayerManager {
     /// アプリ終了時のクリーンアップ。全インスタンスを止める。
     pub async fn close_all(&self) {
         let entries: Vec<PlayerEntry> = lock(&self.players).drain().map(|(_, e)| e).collect();
+        let mut closing = tokio::task::JoinSet::new();
         for PlayerEntry { player, emitter } in entries {
-            emitter.abort();
-            player.abort_pump().await;
-            self.persist_history(&player, player.terminal_completed());
-            player.shutdown().await;
+            let db = self.db.clone();
+            closing.spawn(async move {
+                emitter.abort();
+                player.abort_pump().await;
+                persist_now(&db, &player, player.terminal_completed());
+                player.shutdown().await;
+            });
+        }
+        while let Some(res) = closing.join_next().await {
+            if let Err(e) = res {
+                tracing::warn!(error = %e, "プレイヤー終了タスクが失敗");
+            }
         }
     }
 

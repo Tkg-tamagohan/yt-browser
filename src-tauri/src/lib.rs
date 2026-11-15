@@ -123,7 +123,13 @@ pub fn run() {
             app.manage(db.clone());
 
             // Chrome 拡張の Native Messaging ホスト定義を冪等に自己登録する（仕様決定 AH・DM）
-            native_host::register(app.path().config_dir().ok(), &dir);
+            let suppress_nm = cfg!(debug_assertions)
+                && std::env::var_os("YB_DEV_NO_NM").is_some_and(|v| v == "1");
+            if suppress_nm {
+                tracing::info!("YB_DEV_NO_NM=1 のため Native Messaging 登録を省略する");
+            } else {
+                native_host::register(app.path().config_dir().ok(), &dir);
+            }
 
             // mpv の IPC ソケット置き場。runtime_dir が取れない環境では app_data 配下に退避する
             let socket_dir = app.path().runtime_dir().unwrap_or_else(|_| dir.join("run"));

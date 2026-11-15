@@ -96,3 +96,26 @@ export function moveIndex(cur: number, delta: number, len: number): number {
   if (cur < 0) return delta >= 0 ? 0 : len - 1;
   return Math.min(len - 1, Math.max(0, cur + delta));
 }
+
+/// 対象行が画面上で可視状態にあるか（非表示タブや [hidden] 配下でないか）を判定する
+export function isVisibleRow(el: unknown): boolean {
+  if (el === null || typeof el !== "object") return false;
+  const candidate = el as {
+    closest?: (selector: string) => unknown;
+    getClientRects?: () => { length: number };
+  };
+  if (
+    typeof candidate.closest === "function" &&
+    candidate.closest(".hidden, [hidden]") !== null &&
+    candidate.closest(".hidden, [hidden]") !== undefined
+  ) {
+    return false;
+  }
+  if (
+    typeof candidate.getClientRects === "function" &&
+    candidate.getClientRects().length === 0
+  ) {
+    return false;
+  }
+  return true;
+}

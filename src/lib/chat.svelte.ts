@@ -3,7 +3,7 @@
 // players.svelte.ts と同じくコンポーネント外のストアに状態を置く。
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { t } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
 import {
@@ -212,35 +212,54 @@ let initPromise: Promise<void> | null = null;
 /// ポップアップ窓では /chat ページが同じく一度だけ呼ぶ。
 export function initChatEvents(): Promise<void> {
   if (!initPromise) {
-    initPromise = (async () => {
-      await listen<ChatEvent[]>("chat://message", (ev) =>
-        onChatMessages(ev.payload),
-      );
-      await listen<ChatStatus>("chat://status", (ev) =>
-        onChatStatus(ev.payload),
-      );
-      await listen<{ videoId: string }>("chat://reset", (ev) =>
-        onChatReset(ev.payload),
-      );
-      // ポップアップ側の「パネルに戻す」でバックエンドが発行する
-      // パネル復帰要求。対象インスタンスが同じ動画を再生中のときだけ
-      // 埋め込みパネルを開き直す（FR-27、仕様決定 AT）
-      await listen<{ instanceId: number; videoId: string }>(
-        "chat://open_panel",
-        (ev) => {
-          const { instanceId, videoId } = ev.payload;
-          if (playerStates.list.get(instanceId)?.videoId !== videoId) return;
-          const cur = chatPanels.list.get(instanceId);
-          const next = new Map(chatPanels.list);
-          next.set(instanceId, {
-            open: true,
-            items: cur?.items ?? [],
-            status: null,
-          });
-          chatPanels.list = next;
-        },
-      );
+    const unlistens: UnlistenFn[] = [];
+    let pending: Promise<void> | undefined;
+    pending = (async () => {
+      try {
+        unlistens.push(
+          await listen<ChatEvent[]>("chat://message", (ev) =>
+            onChatMessages(ev.payload),
+          ),
+        );
+        unlistens.push(
+          await listen<ChatStatus>("chat://status", (ev) =>
+            onChatStatus(ev.payload),
+          ),
+        );
+        unlistens.push(
+          await listen<{ videoId: string }>("chat://reset", (ev) =>
+            onChatReset(ev.payload),
+          ),
+        );
+        // ポップアップ側の「パネルに戻す」でバックエンドが発行する
+        // パネル復帰要求。対象インスタンスが同じ動画を再生中のときだけ
+        // 埋め込みパネルを開き直す（FR-27、仕様決定 AT）
+        unlistens.push(
+          await listen<{ instanceId: number; videoId: string }>(
+            "chat://open_panel",
+            (ev) => {
+              const { instanceId, videoId } = ev.payload;
+              if (playerStates.list.get(instanceId)?.videoId !== videoId) {
+                return;
+              }
+              const cur = chatPanels.list.get(instanceId);
+              const next = new Map(chatPanels.list);
+              next.set(instanceId, {
+                open: true,
+                items: cur?.items ?? [],
+                status: null,
+              });
+              chatPanels.list = next;
+            },
+          ),
+        );
+      } catch (err) {
+        for (const u of unlistens) u();
+        if (initPromise === pending) initPromise = null;
+        throw err;
+      }
     })();
+    initPromise = pending;
   }
   return initPromise;
 }

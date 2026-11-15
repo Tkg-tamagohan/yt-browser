@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter};
 use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{ChatStatus, Filter};
+use crate::util::lock;
 
 /// target 単位の NG 判定器。`NgMatcher` が Arc で共有し、
 /// フィルタ登録・削除のたびに丸ごと差し替える。
@@ -203,7 +204,7 @@ impl NgMatcher {
     /// `filters` テーブルの現在値で NG 評価器を作り直す。
     /// 起動時と `filter_add` / `filter_remove` の直後に呼ぶ。
     pub fn refresh(&self) -> Result<(), UiError> {
-        let _serialize = self.refresh_lock.lock().unwrap();
+        let _serialize = lock(&self.refresh_lock);
         let rows = self.db.filter_list()?;
         let m = Matcher::rebuild(&rows);
         if !m.invalid_patterns().is_empty() {
@@ -221,7 +222,7 @@ impl NgMatcher {
                 },
             );
         }
-        *self.current.lock().unwrap() = Arc::new(m);
+        *lock(&self.current) = Arc::new(m);
         Ok(())
     }
 
@@ -229,7 +230,7 @@ impl NgMatcher {
     /// フィード・検索・関連動画の表示側フィルタ（動画系 target）と
     /// チャット表示フィルタ（chat_text / chat_author）の双方に使う。
     pub fn get(&self) -> Arc<Matcher> {
-        self.current.lock().unwrap().clone()
+        lock(&self.current).clone()
     }
 }
 

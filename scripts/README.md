@@ -31,12 +31,12 @@ WebView2 は `--remote-debugging-port` 付きで起動すると CDP エンドポ
    `io.github.tkg-tamagohan.yt-browser-dev` に差し替える。データ
    ディレクトリと single-instance の排他範囲が本番と分かれる
    （dev 専用の空 DB で起動する）
-2. **Native Messaging 登録の抑制**：開発ビルドも起動時にホスト定義を
+2. **Native Messaging 登録の抑制**：開発ビルドも既定では起動時にホスト定義を
    自己登録する（設計書 §3.4.1。最後に起動したバイナリのパスが有効に
    なる）。抑制しないとホスト定義が dev バイナリを指し、本番側の
-   拡張連携が壊れる。`e2e_dev.py` は `src-tauri/src/lib.rs` の
-   `native_host::register(...)` 呼び出しを起動前にコメント化し、
-   終了時に復元する
+   拡張連携が壊れるため、`e2e_dev.py` はデバッグビルド限定で環境変数
+   `YB_DEV_NO_NM=1` を渡して登録処理をスキップする（ソースファイルは
+   書き換えない）
 
 ### 手順
 
@@ -56,7 +56,7 @@ python scripts/cdp_client.py --emit-open-url "https://www.youtube.com/watch?v=<I
 python scripts/cdp_client.py --emit-queue-url "https://www.youtube.com/watch?v=<ID>"
 
 # 4. 終了：e2e_dev.py のターミナルで Ctrl+C
-#    dev プロセスを止めて lib.rs を自動復元する
+#    dev プロセスを止める
 ```
 
 `--emit-open-url` / `--emit-queue-url` は `app://open_url` イベントの注入で、
@@ -67,17 +67,11 @@ OS 経由の deep link を通さずに deep link 受信経路全体（イベン�
 複数の page ターゲットがある環境では `--url-match localhost:1420` で
 本体窓を指定する。
 
-### 一時変更の戻し方
+### 一時変更と設定ファイルの扱い
 
-`e2e_dev.py` は lib.rs の原文を `src-tauri/src/lib.rs.e2e-backup` に退避し、
-終了時（Ctrl+C を含む）に必ず復元する。スクリプト自体を強制終了した
-場合は次のどちらかで戻す。
-
-- `git checkout -- src-tauri/src/lib.rs`
-- `lib.rs.e2e-backup` の内容を `lib.rs` へ書き戻してバックアップを消す
-
-identifier の差し替えは `--config` の一時 JSON 経由で、設定ファイルは
-一切書き換えない。
+Native Messaging の登録抑止（環境変数 `YB_DEV_NO_NM=1`）および
+identifier の差し替え（`--config` の一時 JSON 経由）はどちらも
+リポジトリ管理下のソースや設定ファイルを書き換えない。
 
 ### 再マウント検知など発展的な使い方
 

@@ -38,6 +38,7 @@ function applyAttrs(): void {
 /// 返した関数は購読解除用（$effect のクリーンアップ）。
 /// 本体窓とチャットポップアップ窓のどちらでもレイアウトから呼ぶ
 export function initUiPrefs(): () => void {
+  let disposed = false;
   media = window.matchMedia("(prefers-color-scheme: light)");
   media.addEventListener("change", applyAttrs);
   // 初期読み取りと設定変更の競合を避けるため、コミット済みの値を持つ
@@ -47,6 +48,7 @@ export function initUiPrefs(): () => void {
   const unlistenPromise = listen<{ key: string; value: string }>(
     "settings://changed",
     (ev) => {
+      if (disposed) return;
       const { key, value } = ev.payload;
       if (key === "ui.theme") {
         seen.add(key);
@@ -71,6 +73,7 @@ export function initUiPrefs(): () => void {
         invoke<string | null>("settings_get", { key: "ui.density" }),
         invoke<string | null>("settings_get", { key: "ui.language" }),
       ]);
+      if (disposed) return;
       // 購読中に届いたイベントの値を正とし、初期読み取りの遅延解決で戻さない
       if (!seen.has("ui.theme")) theme = uiTheme(themeRaw);
       if (!seen.has("ui.density")) density = uiDensity(densityRaw);
@@ -84,6 +87,7 @@ export function initUiPrefs(): () => void {
     }
   })();
   return () => {
+    disposed = true;
     media?.removeEventListener("change", applyAttrs);
     void unlistenPromise.then((u) => u()).catch(() => {});
   };

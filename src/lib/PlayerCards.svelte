@@ -234,11 +234,13 @@
     for (const f of playbackHooks) f();
   }
 
-  async function control(id: number, action: PlayerAction): Promise<void> {
+  async function control(id: number, action: PlayerAction): Promise<boolean> {
     try {
       await invoke("player_control", { instanceId: id, action });
+      return true;
     } catch (e) {
       notify(t("player.error", { message: asErrorMessage(e) }));
+      return false;
     }
   }
 
@@ -353,10 +355,11 @@
     }
     audioBusy = new Set(audioBusy).add(id);
     try {
-      await control(id, { type: "audio_device", device });
-    } catch {
-      // control がエラー通知を出す。欄の表示だけ実態へ戻す
-      el.value = playerStates.list.get(id)?.audioDevice ?? "auto";
+      const ok = await control(id, { type: "audio_device", device });
+      if (!ok) {
+        // control がエラー通知を出す。欄の表示だけ実態へ戻す
+        el.value = playerStates.list.get(id)?.audioDevice ?? "auto";
+      }
     } finally {
       const s = new Set(audioBusy);
       s.delete(id);
@@ -383,10 +386,11 @@
     }
     subBusy = new Set(subBusy).add(id);
     try {
-      await control(id, { type: "sub_track", sid });
-    } catch {
-      // control がエラー通知を出す。欄の表示だけ実態へ戻す
-      el.value = playerStates.list.get(id)?.sid ?? "auto";
+      const ok = await control(id, { type: "sub_track", sid });
+      if (!ok) {
+        // control がエラー通知を出す。欄の表示だけ実態へ戻す
+        el.value = playerStates.list.get(id)?.sid ?? "auto";
+      }
     } finally {
       const s = new Set(subBusy);
       s.delete(id);
@@ -398,12 +402,14 @@
     if (qualityBusy.has(id)) return;
     qualityBusy = new Set(qualityBusy).add(id);
     try {
-      await control(id, { type: "quality", format });
-      // 適用成功: このインスタンスの個別指定を記録する（設定画面の全体適用から外す）
-      formatOverrides.add(id);
-    } catch {
-      // control がエラー通知を出す。欄の表示だけ実態へ戻す
-      el.value = playerStates.list.get(id)?.format ?? "";
+      const ok = await control(id, { type: "quality", format });
+      if (ok) {
+        // 適用成功: このインスタンスの個別指定を記録する（設定画面の全体適用から外す）
+        formatOverrides.add(id);
+      } else {
+        // control がエラー通知を出す。欄の表示だけ実態へ戻す
+        el.value = playerStates.list.get(id)?.format ?? "";
+      }
     } finally {
       const s = new Set(qualityBusy);
       s.delete(id);
@@ -411,17 +417,21 @@
     }
   }
 
+  const pipTimers = new Set<ReturnType<typeof setTimeout>>();
+
   async function togglePip(id: number, next: boolean): Promise<void> {
     if (pipBusy.has(id)) return;
     pipBusy = new Set(pipBusy).add(id);
     try {
       await control(id, { type: "pip", enabled: next });
     } finally {
-      setTimeout(() => {
+      const tid = setTimeout(() => {
+        pipTimers.delete(tid);
         const s = new Set(pipBusy);
         s.delete(id);
         pipBusy = s;
       }, 400);
+      pipTimers.add(tid);
     }
   }
 
@@ -504,29 +514,43 @@
     }
   }
 
+  let disposed = false;
   let unlistenFns: UnlistenFn[] = [];
+
+  function registerUnlisten(u: UnlistenFn): void {
+    if (disposed) {
+      u();
+    } else {
+      unlistenFns.push(u);
+    }
+  }
 
   onMount(async () => {
     await initPlayerEvents();
     await initQueue();
     await initChatEvents();
+    if (disposed) return;
     // 音声出力デバイス一覧（FR-32）。失敗・空列は直接入力欄へ縮退する
     try {
-      audioDevices = await invoke<AudioDevice[]>("audio_device_list");
+      const devs = await invoke<AudioDevice[]>("audio_device_list");
+      if (!disposed) audioDevices = devs;
     } catch {
-      audioListFailed = true;
+      if (!disposed) audioListFailed = true;
     }
+    if (disposed) return;
     // mpv 窓の移動・前面化可否（整列・前面化ボタンの有効化判定、
     // FR-41・FR-42）。取得失敗は未判定（空文字）のままにし、
     // 操作時のエラー通知に委ねる
     try {
-      windowing = await invoke<string>("windowing_system");
+      const w = await invoke<string>("windowing_system");
+      if (!disposed) windowing = w;
     } catch {
       // 判定不能の環境ではボタンを無効側へ倒さない
     }
+    if (disposed) return;
 
     // 状態マップの更新は共有ストア側。ここでは通知とパネルの片付けを購読する
-    unlistenFns.push(
+    registerUnlisten(
       await listen<PlayerEnded>("player://ended", (ev) => {
         // ループが継続している間は終了トーストを抑制する（仕様決定 AA。
         // 継続再生による自動遷移ではセッションが終わらないため通知しない。
@@ -562,14 +586,20 @@
         // 終了時の位置（または完了リセット）が履歴へ保存済みなのでヒントを取り直させる
         runPlaybackHooks();
       }),
-      // ウォッチドッグによる mpv 自動再起動（仕様決定 BE）。インスタンスは
-      // 消滅しないためカード・パネル・キューの紐付けはそのまま維持し、
-      // トーストだけ出す。最終的な失敗は player://ended の reason=error で届く
+    );
+    if (disposed) return;
+    // ウォッチドッグによる mpv 自動再起動（仕様決定 BE）。インスタンスは
+    // 消滅しないためカード・パネル・キューの紐付けはそのまま維持し、
+    // トーストだけ出す。最終的な失敗は player://ended の reason=error で届く
+    registerUnlisten(
       await listen<PlayerRestarted>("player://restarted", (ev) => {
         // mpv プロセスの差し替えで ab-loop-a/b は消えるため、表示状態も畳む
         dropAbLoop(ev.payload.instanceId);
         notify(t("player.restarted", { attempt: ev.payload.attempt }));
       }),
+    );
+    if (disposed) return;
+    registerUnlisten(
       await listen<SponsorSkipped>("sponsor://skipped", (ev) => {
         const key =
           ev.payload.action === "skip" ? "sponsor.skipped" : "sponsor.notified";
@@ -584,7 +614,11 @@
   });
 
   onDestroy(() => {
+    disposed = true;
+    for (const tid of pipTimers) clearTimeout(tid);
+    pipTimers.clear();
     for (const u of unlistenFns) u();
+    unlistenFns = [];
   });
 </script>
 

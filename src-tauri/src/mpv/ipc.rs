@@ -117,6 +117,13 @@ pub struct IpcClient {
     /// IPC 無応答ウォッチドッグ（仕様決定 BE）が「受信が止まった」かを
     /// 判定するための入力で、std Mutex で保持する（reader が同期文脈で更新）。
     last_rx: Arc<Mutex<Instant>>,
+    reader: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for IpcClient {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
 }
 
 impl IpcClient {
@@ -126,12 +133,13 @@ impl IpcClient {
         let (read_half, write_half) = imp::connect(path).await?;
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
         let last_rx = Arc::new(Mutex::new(Instant::now()));
-        spawn_reader(read_half, events, pending.clone(), last_rx.clone());
+        let reader = spawn_reader(read_half, events, pending.clone(), last_rx.clone());
         Ok(Self {
             writer: AsyncMutex::new(write_half),
             pending,
             next_request_id: AtomicU64::new(1),
             last_rx,
+            reader,
         })
     }
 
@@ -171,7 +179,7 @@ fn spawn_reader(
     events: mpsc::Sender<IpcEvent>,
     pending: Arc<Mutex<PendingMap>>,
     last_rx: Arc<Mutex<Instant>>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut lines = BufReader::new(read).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -183,7 +191,7 @@ fn spawn_reader(
             let _ = tx.send(Err(IpcError::Closed));
         }
         let _ = events.send(IpcEvent::Disconnected).await;
-    });
+    })
 }
 
 fn dispatch_line(line: &str, events: &mpsc::Sender<IpcEvent>, pending: &Arc<Mutex<PendingMap>>) {
@@ -219,7 +227,9 @@ fn dispatch_line(line: &str, events: &mpsc::Sender<IpcEvent>, pending: &Arc<Mute
         None => return,
     };
     // try_send: 受信側が溢れていても読み取りを止めない（最新値で追いつく設計）
-    let _ = events.try_send(ev);
+    if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = events.try_send(ev) {
+        tracing::warn!("mpv IPC イベントチャネルが満杯のためイベントを破棄");
+    }
 }
 
 /// 転送層の疑似サーバは OS ごとに別実装（Unix は UnixListener、Windows は

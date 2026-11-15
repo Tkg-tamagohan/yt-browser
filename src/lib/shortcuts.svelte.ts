@@ -11,6 +11,7 @@ import { videoContextMenu } from "$lib/video-actions.svelte";
 import {
   isActivateTarget,
   isEditableTarget,
+  isVisibleRow,
   moveIndex,
   resolveShortcut,
   shortcutsEnabled,
@@ -31,7 +32,7 @@ let selectedEl: HTMLElement | null = null;
 function rows(): HTMLElement[] {
   return [
     ...document.querySelectorAll<HTMLElement>("li.vr[data-video-id]"),
-  ];
+  ].filter(isVisibleRow);
 }
 
 function clearSelected(): void {
@@ -104,6 +105,7 @@ function onKeydown(e: KeyboardEvent): void {
 /// 戻り値は解除用（アンマウントやチャットポップアップ窓への
 /// 切り替えでレイアウト側が呼ぶ）
 export function initShortcuts(): () => void {
+  let disposed = false;
   let unlisten: UnlistenFn | undefined;
   // 設定画面の保存と初期読み取りが競合しないよう、コミット済みの値を持つ
   // settings://changed を先に購読し、届いた以降はイベント側を正とする
@@ -112,6 +114,7 @@ export function initShortcuts(): () => void {
   void listen<{ key: string; value: string }>(
     "settings://changed",
     (ev) => {
+      if (disposed) return;
       if (ev.payload.key === "ui.shortcuts") {
         changed = true;
         enabled = shortcutsEnabled(ev.payload.value);
@@ -119,7 +122,11 @@ export function initShortcuts(): () => void {
     },
   )
     .then((u) => {
-      unlisten = u;
+      if (disposed) {
+        u();
+      } else {
+        unlisten = u;
+      }
     })
     .catch(() => {
       // 変更追従なしでも初期値の読み込みで動く
@@ -127,15 +134,17 @@ export function initShortcuts(): () => void {
   void invoke<string | null>("settings_get", { key: "ui.shortcuts" })
     .then((raw) => {
       // 購読中に届いたイベントの値を正とし、遅延解決の読み取りで戻さない
-      if (!changed) enabled = shortcutsEnabled(raw);
+      if (!disposed && !changed) enabled = shortcutsEnabled(raw);
     })
     .catch(() => {
       // 読み取り失敗時は既定（off）のまま動く
     });
   window.addEventListener("keydown", onKeydown);
   return () => {
+    disposed = true;
     window.removeEventListener("keydown", onKeydown);
     unlisten?.();
+    unlisten = undefined;
     clearSelected();
     cursor = -1;
   };

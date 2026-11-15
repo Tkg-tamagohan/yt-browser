@@ -5,9 +5,9 @@
   // 投稿者名と superchat / membership のバッジは出さない
   // （chat.popup_show_author が on のとき投稿者名も出す。FR-68・CS）。
   import { page } from "$app/state";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { t } from "$lib/i18n";
   import ChatList from "$lib/ChatList.svelte";
@@ -46,15 +46,19 @@
   let fontSize = $state(14);
   let opacity = $state(1.0);
 
+  let disposed = false;
+  let unlistenSettings: UnlistenFn | undefined;
+
   onMount(async () => {
     openChatPopupView(videoId);
     await initChatEvents();
     await initPlayerEvents();
+    if (disposed) return;
     // 初期読み取りと設定変更の競合を避けるため、先に
     // settings://changed を購読してから settings_get する
     // （届いたイベントの値を正とする。+page.svelte と同じ型）
     let displayChanged = false;
-    await listen<{ key: string; value: string }>(
+    const u = await listen<{ key: string; value: string }>(
       "settings://changed",
       (ev) => {
         const { key, value } = ev.payload;
@@ -70,14 +74,20 @@
         }
       },
     );
+    if (disposed) {
+      u();
+      return;
+    }
+    unlistenSettings = u;
     try {
       const raw = await invoke<string | null>("settings_get", {
         key: "chat.popup_ontop",
       });
-      ontop = chatPopupOntopEnabled(raw);
+      if (!disposed) ontop = chatPopupOntopEnabled(raw);
     } catch {
       // 設定が読めなくても既定（最前面 ON）のまま表示する
     }
+    if (disposed) return;
     try {
       const [authorRaw, sizeRaw, opacityRaw] = await Promise.all([
         invoke<string | null>("settings_get", {
@@ -91,7 +101,7 @@
         }),
       ]);
       // 購読中に届いたイベント側を正とし、初期読み取りで戻さない
-      if (!displayChanged) {
+      if (!disposed && !displayChanged) {
         showAuthor = popupShowAuthorEnabled(authorRaw);
         fontSize = popupFontSize(sizeRaw);
         opacity = popupOpacity(opacityRaw);
@@ -99,6 +109,12 @@
     } catch {
       // 読み取り失敗時は既定（従来の見た目）のままにする
     }
+  });
+
+  onDestroy(() => {
+    disposed = true;
+    unlistenSettings?.();
+    unlistenSettings = undefined;
   });
 
   async function toggleOntop(): Promise<void> {
