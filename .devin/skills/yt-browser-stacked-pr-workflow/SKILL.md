@@ -25,12 +25,11 @@ description: yt-browser のフェーズ実装でスタックした複数 PR を�
 
 ## 順次マージ
 
-1. 最上流の PR から順に `gh pr merge <番号> --merge`（このリポジトリはマージコミット方式）。
-2. 親がマージされたら、次の PR のベースを `gh pr edit <番号> --base main` で main へ付け替える。
-   付け替えで CI が再走るので、pass を待ってからマージする。
-3. 付け替え直後の `mergeable` は UNKNOWN になりうる。数秒待ってから再取得する。
-4. PR のマージは `gh pr view <番号> --json state` で `MERGED` を確認するか、マージコミットを `git log` で確認してから報告する。
-   CI 全 pass や mergeable だけではマージ済みと断定しない。
+1. 子 PR がある場合は、親 PR をマージする**前に**次の子 PR のベースを `gh pr edit <次番号> --base main` で `main` へ付け替える（親マージと同時に head ブランチが自動削除され、子 PR が連鎖クローズされるのを防ぐため）。
+2. 親 PR の `gh pr merge <親番号> --merge` を実行し（このリポジトリはマージコミット方式）、`gh pr view <親番号> --json state` で `MERGED` を確認する。
+3. 付け替えた次 PR の `mergeable` は直後 UNKNOWN になりうるため、20 秒前後待ってから再取得し、`MERGEABLE`（`CLEAN`）と CI 全 pass を確認して次段へ進む。
+   連続プッシュなどで過去の実行履歴が残ると `statusCheckRollup` に `CANCELLED` や旧 `FAILURE` が混在するため、最新チェックの合否確認には `gh pr checks <番号>` を使う（`pending` 中は終了コード 8 を返す点に留意する）。
+4. CI 全 pass や `mergeable` だけではマージ済みと断定せず、必ず `state == "MERGED"` または `git log` のマージコミットを確認してから報告する。
 
 ## ベースブランチ消失による下流クローズ連鎖
 

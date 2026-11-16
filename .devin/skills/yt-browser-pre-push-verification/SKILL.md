@@ -29,6 +29,7 @@ python scripts/bump_version.py --check
 
 Windows の python 出力は cp932 で文字化けするため `PYTHONUTF8=1` を付ける
 （出力の可読性のためで、判定挙動は変わらない）。
+Windows PowerShell で `pnpm.ps1` が実行ポリシーで拒否される場合は `pnpm.cmd check` や `pnpm.cmd test`、`pnpm.cmd build` を使う。
 `extension/shared.js` は `extension/shared.test.js`（`pnpm test` の一部）で単体検証される。
 `extension/` の `background.js`、`content.js`、`popup.js` には linter が無いため、変更は目視で確認する。
 
@@ -76,6 +77,11 @@ Python スクリプト経由で新規 .rs 等を作ったとき、フォーマ�
 - 新規 Tauri コマンドを加えたら `generate_handler!` への登録までが
   実装。設計書 §3.1 への記載と登録がずれると consistency ジョブ
   （check 1）が検出するが、検出を当てにせず登録は実装の一部として扱う
+- Tauri の `.setup` など Tokio ランタイム外の同期フックから呼ぶ処理に
+  `tokio::net` や `tokio::windows::net::named_pipe::ServerOptions` を置くときは、
+  生成も `tauri::async_runtime::spawn` 内へ入れ、`#[tokio::test]` だけでなく
+  非 async の `#[test]`（必要なら別スレッド）から本番初期化関数を直接呼んで
+  reactor 不在パニックが起きないことを検証する
 
 ## CI 赤の初動
 
