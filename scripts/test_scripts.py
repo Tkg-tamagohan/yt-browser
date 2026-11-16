@@ -207,6 +207,7 @@ class TestCiChanges(unittest.TestCase):
 
             _write_text(repo / "README.md", "# title\n")
             _write_text(repo / "src/app.ts", "export const v = 1;\n")
+            _write_text(repo / "src/movable.ts", "# identical text for rename test\nline2\nline3\n")
             _git_run(repo, "add", ".")
             _git_run(repo, "commit", "-m", "initial")
             base_first = _git_run(repo, "rev-parse", "HEAD")
@@ -252,6 +253,25 @@ class TestCiChanges(unittest.TestCase):
             self.assertEqual(
                 ci_changes.classify_paths(design_files),
                 {"run_frontend": False, "run_rust": True, "run_windows": False},
+            )
+
+            # コードファイルを内容そのまま docs/ へ移動しても、--no-renames により
+            # 削除された元パスが返り、docs 専用として誤スキップしないこと
+            _git_run(repo, "checkout", "-b", "feat-rename", base_first)
+            (repo / "docs").mkdir(parents=True, exist_ok=True)
+            _git_run(repo, "mv", "src/movable.ts", "docs/moved.md")
+            _git_run(repo, "commit", "-m", "move code to docs without content edit")
+            rename_head = _git_run(repo, "rev-parse", "HEAD")
+            rename_files = ci_changes.detect_changed_files(
+                event="pull_request",
+                base=main_head,
+                head=rename_head,
+                repo_root=repo,
+            )
+            self.assertEqual(sorted(rename_files or []), ["docs/moved.md", "src/movable.ts"])
+            self.assertEqual(
+                ci_changes.classify_paths(rename_files),
+                {"run_frontend": True, "run_rust": True, "run_windows": True},
             )
 
             # push イベント（正常 / ZERO_SHA / 欠落 SHA / 未知イベント）

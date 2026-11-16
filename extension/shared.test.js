@@ -230,4 +230,35 @@ describe("CB-04 拡張マニフェスト・DOM ID・共有モジュールの整�
     }
     expect(totalChecked).toBeGreaterThan(0);
   });
+
+  test("package.json の check:js が全 JS を個別の node --check で検査する", () => {
+    const pkg = JSON.parse(
+      readFileSync(join(extDir, "..", "package.json"), "utf-8"),
+    );
+    const cmd = pkg.scripts?.["check:js"] ?? "";
+    const parts = cmd
+      .split("&&")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const checkedFiles = new Set();
+    for (const part of parts) {
+      const m = part.match(/^node\s+--check\s+(\S+)$/);
+      expect(m, `単一ファイル指定でない check:js サブコマンド: ${part}`).not.toBeNull();
+      checkedFiles.add(m[1]);
+    }
+    for (const expected of [
+      "extension/background.js",
+      "extension/content.js",
+      "extension/popup.js",
+      "extension/shared.js",
+      "extension/shared.test.js",
+      "svelte.config.js",
+      "vite.config.js",
+    ]) {
+      expect(
+        checkedFiles.has(expected),
+        `check:js に ${expected} が含まれていない`,
+      ).toBe(true);
+    }
+  });
 });

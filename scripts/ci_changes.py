@@ -101,7 +101,9 @@ def _git(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess[bytes]
 
 
 def _git_diff_names(repo_root: Path, rev_a: str, rev_b: str) -> list[str] | None:
-    res = _git(repo_root, ["diff", "-z", "--name-only", rev_a, rev_b])
+    # リネーム検出を有効にすると「コードファイル → docs/ への移動」で
+    # 削除側が消え、文書専用変更と誤認するため --no-renames を必ず指定する
+    res = _git(repo_root, ["diff", "--no-renames", "-z", "--name-only", rev_a, rev_b])
     if res.returncode != 0:
         return None
     raw = res.stdout.decode("utf-8", errors="surrogateescape")
