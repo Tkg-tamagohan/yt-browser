@@ -12,26 +12,32 @@ Phase 38（PR #102）で CI が一度赤になり、自己レビューで 5 件�
 
 `.github/workflows/ci.yml` のジョブに対応する。
 
-- consistency: `python3 scripts/check_docs_consistency.py` と
-  `python3 scripts/bump_version.py --check`
-- frontend: `pnpm check`、`pnpm test`、`pnpm build`
+- consistency: `python3 -m py_compile scripts/*.py`、
+  `python3 -m unittest discover -s scripts -p "test_*.py" -v`、
+  `python3 scripts/check_docs_consistency.py`、
+  `python3 scripts/bump_version.py --check`、
+  `python3 scripts/e2e_dev.py --dry-run`
+- frontend: `pnpm check`（`svelte-check` と `check:js`）・`pnpm test`・`pnpm build`
 - rust / windows: `cargo fmt --check`、
-  `cargo clippy --all-targets -- -D warnings`、`cargo test`
+  `cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked`
 
 push 前（最後の編集のあと）にローカルで回す:
 
 ```bash
-cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cd ..
+cd src-tauri && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cd ..
 pnpm check && pnpm test && pnpm build
+PYTHONUTF8=1 python -m py_compile scripts/*.py
+PYTHONUTF8=1 python -m unittest discover -s scripts -p "test_*.py" -v
 PYTHONUTF8=1 python scripts/check_docs_consistency.py
 python scripts/bump_version.py --check
+python scripts/e2e_dev.py --dry-run
 ```
 
 Windows の python 出力は cp932 で文字化けするため `PYTHONUTF8=1` を付ける
 （出力の可読性のためで、判定挙動は変わらない）。
 Windows PowerShell で `pnpm.ps1` が実行ポリシーで拒否される場合は `pnpm.cmd check` や `pnpm.cmd test`、`pnpm.cmd build` を使う。
-`extension/shared.js` は `extension/shared.test.js`（`pnpm test` の一部）で単体検証される。
-`extension/` の `background.js`、`content.js`、`popup.js` には linter が無いため、変更は目視で確認する。
+`extension/shared.js` は `extension/shared.test.js`（`pnpm test` の一部）で単体検証され、`manifest.json`・`popup.html/js`・`./shared.js` の export 整合も `CB-04` で自動検証される。
+`extension/*.js`・`svelte.config.js`・`vite.config.js` は `pnpm check`（`check:js`）で `node --check` による構文検証を行う（型検査は無いため、意図や仕様の妥当性は目視でも確認する）。
 
 ## 順序規則: 最終検証の後に編集しない
 

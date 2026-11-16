@@ -39,6 +39,7 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 
 - **タグ名は `vX.Y.Z`**（`v*` がトリガー）。`latest.json` の `version` にはスクリプトが先頭の `v` を除いた semver を書く
 - **タグを打つ前に `scripts/bump_version.py X.Y.Z` でバージョンを更新しておく**（`tauri.conf.json`・`package.json`・`Cargo.toml`・`Cargo.lock` の 4 箇所を一括更新。`--check` で整合を確認できる）。ずれていると成果物名（`*_0.2.0_*` 等）と `latest.json` のバージョンが食い違い、アプリ側の更新判定が誤判定しうる（v0.3.0 タグで version 0.2.0 のままだった例あり）
+  - `release.yml` の `preflight` ジョブでも `bump_version.py --check --expect-tag` と署名秘密鍵の存在をビルド前に検査し、公開直前には `scripts/verify_release.py` で配布成果物を検証する（仕様決定 DQ）
 - **タグは修正を含んだコミットに打つ**。ビルドと release ジョブはタグの指すコミットをチェックアウトするため、修正が main へマージ済みでも古いコミットのタグを打つと古いワークフロー・スクリプトで実行される。Actions の「失敗したジョブの再実行（Re-run）」も同じコミットを見るため、ワークフローやスクリプトの修正は再実行では反映されない
 - **タグの張り替え**: 修正後に同じバージョン名で出し直す場合は `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` で削除してから再打ち、または `git tag -f vX.Y.Z && git push -f origin vX.Y.Z`。出し直しが面倒なら次のタグ（`vX.Y.(Z+1)`）を打つ方が安全
 - **途中失敗でリリースが作られていた場合**: 再実行時に `gh release upload --clobber` でアセットが差し替え添付されるので手動削除は不要（ドラフトのまま残った場合も公開状態に揃える）。配布廃止済みの `.msi` と添付対象外の `.sig` が旧実行で残っていても、再実行時にワークフロー側で削除して新規作成と同じ配布内容に揃える（仕様決定 AK）

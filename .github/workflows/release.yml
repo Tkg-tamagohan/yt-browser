@@ -14,10 +14,33 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # リリースビルド開始前にドキュメント整合・タグと各ファイルのバージョン一致・
+  # 署名秘密鍵の設定有無を数秒で確認し、不整合のまま長時間ビルドへ進むのを防ぐ（仕様決定 DQ）。
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m py_compile scripts/*.py
+      - run: python3 -m unittest discover -s scripts -p "test_*.py" -v
+      - run: python3 scripts/check_docs_consistency.py
+      - name: タグとバージョンおよび署名鍵を検証
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          python3 scripts/bump_version.py --check --expect-tag "$TAG_NAME"
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY が未設定のため署名付きリリースを作成できません"
+            exit 1
+          fi
+
   build:
+    needs: preflight
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -54,11 +77,20 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # updater 用の署名成果物（*.sig）は署名秘密鍵があるときだけ生成される
       # （createUpdaterArtifacts: true）。鍵は GitHub Secrets から供給する
+      - name: Verify signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY が未設定です"
+            exit 1
+          fi
       - name: Build bundles and updater artifacts
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --bundles ${{ matrix.bundles }}
+        run: pnpm tauri build --ci --bundles ${{ matrix.bundles }} -- --locked
       - name: Collect bundles
         shell: bash
         run: |
@@ -76,7 +108,10 @@ jobs:
   release:
     # 両プラットフォームのビルドが成功してからだけ公開する
     needs: build
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -96,7 +131,7 @@ jobs:
           (cd extension && zip -r ../dist/yt-browser-extension-${TAG_NAME}.zip . -x "*.test.js")
       - name: Generate updater manifest (latest.json)
         env:
-          # チェックアウトしないジョブなので対象リポジトリを明示する
+          # release ジョブでも配布先リポジトリを明示して渡す
           GH_REPO: ${{ github.repository }}
           # タグ名は run へ直接展開せず env 経由で受け取る
           # （$(...) 等を含むタグ名がコマンドとして実行されるのを防ぐ）
@@ -115,6 +150,7 @@ jobs:
           # アセット一覧を簡素化するため添付対象から外す（仕様決定 AK）
           rm -f dist/*.sig
           ls -la dist
+          python3 scripts/verify_release.py "$GH_REPO" "$TAG_NAME" dist
           if gh release view "$TAG_NAME" > /dev/null 2>&1; then
             # 既存リリースへの再実行（タグ張り替え）では --clobber が同名
             # アセットしか差し替えない。配布廃止した形式と添付対象外の
@@ -122,10 +158,10 @@ jobs:
             # （仕様決定 AK、Devin Review #61 指摘）
             # grep で絞ると対象なし時に終了コード 1 で pipefail 落ちするため、
             # マッチは jq 側で行い空ならループを回さない
-            names=$(gh release view "$TAG_NAME" --json assets \
-              --jq '.assets[].name | select(endswith(".msi") or endswith(".sig"))')
-            for name in $names; do
-              gh release delete-asset "$TAG_NAME" "$name" --yes
+            gh release view "$TAG_NAME" --json assets \
+              --jq '.assets[].name | select(endswith(".msi") or endswith(".sig"))' | \
+            while IFS= read -r name; do
+              [ -n "$name" ] && gh release delete-asset "$TAG_NAME" "$name" --yes
             done
             # 前回実行が途中で失敗した場合など、既存リリースには差し替え添付する
             gh release upload "$TAG_NAME" --clobber -- dist/*

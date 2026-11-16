@@ -62,15 +62,20 @@ Windows PowerShell で Python スクリプトを実行するときは、cp932 �
 
 ```powershell
 $env:PYTHONUTF8="1"
+python -m py_compile scripts/*.py
+python -m unittest discover -s scripts -p "test_*.py" -v
 python scripts/check_docs_consistency.py
 python scripts/bump_version.py --check
 python scripts/e2e_dev.py --dry-run
 ```
 
 ```powershell
-cargo test
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 pnpm test
 pnpm check
+pnpm build
 ```
 
 Windows 環境で WebView2 CDP スモークを実行する手順は [scripts/README.md](../scripts/README.md) を参照する。

@@ -1,0 +1,32 @@
+name: Security Audit
+
+on:
+  # 毎週月曜 06:00 JST（21:00 UTC 日曜）の定期監査と手動実行（仕様決定 DQ）
+  schedule:
+    - cron: "0 21 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    # Ubuntu ランナーは ubuntu-26.04 に明示固定する（仕様決定 AI）。
+    # 新規 CVE で通常の PR が突然全滅するのを避けるため定期実行へ分離している。
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit --prod --ignore-registry-errors
+      - name: Audit high and critical advisories
+        run: pnpm audit --audit-level high --ignore-registry-errors
+      - name: Full advisory summary (informational)
+        continue-on-error: true
+        run: pnpm audit --ignore-registry-errors

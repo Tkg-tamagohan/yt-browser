@@ -8,8 +8,11 @@
 | スクリプト | 用途 |
 |------------|------|
 | `check_docs_consistency.py` | docs ↔ コードの整合チェック（CI の consistency ジョブと同一） |
-| `bump_version.py` | バージョン 4 箇所の一括更新（リリース準備用） |
+| `ci_changes.py` | CI の変更ファイル判定とジョブスキップ用出力生成（`changes` ジョブ） |
+| `bump_version.py` | バージョン 4 箇所の一括更新（リリース準備用・`--expect-tag` でタグ照合） |
 | `make_latest_json.py` | リリースワークフローの `latest.json` 生成 |
+| `verify_release.py` | リリース公開直前の `dist/`・`latest.json`・拡張 zip 検証（`release.yml`） |
+| `test_scripts.py` | 上記スクリプト群の `unittest` 単体テスト（CI の consistency ジョブで実行） |
 | `cdp_client.py` | CDP（Chrome DevTools Protocol）の薄いクライアント（FR-84） |
 | `e2e_dev.py` | CDP 付き隔離 dev インスタンスの起動補助（FR-84） |
 | `e2e_smoke.py` | dev インスタンスへの DOM smoke チェック（FR-84） |

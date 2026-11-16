@@ -27,6 +27,7 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, NoReturn, Sequence
 
 # updater 対象の成果物パターン → latest.json のプラットフォームキー
 PLATFORMS = {
@@ -35,14 +36,17 @@ PLATFORMS = {
 }
 
 
-def fail(msg: str) -> None:
+def fail(msg: str) -> NoReturn:
     sys.exit(f"latest.json 生成失敗: {msg}")
 
 
-def main() -> None:
-    if len(sys.argv) != 4:
-        fail("usage: make_latest_json.py <owner/repo> <tag> <dist_dir>")
-    repo, tag, dist = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+def build_manifest(
+    repo: str,
+    tag: str,
+    dist: Path,
+    pub_date: str | None = None,
+) -> dict[str, Any]:
+    """dist ディレクトリから latest.json 用の辞書を構築する。"""
     if not dist.is_dir():
         fail(f"成果物ディレクトリがありません: {dist}")
 
@@ -50,7 +54,7 @@ def main() -> None:
     if not version:
         fail(f"タグからバージョンを取得できません: {tag!r}")
 
-    platforms = {}
+    platforms: dict[str, dict[str, str]] = {}
     for key, pattern in PLATFORMS.items():
         bundles = sorted(dist.glob(pattern))
         if not bundles:
@@ -76,13 +80,21 @@ def main() -> None:
             ),
         }
 
-    manifest = {
+    return {
         # updater が比較するバージョンは semver なのでタグの v 接頭辞を外す
         "version": version,
         "notes": "",
-        "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "pub_date": pub_date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platforms": platforms,
     }
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 3:
+        fail("usage: make_latest_json.py <owner/repo> <tag> <dist_dir>")
+    repo, tag, dist = args[0], args[1], Path(args[2])
+    manifest = build_manifest(repo, tag, dist)
     json.dump(manifest, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
 

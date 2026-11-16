@@ -83,6 +83,8 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 ### CI 環境の観察
 
 - **Ubuntu ランナーラベルは明示固定**（仕様決定 AI）：`ubuntu-latest` の Ubuntu 26.04 への移行告知（2026-10-19 から段階移行、actions/runner-images#14748）を受け、`ubuntu-latest` は使わず CI 系は `ubuntu-26.04`、release.yml は `ubuntu-24.04`（配布物の動作下限を維持するため）に固定した
+- **CI の網羅性強化、docs 専用変更スキップ、週次監査**（仕様決定 DQ）：必須チェック `CI` を維持したまま、`changes`（`scripts/ci_changes.py`）でドキュメントやメタファイルのみの変更時はビルドとテストのジョブをスキップする（`docs/design.md` 変更時は DDL 照合のため `rust` を実行する）
+  あわせて `--locked` 強制、`scripts/test_scripts.py` と `check:js` の組み込み、`release.yml` の `preflight` と `scripts/verify_release.py`、週次の `security.yml`（`pnpm audit`）を整備した
 
 ## 引き継ぎ手順
 
