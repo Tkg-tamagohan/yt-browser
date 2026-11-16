@@ -1512,8 +1512,8 @@ CREATE INDEX idx_videos_meta_resolve
 
 ### 9.1 エラー型の棲み分け（技術方針 L）
 
-モジュールごとに thiserror の enum（`MpvError`、`YtError`、`ChatError`、`DbError` 等）を持ち、`commands` 層で anyhow に畳み込んで UI には `{ code, message }` に直列化して返す。
-ポーラー系の長命タスクは anyhow で文脈を積み、連続失敗回数を `feed://status` / `chat://status` の劣化通知に変換する。
+モジュールごとに thiserror の enum（`MpvError`、`YtError`、`FeedError`、`DbError`、`DiagError`、`InnerTubeError`、`SponsorError`、`IpcError`）を持ち、`commands` 層で `UiError` へ変換して UI には `{ code, message }` に直列化して返す。
+ポーラー系の長命タスクは連続失敗回数を追跡し、失敗内容を整形したメッセージとして `feed://status` や `chat://status` の劣化通知に変換する。
 
 ### 9.2 YouTube 仕様変更への構造
 
