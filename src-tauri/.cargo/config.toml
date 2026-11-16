@@ -1,0 +1,3 @@
+# 公開 7 日経過ルール（仕様決定 DP）。Rust 1.100 以降（Cargo RFC 3923）で有効。
+[registry]
+global-min-publish-age = "7 days"

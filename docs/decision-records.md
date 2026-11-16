@@ -120,13 +120,14 @@
 | DM | Edge と Chromium 系へのホスト登録（FR-88） | FR-88。Native Messaging のホスト登録をブラウザ別の置き場へ対応する（Windows は Edge と Chrome のレジストリ、Linux は各ブラウザの config 配下。仕様決定 AH の「Edge と Chromium 系は残課題」を改訂） |
 | DN | Chrome 拡張の初期状態、再生位置取得、境界判定の修復と整理（BG-11） | BG-11。(1) アクションの既定状態を `chrome.action.disable()` で無効にし、`onInstalled`・`onStartup`・ワーカー起動時に既存タブを走査して対象 URL のタブのみ有効化する。タブ消失時の `tabs.get`・`action.enable`/`disable`・フォールバックタブの `tabs.remove` の未処理エラーを捕捉し、`invoke` メッセージには `{ ok: true }` を応答する。`contextMenus.create` の前に `removeAll` を行う。(2) `content.js` の動画要素選択は `#movie_player.ad-showing` の広告再生中を `null` とし、`#movie_player video.html5-main-video` とアクティブな Shorts リール（`ytd-reel-video-renderer[is-active] video`）を優先してから既存の汎用探索へフォールバックする。(3) ポップアップの「再生位置を引き継いで開く」はクリック時にも `video_position` を再取得して最新秒数で URL を組み立て、失敗時は開口時の取得値を使う。(4) `/shorts/<id>` と `/live/<id>` の ID 判定は末尾境界（`/` または文字列終端）を必須とし、拡張と本体の双方で 12 文字以上のセグメントを弾く。(5) `manifest.json` の `background` に `"type": "module"` を指定し、`classifyKind`・`classify`・`schemePrefix` を `shared.js` へ移して `background.js` と `popup.js` から共用し Vitest の単体テスト対象にする（`popup.js` の `classify` メッセージ往復は廃止）。(6) `release.yml` の拡張 zip 作成で `*.test.js` を除外し、`manifest.json` と `background.js` の `*://*.youtube.com/*` に包含される `*://music.youtube.com/*` の重複指定を整理する |
 | DO | Chrome 拡張の失敗バッジとツールチップのタブ単位表示 | 失敗表示（バッジ `!` とツールチップ）と次回成功時の解除は、操作元の `tabId` が指定されている場合はそのタブ単位で行い、`tabId` が無い全体操作では拡張全体に表示して全タブ分と全体表示をまとめて解除する（`failedTabIds` で管理。Phase 23 確定事項の「タブ単位ではなく拡張全体に出す」を改訂） |
+| DP | 依存クレートの公開 7 日経過ルール（Cargo min-publish-age） | Rust 1.100（Cargo RFC 3923）で安定化された `registry.global-min-publish-age = "7 days"` を `src-tauri/.cargo/config.toml` に設定し、新規導入および `cargo update` 時の依存解決で公開から 7 日未満の版（間接依存を含む）を自動除外する。`Cargo.lock` 記載済みの版は維持され、緊急の例外適用は `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow` で上書きする。Cargo 1.99 以下の環境に対する保護と履歴維持のため `Cargo.toml` の既存の `=` 固定は当面維持し、未使用だった `anyhow` 直接依存を削除して技術方針 L を実装の実態に同期した |
 
 ## 技術方針
 
 | ID | 項目 | 決定内容 |
 |----|------|----------|
 | K | DB アクセス | rusqlite + WAL + バージョン管理されたマイグレーション |
-| L | エラー設計 | モジュール境界は thiserror の enum、アプリ層は anyhow で文脈を付し、UI には直列化した `{ code, message }` を返す |
+| L | エラー設計 | モジュール境界は thiserror の enum とし、`commands` 層で `UiError` へ変換して `{ code, message }` に直列化して UI へ返す。Tauri の `.setup` 等では境界エラーを `Box<dyn std::error::Error>` 等で上位へ伝える |
 | M | NG フィルタ | target × match（literal / regex）のモデル。literal は Aho-Corasick、regex は `RegexSet` でプリコンパイルし、変更時に再構築する |
 | N | SponsorBlock | API を自前取得し、mpv IPC の再生位置監視でスキップする。mpv スクリプトには依存しない |
 | O | ポーリングと取得 | 指数バックオフ + 条件付き取得（ETag / Last-Modified）。パーサーは golden fixture でテストする |

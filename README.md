@@ -23,7 +23,7 @@ mpv による軽量な再生と、ローカル完結の購読、履歴、NG 管�
 
 ## 開発環境
 
-- Rust（stable）、Node.js 24、pnpm
+- Rust（stable、1.100 以降。`src-tauri/.cargo/config.toml` の `global-min-publish-age` 適用に必要、仕様決定 DP）、Node.js 24、pnpm
 - Tauri の Linux 依存：`libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
 - 実行依存：mpv、yt-dlp（いずれも PATH から解決。配布物はアプリ本体のみで同梱しない）
 
