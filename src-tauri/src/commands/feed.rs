@@ -155,20 +155,20 @@ pub async fn playing_channel(
 
 /// `unsubscribe_channel`。購読解除し、そのチャンネルの未読を既読化する。
 #[tauri::command]
-pub fn unsubscribe_channel(channel_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn unsubscribe_channel(channel_id: String, db: State<'_, Db>) -> Result<(), UiError> {
     db.channel_delete(&channel_id)?;
     Ok(())
 }
 
 /// 購読チャンネル一覧。
 #[tauri::command]
-pub fn list_channels(db: State<'_, Db>) -> Result<Vec<Channel>, UiError> {
+pub async fn list_channels(db: State<'_, Db>) -> Result<Vec<Channel>, UiError> {
     Ok(db.channel_list()?)
 }
 
 /// チャンネルのカテゴリ割り当て（null で未分類に戻す）。
 #[tauri::command]
-pub fn set_channel_category(
+pub async fn set_channel_category(
     channel_id: String,
     category_id: Option<i64>,
     db: State<'_, Db>,
@@ -178,12 +178,12 @@ pub fn set_channel_category(
 }
 
 #[tauri::command]
-pub fn list_categories(db: State<'_, Db>) -> Result<Vec<Category>, UiError> {
+pub async fn list_categories(db: State<'_, Db>) -> Result<Vec<Category>, UiError> {
     Ok(db.category_list()?)
 }
 
 #[tauri::command]
-pub fn create_category(name: String, db: State<'_, Db>) -> Result<Category, UiError> {
+pub async fn create_category(name: String, db: State<'_, Db>) -> Result<Category, UiError> {
     let name = name.trim();
     if name.is_empty() {
         return Err(UiError::invalid_input("カテゴリ名が空です"));
@@ -195,53 +195,65 @@ pub fn create_category(name: String, db: State<'_, Db>) -> Result<Category, UiEr
 /// `category_ids` が現在のカテゴリ全件と同一集合でなければ変更しない
 /// （`playlist_reorder_lists` と同じ検証規則）。
 #[tauri::command]
-pub fn category_reorder(category_ids: Vec<i64>, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn category_reorder(category_ids: Vec<i64>, db: State<'_, Db>) -> Result<(), UiError> {
     db.category_reorder(&category_ids)?;
     Ok(())
 }
 
 /// `list_feed`（設計書 §3.1）。NG フィルタの動画系 target もここで適用する（FR-9）。
 #[tauri::command]
-pub fn list_feed(
+pub async fn list_feed(
     filter: FeedFilter,
     db: State<'_, Db>,
     ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<Vec<FeedItem>, UiError> {
+    let db = db.inner().clone();
     let matcher = ng.get();
-    // feed.show_shorts が off のとき「すべて」「video」選択は short を除く
-    // （FR-23、仕様決定 AP）。kind で short を明示した選択は設定に関わらず表示する
-    let show_shorts = crate::feed::feed_show_shorts_enabled(
-        db.setting_get(crate::feed::SETTING_FEED_SHOW_SHORTS)?,
-    ) || filter.kind.as_deref() == Some("short");
-    // 述語適合が FEED_LIST_LIMIT 件に達するまで走査するため、
-    // 先頭が NG で抜けても後続の適合行を拾える。
-    // 説明文は遅延解決済みの行だけが持つ（FR-85、仕様決定 DJ）。
-    // 未解決（NULL）の行は video_desc の評価対象にしない暫定解釈。
-    Ok(
-        db.feed_list_filtered(&filter, show_shorts, crate::db::FEED_LIST_LIMIT, |i| {
-            !matcher.is_video_ng(
-                &i.title,
-                i.channel_title.as_deref(),
-                Some(&i.channel_id),
-                i.description.as_deref(),
-            )
-        })?,
-    )
+    // 最大 FEED_LIST_LIMIT 件の走査と NG 評価をメインスレッド外へ逃がす
+    tokio::task::spawn_blocking(move || -> Result<Vec<FeedItem>, UiError> {
+        // feed.show_shorts が off のとき「すべて」「video」選択は short を除く
+        // （FR-23、仕様決定 AP）。kind で short を明示した選択は設定に関わらず表示する
+        let show_shorts = crate::feed::feed_show_shorts_enabled(
+            db.setting_get(crate::feed::SETTING_FEED_SHOW_SHORTS)?,
+        ) || filter.kind.as_deref() == Some("short");
+        // 述語適合が FEED_LIST_LIMIT 件に達するまで走査するため、
+        // 先頭が NG で抜けても後続の適合行を拾える。
+        // 説明文は遅延解決済みの行だけが持つ（FR-85、仕様決定 DJ）。
+        // 未解決（NULL）の行は video_desc の評価対象にしない暫定解釈。
+        Ok(
+            db.feed_list_filtered(&filter, show_shorts, crate::db::FEED_LIST_LIMIT, |i| {
+                !matcher.is_video_ng(
+                    &i.title,
+                    i.channel_title.as_deref(),
+                    Some(&i.channel_id),
+                    i.description.as_deref(),
+                )
+            })?,
+        )
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
 /// `mark_read`（設計書 §3.1）。`all: true` で一括既読、それ以外は `video_ids` を個別既読。
 #[tauri::command]
-pub fn mark_read(
+pub async fn mark_read(
     video_ids: Option<Vec<String>>,
     all: Option<bool>,
     db: State<'_, Db>,
 ) -> Result<u64, UiError> {
-    if all == Some(true) {
-        return Ok(db.videos_mark_all_read()?);
-    }
-    let ids = video_ids.unwrap_or_default();
-    db.videos_mark_read(&ids)?;
-    Ok(ids.len() as u64)
+    let db = db.inner().clone();
+    // `all: true` の一括既読は複数行の書き込みになるためブロッキング側へ逃がす
+    tokio::task::spawn_blocking(move || -> Result<u64, UiError> {
+        if all == Some(true) {
+            return Ok(db.videos_mark_all_read()?);
+        }
+        let ids = video_ids.unwrap_or_default();
+        db.videos_mark_read(&ids)?;
+        Ok(ids.len() as u64)
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
 /// 手動の即時更新。全チャンネル（または指定チャンネル）の次回予定を現在に戻す。

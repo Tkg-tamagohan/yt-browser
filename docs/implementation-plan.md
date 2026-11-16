@@ -51,6 +51,14 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] `docs/design.md`（§3.4.1・§11）・`README.md`・`docs/features.md`・`scripts/check_docs_consistency.py`（Phase 見出し連番整合検証を含む）を更新する
 - [x] 受け入れ：Chrome / Edge 拡張からのローカル IPC 起動と未起動時直接 `spawn` が実機で動作することを確認する（`DB-NM-17`・`DB-NM-18` の自動テスト・ビルド・整合チェックはすべて通過。Windows 上の Edge 拡張から起動中インスタンスへ名前付きパイプ経由で `open` / `queue` / `playlist_add` が配信され（`list_playlists` はホストが本体 DB を直接読む経路として確認）、未起動時はホストが本体バイナリを直接 `spawn` して動画再生まで到達することを実機で確認）
 
+### Phase 86：同期コマンドの非同期化、ローカル IPC 権限強化、テストモジュール分離（Step 3）
+
+- [ ] `commands/` 配下で `State<Db>` を同期で触る Tauri コマンドを `async` 化し、DB ロック保持が重い経路（`list_feed`・`mark_read`・履歴・プレイリスト・キュー保存・フィルタ更新）は `tokio::task::spawn_blocking` へ移す。コマンド名・引数名・戻り値型と `design.md` §3.1 のシグネチャは変えない
+- [ ] ローカル IPC を堅牢化する。Windows 名前付きパイプに `reject_remote_clients(true)` を付け、Unix ソケットを `0600` に制限し（`DB-NM-19`）、終了時にソケット残骸を消す `cleanup_ipc_endpoint` を `RunEvent::Exit` で呼ぶ（`DB-NM-20`）
+- [ ] `mpv/player.rs` と `native_host.rs` のテストモジュールを `#[path]` 付き外部ファイルへ分離し、テスト ID と private 項目へのアクセスを維持する
+- [ ] `feed` / `metaresolve` の `detect_client` に `connect_timeout(5s)` を付け、`security.yml` に `cargo audit` ジョブを追加する
+- [ ] 受け入れ：lint・単体テスト・ビルド・整合チェックがすべて通過することを確認する
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

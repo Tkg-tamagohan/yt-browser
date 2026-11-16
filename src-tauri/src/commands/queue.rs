@@ -19,7 +19,7 @@ const MAX_QUEUE_TEXT_LEN: usize = 1024;
 /// 全置換で保存する。呼び出しはフロントの全ミューテーションごと
 /// （write-through）。
 #[tauri::command]
-pub fn queue_save(
+pub async fn queue_save(
     items: Vec<QueueItem>,
     current_index: i64,
     db: State<'_, Db>,
@@ -39,12 +39,18 @@ pub fn queue_save(
             return Err(UiError::invalid_input("キュー項目の文字列が長すぎます"));
         }
     }
-    Ok(db.queue_save(&items, current_index)?)
+    let db = db.inner().clone();
+    // 全置換の複数行書き込みのためブロッキング側へ逃がす
+    Ok(
+        tokio::task::spawn_blocking(move || db.queue_save(&items, current_index))
+            .await
+            .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??,
+    )
 }
 
 /// `queue_load`（FR-30、仕様決定 AY）。起動時の一時キュー復元用。
 #[tauri::command]
-pub fn queue_load(db: State<'_, Db>) -> Result<QueueSnapshot, UiError> {
+pub async fn queue_load(db: State<'_, Db>) -> Result<QueueSnapshot, UiError> {
     Ok(db.queue_load()?)
 }
 
@@ -57,7 +63,7 @@ pub fn queue_load(db: State<'_, Db>) -> Result<QueueSnapshot, UiError> {
 /// 成功時は `library://playlists_changed` で作成したプレイリストを通知し、
 /// 表示中の /library が画面外からの追加を検知できるようにする
 #[tauri::command]
-pub fn queue_save_as_playlist(
+pub async fn queue_save_as_playlist(
     name: String,
     items: Vec<VideoRef>,
     db: State<'_, Db>,
@@ -74,14 +80,21 @@ pub fn queue_save_as_playlist(
     for v in items.iter_mut() {
         v.video_id = validate_video_ref(v)?;
     }
-    let mut playlist = db.playlist_create(&name)?;
-    if let Err(e) = db.playlist_add_many(playlist.id, &items) {
-        // 項目登録の失敗で空の一覧を残さない
-        let _ = db.playlist_delete(playlist.id);
-        return Err(e.into());
-    }
-    // INSERT OR IGNORE で重複は位置維持されるため実件数を取り直す
-    playlist.item_count = db.playlist_items(playlist.id)?.len() as i64;
+    let db = db.inner().clone();
+    // プレイリスト作成から複数行の項目登録まで一連の書き込みをブロッキング側へ逃がす
+    let playlist = tokio::task::spawn_blocking(move || -> Result<Playlist, UiError> {
+        let mut playlist = db.playlist_create(&name)?;
+        if let Err(e) = db.playlist_add_many(playlist.id, &items) {
+            // 項目登録の失敗で空の一覧を残さない
+            let _ = db.playlist_delete(playlist.id);
+            return Err(e.into());
+        }
+        // INSERT OR IGNORE で重複は位置維持されるため実件数を取り直す
+        playlist.item_count = db.playlist_items(playlist.id)?.len() as i64;
+        Ok(playlist)
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??;
     let _ = app.emit("library://playlists_changed", &playlist);
     Ok(playlist)
 }
@@ -90,7 +103,7 @@ pub fn queue_save_as_playlist(
 /// 現在位置を playlist_id 行へ write-through で保存する
 /// （項目列は playlist_items を正として保存しない）
 #[tauri::command]
-pub fn queue_playlist_save(
+pub async fn queue_playlist_save(
     playlist_id: i64,
     current_index: i64,
     db: State<'_, Db>,
@@ -104,7 +117,7 @@ pub fn queue_playlist_save(
 /// `queue_playlist_clear`（FR-48）。保存済みのプレイリストキュー行を消す
 /// （キュー消滅時）。未保存でも正常終了とする
 #[tauri::command]
-pub fn queue_playlist_clear(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn queue_playlist_clear(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
@@ -114,7 +127,7 @@ pub fn queue_playlist_clear(playlist_id: i64, db: State<'_, Db>) -> Result<(), U
 /// `queue_playlist_load`（FR-48）。起動時のプレイリストキュー復元用。
 /// 永続化されたプレイリストキュー（playlist_id・名前・保存位置）の一覧を返す
 #[tauri::command]
-pub fn queue_playlist_load(db: State<'_, Db>) -> Result<Vec<PlaylistQueueState>, UiError> {
+pub async fn queue_playlist_load(db: State<'_, Db>) -> Result<Vec<PlaylistQueueState>, UiError> {
     Ok(db.queue_playlist_load()?)
 }
 
@@ -122,7 +135,10 @@ pub fn queue_playlist_load(db: State<'_, Db>) -> Result<Vec<PlaylistQueueState>,
 /// 動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history`
 /// の順に補完する。どちらにも無ければ None。
 #[tauri::command]
-pub fn video_meta_lookup(video_id: String, db: State<'_, Db>) -> Result<Option<VideoRef>, UiError> {
+pub async fn video_meta_lookup(
+    video_id: String,
+    db: State<'_, Db>,
+) -> Result<Option<VideoRef>, UiError> {
     let id = parse_video_id(&video_id)?;
     Ok(db.video_meta_lookup(&id)?)
 }

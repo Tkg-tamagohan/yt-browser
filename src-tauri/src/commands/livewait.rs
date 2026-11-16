@@ -88,7 +88,7 @@ pub async fn live_wait_add(
 /// `live_wait_remove`（仕様決定 BT(2)）。待機の個別解除。
 /// 未登録の動画 ID でも正常終了とする（冪等）。
 #[tauri::command]
-pub fn live_wait_remove(
+pub async fn live_wait_remove(
     video_id: String,
     db: State<'_, Db>,
     app: AppHandle,
@@ -101,6 +101,6 @@ pub fn live_wait_remove(
 
 /// `live_wait_list`（仕様決定 BT(2)(5)）。待機一覧の復元・表示用。
 #[tauri::command]
-pub fn live_wait_list(db: State<'_, Db>) -> Result<Vec<LiveWait>, UiError> {
+pub async fn live_wait_list(db: State<'_, Db>) -> Result<Vec<LiveWait>, UiError> {
     Ok(db.live_wait_list()?)
 }

@@ -30,3 +30,15 @@ jobs:
       - name: Full advisory summary (informational)
         continue-on-error: true
         run: pnpm audit --ignore-registry-errors
+
+  cargo-audit:
+    # Rust 側依存の監査。npm 側と同じく定期実行へ置き、
+    # 新規 CVE で通常の PR が全滅するのを避ける。
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@cargo-audit
+      - name: Audit Rust dependencies
+        working-directory: src-tauri
+        run: cargo audit
