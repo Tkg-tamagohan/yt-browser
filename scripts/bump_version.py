@@ -12,15 +12,18 @@
 このスクリプトで更新するのは素の semver だけ。
 
 使い方:
-  scripts/bump_version.py 0.3.2      # v0.3.2 でも可
-  scripts/bump_version.py --check    # 4 箇所が揃っているか確認するだけ
+  scripts/bump_version.py 0.3.2                          # v0.3.2 でも可
+  scripts/bump_version.py --check                        # 4 箇所が揃っているか確認するだけ
+  scripts/bump_version.py --check --expect-tag v0.3.2    # 4 箇所とタグの一致も確認
 """
 
+import argparse
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -34,15 +37,15 @@ SEMVER = re.compile(
     r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
 )
 
-# (file, 書き換えパターン)。各ファイル先頭の 1 箇所だけを更新する
-TEXT_TARGETS = [
-    (ROOT / "src-tauri/tauri.conf.json", re.compile(r'^(\s*)"version": "[^"]*"')),
-    (ROOT / "package.json", re.compile(r'^(\s*)"version": "[^"]*"')),
-    (ROOT / "src-tauri/Cargo.toml", re.compile(r'^(version = ")[^"]*"')),
+# (file テンプレートパス, 書き換えパターン)。各ファイル先頭の 1 箇所だけを更新する
+TARGET_PATTERNS = [
+    ("src-tauri/tauri.conf.json", re.compile(r'^(\s*)"version": "[^"]*"')),
+    ("package.json", re.compile(r'^(\s*)"version": "[^"]*"')),
+    ("src-tauri/Cargo.toml", re.compile(r'^(version = ")[^"]*"')),
 ]
 
 
-def fail(msg: str) -> None:
+def fail(msg: str) -> NoReturn:
     sys.exit(f"bump_version 失敗: {msg}")
 
 
@@ -71,17 +74,17 @@ def replace_cargo_lock_version(lock_path: Path, version: str) -> None:
         f.write(new_text)
 
 
-def current_versions() -> dict[str, str | None]:
+def current_versions(root: Path = ROOT) -> dict[str, str | None]:
     """4 箇所の現行バージョンを読む。"""
-    conf = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
-    pkg = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    conf = json.loads((root / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
     cargo = None
-    for line in (ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8").splitlines():
+    for line in (root / "src-tauri/Cargo.toml").read_text(encoding="utf-8").splitlines():
         m = re.match(r'^version = "([^"]*)"', line)
         if m:
             cargo = m.group(1)
             break
-    lock = current_versions_lock(ROOT / "src-tauri/Cargo.lock")
+    lock = current_versions_lock(root / "src-tauri/Cargo.lock")
     return {
         "tauri.conf.json": conf.get("version"),
         "package.json": pkg.get("version"),
@@ -90,7 +93,7 @@ def current_versions() -> dict[str, str | None]:
     }
 
 
-def update_lock(version: str) -> None:
+def update_lock(version: str, root: Path = ROOT) -> None:
     """Cargo.lock を cargo で再生成する。失敗・cargo 不在時は yt-browser 行だけ直接書き換える。"""
     # yt-browser はワークスペースのローカルパッケージだが、依存解決には
     # crates.io の索引・クレートが要るため、キャッシュの無い新規環境では
@@ -101,7 +104,7 @@ def update_lock(version: str) -> None:
         try:
             r = subprocess.run(
                 ["cargo", "update", *extra, "-p", "yt-browser"],
-                cwd=ROOT / "src-tauri",
+                cwd=root / "src-tauri",
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -116,17 +119,18 @@ def update_lock(version: str) -> None:
         f"警告: cargo update に失敗したため Cargo.lock を直接更新します: {last_err.strip()}",
         file=sys.stderr,
     )
-    replace_cargo_lock_version(ROOT / "src-tauri/Cargo.lock", version)
+    replace_cargo_lock_version(root / "src-tauri/Cargo.lock", version)
 
 
-def bump(version: str) -> None:
+def bump(version: str, root: Path = ROOT, use_cargo: bool = True) -> None:
     # 途中失敗で不整合を残さないよう、先に全ファイルの原文を改行コードごと退避する
+    targets = [(root / rel, pat) for rel, pat in TARGET_PATTERNS]
     originals: dict[Path, str] = {}
-    for p, _ in TEXT_TARGETS:
+    for p, _ in targets:
         with p.open("r", encoding="utf-8", newline="") as f:
             originals[p] = f.read()
     try:
-        for path, pattern in TEXT_TARGETS:
+        for path, pattern in targets:
             lines = originals[path].splitlines(keepends=True)
             for i, line in enumerate(lines):
                 m = pattern.match(line)
@@ -138,10 +142,13 @@ def bump(version: str) -> None:
                         lines[i] = f'{m.group(1)}"version": "{version}",{eol}'
                     break
             else:
-                fail(f"version 行が見つかりません: {path.relative_to(ROOT)}")
+                fail(f"version 行が見つかりません: {path.relative_to(root)}")
             with path.open("w", encoding="utf-8", newline="") as f:
                 f.write("".join(lines))
-        update_lock(version)
+        if use_cargo:
+            update_lock(version, root=root)
+        else:
+            replace_cargo_lock_version(root / "src-tauri/Cargo.lock", version)
     except SystemExit:
         for path, text in originals.items():
             with path.open("w", encoding="utf-8", newline="") as f:
@@ -149,20 +156,56 @@ def bump(version: str) -> None:
         raise
 
 
-def main() -> None:
-    args = sys.argv[1:]
-    if args == ["--check"]:
-        versions = current_versions()
-        for name, v in versions.items():
-            print(f"  {name}: {v}")
-        if not all(versions.values()) or len(set(versions.values())) != 1:
-            fail("バージョンが揃っていません")
-        print(f"OK: 4 箇所すべて {versions['Cargo.lock']}")
+def check_versions(expect_tag: str | None = None, root: Path = ROOT) -> str:
+    """4 箇所の一致および任意のタグ文字列との一致を確認して現行バージョンを返す。"""
+    versions = current_versions(root=root)
+    for name, v in versions.items():
+        print(f"  {name}: {v}")
+    if not all(versions.values()) or len(set(versions.values())) != 1:
+        fail("バージョンが揃っていません")
+    actual = versions["Cargo.lock"]
+    assert actual is not None
+    if expect_tag is not None:
+        if not expect_tag.startswith("v") or not SEMVER.match(expect_tag):
+            fail(f"タグ形式が不正です（v<semver> を期待）: {expect_tag!r}")
+        expected = expect_tag.removeprefix("v")
+        if actual != expected:
+            fail(
+                f"タグ {expect_tag}（期待 {expected}）とファイルバージョン {actual} が一致しません"
+            )
+        print(f"OK: 4 箇所すべて {actual}（タグ {expect_tag} と一致）")
+    else:
+        print(f"OK: 4 箇所すべて {actual}")
+    return actual
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        usage="bump_version.py <X.Y.Z|vX.Y.Z> | --check [--expect-tag vX.Y.Z]"
+    )
+    parser.add_argument("version", nargs="?", help="設定する semver（v 接頭辞可）")
+    parser.add_argument(
+        "--check", action="store_true", help="4 箇所が揃っているか確認するだけ"
+    )
+    parser.add_argument(
+        "--expect-tag",
+        default=None,
+        help="--check と併用し、タグ名（例: v0.11.9）と一致するかも確認する",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.check:
+        if args.version is not None:
+            fail("--check とバージョン指定は同時に使えません")
+        check_versions(expect_tag=args.expect_tag)
         return
 
-    if len(args) != 1 or not SEMVER.match(args[0]):
-        fail("usage: bump_version.py <X.Y.Z|vX.Y.Z> | --check")
-    version = args[0].removeprefix("v")
+    if args.expect_tag is not None:
+        fail("--expect-tag は --check と併用してください")
+
+    if args.version is None or not SEMVER.match(args.version):
+        fail("usage: bump_version.py <X.Y.Z|vX.Y.Z> | --check [--expect-tag vX.Y.Z]")
+    version = args.version.removeprefix("v")
 
     bump(version)
     versions = current_versions()

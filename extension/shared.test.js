@@ -2,7 +2,12 @@
 // CB-01: withTimeParam — t= の付与・既存 t= の上書き・他クエリの温存
 // CB-02: hasUsablePosition — t= を付ける意味がある再生位置の判定
 // CB-03: classifyKind / classify / schemePrefix — URL 種別判定と末尾境界
+// CB-04: manifest.json・popup.html/js・shared.js 間の構文・DOM ID・export 整合
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import * as sharedExports from "./shared.js";
 import {
   classify,
   classifyKind,
@@ -144,5 +149,85 @@ describe("runWithTimeout", () => {
 
     lateDone?.({ ok: true }, null);
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("CB-04 拡張マニフェスト・DOM ID・共有モジュールの整合", () => {
+  const extDir = dirname(fileURLToPath(import.meta.url));
+
+  test("manifest.json が参照するファイルがすべて存在する", () => {
+    const manifest = JSON.parse(
+      readFileSync(join(extDir, "manifest.json"), "utf-8"),
+    );
+    expect(manifest.manifest_version).toBe(3);
+
+    const refs = [];
+    if (manifest.background?.service_worker) {
+      refs.push(manifest.background.service_worker);
+    }
+    if (manifest.action?.default_popup) {
+      refs.push(manifest.action.default_popup);
+    }
+    for (const cs of manifest.content_scripts ?? []) {
+      for (const jsFile of cs.js ?? []) {
+        refs.push(jsFile);
+      }
+      for (const cssFile of cs.css ?? []) {
+        refs.push(cssFile);
+      }
+    }
+    expect(refs.length).toBeGreaterThan(0);
+    for (const rel of refs) {
+      expect(existsSync(join(extDir, rel)), `${rel} が存在しない`).toBe(true);
+    }
+  });
+
+  test("popup.js が参照する DOM ID と popup.html の script 参照が一致する", () => {
+    const popupHtml = readFileSync(join(extDir, "popup.html"), "utf-8");
+    const popupJs = readFileSync(join(extDir, "popup.js"), "utf-8");
+
+    const htmlIds = new Set(
+      [...popupHtml.matchAll(/\bid\s*=\s*["']([^"']+)["']/g)].map((m) => m[1]),
+    );
+    const jsIds = [
+      ...popupJs.matchAll(/document\.getElementById\(\s*["']([^"']+)["']\s*\)/g),
+    ].map((m) => m[1]);
+    expect(jsIds.length).toBeGreaterThan(0);
+    for (const id of jsIds) {
+      expect(htmlIds.has(id), `popup.html に #${id} が無い`).toBe(true);
+    }
+
+    const scripts = [
+      ...popupHtml.matchAll(/<script[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi),
+    ].map((m) => m[1]);
+    for (const src of scripts) {
+      expect(
+        existsSync(join(extDir, src.replace(/^\.\//, ""))),
+        `popup.html が参照する ${src} が存在しない`,
+      ).toBe(true);
+    }
+  });
+
+  test("extension JS の ./shared.js import がすべて export されている", () => {
+    const importRe = /import\s*\{([^}]+)\}\s*from\s*["']\.\/shared\.js["']/g;
+    let totalChecked = 0;
+    for (const file of ["background.js", "popup.js", "content.js"]) {
+      const text = readFileSync(join(extDir, file), "utf-8");
+      for (const m of text.matchAll(importRe)) {
+        const specs = m[1]
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        for (const spec of specs) {
+          const exportedName = spec.split(/\s+as\s+/)[0].trim();
+          expect(
+            Object.hasOwn(sharedExports, exportedName),
+            `${file} が import する shared.js の ${exportedName} が存在しない`,
+          ).toBe(true);
+          totalChecked += 1;
+        }
+      }
+    }
+    expect(totalChecked).toBeGreaterThan(0);
   });
 });

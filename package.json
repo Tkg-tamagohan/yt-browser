@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "prepare": "svelte-kit sync || echo ''",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:js": "node --check extension/background.js extension/content.js extension/popup.js extension/shared.js extension/shared.test.js svelte.config.js vite.config.js",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && pnpm run check:js",
     "test": "vitest run",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"

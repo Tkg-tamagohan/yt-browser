@@ -12,21 +12,24 @@
 consistency ジョブ）の双方から実行できる。
 
 実装しているチェック（計画書の番号）:
-    1. design.md §3.1 のコマンド表 ↔ lib.rs の generate_handler!
-    2. design.md §3.2 のイベント表 ↔ emit / emit_to / listen の
-       第 1 引数リテラル
+    1. design.md §3.1 のコマンド表 ↔ lib.rs の generate_handler! ↔ src/ の invoke()
+    2. design.md §3.2 のイベント表 ↔ Rust emit* / フロントエンド listen* の
+       イベント名引数
     4. i18n の ja リソースキー ↔ フロントエンドの t() 参照
     5. テスト ID（DB-XX-NN）の docs 引用・コード側重複・#[test] 直下
     6. design.md の設定キー表 ↔ SETTING_* 定数リテラル
-    7. ci.yml の集約ジョブ ci-status の needs ↔ jobs 一覧
+    7. ci.yml の集約ジョブ ci-status の needs・if: always()・changes 契約
     8. 要件 ID（FR-N / BG-N / INV-N）の参照 ↔ requirements-definition.md の見出し
     9. 決定記録 ID（仕様決定 / 技術方針）の参照 ↔ decision-records.md の表
     10. 設計書 §N / design.md §N の参照 ↔ design.md の見出し番号
     11. .test.ts のテスト ID（LP-NN 系）の宣言・索引・重複
     12. capabilities の windows glob ↔ コード側の窓ラベル
-    13. 拡張・識別子定数（ホスト名・拡張 ID・スキーム・バージョン）の一致
+    13. 拡張・識別子定数（ホスト名・拡張 ID 導出一致・スキーム・バージョン）
     14. docs 間リンク `[..](path)` の参照先の存在
     15. design.md §11 リポジトリ構成ツリーの掲載パスの存在（WARN 限定）
+    16. decision-records.md の Markdown 表構文
+    17. 実装計画・実装履歴のフェーズ連番整合
+    18. テキスト健全性（U+FFFD・競合マーカー）と JSON/XML 構文
 チェック 3（§8 DDL と適用後スキーマの照合）は実マイグレーション経路を
 通す必要があるため Rust 側テストとして src-tauri/src/db/tests/ddl.rs にある。
 
@@ -37,10 +40,13 @@ consistency ジョブ）の双方から実行できる。
 
 from __future__ import annotations
 
+import base64
 import fnmatch
+import hashlib
 import json
 import re
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,11 +61,13 @@ I18N_JA_TS = ROOT / "src" / "lib" / "i18n-ja.ts"
 I18N_EN_TS = ROOT / "src" / "lib" / "i18n-en.ts"
 I18N_FILES = {I18N_TS, I18N_JA_TS, I18N_EN_TS}
 SRC_TAURI = ROOT / "src-tauri" / "src"
+SRC_TAURI_TESTS = ROOT / "src-tauri" / "tests"
 SRC_FRONTEND = ROOT / "src"
 EXTENSION_DIR = ROOT / "extension"
 TAURI_CONF = ROOT / "src-tauri" / "tauri.conf.json"
 CAPABILITIES_DIR = ROOT / "src-tauri" / "capabilities"
 WHEEL_LUA = ROOT / "src-tauri" / "mpv" / "wheel.lua"
+WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 DOCS_DIR = ROOT / "docs"
 SCRIPTS_DIR = ROOT / "scripts"
 
@@ -235,13 +243,90 @@ def strip_comments(text: str, suffix: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# チェック 1: §3.1 コマンド表 ↔ generate_handler!
+# チェック 1: §3.1 コマンド表 ↔ generate_handler! ↔ src/ の invoke()
 # ---------------------------------------------------------------------------
 
 
-def check_commands() -> Findings:
+def find_call_open_paren(text: str, ident_end: int, rust: bool = False) -> int | None:
+    """関数名直後（任意の空白とジェネリクス `<...>` または `:: <...>` 後）の `(` 位置を返す。
+
+    TypeScript のアロー関数型 `=>` の `>` はジェネリクス閉じ括弧と誤認しない。
+    ジェネリクス内の `{ a: string; b: number }` 等に含まれる `;` は波括弧深さで
+    許容しつつ、比較演算子 `x < y;` は打ち切る。文字列リテラル内の文字も読み飛ばす。
+    """
+    i, n = ident_end, len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    if i + 1 < n and text[i : i + 2] == "::":
+        i += 2
+        while i < n and text[i].isspace():
+            i += 1
+    if i < n and text[i] == "<":
+        depth = 1
+        brace = paren = bracket = 0
+        i += 1
+        while i < n and depth > 0:
+            c = text[i]
+            if c == "'" and rust:
+                if i + 2 < n and text[i + 2] == "'" and text[i + 1] != "\\":
+                    i += 3
+                    continue
+                if i + 3 < n and text[i + 1] == "\\" and text[i + 3] == "'":
+                    i += 4
+                    continue
+                i += 1
+                continue
+            if c in "\"'`":
+                i += 1
+                while i < n:
+                    if text[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if text[i] == c:
+                        break
+                    i += 1
+            elif c == "{":
+                brace += 1
+            elif c == "}":
+                if brace == 0:
+                    return None
+                brace -= 1
+            elif c == "(":
+                paren += 1
+            elif c == ")":
+                if paren == 0:
+                    return None
+                paren -= 1
+            elif c == "[":
+                bracket += 1
+            elif c == "]":
+                if bracket == 0:
+                    return None
+                bracket -= 1
+            elif c == "<":
+                depth += 1
+            elif c == ">" and (i == 0 or text[i - 1] != "="):
+                depth -= 1
+            elif c == ";" and brace == 0 and paren == 0 and bracket == 0 and depth == 1:
+                # 比較演算子 `x < y;` をジェネリクスと誤認した場合に打ち切る
+                return None
+            i += 1
+        if depth != 0:
+            return None
+        while i < n and text[i].isspace():
+            i += 1
+    if i < n and text[i] == "(":
+        return i
+    return None
+
+
+def check_commands(
+    design_md: Path = DESIGN_MD,
+    lib_rs: Path = LIB_RS,
+    src_frontend: Path = SRC_FRONTEND,
+) -> Findings:
     f = Findings([])
-    section_text = extract_section(read_text(DESIGN_MD), r"コマンド（フロント")
+    section_text = extract_section(read_text(design_md), r"コマンド（フロント")
     if not section_text:
         f.error("design.md に §3.1（コマンド表）の見出しが見つからない")
         return f
@@ -253,7 +338,7 @@ def check_commands() -> Findings:
         for name in names_in_cell(row[0]):
             doc_entries.append((name, "*" in name))
 
-    lib = read_text(LIB_RS)
+    lib = read_text(lib_rs)
     m = re.search(r"generate_handler!\s*\[(.*?)\]", lib, re.S)
     if not m:
         f.error("lib.rs に generate_handler! ブロックが見つからない")
@@ -274,8 +359,39 @@ def check_commands() -> Findings:
         if not fnmatch.filter(code_names, g):
             f.error(f"§3.1 の glob `{g}` に一致するコマンドがコードに無い")
 
+    # フロントエンド本番コードの invoke(...) 呼び出し ↔ generate_handler!
+    invoked: set[str] = set()
+    dynamic_invokes: list[str] = []
+    for path in iter_files(src_frontend, (".ts", ".svelte")):
+        if path.name.endswith(".test.ts"):
+            continue
+        text = strip_comments(read_text(path), path.suffix)
+        for mi in re.finditer(r"\binvoke\b", text):
+            if mi.start() > 0 and text[mi.start() - 1] == ".":
+                continue
+            open_paren = find_call_open_paren(text, mi.end())
+            if open_paren is None:
+                continue
+            args = split_call_args(text, open_paren, rust=False)
+            if not args:
+                continue
+            line_no = text.count("\n", 0, mi.start()) + 1
+            loc = f"{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}:{line_no}"
+            inner = single_string_literal(args[0])
+            if inner is None:
+                dynamic_invokes.append(loc)
+            else:
+                invoked.add(inner)
+
+    for name in sorted(invoked - code_names):
+        f.error(f"フロントエンドの invoke `{name}` が generate_handler! に無い")
+    for name in sorted(code_names - invoked):
+        f.warn(f"コマンド `{name}` が generate_handler! にあるが src/ から invoke されていない")
+    for loc in dynamic_invokes:
+        f.warn(f"{loc}: invoke のコマンド名が文字列リテラルでなく照合不能")
+
     if f.worst() == OK:
-        f.ok(f"{len(code_names)} 件のコマンドが一致")
+        f.ok(f"{len(code_names)} 件のコマンド（§3.1 / generate_handler! / src invoke）が一致")
     return f
 
 
@@ -284,14 +400,12 @@ def check_commands() -> Findings:
 # ---------------------------------------------------------------------------
 
 EVENT_NAME_RE = r"[a-z][a-z0-9_]*://[a-z0-9_]+"
-# listen<T>(...) のジェネリクスや改行を挟む呼び出しを拾うため、
-# 関数名と `(` の間は括弧以外なら何でも許す。
 # イベント名を取る関数: emit / emit_all / emit_filter / listen /
 # listen_any / once は第 1 引数、emit_to は第 2 引数（第 1 引数は
 # 送信先ラベル）。trigger は SQL の CREATE TRIGGER と衝突して
 # 誤検出になるため対象外。
-EVENT_CALL_RE = re.compile(
-    r"\b(emit|emit_all|emit_filter|listen|listen_any|once|emit_to)\b[^(\n]{0,60}\("
+EVENT_FN_RE = re.compile(
+    r"\b(emit|emit_all|emit_filter|listen|listen_any|once|emit_to)\b"
 )
 
 
@@ -370,9 +484,13 @@ def single_string_literal(arg: str) -> str | None:
     return inner
 
 
-def check_events() -> Findings:
+def check_events(
+    design_md: Path = DESIGN_MD,
+    src_tauri: Path = SRC_TAURI,
+    src_frontend: Path = SRC_FRONTEND,
+) -> Findings:
     f = Findings([])
-    section_text = extract_section(read_text(DESIGN_MD), r"イベント（Rust")
+    section_text = extract_section(read_text(design_md), r"イベント（Rust")
     if not section_text:
         f.error("design.md に §3.2（イベント表）の見出しが見つからない")
         return f
@@ -383,42 +501,56 @@ def check_events() -> Findings:
             continue
         doc_events.update(re.findall(EVENT_NAME_RE, row[0]))
 
-    code_events: set[str] = set()
+    emitted_events: set[str] = set()
+    listened_events: set[str] = set()
     dynamic_calls: list[str] = []
-    targets = iter_files(SRC_TAURI, (".rs",)) + iter_files(
-        SRC_FRONTEND, (".ts", ".svelte")
-    )
+    targets = iter_files(src_tauri, (".rs",)) + [
+        p for p in iter_files(src_frontend, (".ts", ".svelte"))
+        if not p.name.endswith(".test.ts")
+    ]
     for path in targets:
         text = strip_comments(read_text(path), path.suffix)
         rust = path.suffix == ".rs"
-        for m in EVENT_CALL_RE.finditer(text):
+        for m in EVENT_FN_RE.finditer(text):
+            open_paren = find_call_open_paren(text, m.end(), rust=rust)
+            if open_paren is None:
+                continue
+            fn = m.group(1)
             # イベント名の位置は emit_to だけ第 2 引数
-            idx = 1 if m.group(1) == "emit_to" else 0
-            args = split_call_args(text, m.end() - 1, rust)
+            idx = 1 if fn == "emit_to" else 0
+            args = split_call_args(text, open_paren, rust)
             if len(args) <= idx:
                 continue
             event_arg = args[idx].strip()
             line_no = text.count("\n", 0, m.start()) + 1
-            loc = f"{path.relative_to(ROOT)}:{line_no}"
+            loc = f"{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}:{line_no}"
             inner = single_string_literal(event_arg)
             if inner is None:
                 dynamic_calls.append(loc)
                 continue
             if re.fullmatch(EVENT_NAME_RE, inner):
-                code_events.add(inner)
+                if fn.startswith("emit"):
+                    emitted_events.add(inner)
+                else:
+                    listened_events.add(inner)
             else:
                 # リテラルなのに `name://` 形式でない = §3.2 に載せられない命名
                 dynamic_calls.append(loc)
 
+    code_events = emitted_events | listened_events
     for name in sorted(code_events - doc_events):
         f.error(f"イベント `{name}` がコードにあるが §3.2 に無い")
     for name in sorted(doc_events - code_events):
         f.error(f"イベント `{name}` が §3.2 にあるがコードに無い")
+    for name in sorted(emitted_events - listened_events):
+        f.error(f"イベント `{name}` が emit されているがフロントエンドで listen されていない")
+    for name in sorted(listened_events - emitted_events):
+        f.error(f"イベント `{name}` が listen されているがバックエンドから emit されていない")
     for loc in dynamic_calls:
         f.warn(f"{loc}: イベント名が `name://` 形式のリテラルでなく照合不能（イベント名はリテラルで書く）")
 
     if f.worst() == OK:
-        f.ok(f"{len(code_events)} 件のイベントが一致")
+        f.ok(f"{len(code_events)} 件のイベント（§3.2 / emit / listen）が一致")
     return f
 
 
@@ -540,8 +672,12 @@ NON_TEST_ID_PREFIXES = {"FR", "BG", "INV", "UTF"}
 def check_test_ids(ts_test_ids: set[str]) -> Findings:
     f = Findings([])
 
+    rs_files = iter_files(SRC_TAURI, (".rs",))
+    if SRC_TAURI_TESTS.is_dir():
+        rs_files += iter_files(SRC_TAURI_TESTS, (".rs",))
+
     code_ids: dict[str, list[str]] = {}
-    for path in iter_files(SRC_TAURI, (".rs",)):
+    for path in rs_files:
         lines = read_text(path).splitlines()
         for i, line in enumerate(lines):
             for test_id in TEST_ID_DOC_COMMENT_RE.findall(line):
@@ -640,15 +776,16 @@ def check_settings(setting_keys: set[str]) -> Findings:
 # チェック 7: ci.yml の集約ジョブ ci-status の needs ↔ jobs 一覧
 # ---------------------------------------------------------------------------
 
-CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
+CI_YML = WORKFLOWS_DIR / "ci.yml"
 GATE_JOB_ID = "ci-status"
 GATE_JOB_NAME = "CI"
 
 
-def check_ci_gate() -> Findings:
+def check_ci_gate(ci_yml: Path = CI_YML) -> Findings:
     f = Findings([])
-    if not CI_YML.is_file():
-        f.error(f"{CI_YML.relative_to(ROOT)} が見つからない")
+    if not ci_yml.is_file():
+        rel = ci_yml.relative_to(ROOT) if ci_yml.is_relative_to(ROOT) else ci_yml
+        f.error(f"{rel} が見つからない")
         return f
 
     # jobs: 直下の 2 スペースインデントのキーをジョブ ID として拾う。
@@ -656,31 +793,55 @@ def check_ci_gate() -> Findings:
     job_ids: list[str] = []
     gate_needs: list[str] | None = None
     gate_name: str | None = None
+    gate_if: str | None = None
+    changes_outputs: set[str] = set()
+    referenced_change_outputs: list[tuple[str, str]] = []
     in_jobs = False
-    in_gate = False
-    for line in read_text(CI_YML).splitlines():
-        if re.match(r"^jobs:\s*$", line):
+    current_job: str | None = None
+    in_changes_outputs = False
+
+    for line in read_text(ci_yml).splitlines():
+        if re.match(r"^jobs:\s*(?:#.*)?$", line):
             in_jobs = True
             continue
-        if not in_jobs or re.match(r"^\s*#", line):
+        if not in_jobs or re.match(r"^\s*#", line) or not line.strip():
             continue
         if re.match(r"^\S", line):
             break  # トップレベルキーの復帰 = jobs 節の終わり
-        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$", line)
         if m:
-            in_gate = m.group(1) == GATE_JOB_ID
-            job_ids.append(m.group(1))
+            current_job = m.group(1)
+            job_ids.append(current_job)
+            in_changes_outputs = False
             continue
-        if in_gate:
-            m = re.match(r"^    needs:\s*\[(.*)\]\s*$", line)
+        if current_job == GATE_JOB_ID:
+            m = re.match(r"^    needs:\s*\[([^\]]*)\]\s*(?:#.*)?$", line)
             if m:
                 gate_needs = [
                     s.strip() for s in m.group(1).split(",") if s.strip()
                 ]
                 continue
-            m = re.match(r"^    name:\s*(\S+)\s*$", line)
+            m = re.match(r"^    name:\s*(\S+)\s*(?:#.*)?$", line)
             if m:
                 gate_name = m.group(1)
+                continue
+            m = re.match(r"^    if:\s*(.+?)\s*(?:#.*)?$", line)
+            if m:
+                gate_if = m.group(1)
+                continue
+        elif current_job == "changes":
+            if re.match(r"^    outputs:\s*(?:#.*)?$", line):
+                in_changes_outputs = True
+                continue
+            if re.match(r"^    [A-Za-z0-9_-]+:", line):
+                in_changes_outputs = False
+            elif in_changes_outputs:
+                m = re.match(r"^      ([A-Za-z0-9_-]+):\s*", line)
+                if m:
+                    changes_outputs.add(m.group(1))
+        if current_job is not None and current_job != GATE_JOB_ID:
+            for ref in re.findall(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)", line):
+                referenced_change_outputs.append((current_job, ref))
 
     if GATE_JOB_ID not in job_ids:
         f.error(f"ci.yml に集約ジョブ `{GATE_JOB_ID}` が無い")
@@ -689,6 +850,10 @@ def check_ci_gate() -> Findings:
         f.error(
             f"`{GATE_JOB_ID}` の name が `{gate_name}` になっている"
             f"（必須チェック名 `{GATE_JOB_NAME}` と一致させる契約）"
+        )
+    if gate_if != "always()":
+        f.error(
+            f"`{GATE_JOB_ID}` に `if: always()` が無い（現在: {gate_if!r}）"
         )
     if gate_needs is None:
         f.error(f"`{GATE_JOB_ID}` の needs がインライン `[a, b]` 形式で読めない")
@@ -699,8 +864,22 @@ def check_ci_gate() -> Findings:
         for j in sorted(set(gate_needs) - expected):
             f.error(f"`{GATE_JOB_ID}` の needs の `{j}` は存在しないジョブ")
 
+    if "changes" in job_ids:
+        for job_id, ref in referenced_change_outputs:
+            if ref not in changes_outputs:
+                f.error(
+                    f"ジョブ `{job_id}` が参照する `needs.changes.outputs.{ref}` が "
+                    "`changes.outputs` に定義されていない"
+                )
+        used_refs = {ref for _, ref in referenced_change_outputs}
+        for out_key in sorted(changes_outputs - used_refs):
+            f.warn(f"`changes.outputs.{out_key}` が他ジョブの if 条件で使われていない")
+
     if f.worst() == OK:
-        f.ok(f"{len(job_ids) - 1} 件のジョブが `{GATE_JOB_ID}` の needs に網羅されている")
+        f.ok(
+            f"{len(job_ids) - 1} 件のジョブが `{GATE_JOB_ID}`（if: always()）の "
+            "needs に網羅されている"
+        )
     return f
 
 
@@ -720,6 +899,8 @@ def doc_and_code_files() -> list[Path]:
         p for p in iter_files(SCRIPTS_DIR, (".md", ".py"))
         if p.name != "check_docs_consistency.py"
     ]
+    if WORKFLOWS_DIR.is_dir():
+        files += iter_files(WORKFLOWS_DIR, (".yml", ".yaml"))
     files.append(WHEEL_LUA)
     return [p for p in files if p.is_file()]
 
@@ -1105,7 +1286,16 @@ def check_window_labels() -> Findings:
 # ---------------------------------------------------------------------------
 
 
-def check_extension_constants() -> Findings:
+def derive_extension_id(pubkey_b64: str) -> str:
+    """Chrome 拡張 manifest.json の Base64 公開鍵 `key` から 32 文字の拡張 ID を導出する。"""
+    digest = hashlib.sha256(base64.b64decode(pubkey_b64)).digest()[:16]
+    return "".join(chr(ord("a") + (b >> 4)) + chr(ord("a") + (b & 0xF)) for b in digest)
+
+
+def check_extension_constants(
+    manifest_path: Path | None = None,
+    native_host_path: Path | None = None,
+) -> Findings:
     f = Findings([])
     conf = json.loads(read_text(TAURI_CONF))
     identifier = conf.get("identifier")
@@ -1114,7 +1304,9 @@ def check_extension_constants() -> Findings:
         return f
     host_name_expected = identifier.replace("-", "_")
 
-    native_host = read_text(ROOT / "src-tauri" / "src" / "native_host.rs")
+    nh_file = native_host_path or (ROOT / "src-tauri" / "src" / "native_host.rs")
+    mf_file = manifest_path or (EXTENSION_DIR / "manifest.json")
+    native_host = read_text(nh_file)
     background = read_text(EXTENSION_DIR / "background.js")
     deep_link = read_text(ROOT / "src-tauri" / "src" / "deep_link.rs")
 
@@ -1141,10 +1333,44 @@ def check_extension_constants() -> Findings:
     m = re.search(r'EXTENSION_ID\s*:\s*&str\s*=\s*"([^"]+)"', native_host)
     if not m:
         f.error("native_host.rs の EXTENSION_ID を読めない")
-    elif m.group(1) not in read_text(DECISIONS_MD):
-        f.error(
-            f"EXTENSION_ID `{m.group(1)}` が decision-records.md に記載されていない"
-        )
+    else:
+        ext_id = m.group(1)
+        if ext_id not in read_text(DECISIONS_MD):
+            f.error(
+                f"EXTENSION_ID `{ext_id}` が decision-records.md に記載されていない"
+            )
+        try:
+            manifest = json.loads(read_text(mf_file))
+        except Exception as e:
+            f.error(f"extension/manifest.json を読めない: {e}")
+            manifest = None
+        if isinstance(manifest, dict):
+            pubkey = manifest.get("key")
+            if not isinstance(pubkey, str) or not pubkey.strip():
+                f.error("extension/manifest.json に公開鍵 `key` が無い")
+            else:
+                try:
+                    derived = derive_extension_id(pubkey)
+                except Exception as e:
+                    f.error(f"extension/manifest.json の key から拡張 ID を導出できない: {e}")
+                else:
+                    if derived != ext_id:
+                        f.error(
+                            f"extension/manifest.json の公開鍵から導出した ID `{derived}` と "
+                            f"native_host.rs の EXTENSION_ID `{ext_id}` が不一致"
+                        )
+            # manifest.json が参照する拡張ファイルの実在確認
+            ext_dir = mf_file.parent
+            bg_sw = (manifest.get("background") or {}).get("service_worker")
+            if bg_sw and not (ext_dir / bg_sw).is_file():
+                f.error(f"manifest.json の service_worker `{bg_sw}` が存在しない")
+            popup_file = (manifest.get("action") or {}).get("default_popup")
+            if popup_file and not (ext_dir / popup_file).is_file():
+                f.error(f"manifest.json の default_popup `{popup_file}` が存在しない")
+            for cs in manifest.get("content_scripts") or []:
+                for js_rel in cs.get("js") or []:
+                    if not (ext_dir / js_rel).is_file():
+                        f.error(f"manifest.json の content_scripts `{js_rel}` が存在しない")
 
     schemes = (
         conf.get("plugins", {})
@@ -1380,6 +1606,75 @@ def check_implementation_phases() -> Findings:
 
 
 # ---------------------------------------------------------------------------
+# チェック 18: テキスト健全性（U+FFFD・競合マーカー）と JSON/XML 構文
+# ---------------------------------------------------------------------------
+
+CONFLICT_MARKER_RE = re.compile(
+    r"^(?:<{7}(?:\s|$)|={7}$|>{7}(?:\s|$))", re.M
+)
+TEXT_CHECK_SUFFIXES = {
+    ".md", ".ts", ".js", ".svelte", ".rs", ".py",
+    ".yml", ".yaml", ".json", ".toml", ".html", ".css", ".lua", ".xml",
+}
+SKIP_DIR_NAMES = {
+    "node_modules", "target", ".svelte-kit", ".git", "build", "__pycache__", "gen",
+}
+
+
+def iter_repo_text_files(root: Path = ROOT) -> list[Path]:
+    out: list[Path] = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.suffix not in TEXT_CHECK_SUFFIXES:
+            continue
+        rel_parts = p.relative_to(root).parts
+        if any(part in SKIP_DIR_NAMES for part in rel_parts):
+            continue
+        out.append(p)
+    return out
+
+
+def check_text_and_syntax(root: Path = ROOT) -> Findings:
+    f = Findings([])
+    text_files = iter_repo_text_files(root)
+    checked_text = 0
+    checked_structured = 0
+
+    for p in text_files:
+        rel = p.relative_to(root)
+        try:
+            content = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError as e:
+            f.error(f"{rel}: UTF-8 デコードに失敗（{e}）")
+            continue
+        checked_text += 1
+        if "\ufffd" in content:
+            f.error(f"{rel}: 置換文字 U+FFFD（文字化け）が含まれている")
+        if CONFLICT_MARKER_RE.search(content):
+            f.error(f"{rel}: マージ競合マーカーが残存している")
+
+        # tsconfig.json は JSONC（コメント可）のため純粋 JSON 検査から外す
+        if p.suffix == ".json" and p.name != "tsconfig.json":
+            checked_structured += 1
+            try:
+                json.loads(content)
+            except json.JSONDecodeError as e:
+                f.error(f"{rel}: JSON 構文エラー（{e}）")
+        elif p.suffix == ".xml":
+            checked_structured += 1
+            try:
+                ET.fromstring(content)
+            except ET.ParseError as e:
+                f.error(f"{rel}: XML 構文エラー（{e}）")
+
+    if f.worst() == OK:
+        f.ok(
+            f"テキスト {checked_text} 件（文字化け・競合なし）・"
+            f"JSON/XML {checked_structured} 件の構文が正常"
+        )
+    return f
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -1403,6 +1698,7 @@ def main() -> int:
     checks.append(("check 15: リポジトリ構成ツリー", check_repo_tree()))
     checks.append(("check 16: 決定記録表構文", check_decision_tables()))
     checks.append(("check 17: 実装計画フェーズ番号", check_implementation_phases()))
+    checks.append(("check 18: テキスト健全性と構文", check_text_and_syntax()))
     # チェック 3（§8 DDL ↔ 適用後スキーマ）は src-tauri の
     # ddl_matches_design_section8 テストが担う
 

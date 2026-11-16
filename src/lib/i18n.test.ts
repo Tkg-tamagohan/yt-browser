@@ -3,6 +3,7 @@
 // LN-02: resolveMessage のロケール別解決・ja フォールバック・未知キー
 // LN-03: setLocale / currentLocale の反映と t() のプレースホルダー置換
 import { describe, expect, test } from "vitest";
+import { en } from "./i18n-en";
 import {
   currentLocale,
   fallbackKeys,
@@ -17,6 +18,12 @@ import {
 describe("LN-01 en リソースの網羅", () => {
   test("en は ja の全キーを持つ（フォールバック対象なし）", () => {
     expect(fallbackKeys("en")).toEqual([]);
+  });
+
+  test("en に ja へ無い余剰キーが存在しない", () => {
+    const jaSet = new Set<string>(messageKeys());
+    const extra = Object.keys(en).filter((key) => !jaSet.has(key));
+    expect(extra).toEqual([]);
   });
 
   test("全キーが en で文言へ解決される", () => {

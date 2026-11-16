@@ -48,5 +48,5 @@ description: yt-browser の scripts/check_docs_consistency.py を拡張・修正
 
 ## CI との関係
 
-`consistency` ジョブは `check_docs_consistency.py` と `scripts/bump_version.py --check` の 2 本を実行する。
+`consistency` ジョブは `py_compile`・`scripts/test_scripts.py`・`check_docs_consistency.py`・`bump_version.py --check`・`e2e_dev.py --dry-run` を実行する。
 チェックを追加して CI を常時赤くしないよう、意図的な現状のずれは `[WARN]` に落とす設計にする。
