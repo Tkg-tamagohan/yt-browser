@@ -13,7 +13,13 @@
   import { diagFileName } from "$lib/diag-logic";
   import { asErrorMessage, type DbSize } from "$lib/players.svelte";
 
-  let { notify }: { notify: (msg: string) => void } = $props();
+  let {
+    notify,
+    onImported,
+  }: {
+    notify: (msg: string) => void;
+    onImported?: () => void | Promise<void>;
+  } = $props();
 
   // DB サイズ（バイト）。取得失敗は null のままにして表示を出さない
   let dbBytes = $state<number | null>(null);
@@ -87,6 +93,7 @@
     try {
       await invoke("data_import", { path });
       notify(t("settings.ops.imported", { path }));
+      await onImported?.();
     } catch (e) {
       notify(t("settings.ops.importFailed", { message: asErrorMessage(e) }));
     } finally {

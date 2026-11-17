@@ -1,11 +1,15 @@
-// 表示設定（ui.*）の解釈テスト（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF）。
+// 表示設定（ui.* / player.navigate_on_play）の解釈テスト（FR-76・FR-77・FR-81・FR-91・FR-92、仕様決定 DA・DB・DF・DT・DU）。
 // UI-01: uiTheme の受理集合（light / system のみ、既定は dark）
 // UI-02: uiDensity の受理集合（compact のみ、既定は comfortable）
 // UI-03: resolveTheme の system 解決（prefers-color-scheme 追従）
 // UI-04: uiLanguage の受理集合（en のみ、既定は ja）
+// UI-05: uiConfirmUnsaved の受理集合（off 系のみ false、既定は true）
+// UI-06: playerNavigateOnPlay の受理集合（off 系のみ false、既定は true）
 import { describe, expect, test } from "vitest";
 import {
+  playerNavigateOnPlay,
   resolveTheme,
+  uiConfirmUnsaved,
   uiDensity,
   uiLanguage,
   uiTheme,
@@ -73,5 +77,35 @@ describe("UI-04 uiLanguage の受理集合", () => {
       expect(uiLanguage(v), `${v} は ja になるべき`).toBe("ja");
     }
     expect(uiLanguage(null)).toBe("ja");
+  });
+});
+
+describe("UI-05 uiConfirmUnsaved の受理集合", () => {
+  test("off 系（off/false/0/no）のみ false を返す", () => {
+    for (const v of ["off", "OFF", " false ", "0", "No"]) {
+      expect(uiConfirmUnsaved(v), `${v} は false になるべき`).toBe(false);
+    }
+  });
+
+  test("未設定・on 系・その他は既定の true を返す", () => {
+    for (const v of ["on", "true", "1", "yes", "", "  ", "maybe"]) {
+      expect(uiConfirmUnsaved(v), `${v} は true になるべき`).toBe(true);
+    }
+    expect(uiConfirmUnsaved(null)).toBe(true);
+  });
+});
+
+describe("UI-06 playerNavigateOnPlay の受理集合", () => {
+  test("off 系（off/false/0/no）のみ false を返す", () => {
+    for (const v of ["off", "OFF", " false ", "0", "No"]) {
+      expect(playerNavigateOnPlay(v), `${v} は false になるべき`).toBe(false);
+    }
+  });
+
+  test("未設定・on 系・その他は既定の true を返す", () => {
+    for (const v of ["on", "true", "1", "yes", "", "  ", "stay"]) {
+      expect(playerNavigateOnPlay(v), `${v} は true になるべき`).toBe(true);
+    }
+    expect(playerNavigateOnPlay(null)).toBe(true);
   });
 });

@@ -3,10 +3,10 @@
 // +page.svelte に同居していた script ロジックをここへ集約し、
 // ページ側はタブ状態とイベント購読のライフサイクルだけを持つ。
 
-import { goto } from "$app/navigation";
 import { invoke } from "@tauri-apps/api/core";
 import { t, type MessageKey } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
+import { navigateOnPlay } from "$lib/ui-prefs";
 import { loadLibrary } from "$lib/library";
 import { createVideoActionState } from "$lib/video-actions.svelte";
 import {
@@ -284,7 +284,7 @@ export function createLibraryPageState(opts: Options) {
   async function play(videoId: string, resume: boolean): Promise<void> {
     try {
       await invoke("play_video", { videoId, resume });
-      goto("/");
+      navigateOnPlay();
     } catch (e) {
       notify(t("player.error", { message: asErrorMessage(e) }));
     }
@@ -942,7 +942,7 @@ export function createLibraryPageState(opts: Options) {
         index,
         instanceId,
       );
-      goto("/");
+      navigateOnPlay();
     } catch (e) {
       // 武装失敗は armQueue 側で畳むためここには来ない。
       // startQueue が途中で例外を投げた場合の保険として、

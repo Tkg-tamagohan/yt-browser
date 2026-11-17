@@ -77,6 +77,38 @@ pub(crate) fn ui_language(value: Option<String>) -> &'static str {
     }
 }
 
+/// 設定キー: 設定画面の未保存タブ移動時の確認（FR-91、仕様決定 DT）。
+/// 値は "on" / "off"。未設定・その他の値は "on"（確認する）として扱う。
+/// フロントが settings_get で読む表示側だけの設定でバックエンドでは
+/// 参照しないが、設定キー表との両方向照合（check_docs_consistency）の
+/// ため定数として保持する。
+#[allow(dead_code)]
+pub(crate) const SETTING_UI_CONFIRM_UNSAVED: &str = "ui.confirm_unsaved";
+
+/// `ui.confirm_unsaved` の保存値を解釈する（FR-91、仕様決定 DT）。
+/// `off` / `false` / `0` / `no`（大小文字・前後空白を許容）だけが
+/// 無効（false）で、それ以外と未設定は有効（true）を返す。
+#[allow(dead_code)]
+pub(crate) fn ui_confirm_unsaved_enabled(value: Option<String>) -> bool {
+    crate::util::setting_off_disabled(value)
+}
+
+/// 設定キー: 再生開始時の再生画面への自動遷移（FR-92、仕様決定 DU）。
+/// 値は "on" / "off"。未設定・その他の値は "on"（遷移する）として扱う。
+/// フロントが settings_get で読む表示側だけの設定でバックエンドでは
+/// 参照しないが、設定キー表との両方向照合（check_docs_consistency）の
+/// ため定数として保持する。
+#[allow(dead_code)]
+pub(crate) const SETTING_PLAYER_NAVIGATE_ON_PLAY: &str = "player.navigate_on_play";
+
+/// `player.navigate_on_play` の保存値を解釈する（FR-92、仕様決定 DU）。
+/// `off` / `false` / `0` / `no`（大小文字・前後空白を許容）だけが
+/// 無効（false）で、それ以外と未設定は有効（true）を返す。
+#[allow(dead_code)]
+pub(crate) fn player_navigate_on_play_enabled(value: Option<String>) -> bool {
+    crate::util::setting_off_disabled(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +194,43 @@ mod tests {
             );
         }
         assert_eq!(ui_language(None), "ja");
+    }
+
+    /// DB-UI-05: `ui.confirm_unsaved` の解釈（FR-91、仕様決定 DT）。
+    /// off 系のみ無効（false）で、未設定・その他は既定の有効（true）へ戻す。
+    #[test]
+    fn ui_confirm_unsaved_values() {
+        for v in ["off", "OFF", " false ", "0", "No"] {
+            assert!(
+                !ui_confirm_unsaved_enabled(Some(v.to_string())),
+                "{v:?} は false になるべき"
+            );
+        }
+        for v in ["on", "true", "1", "yes", "", "  ", "maybe"] {
+            assert!(
+                ui_confirm_unsaved_enabled(Some(v.to_string())),
+                "{v:?} は true になるべき"
+            );
+        }
+        assert!(ui_confirm_unsaved_enabled(None));
+    }
+
+    /// DB-UI-06: `player.navigate_on_play` の解釈（FR-92、仕様決定 DU）。
+    /// off 系のみ無効（false）で、未設定・その他は既定の有効（true）へ戻す。
+    #[test]
+    fn player_navigate_on_play_values() {
+        for v in ["off", "OFF", " false ", "0", "No"] {
+            assert!(
+                !player_navigate_on_play_enabled(Some(v.to_string())),
+                "{v:?} は false になるべき"
+            );
+        }
+        for v in ["on", "true", "1", "yes", "", "  ", "stay"] {
+            assert!(
+                player_navigate_on_play_enabled(Some(v.to_string())),
+                "{v:?} は true になるべき"
+            );
+        }
+        assert!(player_navigate_on_play_enabled(None));
     }
 }

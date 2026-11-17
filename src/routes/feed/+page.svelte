@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
   import { feedItemCompare, feedItemSortsAfter } from "$lib/feed-page-logic";
   import { notify } from "$lib/notices.svelte";
+  import { navigateOnPlay } from "$lib/ui-prefs";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
   import {
@@ -382,7 +382,7 @@
     } catch (e) {
       notify(t("feed.readMarkFailed", { message: asErrorMessage(e) }));
     }
-    goto("/");
+    navigateOnPlay();
   }
 
   async function refreshNow(): Promise<void> {

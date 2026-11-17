@@ -7,10 +7,10 @@
   // ナビ入口とキューを背負うカードから同じパネルを開く。
   // タブ選択は「キューに追加」の追加先指定でもある（FR-45、仕様決定 BV）
   // 項目メタ（タイトル・チャンネル）はセッション内メモリのみ
-  import { goto } from "$app/navigation";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/notices.svelte";
   import { asErrorMessage } from "$lib/players.svelte";
+  import { navigateOnPlay } from "$lib/ui-prefs";
   import {
     bookmarks,
     bookmarkPlay,
@@ -63,7 +63,7 @@
   async function playBookmark(b: VideoBookmark): Promise<void> {
     try {
       await bookmarkPlay(b);
-      goto("/");
+      navigateOnPlay();
     } catch (e) {
       notify(t("bookmark.playFailed", { message: asErrorMessage(e) }));
     }
@@ -88,7 +88,7 @@
   async function start(): Promise<void> {
     try {
       await queuePlayStart(selKey);
-      goto("/");
+      navigateOnPlay();
     } catch (e) {
       notify(
         t("queue.startFailed", { message: asErrorMessage(e) }),
@@ -415,7 +415,7 @@
 <style>
   .queue-panel {
     position: fixed;
-    top: 48px;
+    top: var(--app-nav-height, 48px);
     right: 16px;
     z-index: 40;
     width: 380px;

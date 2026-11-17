@@ -125,6 +125,25 @@ export const ja = {
   "settings.quality.format.label": "フォーマット式",
   "settings.save": "保存",
   "settings.saving": "保存中…",
+  "settings.reset": "変更を元に戻す",
+  "settings.changes.title": "変更内容",
+  "settings.changes.count": "変更内容（{count} 件）",
+  "settings.changes.empty": "変更はありません",
+  "settings.value.on": "オン",
+  "settings.value.off": "オフ",
+  "settings.value.empty": "未設定",
+  "settings.value.masked": "***",
+  "settings.value.maskedChanged": "***（変更あり）",
+  "settings.value.resetDefault": "空欄（既定 {value} に戻す）",
+  "settings.value.resetZero": "空欄（0 = 無効として保存）",
+  "settings.value.qualityEmpty": "カスタム（空欄）",
+  "settings.value.customFormat": "カスタム（{format}）",
+  "settings.value.skippedNote": "空欄のため保存時は変更されません",
+  "settings.unsavedDialog.title": "未保存の設定があります",
+  "settings.unsavedDialog.body": "保存せずに移動すると変更は破棄されます。",
+  "settings.unsavedDialog.cancel": "キャンセル",
+  "settings.unsavedDialog.discard": "破棄して移動",
+  "settings.unsavedDialog.save": "保存して移動",
   "settings.saved": "保存しました",
   "settings.applied": "保存し、再生中の {count} 台へ適用しました",
   "settings.applyPartial":
@@ -445,6 +464,7 @@ export const ja = {
   "settings.player.initialSpeed.desc": "0.25〜4.0（空欄で既定 1.0）",
   "settings.player.initialVolume": "初期音量（%）",
   "settings.player.initialVolume.desc": "0〜130（空欄で既定 100）",
+  "settings.player.navigateOnPlay": "再生開始時に再生画面へ移動する",
   "settings.player.unsaved": "保存中に再生設定が変更されました（要再保存）",
 
   // Phase 8: PiP 小窓の位置（次回の PiP 化から有効）
@@ -544,6 +564,7 @@ export const ja = {
   "settings.ui.language": "UI 言語",
   "settings.ui.language.ja": "日本語",
   "settings.ui.language.en": "English",
+  "settings.ui.confirmUnsaved": "未保存の変更があるタブ移動時に確認する",
   "settings.ui.unsaved": "保存中に表示設定が変更されました（要再保存）",
 
   // Phase 72: キーボードショートカットの有効化（FR-79、仕様決定 DD）

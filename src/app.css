@@ -46,6 +46,9 @@
   --thumb-md: 120px;
   --thumb-lg: 160px;
 
+  /* 共通ヘッダー実測高さ（+layout.svelte が --app-nav-height へ書き戻す） */
+  --app-nav-height: 48px;
+
   font-family:
     Inter,
     "Hiragino Kaku Gothic ProN",
@@ -105,6 +108,10 @@
   --thumb-lg: 120px;
 }
 
+body {
+  margin: 0;
+}
+
 .container {
   margin: 0 auto;
   max-width: 720px;
@@ -114,7 +121,12 @@
 }
 
 .app-nav {
+  position: sticky;
+  top: 0;
+  /* ページ本文や設定サイドバーより前面、QueuePanel(40)・メニュー(45)・トースト(50)より背面 */
+  z-index: 35;
   display: flex;
+  align-items: center;
   gap: 16px;
   padding: 12px 24px;
   border-bottom: 1px solid var(--border);
@@ -282,6 +294,9 @@ section.panel--filled p.desc {
 .format-input {
   width: 100%;
   margin-top: 4px;
+  /* 共通ヘッダー実測高さ（+layout.svelte が --app-nav-height へ書き戻す） */
+  --app-nav-height: 48px;
+
   font-family: monospace;
 }
 
