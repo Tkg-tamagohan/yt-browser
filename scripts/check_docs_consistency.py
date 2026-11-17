@@ -28,7 +28,7 @@ consistency ジョブ）の双方から実行できる。
     14. docs 間リンク `[..](path)` の参照先の存在
     15. design.md §11 リポジトリ構成ツリーの掲載パスの存在（WARN 限定）
     16. decision-records.md の Markdown 表構文
-    17. 実装計画・実装履歴のフェーズ連番整合
+    17. 実装計画・実装履歴・README のフェーズ整合
     18. テキスト健全性（U+FFFD・競合マーカー）と JSON/XML 構文
 チェック 3（§8 DDL と適用後スキーマの照合）は実マイグレーション経路を
 通す必要があるため Rust 側テストとして src-tauri/src/db/tests/ddl.rs にある。
@@ -1549,31 +1549,45 @@ def check_decision_tables() -> Findings:
 
 
 # ---------------------------------------------------------------------------
-# チェック 17: 実装計画・実装履歴のフェーズ連番整合
+# チェック 17: 実装計画・実装履歴・README のフェーズ整合
 # ---------------------------------------------------------------------------
 
+README_MD = ROOT / "README.md"
 IMPL_PLAN_MD = DOCS_DIR / "implementation-plan.md"
 IMPL_HISTORY_MD = DOCS_DIR / "implementation-history.md"
 PHASE_HEADING_RE = re.compile(r"^###\s+Phase\s+(\d+)：", re.M)
+README_TOTAL_PHASE_RE = re.compile(r"全フェーズ（Phase\s+0〜(\d+)）")
+README_HISTORY_PHASE_RE = re.compile(r"Phase\s+0〜(\d+)\s+の完了済み実装履歴")
+PLAN_HISTORY_PHASE_RE = re.compile(r"Phase\s+0〜(\d+)\s+の完了済み記録")
 
 
-def check_implementation_phases() -> Findings:
+def check_implementation_phases(
+    impl_plan_md: Path = IMPL_PLAN_MD,
+    impl_history_md: Path = IMPL_HISTORY_MD,
+    readme_md: Path = README_MD,
+) -> Findings:
     f = Findings([])
-    if not IMPL_HISTORY_MD.is_file():
-        f.error(f"{IMPL_HISTORY_MD.relative_to(ROOT)} が見つからない")
-        return f
-    if not IMPL_PLAN_MD.is_file():
-        f.error(f"{IMPL_PLAN_MD.relative_to(ROOT)} が見つからない")
+    missing_files = [
+        p for p in (impl_history_md, impl_plan_md, readme_md) if not p.is_file()
+    ]
+    if missing_files:
+        for p in missing_files:
+            rel = p.relative_to(ROOT) if p.is_relative_to(ROOT) else p
+            f.error(f"{rel} が見つからない")
         return f
 
-    history_nums = [int(n) for n in PHASE_HEADING_RE.findall(read_text(IMPL_HISTORY_MD))]
-    plan_nums = [int(n) for n in PHASE_HEADING_RE.findall(read_text(IMPL_PLAN_MD))]
+    history_text = read_text(impl_history_md)
+    plan_text = read_text(impl_plan_md)
+    readme_text = read_text(readme_md)
+
+    history_nums = [int(n) for n in PHASE_HEADING_RE.findall(history_text)]
+    plan_nums = [int(n) for n in PHASE_HEADING_RE.findall(plan_text)]
 
     if not history_nums:
         f.error("implementation-history.md に `### Phase N：` 見出しが無い")
-        return f
     if not plan_nums:
         f.error("implementation-plan.md に `### Phase N：` 見出しが無い")
+    if not history_nums or not plan_nums:
         return f
 
     counts: dict[int, list[str]] = {}
@@ -1585,22 +1599,67 @@ def check_implementation_phases() -> Findings:
         if len(locs) > 1:
             f.error(f"Phase {n} の見出しが重複している（{', '.join(locs)}）")
 
+    if history_nums != sorted(history_nums):
+        f.error("implementation-history.md の Phase 見出し順が昇順になっていない")
+    if plan_nums != sorted(plan_nums):
+        f.error("implementation-plan.md の Phase 見出し順が昇順になっていない")
+
     all_nums = sorted(counts)
     expected = list(range(0, all_nums[-1] + 1))
     missing = sorted(set(expected) - set(all_nums))
     if missing:
         f.error(f"Phase 見出しに連番の抜けがある: {missing}")
 
-    if history_nums[-1] >= plan_nums[0]:
+    last_all = all_nums[-1]
+    last_hist = max(history_nums)
+    first_plan = min(plan_nums)
+    if last_hist >= first_plan:
         f.error(
-            f"implementation-history.md の末尾 Phase {history_nums[-1]} と "
-            f"implementation-plan.md の先頭 Phase {plan_nums[0]} の境界が逆転している"
+            f"implementation-history.md の末尾 Phase {last_hist} と "
+            f"implementation-plan.md の先頭 Phase {first_plan} の境界が逆転している"
         )
+
+    range_checks = [
+        (
+            README_TOTAL_PHASE_RE,
+            readme_text,
+            last_all,
+            "README.md に `全フェーズ（Phase 0〜N）` の表記が無い",
+            "README.md の全フェーズ表記",
+            "実見出しの末尾",
+        ),
+        (
+            README_HISTORY_PHASE_RE,
+            readme_text,
+            last_hist,
+            "README.md に `Phase 0〜N の完了済み実装履歴` の表記が無い",
+            "README.md の実装履歴表記",
+            "implementation-history.md の末尾",
+        ),
+        (
+            PLAN_HISTORY_PHASE_RE,
+            plan_text,
+            last_hist,
+            "implementation-plan.md に `Phase 0〜N の完了済み記録` の表記が無い",
+            "implementation-plan.md の完了済み記録表記",
+            "implementation-history.md の末尾",
+        ),
+    ]
+    for pattern, text, expected_num, missing_msg, label, target_label in range_checks:
+        matches = pattern.findall(text)
+        if not matches:
+            f.error(missing_msg)
+            continue
+        for num_str in matches:
+            if int(num_str) != expected_num:
+                f.error(
+                    f"{label} Phase 0〜{num_str} が {target_label} Phase {expected_num} と不一致"
+                )
 
     if f.worst() == OK:
         f.ok(
-            f"Phase 0〜{all_nums[-1]}（履歴 0〜{history_nums[-1]} / "
-            f"計画 {plan_nums[0]}〜{plan_nums[-1]}）が重複・欠番なく一致"
+            f"Phase 0〜{last_all}（履歴 0〜{last_hist} / "
+            f"計画 {first_plan}〜{max(plan_nums)} / README 表記）が重複・欠番なく一致"
         )
     return f
 
