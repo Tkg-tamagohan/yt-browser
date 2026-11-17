@@ -53,11 +53,11 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 
 ### Phase 86：同期コマンドの非同期化、ローカル IPC 権限強化、テストモジュール分離（Step 3）
 
-- [ ] `commands/` 配下で `State<Db>` を同期で触る Tauri コマンドを `async` 化し、DB ロック保持が重い経路（`list_feed`・`mark_read`・履歴・プレイリスト・キュー保存・フィルタ更新）は `tokio::task::spawn_blocking` へ移す。コマンド名・引数名・戻り値型と `design.md` §3.1 のシグネチャは変えない
-- [ ] ローカル IPC を堅牢化する。Windows 名前付きパイプに `reject_remote_clients(true)` を付け、Unix ソケットを `0600` に制限し（`DB-NM-19`）、終了時にソケット残骸を消す `cleanup_ipc_endpoint` を `RunEvent::Exit` で呼ぶ（`DB-NM-20`）
-- [ ] `mpv/player.rs` と `native_host.rs` のテストモジュールを `#[path]` 付き外部ファイルへ分離し、テスト ID と private 項目へのアクセスを維持する
-- [ ] `feed` / `metaresolve` の `detect_client` に `connect_timeout(5s)` を付け、`security.yml` に `cargo audit` ジョブを追加する
-- [ ] 受け入れ：lint・単体テスト・ビルド・整合チェックがすべて通過することを確認する
+- [x] `commands/` 配下で `State<Db>` を同期で触る Tauri コマンドを `async` 化し、DB ロック保持が重い経路（`list_feed`・`mark_read`・履歴・プレイリスト・キュー保存・フィルタ更新）は `tokio::task::spawn_blocking` へ移す。コマンド名・引数名・戻り値型と `design.md` §3.1 のシグネチャは変えない
+- [x] ローカル IPC を堅牢化する。Windows 名前付きパイプに `reject_remote_clients(true)` を付け、Unix ソケットを `0600` に制限し（`DB-NM-19`）、終了時にソケット残骸を消す `cleanup_ipc_endpoint` を `RunEvent::Exit` で呼ぶ（`DB-NM-20`）
+- [x] `mpv/player.rs` と `native_host.rs` のテストモジュールを `#[path]` 付き外部ファイルへ分離し、テスト ID と private 項目へのアクセスを維持する
+- [x] `feed` / `metaresolve` の `detect_client` に `connect_timeout(5s)` を付け、`security.yml` に `cargo audit` ジョブを追加する
+- [x] 受け入れ：lint・単体テスト・ビルド・整合チェックがすべて通過することを確認する（Windows dev ビルドで非同期化した全コマンドを実 UI から操作確認し、UiError・ハング・ログの ERROR/WARN なしを実機で検証済み）
 
 ## 残課題（既知の制限と観察メモ）
 
