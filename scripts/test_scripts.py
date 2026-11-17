@@ -7,7 +7,7 @@
   SC-03: bump_version の整合検査・タグ照合・ロールバック
   SC-04: make_latest_json の正常生成と異常系
   SC-05: verify_release の配布成果物・拡張 zip 検証
-  SC-06: check_docs_consistency のパーサ・新規静的検査（1, 2, 7, 13, 18）
+  SC-06: check_docs_consistency のパーサ・新規静的検査（1, 2, 7, 13, 17, 18）
   SC-07: cdp_client のターゲット選択とローカルモック WebSocket 通信
   SC-08: e2e_dev の override 設定生成と --dry-run
   SC-09: e2e_smoke のページ定義整合確認
@@ -580,6 +580,106 @@ jobs:
             self.assertIn("broken.json", joined)
             self.assertIn("broken.xml", joined)
             self.assertNotIn("tsconfig.json", joined)
+
+    def test_sc06_implementation_phases_and_readme_sync(self) -> None:
+        # 現行リポジトリの実装計画・実装履歴・README が整合すること
+        self.assertEqual(cdc.check_implementation_phases().worst(), cdc.OK)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            hist = root / "implementation-history.md"
+            plan = root / "implementation-plan.md"
+            readme = root / "README.md"
+
+            valid_hist = "### Phase 0：初期\n### Phase 1：基盤\n"
+            valid_plan = (
+                "Phase 0〜1 の完了済み記録は [implementation-history.md](implementation-history.md) に分離した。\n"
+                "### Phase 2：拡張\n"
+            )
+            valid_readme = (
+                "全フェーズ（Phase 0〜2）が実装済み。\n"
+                "| [docs/implementation-history.md](docs/implementation-history.md) | Phase 0〜1 の完了済み実装履歴 |\n"
+            )
+
+            _write_text(hist, valid_hist)
+            _write_text(plan, valid_plan)
+            _write_text(readme, valid_readme)
+            self.assertEqual(
+                cdc.check_implementation_phases(plan, hist, readme).worst(),
+                cdc.OK,
+            )
+
+            # README.md の全フェーズ末尾番号・実装履歴末尾番号、および implementation-plan.md の記録番号ズレ
+            mismatch_cases = [
+                (
+                    "readme_total_mismatch",
+                    valid_hist,
+                    valid_plan,
+                    valid_readme.replace("Phase 0〜2", "Phase 0〜1"),
+                    ["README.md の全フェーズ表記"],
+                ),
+                (
+                    "readme_history_mismatch",
+                    valid_hist,
+                    valid_plan,
+                    valid_readme.replace("Phase 0〜1 の完了済み実装履歴", "Phase 0〜0 の完了済み実装履歴"),
+                    ["README.md の実装履歴表記"],
+                ),
+                (
+                    "plan_history_mismatch",
+                    valid_hist,
+                    valid_plan.replace("Phase 0〜1 の完了済み記録", "Phase 0〜0 の完了済み記録"),
+                    valid_readme,
+                    ["implementation-plan.md の完了済み記録表記"],
+                ),
+                (
+                    "missing_markers",
+                    valid_hist,
+                    "### Phase 2：拡張\n",
+                    "見出し以外の記述のみ\n",
+                    [
+                        "`全フェーズ（Phase 0〜N）` の表記が無い",
+                        "`Phase 0〜N の完了済み実装履歴` の表記が無い",
+                        "`Phase 0〜N の完了済み記録` の表記が無い",
+                    ],
+                ),
+                (
+                    "missing_and_duplicate_headings",
+                    "### Phase 0：初期\n### Phase 0：重複\n",
+                    "Phase 0〜0 の完了済み記録\n### Phase 2：飛び番\n",
+                    "全フェーズ（Phase 0〜2）\nPhase 0〜0 の完了済み実装履歴\n",
+                    ["Phase 0 の見出しが重複している", "Phase 見出しに連番の抜けがある"],
+                ),
+                (
+                    "boundary_inverted_and_unsorted",
+                    "### Phase 2：逆転\n### Phase 0：初期\n",
+                    "Phase 0〜2 の完了済み記録\n### Phase 1：計画\n",
+                    "全フェーズ（Phase 0〜2）\nPhase 0〜2 の完了済み実装履歴\n",
+                    ["昇順になっていない", "境界が逆転している"],
+                ),
+            ]
+            for name, h_txt, p_txt, r_txt, expected_substrs in mismatch_cases:
+                with self.subTest(case=name):
+                    _write_text(hist, h_txt)
+                    _write_text(plan, p_txt)
+                    _write_text(readme, r_txt)
+                    res = cdc.check_implementation_phases(plan, hist, readme)
+                    self.assertEqual(res.worst(), cdc.ERROR)
+                    msgs = "\n".join(msg for _, msg in res.items)
+                    for expected_substr in expected_substrs:
+                        self.assertIn(expected_substr, msgs)
+
+            # ファイル不在・見出し不在でも ERROR で安全に終了すること
+            _write_text(hist, "見出し無し\n")
+            _write_text(plan, valid_plan)
+            _write_text(readme, valid_readme)
+            no_heading_res = cdc.check_implementation_phases(plan, hist, readme)
+            self.assertEqual(no_heading_res.worst(), cdc.ERROR)
+
+            readme.unlink()
+            missing_res = cdc.check_implementation_phases(plan, hist, readme)
+            self.assertEqual(missing_res.worst(), cdc.ERROR)
+            self.assertIn("が見つからない", "\n".join(msg for _, msg in missing_res.items))
 
 
 def _ws_send_frame(conn: socket.socket, opcode: int, payload: bytes) -> None:
