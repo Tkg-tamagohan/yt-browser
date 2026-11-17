@@ -37,14 +37,14 @@ fn validate_setting_key(key: &str) -> Result<(), UiError> {
 
 /// DB の生存確認。起動直後のヘルスチェック用。
 #[tauri::command]
-pub fn db_status(db: State<'_, Db>) -> Result<DbStatus, UiError> {
+pub async fn db_status(db: State<'_, Db>) -> Result<DbStatus, UiError> {
     Ok(DbStatus {
         schema_version: db.schema_version()?,
     })
 }
 
 #[tauri::command]
-pub fn settings_get(db: State<'_, Db>, key: String) -> Result<Option<String>, UiError> {
+pub async fn settings_get(db: State<'_, Db>, key: String) -> Result<Option<String>, UiError> {
     validate_setting_key(&key)?;
     Ok(db.setting_get(&key)?)
 }
@@ -149,7 +149,7 @@ pub async fn deps_status(
 /// `setup_deps_pending`（FR-75、仕様決定 CZ）。初回起動の依存検出画面を
 /// まだ表示していないか（`setup.deps_shown` が on 系でないか）を返す。
 #[tauri::command]
-pub fn setup_deps_pending(db: State<'_, Db>) -> Result<bool, UiError> {
+pub async fn setup_deps_pending(db: State<'_, Db>) -> Result<bool, UiError> {
     let raw = db.setting_get(crate::deps::SETTING_SETUP_DEPS_SHOWN)?;
     Ok(!crate::deps::setup_deps_shown_enabled(raw))
 }
@@ -201,7 +201,7 @@ pub async fn data_import(path: String, db: State<'_, Db>) -> Result<(), UiError>
 /// `db_size`（FR-66、仕様決定 CQ）。DB 本体と WAL/SHM サイドファイルの
 /// 合計バイト数を返す（設定画面の運用節の表示用）。
 #[tauri::command]
-pub fn db_size(db: State<'_, Db>) -> Result<DbSize, UiError> {
+pub async fn db_size(db: State<'_, Db>) -> Result<DbSize, UiError> {
     Ok(db.db_size()?)
 }
 

@@ -320,6 +320,10 @@ pub fn run() {
             if let Some(poller) = handle.try_state::<std::sync::Arc<chat::ChatPoller>>() {
                 poller.stop_all();
             }
+            // 正常終了ではローカル IPC のソケット残骸を残さない
+            if let Ok(dir) = handle.path().app_data_dir() {
+                native_host::cleanup_ipc_endpoint(&dir);
+            }
         }
     });
 }

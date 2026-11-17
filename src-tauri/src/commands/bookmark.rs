@@ -16,7 +16,7 @@ const MAX_LABEL_LEN: usize = 1024;
 /// 同一動画の同一位置の重複は `None` を返して抑止する
 /// （暫定解釈: UNIQUE (video_id, position_sec)。既存行のラベルは維持）。
 #[tauri::command]
-pub fn bookmark_add(
+pub async fn bookmark_add(
     video_id: String,
     position_sec: f64,
     db: State<'_, Db>,
@@ -31,13 +31,13 @@ pub fn bookmark_add(
 /// `bookmark_list`。表示用タイトルは `videos` 台帳 → `watch_history` の順で
 /// 解決する。並びは保存の新しい順（暫定解釈）。
 #[tauri::command]
-pub fn bookmark_list(db: State<'_, Db>) -> Result<Vec<VideoBookmark>, UiError> {
+pub async fn bookmark_list(db: State<'_, Db>) -> Result<Vec<VideoBookmark>, UiError> {
     Ok(db.bookmark_list()?)
 }
 
 /// `bookmark_remove`。未登録の行 ID でも正常終了とする（冪等）。
 #[tauri::command]
-pub fn bookmark_remove(id: i64, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn bookmark_remove(id: i64, db: State<'_, Db>) -> Result<(), UiError> {
     db.bookmark_remove(id)?;
     Ok(())
 }
@@ -46,7 +46,7 @@ pub fn bookmark_remove(id: i64, db: State<'_, Db>) -> Result<(), UiError> {
 /// （暫定解釈: 空ラベルの行は残さず既定表示に復帰させる）。
 /// 対象が存在しなければ `DbError::NotFound`。
 #[tauri::command]
-pub fn bookmark_set_label(
+pub async fn bookmark_set_label(
     id: i64,
     label: String,
     db: State<'_, Db>,

@@ -9,7 +9,11 @@ use crate::error::UiError;
 
 /// `block_channel`（設計書 §3.1、FR-5）。検索・関連・フィードの全一覧から除外される。
 #[tauri::command]
-pub fn block_channel(channel_id: String, title: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn block_channel(
+    channel_id: String,
+    title: String,
+    db: State<'_, Db>,
+) -> Result<(), UiError> {
     let channel_id = channel_id.trim();
     if channel_id.is_empty() {
         return Err(UiError::invalid_input("channel_id が空です"));
@@ -20,14 +24,16 @@ pub fn block_channel(channel_id: String, title: String, db: State<'_, Db>) -> Re
 
 /// `unblock_channel`（FR-5）。設定画面のブロック一覧から解除する。
 #[tauri::command]
-pub fn unblock_channel(channel_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn unblock_channel(channel_id: String, db: State<'_, Db>) -> Result<(), UiError> {
     db.blocked_remove(channel_id.trim())?;
     Ok(())
 }
 
 /// ブロック中チャンネル一覧（設定画面用）。
 #[tauri::command]
-pub fn blocked_channels(db: State<'_, Db>) -> Result<Vec<crate::model::BlockedChannel>, UiError> {
+pub async fn blocked_channels(
+    db: State<'_, Db>,
+) -> Result<Vec<crate::model::BlockedChannel>, UiError> {
     Ok(db.blocked_list()?)
 }
 
@@ -36,7 +42,7 @@ pub fn blocked_channels(db: State<'_, Db>) -> Result<Vec<crate::model::BlockedCh
 /// kind は `literal` / `regex` / `highlight`。`highlight` はチャット発言の
 /// 強調表示に使う種別で、部分一致と同じ照合を専用集合で行う（仕様決定 CT）。
 #[tauri::command]
-pub fn filter_add(
+pub async fn filter_add(
     target: String,
     kind: String,
     pattern: String,
@@ -68,25 +74,39 @@ pub fn filter_add(
         regex::Regex::new(&pattern)
             .map_err(|e| UiError::invalid_input(format!("正規表現が不正です: {e}")))?;
     }
-    let f = db.filter_add(&target, &kind, &pattern)?;
-    ng.refresh()?;
-    Ok(f)
+    let db = db.inner().clone();
+    let ng = ng.inner().clone();
+    // フィルタ登録と Aho-Corasick / RegexSet の再構築（ng.refresh()）を
+    // ブロッキング側へ逃がす
+    tokio::task::spawn_blocking(move || -> Result<crate::model::Filter, UiError> {
+        let f = db.filter_add(&target, &kind, &pattern)?;
+        ng.refresh()?;
+        Ok(f)
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
 /// `filter_remove`。削除して NG 評価器を作り直す。
 #[tauri::command]
-pub fn filter_remove(
+pub async fn filter_remove(
     id: i64,
     db: State<'_, Db>,
     ng: State<'_, Arc<crate::filter::NgMatcher>>,
 ) -> Result<(), UiError> {
-    db.filter_remove(id)?;
-    ng.refresh()?;
-    Ok(())
+    let db = db.inner().clone();
+    let ng = ng.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), UiError> {
+        db.filter_remove(id)?;
+        ng.refresh()?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
 /// `filter_list`。登録済み NG フィルタの一覧。
 #[tauri::command]
-pub fn filter_list(db: State<'_, Db>) -> Result<Vec<crate::model::Filter>, UiError> {
+pub async fn filter_list(db: State<'_, Db>) -> Result<Vec<crate::model::Filter>, UiError> {
     Ok(db.filter_list()?)
 }

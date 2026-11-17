@@ -12,7 +12,10 @@ use tauri::{AppHandle, Emitter, State};
 
 /// 動画 1 件分の視聴履歴。`video_id` は `play_video` と同じ正規化を経る。
 #[tauri::command]
-pub fn history_get(video_id: String, db: State<'_, Db>) -> Result<Option<WatchHistory>, UiError> {
+pub async fn history_get(
+    video_id: String,
+    db: State<'_, Db>,
+) -> Result<Option<WatchHistory>, UiError> {
     let id = parse_video_id(&video_id)?;
     Ok(db.history_get(&id)?)
 }
@@ -30,21 +33,26 @@ const MAX_VIDEO_FIELD_LEN: usize = 1024;
 /// 絞り込み（FR-61、仕様決定 CL）。戻り値は `items` と `next_cursor` の
 /// ページで、続きが無ければ `next_cursor` は null。
 #[tauri::command]
-pub fn history_list(
+pub async fn history_list(
     cursor: Option<HistoryCursor>,
     query: Option<String>,
     limit: Option<u32>,
     db: State<'_, Db>,
 ) -> Result<HistoryPage, UiError> {
     let limit = limit.unwrap_or(HISTORY_LIST_LIMIT).min(1000);
-    Ok(db.history_list(cursor.as_ref(), query.as_deref(), limit)?)
+    let db = db.inner().clone();
+    Ok(tokio::task::spawn_blocking(move || {
+        db.history_list(cursor.as_ref(), query.as_deref(), limit)
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??)
 }
 
 /// `history_remove`（FR-7、仕様決定 I の手動削除）。
 /// 削除した行のスナップショットを返す（FR-54、仕様決定 CE の
 /// トースト「元に戻す」→ `history_restore` の入力）。対象行が無ければ null。
 #[tauri::command]
-pub fn history_remove(
+pub async fn history_remove(
     video_id: String,
     db: State<'_, Db>,
 ) -> Result<Option<WatchHistory>, UiError> {
@@ -56,7 +64,7 @@ pub fn history_remove(
 /// `history_remove` が返したスナップショットをそのまま受け取り、
 /// 削除前の行（最終視聴日時・再生位置・視聴済みを含む全列）を復元する。
 #[tauri::command]
-pub fn history_restore(entry: WatchHistory, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn history_restore(entry: WatchHistory, db: State<'_, Db>) -> Result<(), UiError> {
     let id = parse_video_id(&entry.video_id)?;
     let mut e = entry;
     e.video_id = id;
@@ -86,7 +94,7 @@ pub(crate) fn validate_video_ref(v: &VideoRef) -> Result<String, UiError> {
 
 /// `favorite_add`（FR-7）。動画メタは `videos` 台帳へ登録される。
 #[tauri::command]
-pub fn favorite_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn favorite_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
     let id = validate_video_ref(&video)?;
     let mut v = video;
     v.video_id = id;
@@ -97,7 +105,7 @@ pub fn favorite_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
 /// 削除した行のスナップショットを返す（FR-54、仕様決定 CE の
 /// トースト「元に戻す」→ `favorite_restore` の入力）。対象行が無ければ null。
 #[tauri::command]
-pub fn favorite_remove(
+pub async fn favorite_remove(
     video_id: String,
     db: State<'_, Db>,
 ) -> Result<Option<FavoriteEntry>, UiError> {
@@ -109,7 +117,7 @@ pub fn favorite_remove(
 /// `favorite_remove` が返したスナップショットをそのまま受け取り、
 /// 登録日時（`added_at`）も含めて削除前の行を復元する。
 #[tauri::command]
-pub fn favorite_restore(entry: FavoriteEntry, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn favorite_restore(entry: FavoriteEntry, db: State<'_, Db>) -> Result<(), UiError> {
     if entry.title.chars().count() > MAX_VIDEO_FIELD_LEN {
         return Err(UiError::invalid_input("タイトルが長すぎます"));
     }
@@ -121,7 +129,7 @@ pub fn favorite_restore(entry: FavoriteEntry, db: State<'_, Db>) -> Result<(), U
 
 /// `favorite_list`（FR-7）。追加が新しい順。
 #[tauri::command]
-pub fn favorite_list(db: State<'_, Db>) -> Result<Vec<FavoriteEntry>, UiError> {
+pub async fn favorite_list(db: State<'_, Db>) -> Result<Vec<FavoriteEntry>, UiError> {
     Ok(db.favorite_list()?)
 }
 
@@ -133,7 +141,7 @@ const LIBRARY_SEARCH_LIMIT: u32 = 200;
 /// 動画メタは `videos` 台帳へ登録され、同一動画の再登録は追加日時を
 /// 変えない（冪等）。
 #[tauri::command]
-pub fn watch_later_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn watch_later_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
     let id = validate_video_ref(&video)?;
     let mut v = video;
     v.video_id = id;
@@ -142,14 +150,14 @@ pub fn watch_later_add(video: VideoRef, db: State<'_, Db>) -> Result<(), UiError
 
 /// `watch_later_remove`（FR-59）。未登録でも正常終了（冪等）。
 #[tauri::command]
-pub fn watch_later_remove(video_id: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn watch_later_remove(video_id: String, db: State<'_, Db>) -> Result<(), UiError> {
     let id = parse_video_id(&video_id)?;
     Ok(db.watch_later_remove(&id)?)
 }
 
 /// `watch_later_list`（FR-59）。追加が新しい順。
 #[tauri::command]
-pub fn watch_later_list(db: State<'_, Db>) -> Result<Vec<WatchLaterEntry>, UiError> {
+pub async fn watch_later_list(db: State<'_, Db>) -> Result<Vec<WatchLaterEntry>, UiError> {
     Ok(db.watch_later_list()?)
 }
 
@@ -174,7 +182,7 @@ pub async fn library_search(
 
 /// `playlist_list`（FR-7）。件数集計付き。
 #[tauri::command]
-pub fn playlist_list(db: State<'_, Db>) -> Result<Vec<Playlist>, UiError> {
+pub async fn playlist_list(db: State<'_, Db>) -> Result<Vec<Playlist>, UiError> {
     Ok(db.playlist_list()?)
 }
 
@@ -195,14 +203,18 @@ pub(crate) fn validate_playlist_name(name: &str) -> Result<String, UiError> {
 
 /// `playlist_create`（FR-7）。
 #[tauri::command]
-pub fn playlist_create(name: String, db: State<'_, Db>) -> Result<Playlist, UiError> {
+pub async fn playlist_create(name: String, db: State<'_, Db>) -> Result<Playlist, UiError> {
     let name = validate_playlist_name(&name)?;
     Ok(db.playlist_create(&name)?)
 }
 
 /// `playlist_rename`（FR-7）。
 #[tauri::command]
-pub fn playlist_rename(playlist_id: i64, name: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn playlist_rename(
+    playlist_id: i64,
+    name: String,
+    db: State<'_, Db>,
+) -> Result<(), UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
@@ -212,7 +224,7 @@ pub fn playlist_rename(playlist_id: i64, name: String, db: State<'_, Db>) -> Res
 
 /// `playlist_delete`（FR-7）。中身は CASCADE で消える。
 #[tauri::command]
-pub fn playlist_delete(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn playlist_delete(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
@@ -224,7 +236,7 @@ pub fn playlist_delete(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiErro
 /// ページングは末尾行の position を `after_position` に渡して続きを取る
 /// （FR-25、仕様決定 AR）。
 #[tauri::command]
-pub fn playlist_items(
+pub async fn playlist_items(
     playlist_id: i64,
     after_position: Option<i64>,
     limit: Option<u32>,
@@ -233,12 +245,21 @@ pub fn playlist_items(
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
-    Ok(db.playlist_items_page(playlist_id, after_position, limit)?)
+    let db = db.inner().clone();
+    Ok(tokio::task::spawn_blocking(move || {
+        db.playlist_items_page(playlist_id, after_position, limit)
+    })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??)
 }
 
 /// `playlist_add`（FR-7）。末尾への追加、重複は位置を維持して無視。
 #[tauri::command]
-pub fn playlist_add(playlist_id: i64, video: VideoRef, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn playlist_add(
+    playlist_id: i64,
+    video: VideoRef,
+    db: State<'_, Db>,
+) -> Result<(), UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
@@ -253,7 +274,7 @@ pub fn playlist_add(playlist_id: i64, video: VideoRef, db: State<'_, Db>) -> Res
 /// （FR-54、仕様決定 CE のトースト「元に戻す」→ `playlist_item_restore`
 /// の入力）。対象行が無ければ null。
 #[tauri::command]
-pub fn playlist_remove(
+pub async fn playlist_remove(
     playlist_id: i64,
     video_id: String,
     db: State<'_, Db>,
@@ -270,7 +291,7 @@ pub fn playlist_remove(
 /// 元の `position` が空いていれば元位置へ、埋まっていれば末尾へ復元する。
 /// 戻り値は実際に登録された行（実効 `position` 付き）。
 #[tauri::command]
-pub fn playlist_item_restore(
+pub async fn playlist_item_restore(
     playlist_id: i64,
     entry: PlaylistEntry,
     db: State<'_, Db>,
@@ -371,7 +392,7 @@ pub async fn playlist_import(
 /// 項目順の一括書き換え。渡した `video_ids` は現在の項目と同一集合である
 /// 必要があり、一致しない場合は変更せずエラーとする（並行編集の誤適用防止）。
 #[tauri::command]
-pub fn playlist_reorder(
+pub async fn playlist_reorder(
     playlist_id: i64,
     video_ids: Vec<String>,
     db: State<'_, Db>,
@@ -383,13 +404,17 @@ pub fn playlist_reorder(
         .iter()
         .map(|v| parse_video_id(v))
         .collect::<Result<_, _>>()?;
+    let db = db.inner().clone();
     // 同一集合の検証は db.playlist_reorder が書き込みトランザクション内で行う
-    db.playlist_reorder(playlist_id, &ids).map_err(|e| match e {
-        crate::db::DbError::MismatchedItems => {
-            UiError::invalid_input("並べ替え後の項目が現在のプレイリスト内容と一致しません")
-        }
-        e => e.into(),
-    })
+    tokio::task::spawn_blocking(move || db.playlist_reorder(playlist_id, &ids))
+        .await
+        .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
+        .map_err(|e| match e {
+            crate::db::DbError::MismatchedItems => {
+                UiError::invalid_input("並べ替え後の項目が現在のプレイリスト内容と一致しません")
+            }
+            e => e.into(),
+        })
 }
 
 /// `playlist_reorder_lists`（FR-35、仕様決定 BF）。
@@ -397,12 +422,18 @@ pub fn playlist_reorder(
 /// プレイリスト全件と同一集合である必要があり、一致しない場合は変更せず
 /// エラーとする（`playlist_reorder` と同じ並行編集の誤適用防止）。
 #[tauri::command]
-pub fn playlist_reorder_lists(playlist_ids: Vec<i64>, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn playlist_reorder_lists(
+    playlist_ids: Vec<i64>,
+    db: State<'_, Db>,
+) -> Result<(), UiError> {
     if playlist_ids.iter().any(|&id| id <= 0) {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
+    let db = db.inner().clone();
     // 同一集合の検証は db.playlist_reorder_lists が書き込みトランザクション内で行う
-    db.playlist_reorder_lists(&playlist_ids)
+    tokio::task::spawn_blocking(move || db.playlist_reorder_lists(&playlist_ids))
+        .await
+        .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
         .map_err(|e| match e {
             crate::db::DbError::MismatchedItems => {
                 UiError::invalid_input("並べ替え後のプレイリストが現在の一覧と一致しません")
@@ -415,33 +446,44 @@ pub fn playlist_reorder_lists(playlist_ids: Vec<i64>, db: State<'_, Db>) -> Resu
 /// 投稿日時の昇順で一括ソートする（one-shot）。`published_at` の無い項目は
 /// 末尾に寄せ、同キー内は現在順を保つ。
 #[tauri::command]
-pub fn playlist_sort(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn playlist_sort(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
-    let mut items = db.playlist_items(playlist_id)?;
-    items.sort_by(|a, b| match (&a.published_at, &b.published_at) {
-        (Some(x), Some(y)) => x.cmp(y),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
-    });
-    let ids: Vec<String> = items.into_iter().map(|i| i.video_id).collect();
-    db.playlist_reorder(playlist_id, &ids).map_err(|e| match e {
-        crate::db::DbError::MismatchedItems => {
-            UiError::invalid_input("プレイリストが他の操作で変更されました。再度お試しください")
-        }
-        e => e.into(),
+    let db = db.inner().clone();
+    // 全件読み出し→ソート→一括書き換えのためブロッキング側へ逃がす
+    tokio::task::spawn_blocking(move || -> Result<(), UiError> {
+        let mut items = db.playlist_items(playlist_id)?;
+        items.sort_by(|a, b| match (&a.published_at, &b.published_at) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        let ids: Vec<String> = items.into_iter().map(|i| i.video_id).collect();
+        db.playlist_reorder(playlist_id, &ids).map_err(|e| match e {
+            crate::db::DbError::MismatchedItems => {
+                UiError::invalid_input("プレイリストが他の操作で変更されました。再度お試しください")
+            }
+            e => e.into(),
+        })
     })
+    .await
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
 /// `playlist_reverse`（FR-11、仕様決定 Z）。
 /// 項目順を一括で反転する（one-shot）。YouTube が新しい順で返す
 /// プレイリストを投稿日時の昇順へ変える用途に使う。
 #[tauri::command]
-pub fn playlist_reverse(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn playlist_reverse(playlist_id: i64, db: State<'_, Db>) -> Result<(), UiError> {
     if playlist_id <= 0 {
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
-    Ok(db.playlist_reverse(playlist_id)?)
+    let db = db.inner().clone();
+    Ok(
+        tokio::task::spawn_blocking(move || db.playlist_reverse(playlist_id))
+            .await
+            .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??,
+    )
 }

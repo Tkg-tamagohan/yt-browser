@@ -326,6 +326,8 @@ impl FeedPoller {
             client: reqwest::Client::new(),
             detect_client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                // 検出は応答の有無だけ見るため接続確立を短く打ち切る
+                .connect_timeout(Duration::from_secs(5))
                 .build()
                 .expect("リダイレクト非追跡クライアントの生成に失敗"),
             sched: Mutex::new(HashMap::new()),
