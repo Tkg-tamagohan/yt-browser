@@ -1,10 +1,12 @@
 // 設定画面（src/routes/settings/+page.svelte）の保存検証・競合検出テスト。
 // SV-01: validateOptionalRange / validateAutoReadDays / validateWheelDelta の境界・不正入力
 // SV-02: saveToggleSetting / saveStringSetting / saveSettingBatch のスナップショット競合検出
-// SV-03: saveOptionalRangeSetting の空欄保存・範囲外スキップ・待機中変更検出
+// SV-03: saveOptionalRangeSetting の空欄・数値入力・範囲外スキップ・待機中変更検出
+// SV-04: saveSettingBatch の途中失敗時に成功済みキーだけ onCommitted が発火する
 import { describe, expect, test } from "vitest";
 import { TONE_MAPPING_MPV } from "./i18n";
 import {
+  normalizeOptionalRaw,
   saveOptionalRangeSetting,
   saveSettingBatch,
   saveStringSetting,
@@ -205,5 +207,82 @@ describe("SV-03: saveOptionalRangeSetting の空欄・範囲外・競合動作",
       ["chat.popup_font_size", "18"],
     ]);
     expect(unsaved).toEqual(["font"]);
+
+    // number / undefined（<input type="number"> バインド値）をそのまま保存・検証できる
+    let speed: number | undefined = 1.5;
+    const speedCommitted: Array<number | undefined> = [];
+    expect(normalizeOptionalRaw(speed)).toBe("1.5");
+    expect(normalizeOptionalRaw(undefined)).toBe("");
+    expect(
+      await saveOptionalRangeSetting(
+        async (k, v) => {
+          writes.push([k, v]);
+        },
+        "player.initial_speed",
+        speed,
+        () => speed,
+        0.25,
+        4.0,
+        (raw) => failed.push(raw),
+        () => unsaved.push("speed"),
+        () => speedCommitted.push(speed),
+      ),
+    ).toBe(true);
+    expect(writes.at(-1)).toEqual(["player.initial_speed", "1.5"]);
+    expect(speedCommitted).toEqual([1.5]);
+
+    speed = undefined;
+    expect(
+      await saveOptionalRangeSetting(
+        async (k, v) => {
+          writes.push([k, v]);
+        },
+        "player.initial_speed",
+        speed,
+        () => speed,
+        0.25,
+        4.0,
+        (raw) => failed.push(raw),
+        () => unsaved.push("speed"),
+        () => speedCommitted.push(speed),
+      ),
+    ).toBe(true);
+    expect(writes.at(-1)).toEqual(["player.initial_speed", ""]);
+    expect(speedCommitted).toEqual([1.5, undefined]);
+  });
+});
+
+describe("SV-04: saveSettingBatch の途中失敗時の部分コミット確定", () => {
+  test("後続キーが例外終了しても先行して保存成功したキーのみ onCommitted が呼ばれる", async () => {
+    const committed: string[] = [];
+    let theme = "light";
+    let lang = "en";
+
+    await expect(
+      saveSettingBatch(
+        async (key) => {
+          if (key === "ui.language") {
+            throw new Error("db busy");
+          }
+        },
+        [
+          {
+            key: "ui.theme",
+            snapshot: theme,
+            getCurrent: () => theme,
+            onCommitted: () => committed.push("ui.theme"),
+          },
+          {
+            key: "ui.language",
+            snapshot: lang,
+            getCurrent: () => lang,
+            onCommitted: () => committed.push("ui.language"),
+          },
+        ],
+        () => {},
+      ),
+    ).rejects.toThrow("db busy");
+
+    expect(committed).toEqual(["ui.theme"]);
   });
 });

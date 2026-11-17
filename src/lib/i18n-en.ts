@@ -129,6 +129,25 @@ export const en = {
   "settings.quality.format.label": "Format expression",
   "settings.save": "Save",
   "settings.saving": "Saving…",
+  "settings.reset": "Reset changes",
+  "settings.changes.title": "Pending changes",
+  "settings.changes.count": "Pending changes ({count})",
+  "settings.changes.empty": "No pending changes",
+  "settings.value.on": "On",
+  "settings.value.off": "Off",
+  "settings.value.empty": "Unset",
+  "settings.value.masked": "***",
+  "settings.value.maskedChanged": "*** (modified)",
+  "settings.value.resetDefault": "Empty (reset to {value})",
+  "settings.value.resetZero": "Empty (saved as 0 = disabled)",
+  "settings.value.qualityEmpty": "Custom (empty)",
+  "settings.value.customFormat": "Custom ({format})",
+  "settings.value.skippedNote": "Empty value is skipped on save",
+  "settings.unsavedDialog.title": "Unsaved settings",
+  "settings.unsavedDialog.body": "Leaving without saving will discard your changes.",
+  "settings.unsavedDialog.cancel": "Cancel",
+  "settings.unsavedDialog.discard": "Discard and leave",
+  "settings.unsavedDialog.save": "Save and leave",
   "settings.saved": "Saved",
   "settings.applied": "Saved and applied to {count} playing instance(s)",
   "settings.applyPartial":
@@ -452,6 +471,7 @@ export const en = {
   "settings.player.initialSpeed.desc": "0.25-4.0 (empty for default 1.0)",
   "settings.player.initialVolume": "Initial volume (%)",
   "settings.player.initialVolume.desc": "0-130 (empty for default 100)",
+  "settings.player.navigateOnPlay": "Switch to Player view when playback starts",
   "settings.player.unsaved":
     "Playback settings changed while saving (save again)",
 
@@ -557,6 +577,7 @@ export const en = {
   "settings.ui.language": "UI language",
   "settings.ui.language.ja": "日本語",
   "settings.ui.language.en": "English",
+  "settings.ui.confirmUnsaved": "Confirm before leaving unsaved settings",
   "settings.ui.unsaved": "Appearance changed while saving (save again)",
 
   // Phase 72: キーボードショートカットの有効化（FR-79、仕様決定 DD）

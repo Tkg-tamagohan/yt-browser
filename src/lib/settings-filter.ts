@@ -39,7 +39,9 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
       "settings.player.title",
       "settings.player.initialSpeed",
       "settings.player.initialVolume",
+      "settings.player.navigateOnPlay",
     ],
+    extraLabels: ["player.navigate_on_play"],
   },
   {
     id: "pip",
@@ -113,7 +115,9 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
       "settings.ui.theme",
       "settings.ui.density",
       "settings.ui.language",
+      "settings.ui.confirmUnsaved",
     ],
+    extraLabels: ["ui.confirm_unsaved"],
   },
   { id: "blocked", labelKeys: ["blocked.title"] },
   {

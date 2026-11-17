@@ -51,6 +51,16 @@ export function validateWheelDelta(
   return { skip: false, ok: true, value: String(delta) };
 }
 
+/// 数値・文字列フォーム値の比較・検証用に前後の空白を取り除いた文字列へ揃える
+export function normalizeOptionalRaw(
+  raw: string | number | null | undefined,
+): string {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? String(raw) : "";
+  }
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
 /// 真偽値設定を on/off で保存し、保存待ち中の画面変更を検知する
 export async function saveToggleSetting(
   setSetting: SetterFn,
@@ -58,8 +68,10 @@ export async function saveToggleSetting(
   snapshot: boolean,
   getCurrent: () => boolean,
   onUnsaved: () => void,
+  onCommitted?: () => void,
 ): Promise<boolean> {
   await setSetting(key, snapshot ? "on" : "off");
+  onCommitted?.();
   if (getCurrent() !== snapshot) {
     onUnsaved();
     return false;
@@ -74,8 +86,10 @@ export async function saveStringSetting(
   snapshot: string,
   getCurrent: () => string,
   onUnsaved: () => void,
+  onCommitted?: () => void,
 ): Promise<boolean> {
   await setSetting(key, snapshot);
+  onCommitted?.();
   if (getCurrent() !== snapshot) {
     onUnsaved();
     return false;
@@ -87,23 +101,25 @@ export async function saveStringSetting(
 export async function saveOptionalRangeSetting(
   setSetting: SetterFn,
   key: string,
-  snapshotRaw: string,
-  getCurrentRaw: () => string,
+  snapshotRaw: string | number | null | undefined,
+  getCurrentRaw: () => string | number | null | undefined,
   min: number,
   max: number,
   onFailed: (raw: string) => void,
   onUnsaved: () => void,
+  onCommitted?: () => void,
 ): Promise<boolean> {
-  const snapshot = snapshotRaw.trim();
+  const snapshot = normalizeOptionalRaw(snapshotRaw);
   const res = validateOptionalRange(snapshot, min, max);
   let ok = true;
   if (res.ok) {
     await setSetting(key, res.value);
+    onCommitted?.();
   } else {
     ok = false;
     onFailed(res.raw);
   }
-  if (getCurrentRaw().trim() !== snapshot) {
+  if (normalizeOptionalRaw(getCurrentRaw()) !== snapshot) {
     ok = false;
     onUnsaved();
   }
@@ -115,9 +131,10 @@ export type BatchEntry = {
   snapshot: string;
   writeValue?: string;
   getCurrent: () => string;
+  onCommitted?: () => void;
 };
 
-/// 先に全スナップショットを確定した複数キーを順次保存し、まとめて競合を検知する
+/// 先に全スナップショットを確定した複数キーを順次保存し、コミット済みキーから確定する
 export async function saveSettingBatch(
   setSetting: SetterFn,
   entries: BatchEntry[],
@@ -125,6 +142,7 @@ export async function saveSettingBatch(
 ): Promise<boolean> {
   for (const e of entries) {
     await setSetting(e.key, e.writeValue ?? e.snapshot);
+    e.onCommitted?.();
   }
   if (entries.some((e) => e.getCurrent() !== e.snapshot)) {
     onUnsaved();

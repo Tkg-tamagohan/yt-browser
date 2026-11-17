@@ -1,12 +1,16 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
   import { fmtDateTime } from "$lib/format";
-  import { feedItemCompare, feedItemSortsAfter } from "$lib/feed-page-logic";
+  import {
+    feedItemCompare,
+    feedItemSortsAfter,
+    markFeedItemRead,
+  } from "$lib/feed-page-logic";
   import { notify } from "$lib/notices.svelte";
+  import { navigateOnPlay } from "$lib/ui-prefs";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
   import {
@@ -350,9 +354,7 @@
   async function markRead(videoId: string): Promise<void> {
     try {
       await invoke("mark_read", { videoIds: [videoId] });
-      const it = items.find((i) => i.videoId === videoId);
-      if (it) it.isRead = true;
-      if (unreadOnly) items = items.filter((i) => i.videoId !== videoId);
+      items = markFeedItemRead(items, videoId, unreadOnly);
     } catch (e) {
       notify(t("feed.failed", { message: asErrorMessage(e) }));
     }
@@ -379,10 +381,11 @@
     // 既読化の失敗は再生を止めない（通知に留めて遷移は行う）
     try {
       await invoke("mark_read", { videoIds: [it.videoId] });
+      items = markFeedItemRead(items, it.videoId, unreadOnly);
     } catch (e) {
       notify(t("feed.readMarkFailed", { message: asErrorMessage(e) }));
     }
-    goto("/");
+    navigateOnPlay();
   }
 
   async function refreshNow(): Promise<void> {

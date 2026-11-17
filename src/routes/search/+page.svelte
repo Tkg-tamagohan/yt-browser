@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { fmtDuration, fmtViews } from "$lib/format";
   import { notify } from "$lib/notices.svelte";
+  import { navigateOnPlay } from "$lib/ui-prefs";
   import VideoActions from "$lib/VideoActions.svelte";
   import VideoRow from "$lib/VideoRow.svelte";
   import {
@@ -81,7 +81,7 @@
   async function playItem(r: SearchResult): Promise<void> {
     try {
       await invoke("play_video", { videoId: r.videoId, resume: true });
-      goto("/");
+      navigateOnPlay();
     } catch (e) {
       notify(t("player.error", { message: asErrorMessage(e) }));
     }

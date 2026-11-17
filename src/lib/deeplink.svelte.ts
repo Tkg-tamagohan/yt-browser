@@ -15,6 +15,7 @@ import { listen } from "@tauri-apps/api/event";
 import { goto } from "$app/navigation";
 import { t } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
+import { navigateOnPlay } from "$lib/ui-prefs";
 import {
   asErrorMessage,
   type Playlist,
@@ -227,7 +228,7 @@ async function dispatch(target: OpenTarget): Promise<void> {
         resume: false,
         startSec: target.startSec,
       });
-      goto("/");
+      navigateOnPlay();
     } catch (e) {
       notify(t("deeplink.playFailed", { message: asErrorMessage(e) }));
     }

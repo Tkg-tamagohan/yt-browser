@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { feedItemCompare, feedItemSortsAfter } from "./feed-page-logic";
+import {
+  feedItemCompare,
+  feedItemSortsAfter,
+  markFeedItemRead,
+} from "./feed-page-logic";
 
 // FP-01: feedItemCompare の並び順（published_at 降順・NULL 末尾・video_id 昇順）
 // FP-02: feedItemSortsAfter のカーソル境界判定
+// FP-03: markFeedItemRead の一覧更新（未読のみ抽出時は除去、全表示時は isRead 更新）
 const item = (publishedAt: string | null, videoId: string) => ({
   publishedAt,
   videoId,
@@ -54,5 +59,26 @@ describe("FP-02: feedItemSortsAfter", () => {
     expect(feedItemSortsAfter(item("2024-01-01T00:00:00Z", "z"), null, "a")).toBe(
       false,
     );
+  });
+});
+
+describe("FP-03: markFeedItemRead", () => {
+  const sample = [
+    { videoId: "v1", isRead: false },
+    { videoId: "v2", isRead: false },
+  ];
+
+  it("unreadOnly=true では該当項目を一覧から除去する", () => {
+    expect(markFeedItemRead(sample, "v1", true)).toEqual([
+      { videoId: "v2", isRead: false },
+    ]);
+  });
+
+  it("unreadOnly=false では該当項目のみ isRead=true へ更新する", () => {
+    const next = markFeedItemRead(sample, "v1", false);
+    expect(next).toEqual([
+      { videoId: "v1", isRead: true },
+      { videoId: "v2", isRead: false },
+    ]);
   });
 });

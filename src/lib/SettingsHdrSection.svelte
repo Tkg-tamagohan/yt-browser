@@ -14,7 +14,7 @@
     toneMapping: string;
     computePeak: string;
     mpvExtraArgs: string;
-    networkTimeout: string;
+    networkTimeout: number | undefined;
     hwdec: string;
   } = $props();
 </script>

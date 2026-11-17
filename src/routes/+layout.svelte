@@ -36,6 +36,19 @@
   // isChatPopup のガードは掛けない
   $effect(() => initUiPrefs());
 
+  // 追従ヘッダーの実測高さを CSS 変数へ反映し、QueuePanel や設定画面の
+  // 追従右ペインがフォント変更時にもヘッダー裏へ潜り込まないようにする（FR-89）
+  let navHeight = $state(48);
+  $effect(() => {
+    if (isChatPopup) return;
+    if (navHeight > 0) {
+      document.documentElement.style.setProperty(
+        "--app-nav-height",
+        `${navHeight}px`,
+      );
+    }
+  });
+
   // deep link（yt-browser://open?url=...）の受信を開始する
   // （FR-17、仕様決定 AC）。リスナー登録と保留分ドレインを行い、
   // アンマウント時に解除する
@@ -79,7 +92,7 @@
 {#if isChatPopup}
   {@render children()}
 {:else}
-<nav class="app-nav">
+<nav class="app-nav" bind:clientHeight={navHeight}>
   <a href="/" class:active={page.url.pathname === "/"}>{t("nav.player")}</a>
   <a href="/feed" class:active={page.url.pathname === "/feed"}>{t("nav.feed")}</a>
   <a href="/search" class:active={page.url.pathname === "/search"}

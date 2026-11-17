@@ -294,12 +294,14 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
 | `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
 | `player.close_on_eof` | `on` / `off` | 再生完了時の自動クローズ（§4.15、FR-43、仕様決定 BS）。`on` のとき継続再生を伴わない `reason=eof` の終端でインスタンスを畳む。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（残す）。終端時点の値で都度判定する |
+| `player.navigate_on_play` | `on` / `off` | 再生開始時に再生タブ `/` へ自動遷移するか（FR-92、仕様決定 DU）。受理集合は `pip.default` と同一で、未設定・その他の値は `on`（自動遷移する）。フロント側 `ui-prefs.ts` の `navigateOnPlay()` で参照し、`settings://changed` で即時に反映される |
 | `live_wait.action` | `play` / `notify` | ライブ待機の開始検出時の動作（§4.16、FR-44、仕様決定 BT）。`play` は新規インスタンスで自動再生、`notify` はトースト通知のみ。未設定・その他の値は `play` |
 | `setup.deps_shown` | `on` / `off` | 初回起動の依存検出画面の既出フラグ（§5、FR-75、仕様決定 CZ）。on 系のみ表示済み＝次回以降は出さない。未設定・その他の値は未表示（初回起動で表示する）。受理集合は `feed.show_shorts` と同一 |
 | `ui.theme` | `dark` / `light` / `system` | 配色テーマ（FR-76、仕様決定 DA）。色は `app.css` の CSS 変数で持ち、`<html>` の `data-theme` 属性で切り替える。`system` は OS の `prefers-color-scheme` に従う。未設定・その他の値は `dark`。解釈の正は Rust 側 `src-tauri/src/ui.rs` |
 | `ui.density` | `comfortable` / `compact` | 一覧の表示密度（FR-77、仕様決定 DB）。`compact` は動画行（VideoRow）の行高・サムネイルを CSS 変数で縮小する（暫定解釈: 対象は VideoRow のみ）。`<html>` の `data-density` 属性で切り替える。未設定・その他の値は `comfortable` |
 | `ui.shortcuts` | `on` / `off` | アプリ側キーボードショートカットの有効化（§4.20、FR-79、仕様決定 DD）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（暫定解釈の既定）。値の解釈と既定キーマップの適用はフロント側が持つ |
 | `ui.language` | `ja` / `en` | UI 言語（FR-81、仕様決定 DF）。i18n の現行ロケールを切り替え、`en` で UI が英語リソース表示になる（未翻訳キーは ja へフォールバックする機構を持つが、en リソースは全キーを網羅）。`<html>` の `lang` 属性と日時・再生数表示のロケールも連動する。`settings://changed` で即時に反映される。未設定・その他の値は `ja`。解釈の正は Rust 側 `src-tauri/src/ui.rs` |
+| `ui.confirm_unsaved` | `on` / `off` | 設定画面に未保存の変更がある状態で別タブや別ルートへ離脱するとき確認ダイアログを出すか（FR-91、仕様決定 DT）。受理集合は `pip.default` と同一で、未設定・その他の値は `on`（確認する）。フロント側 `settings/+page.svelte` の `beforeNavigate` で保存済みスナップショットの値を参照する |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -1549,8 +1551,8 @@ FR-80（仕様決定 DE）では、残る発生源として挙げていたパネ
 
 拡大後の対象と方式は次のとおり。
 
-- プレイヤーカード内のチャット・概要欄・関連動画の 3 パネル、キューパネルの 3 面タブ、行アクションのプレイリスト追加メニュー、更新確認ダイアログ、ライブラリ画面の 6 タブは常時マウントし、開閉・切替はラッパまたは要素の `class:hidden` で行う
-- 一覧の「読み込み中・空・一覧」の出し分けブロック、およびフィルタ行・「さらに読み込む」ボタン・再開ヒント・DB / yt-dlp 状態表示のように、UI 状態やデータ有無で出入りする要素も同じく `class:hidden` で出し分ける
+- プレイヤーカード内のチャット・概要欄・関連動画の 3 パネル、キューパネルの 3 面タブ、行アクションのプレイリスト追加メニュー、更新確認ダイアログ、設定未保存確認ダイアログ、ライブラリ画面の 6 タブは常時マウントし、開閉・切替はラッパまたは要素の `class:hidden` で行う
+- 一覧の「読み込み中・空・一覧」の出し分けブロック、およびフィルタ行・「さらに読み込む」ボタン・再開ヒント・設定右サイドバーの変更差分リストと通知メッセージ・DB / yt-dlp 状態表示のように、UI 状態やデータ有無で出入りする要素も同じく `class:hidden` で出し分ける
 - ブックマークのラベル編集やプレイリスト名のリネームのような編集モード、購読状態・既読・音声デバイス列挙の成否で入れ替わる要素も同様とする
 - 出し分けに使う `hidden` クラスは `src/app.css` のグローバル `.hidden { display: none !important; }` で定義する。切替対象の scoped style（display:flex/grid など）より詳細度で負けないよう `!important` を付ける
 
@@ -1617,7 +1619,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   scripts/            # 開発・CI・リリース補助（docs 整合チェック・変更ファイル判定・バージョン更新・latest.json 生成とリリース成果物検証・単体テスト）と CDP 検証基盤（FR-84。cdp_client/e2e_dev/e2e_smoke と README.md の手順書）
   package.json

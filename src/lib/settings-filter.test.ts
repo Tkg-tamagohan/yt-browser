@@ -55,6 +55,13 @@ describe("SF-02 filterSectionIds の絞り込み結果", () => {
     expect(deps.has("deps")).toBe(true);
     expect(deps.has("diag")).toBe(true);
     expect(deps.has("ops")).toBe(false);
+    // 新規追加設定キー（confirm_unsaved / navigate_on_play）での絞り込み
+    const confirmUnsaved = filterSectionIds("confirm_unsaved", defs);
+    expect(confirmUnsaved.has("ui")).toBe(true);
+    expect(confirmUnsaved.has("player")).toBe(false);
+    const navOnPlay = filterSectionIds("navigate_on_play", defs);
+    expect(navOnPlay.has("player")).toBe(true);
+    expect(navOnPlay.has("ui")).toBe(false);
   });
 
   test("節定義の id は重複しない", () => {

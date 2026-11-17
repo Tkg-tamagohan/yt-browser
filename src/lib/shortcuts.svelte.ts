@@ -62,6 +62,15 @@ function clickRowAction(i: number, act: string): void {
 
 function onKeydown(e: KeyboardEvent): void {
   if (!enabled) return;
+  // モーダル確認・更新・初期設定ダイアログ表示中は裏の一覧・パネル操作を効かせない
+  if (
+    typeof document !== "undefined" &&
+    document.querySelector(
+      ".unsaved-overlay:not(.hidden), .update-overlay:not(.hidden), .setup-overlay:not(.hidden)",
+    ) !== null
+  ) {
+    return;
+  }
   // コンテキストメニュー表示中は一覧操作を効かせない
   // （Escape によるクローズは VideoContextMenu 側で処理する）
   if (videoContextMenu.current !== null) return;
@@ -98,6 +107,22 @@ function onKeydown(e: KeyboardEvent): void {
       e.preventDefault();
       return;
     }
+  }
+}
+
+/// DB から `ui.shortcuts` を再読込して反映する（データインポート後の同期用）
+export async function refreshShortcuts(): Promise<void> {
+  try {
+    const raw = await invoke<string | null>("settings_get", {
+      key: "ui.shortcuts",
+    });
+    enabled = shortcutsEnabled(raw);
+    if (!enabled) {
+      clearSelected();
+      cursor = -1;
+    }
+  } catch {
+    // 読み取り失敗時は現在値を維持する
   }
 }
 

@@ -1,8 +1,10 @@
-// 表示設定（ui.* キー）の解釈（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF）。
+// 表示設定（ui.* キー・player.navigate_on_play）の解釈
+// （FR-76・FR-77・FR-81・FR-91・FR-92、仕様決定 DA・DB・DF・DT・DU）。
 // Tauri API へ触れない純粋関数だけを置き、vitest から直接検証できるようにする。
-// 解釈の正は Rust 側（src-tauri/src/ui.rs の `ui_theme` / `ui_theme_resolved` /
-// `ui_density` / `ui_language`）にあり、ここにあるのは UI 側の同一解釈
+// 解釈の正は Rust 側（src-tauri/src/ui.rs）にあり、ここにあるのは UI 側の同一解釈
 // （chat-popup-logic.ts と chat/popup.rs の関係と同じ型）。
+
+import { offDisabledEnabled } from "./feed-settings";
 
 /// `ui.theme` が取り得るテーマ名。`dark` / `light` / `system`。
 export type UiTheme = "dark" | "light" | "system";
@@ -51,4 +53,51 @@ export function uiDensity(raw: string | null): UiDensity {
 /// Rust 側 `ui_language`（src-tauri/src/ui.rs）と同一解釈。
 export function uiLanguage(raw: string | null): UiLanguage {
   return raw?.trim().toLowerCase() === "en" ? "en" : "ja";
+}
+
+/// `ui.confirm_unsaved` の保存値を解釈する（FR-91、仕様決定 DT）。
+/// `off` / `false` / `0` / `no`（大小文字・前後空白を許容）のみ false で、
+/// 未設定・その他の値は既定の true（確認あり）。
+/// Rust 側 `ui_confirm_unsaved_enabled`（src-tauri/src/ui.rs）と同一解釈。
+export function uiConfirmUnsaved(raw: string | null): boolean {
+  return offDisabledEnabled(raw);
+}
+
+/// `player.navigate_on_play` の保存値を解釈する（FR-92、仕様決定 DU）。
+/// `off` / `false` / `0` / `no`（大小文字・前後空白を許容）のみ false で、
+/// 未設定・その他の値は既定の true（再生画面へ遷移）。
+/// Rust 側 `player_navigate_on_play_enabled`（src-tauri/src/ui.rs）と同一解釈。
+export function playerNavigateOnPlay(raw: string | null): boolean {
+  return offDisabledEnabled(raw);
+}
+
+export type UnsavedLeaveDecision = "allow" | "cancelUnload" | "promptModal";
+
+/// 設定画面からの離脱時（`beforeNavigate`）の挙動を判定する
+/// （FR-91、仕様決定 DT）。
+/// - `allowOnce` が有効かつ通常のアプリ内遷移時は確認を飛ばして許可する
+/// - 確認設定が無効または未変更時は許可する
+/// - 再読み込み・外部 URL 遷移など `willUnload` / 遷移先なしの場合は
+///   非同期モーダルを待てないためブラウザ離脱抑止（`cancelUnload`）に倒す
+export function decideUnsavedLeave(params: {
+  allowOnce: boolean;
+  loading: boolean;
+  confirmUnsaved: boolean;
+  hasChanges: boolean;
+  willUnload: boolean;
+  toPathname: string | null;
+}): UnsavedLeaveDecision {
+  if (params.allowOnce && !params.willUnload && params.toPathname !== null) {
+    return "allow";
+  }
+  if (params.loading || !params.confirmUnsaved || !params.hasChanges) {
+    return "allow";
+  }
+  if (!params.willUnload && params.toPathname === "/settings") {
+    return "allow";
+  }
+  if (params.willUnload || params.toPathname === null) {
+    return "cancelUnload";
+  }
+  return "promptModal";
 }

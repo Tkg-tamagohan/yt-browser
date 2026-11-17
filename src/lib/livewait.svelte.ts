@@ -11,6 +11,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { t } from "$lib/i18n";
 import { notify } from "$lib/notices.svelte";
 import { asErrorMessage, type VideoRef } from "$lib/players.svelte";
+import { navigateOnPlay } from "$lib/ui-prefs";
 import {
   isWaiting as isWaitingInList,
   liveWaitCompare,
@@ -57,7 +58,11 @@ export async function liveWaitAdd(video: VideoRef): Promise<void> {
               void invoke("play_video", {
                 videoId: video.videoId,
                 resume: false,
-              });
+              })
+                .then(() => navigateOnPlay())
+                .catch((e) =>
+                  notify(t("player.error", { message: asErrorMessage(e) })),
+                );
             },
           }
         : undefined;
