@@ -70,3 +70,34 @@ export function uiConfirmUnsaved(raw: string | null): boolean {
 export function playerNavigateOnPlay(raw: string | null): boolean {
   return offDisabledEnabled(raw);
 }
+
+export type UnsavedLeaveDecision = "allow" | "cancelUnload" | "promptModal";
+
+/// 設定画面からの離脱時（`beforeNavigate`）の挙動を判定する
+/// （FR-91、仕様決定 DT）。
+/// - `allowOnce` が有効かつ通常のアプリ内遷移時は確認を飛ばして許可する
+/// - 確認設定が無効または未変更時は許可する
+/// - 再読み込み・外部 URL 遷移など `willUnload` / 遷移先なしの場合は
+///   非同期モーダルを待てないためブラウザ離脱抑止（`cancelUnload`）に倒す
+export function decideUnsavedLeave(params: {
+  allowOnce: boolean;
+  loading: boolean;
+  confirmUnsaved: boolean;
+  hasChanges: boolean;
+  willUnload: boolean;
+  toPathname: string | null;
+}): UnsavedLeaveDecision {
+  if (params.allowOnce && !params.willUnload && params.toPathname !== null) {
+    return "allow";
+  }
+  if (params.loading || !params.confirmUnsaved || !params.hasChanges) {
+    return "allow";
+  }
+  if (!params.willUnload && params.toPathname === "/settings") {
+    return "allow";
+  }
+  if (params.willUnload || params.toPathname === null) {
+    return "cancelUnload";
+  }
+  return "promptModal";
+}

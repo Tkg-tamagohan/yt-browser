@@ -12,8 +12,8 @@
     navigateOnPlay = $bindable(),
   }: {
     loading: boolean;
-    initialSpeed: string;
-    initialVolume: string;
+    initialSpeed: number | undefined;
+    initialVolume: number | undefined;
     navigateOnPlay: boolean;
   } = $props();
 </script>

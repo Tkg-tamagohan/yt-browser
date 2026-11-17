@@ -29,3 +29,18 @@ export function feedItemSortsAfter(
 ): boolean {
   return feedItemCompare(item, { publishedAt, videoId }) > 0;
 }
+
+/// 指定動画を一覧上で既読化し、未読のみ表示中なら一覧から取り除く
+/// （FR-20・FR-92、仕様決定 DU）。
+export function markFeedItemRead<T extends { videoId: string; isRead: boolean }>(
+  items: readonly T[],
+  videoId: string,
+  unreadOnly: boolean,
+): T[] {
+  if (unreadOnly) {
+    return items.filter((i) => i.videoId !== videoId);
+  }
+  return items.map((i) =>
+    i.videoId === videoId && !i.isRead ? { ...i, isRead: true } : i,
+  );
+}

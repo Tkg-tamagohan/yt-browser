@@ -197,6 +197,52 @@ describe("SD-04 空欄リセットと保存スキップの境界条件", () => {
     expect(f?.afterText).toBe("空欄（0 = 無効として保存）");
     expect(f?.note).toBeUndefined();
   });
+
+  test("数値型入力（initialSpeed / initialVolume / mpvNetworkTimeout）で差分算出が停止せず 0 と undefined を区別する", () => {
+    const saved = defaultSettingsFormState();
+    const curr = cloneSettingsFormState(saved);
+    curr.initialSpeed = 1.5;
+    curr.initialVolume = 0;
+    curr.mpvNetworkTimeout = 0;
+    const setItems = diffSettingsFormState(saved, curr, {
+      t: jaT,
+      monitors: [],
+    });
+    expect(setItems.map((i) => i.id)).toEqual([
+      "player.initial_speed",
+      "player.initial_volume",
+      "mpv.network_timeout_ms",
+    ]);
+    expect(setItems.find((i) => i.id === "player.initial_speed")).toMatchObject({
+      beforeText: "未設定",
+      afterText: "1.5",
+    });
+    expect(setItems.find((i) => i.id === "player.initial_volume")).toMatchObject({
+      beforeText: "未設定",
+      afterText: "0",
+    });
+    expect(setItems.find((i) => i.id === "mpv.network_timeout_ms")).toMatchObject({
+      beforeText: "未設定",
+      afterText: "0",
+    });
+
+    // 保存済み数値から空欄（undefined）へ消した場合は既定へ戻る表示になる
+    const cleared = cloneSettingsFormState(curr);
+    cleared.initialSpeed = undefined;
+    cleared.mpvNetworkTimeout = undefined;
+    const resetItems = diffSettingsFormState(curr, cleared, {
+      t: jaT,
+      monitors: [],
+    });
+    expect(resetItems.find((i) => i.id === "player.initial_speed")).toMatchObject({
+      beforeText: "1.5",
+      afterText: "空欄（既定 1.0 に戻す）",
+    });
+    expect(resetItems.find((i) => i.id === "mpv.network_timeout_ms")).toMatchObject({
+      beforeText: "0",
+      afterText: "空欄（既定 30000 に戻す）",
+    });
+  });
 });
 
 describe("SD-05 複製分離とスナップショット更新", () => {
@@ -204,13 +250,13 @@ describe("SD-05 複製分離とスナップショット更新", () => {
     const saved = defaultSettingsFormState();
     const curr = cloneSettingsFormState(saved);
     curr.sponsorActions.sponsor = "notify";
-    curr.initialSpeed = "1.5";
-    curr.initialVolume = "999";
+    curr.initialSpeed = 1.5;
+    curr.initialVolume = 999;
 
     expect(saved.sponsorActions.sponsor).toBe("skip");
     // 正常項目（sponsor と initialSpeed）だけが保存された状態を再現
     saved.sponsorActions.sponsor = "notify";
-    saved.initialSpeed = "1.5";
+    saved.initialSpeed = 1.5;
 
     const remaining = diffSettingsFormState(saved, curr, {
       t: jaT,

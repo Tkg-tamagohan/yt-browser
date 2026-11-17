@@ -5,8 +5,10 @@
 // UI-04: uiLanguage の受理集合（en のみ、既定は ja）
 // UI-05: uiConfirmUnsaved の受理集合（off 系のみ false、既定は true）
 // UI-06: playerNavigateOnPlay の受理集合（off 系のみ false、既定は true）
+// UI-07: decideUnsavedLeave の判定（通常離脱・同一ルート・再読み込み/外部離脱・確認無効）
 import { describe, expect, test } from "vitest";
 import {
+  decideUnsavedLeave,
   playerNavigateOnPlay,
   resolveTheme,
   uiConfirmUnsaved,
@@ -107,5 +109,40 @@ describe("UI-06 playerNavigateOnPlay の受理集合", () => {
       expect(playerNavigateOnPlay(v), `${v} は true になるべき`).toBe(true);
     }
     expect(playerNavigateOnPlay(null)).toBe(true);
+  });
+});
+
+describe("UI-07 decideUnsavedLeave の判定", () => {
+  const base = {
+    allowOnce: false,
+    loading: false,
+    confirmUnsaved: true,
+    hasChanges: true,
+    willUnload: false,
+    toPathname: "/feed" as string | null,
+  };
+
+  test("再読み込みや外部離脱（willUnload / toPathname=null）は confirmUnsaved 有効かつ未保存時に cancelUnload を返す", () => {
+    expect(
+      decideUnsavedLeave({ ...base, willUnload: true, toPathname: null }),
+    ).toBe("cancelUnload");
+    expect(
+      decideUnsavedLeave({ ...base, willUnload: true, toPathname: "/settings" }),
+    ).toBe("cancelUnload");
+    expect(
+      decideUnsavedLeave({ ...base, willUnload: false, toPathname: null }),
+    ).toBe("cancelUnload");
+  });
+
+  test("設定画面外への通常遷移は未保存かつ確認有効時に promptModal を返す", () => {
+    expect(decideUnsavedLeave(base)).toBe("promptModal");
+  });
+
+  test("確認無効・未変更・読込中・設定画面内遷移・許可フラグありでは allow を返す", () => {
+    expect(decideUnsavedLeave({ ...base, confirmUnsaved: false, willUnload: true, toPathname: null })).toBe("allow");
+    expect(decideUnsavedLeave({ ...base, hasChanges: false, willUnload: true, toPathname: null })).toBe("allow");
+    expect(decideUnsavedLeave({ ...base, loading: true })).toBe("allow");
+    expect(decideUnsavedLeave({ ...base, toPathname: "/settings" })).toBe("allow");
+    expect(decideUnsavedLeave({ ...base, allowOnce: true })).toBe("allow");
   });
 });

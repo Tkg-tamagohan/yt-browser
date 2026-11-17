@@ -19,13 +19,16 @@
   import { popupShowAuthorEnabled } from "$lib/chat-popup-logic";
   import { closeOnEofEnabled } from "$lib/eof-logic";
   import { shortcutsEnabled as parseShortcutsEnabled } from "$lib/shortcuts-logic";
+  import { refreshShortcuts } from "$lib/shortcuts.svelte";
   import {
+    decideUnsavedLeave,
     playerNavigateOnPlay as parseNavigateOnPlay,
     uiConfirmUnsaved as parseConfirmUnsaved,
     uiDensity as parseUiDensity,
     uiLanguage as parseUiLanguage,
     uiTheme as parseUiTheme,
   } from "$lib/ui-logic";
+  import { refreshUiPrefs } from "$lib/ui-prefs";
   import {
     asErrorMessage,
     formatOverrides,
@@ -41,6 +44,7 @@
     TONE_MAPPINGS,
   } from "$lib/settings-consts";
   import {
+    normalizeOptionalRaw,
     saveOptionalRangeSetting,
     saveSettingBatch,
     saveStringSetting,
@@ -512,10 +516,15 @@
       }
 
       // 8. player.*（FR-39/BO、FR-92/DU）
-      if (form.initialSpeed.trim() !== savedSnapshot.initialSpeed.trim()) {
-        const snap = form.initialSpeed.trim();
+      if (
+        normalizeOptionalRaw(form.initialSpeed) !==
+        normalizeOptionalRaw(savedSnapshot.initialSpeed)
+      ) {
+        const snap = form.initialSpeed;
+        const committed =
+          snap !== undefined && Number.isFinite(snap) ? snap : undefined;
         if (
-          await saveOptionalRangeSetting(
+          !(await saveOptionalRangeSetting(
             setSetting,
             "player.initial_speed",
             snap,
@@ -524,17 +533,23 @@
             4.0,
             (raw) => failKey(`player.initial_speed: ${raw}`),
             () => notify(t("settings.player.unsaved")),
-          )
+            () => {
+              savedSnapshot.initialSpeed = committed;
+            },
+          ))
         ) {
-          savedSnapshot.initialSpeed = snap;
-        } else {
           invalid = true;
         }
       }
-      if (form.initialVolume.trim() !== savedSnapshot.initialVolume.trim()) {
-        const snap = form.initialVolume.trim();
+      if (
+        normalizeOptionalRaw(form.initialVolume) !==
+        normalizeOptionalRaw(savedSnapshot.initialVolume)
+      ) {
+        const snap = form.initialVolume;
+        const committed =
+          snap !== undefined && Number.isFinite(snap) ? snap : undefined;
         if (
-          await saveOptionalRangeSetting(
+          !(await saveOptionalRangeSetting(
             setSetting,
             "player.initial_volume",
             snap,
@@ -543,10 +558,11 @@
             130,
             (raw) => failKey(`player.initial_volume: ${raw}`),
             () => notify(t("settings.player.unsaved")),
-          )
+            () => {
+              savedSnapshot.initialVolume = committed;
+            },
+          ))
         ) {
-          savedSnapshot.initialVolume = snap;
-        } else {
           invalid = true;
         }
       }
@@ -612,6 +628,9 @@
           key: "ui.theme",
           snapshot: snapTheme,
           getCurrent: () => form.uiTheme,
+          onCommitted: () => {
+            savedSnapshot.uiTheme = snapTheme;
+          },
         });
       }
       if (snapDensity !== savedSnapshot.uiDensity) {
@@ -619,6 +638,9 @@
           key: "ui.density",
           snapshot: snapDensity,
           getCurrent: () => form.uiDensity,
+          onCommitted: () => {
+            savedSnapshot.uiDensity = snapDensity;
+          },
         });
       }
       if (snapLanguage !== savedSnapshot.uiLanguage) {
@@ -626,36 +648,36 @@
           key: "ui.language",
           snapshot: snapLanguage,
           getCurrent: () => form.uiLanguage,
+          onCommitted: () => {
+            savedSnapshot.uiLanguage = snapLanguage;
+          },
         });
       }
       if (uiEntries.length > 0) {
         if (
-          await saveSettingBatch(
+          !(await saveSettingBatch(
             setSetting,
             uiEntries,
             () => notify(t("settings.ui.unsaved")),
-          )
+          ))
         ) {
-          savedSnapshot.uiTheme = snapTheme;
-          savedSnapshot.uiDensity = snapDensity;
-          savedSnapshot.uiLanguage = snapLanguage;
-        } else {
           invalid = true;
         }
       }
       if (form.confirmUnsaved !== savedSnapshot.confirmUnsaved) {
         const snap = form.confirmUnsaved;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "ui.confirm_unsaved",
             snap,
             () => form.confirmUnsaved,
             () => notify(t("settings.ui.unsaved")),
-          )
+            () => {
+              savedSnapshot.confirmUnsaved = snap;
+            },
+          ))
         ) {
-          savedSnapshot.confirmUnsaved = snap;
-        } else {
           invalid = true;
         }
       }
@@ -670,6 +692,9 @@
           snapshot: snapTone,
           writeValue: TONE_MAPPING_MPV[snapTone] ?? snapTone,
           getCurrent: () => form.toneMapping,
+          onCommitted: () => {
+            savedSnapshot.toneMapping = snapTone;
+          },
         });
       }
       if (snapPeak !== savedSnapshot.computePeak) {
@@ -677,19 +702,19 @@
           key: "hdr.compute_peak",
           snapshot: snapPeak,
           getCurrent: () => form.computePeak,
+          onCommitted: () => {
+            savedSnapshot.computePeak = snapPeak;
+          },
         });
       }
       if (hdrEntries.length > 0) {
         if (
-          await saveSettingBatch(
+          !(await saveSettingBatch(
             setSetting,
             hdrEntries,
             () => notify(t("settings.hdr.unsaved")),
-          )
+          ))
         ) {
-          savedSnapshot.toneMapping = snapTone;
-          savedSnapshot.computePeak = snapPeak;
-        } else {
           invalid = true;
         }
       }
@@ -712,21 +737,33 @@
         }
       }
       if (
-        form.mpvNetworkTimeout.trim() !== savedSnapshot.mpvNetworkTimeout.trim()
+        normalizeOptionalRaw(form.mpvNetworkTimeout) !==
+        normalizeOptionalRaw(savedSnapshot.mpvNetworkTimeout)
       ) {
-        const snap = form.mpvNetworkTimeout.trim();
+        const snapNum = form.mpvNetworkTimeout;
+        const snapText = normalizeOptionalRaw(snapNum);
         if (
-          await saveStringSetting(
-            setSetting,
-            "mpv.network_timeout_ms",
-            snap,
-            () => form.mpvNetworkTimeout.trim(),
-            () => notify(t("settings.hdr.unsaved")),
-          )
+          snapText !== "" &&
+          (snapNum === undefined || !Number.isInteger(snapNum) || snapNum < 0)
         ) {
-          savedSnapshot.mpvNetworkTimeout = snap;
+          failKey(`mpv.network_timeout_ms: ${snapText || String(snapNum)}`);
         } else {
-          invalid = true;
+          const committedVal =
+            snapText === "" ? undefined : (snapNum as number);
+          if (
+            !(await saveStringSetting(
+              setSetting,
+              "mpv.network_timeout_ms",
+              snapText,
+              () => normalizeOptionalRaw(form.mpvNetworkTimeout),
+              () => notify(t("settings.hdr.unsaved")),
+              () => {
+                savedSnapshot.mpvNetworkTimeout = committedVal;
+              },
+            ))
+          ) {
+            invalid = true;
+          }
         }
       }
       if (form.mpvHwdec !== savedSnapshot.mpvHwdec) {
@@ -915,6 +952,14 @@
     const raw = (key: (typeof SETTING_KEYS)[number]): string | null =>
       values.get(key) ?? null;
 
+    const parseOptNum = (s: string | null): number | undefined => {
+      if (s === null) return undefined;
+      const trimmed = s.trim();
+      if (trimmed === "") return undefined;
+      const n = Number(trimmed);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
     const next = defaultSettingsFormState();
 
     const stored = raw("quality.format");
@@ -963,14 +1008,8 @@
     if (chatOpacityRaw !== null) {
       next.chatOpacity = chatOpacityRaw.trim();
     }
-    const initialSpeedRaw = raw("player.initial_speed");
-    if (initialSpeedRaw !== null) {
-      next.initialSpeed = initialSpeedRaw.trim();
-    }
-    const initialVolumeRaw = raw("player.initial_volume");
-    if (initialVolumeRaw !== null) {
-      next.initialVolume = initialVolumeRaw.trim();
-    }
+    next.initialSpeed = parseOptNum(raw("player.initial_speed"));
+    next.initialVolume = parseOptNum(raw("player.initial_volume"));
     next.navigateOnPlay = parseNavigateOnPlay(raw("player.navigate_on_play"));
     const screenRaw = raw("window.screen");
     if (screenRaw !== null) {
@@ -1006,10 +1045,7 @@
     if (extraRaw !== null) {
       next.mpvExtraArgs = extraRaw;
     }
-    const ntRaw = raw("mpv.network_timeout_ms");
-    if (ntRaw !== null) {
-      next.mpvNetworkTimeout = ntRaw.trim();
-    }
+    next.mpvNetworkTimeout = parseOptNum(raw("mpv.network_timeout_ms"));
     const hwRaw = raw("mpv.hwdec");
     if (
       hwRaw !== null &&
@@ -1068,17 +1104,32 @@
     await loadSettings();
   });
 
-  // 未保存の変更がある状態で別タブへ移動しようとしたときの警告
-  // （FR-91、仕様決定 DT）。有効判定は保存済みの設定値を正とする
+  async function handleImported(): Promise<void> {
+    await Promise.all([loadSettings(), refreshUiPrefs(), refreshShortcuts()]);
+  }
+
+  // 未保存の変更がある状態で別タブやアプリ外へ移動しようとしたときの警告
+  // （FR-91、仕様決定 DT）。有効判定は保存済みの設定値を正とし、
+  // 再読み込み・外部離脱時は willUnload / to === null の前に抑止判定を行う
   beforeNavigate((navigation) => {
-    if (allowNavigationOnce) {
-      allowNavigationOnce = false;
+    const decision = decideUnsavedLeave({
+      allowOnce: allowNavigationOnce,
+      loading,
+      confirmUnsaved: savedSnapshot.confirmUnsaved,
+      hasChanges,
+      willUnload: navigation.willUnload,
+      toPathname: navigation.to?.url.pathname ?? null,
+    });
+    if (decision === "allow") {
+      if (allowNavigationOnce && !navigation.willUnload && navigation.to !== null) {
+        allowNavigationOnce = false;
+      }
       return;
     }
-    if (navigation.to === null) return;
-    if (navigation.to.url.pathname === "/settings") return;
-    if (loading || !savedSnapshot.confirmUnsaved || !hasChanges) return;
     navigation.cancel();
+    if (decision === "cancelUnload" || navigation.to === null) {
+      return;
+    }
     pendingNavigation = navigation.to.url;
     void tick().then(() => {
       cancelDialogBtn?.focus();
@@ -1268,7 +1319,7 @@
       </div>
 
       <div class:hidden={!visibleSectionIds.has("ops")}>
-        <SettingsOpsSection {notify} onImported={loadSettings} />
+        <SettingsOpsSection {notify} onImported={handleImported} />
       </div>
 
       <div class:hidden={!visibleSectionIds.has("notices")}>
@@ -1299,7 +1350,7 @@
         <button
           class="save-btn primary"
           onclick={() => void save(false)}
-          disabled={loading || saving || !hasChanges}
+          disabled={loading || saving || (!hasChanges && pendingApply === null)}
         >
           {saving ? t("settings.saving") : t("settings.save")}
         </button>

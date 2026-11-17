@@ -110,6 +110,22 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 
+/// DB から `ui.shortcuts` を再読込して反映する（データインポート後の同期用）
+export async function refreshShortcuts(): Promise<void> {
+  try {
+    const raw = await invoke<string | null>("settings_get", {
+      key: "ui.shortcuts",
+    });
+    enabled = shortcutsEnabled(raw);
+    if (!enabled) {
+      clearSelected();
+      cursor = -1;
+    }
+  } catch {
+    // 読み取り失敗時は現在値を維持する
+  }
+}
+
 /// ショートカットの有効化購読とキーハンドラを張る。
 /// 戻り値は解除用（アンマウントやチャットポップアップ窓への
 /// 切り替えでレイアウト側が呼ぶ）

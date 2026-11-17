@@ -32,8 +32,8 @@ export type SettingsFormState = {
   chatShowAuthor: boolean;
   chatFontSize: string;
   chatOpacity: string;
-  initialSpeed: string;
-  initialVolume: string;
+  initialSpeed: number | undefined;
+  initialVolume: number | undefined;
   windowScreen: string;
   closeOnEof: boolean;
   uiTheme: string;
@@ -44,7 +44,7 @@ export type SettingsFormState = {
   toneMapping: string;
   computePeak: string;
   mpvExtraArgs: string;
-  mpvNetworkTimeout: string;
+  mpvNetworkTimeout: number | undefined;
   mpvHwdec: string;
   ytdlpPath: string;
   poToken: string;
@@ -93,8 +93,8 @@ export function defaultSettingsFormState(): SettingsFormState {
     chatShowAuthor: false,
     chatFontSize: "",
     chatOpacity: "",
-    initialSpeed: "",
-    initialVolume: "",
+    initialSpeed: undefined,
+    initialVolume: undefined,
     windowScreen: "",
     closeOnEof: false,
     uiTheme: "dark",
@@ -105,7 +105,7 @@ export function defaultSettingsFormState(): SettingsFormState {
     toneMapping: "auto",
     computePeak: "auto",
     mpvExtraArgs: "",
-    mpvNetworkTimeout: "",
+    mpvNetworkTimeout: undefined,
     mpvHwdec: "auto-safe",
     ytdlpPath: "",
     poToken: "",
@@ -257,16 +257,23 @@ export function diffSettingsFormState(
     });
   };
 
+  const coerceTrimmed = (v: unknown): string => {
+    if (typeof v === "number") {
+      return Number.isFinite(v) ? String(v) : "";
+    }
+    return typeof v === "string" ? v.trim() : "";
+  };
+
   const pushTrimmedString = (
     id: string,
     sectionKey: MessageKey,
     fieldKey: MessageKey,
-    prev: string,
-    curr: string,
+    prev: unknown,
+    curr: unknown,
     format: (trimmed: string, isAfter: boolean) => string,
   ) => {
-    const p = prev.trim();
-    const c = curr.trim();
+    const p = coerceTrimmed(prev);
+    const c = coerceTrimmed(curr);
     if (p === c) return;
     items.push({
       id,
