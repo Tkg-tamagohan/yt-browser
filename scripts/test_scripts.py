@@ -1267,6 +1267,40 @@ jobs:
                     "    crate::beta::b();\n"
                     "}\n",
                 ),
+                (
+                    "as_cast_generic_lt_followed_by_if_gt",
+                    "pub fn f(x: *const Option<u8>, y: *const Option<u8>, z: i32) {\n"
+                    "    #[cfg(test)]\n"
+                    "    if x as *const Option<u8> < y {}\n"
+                    "    if z > 0 { crate::beta::b(); }\n"
+                    "}\n",
+                ),
+                (
+                    "as_cast_array_lt_followed_by_if_gt",
+                    "pub fn f(x: *const [u8; 1], y: *const [u8; 1], z: i32) {\n"
+                    "    #[cfg(test)]\n"
+                    "    if x as *const [u8; 1] < y {}\n"
+                    "    if z > 0 { crate::beta::b(); }\n"
+                    "}\n",
+                ),
+                (
+                    "as_cast_fn_ptr_ret_generic_lt_followed_by_if_gt",
+                    "pub fn f(x: fn(u8) -> Option<u8>, y: fn(u8) -> Option<u8>, z: i32) {\n"
+                    "    #[cfg(test)]\n"
+                    "    if x as fn(u8) -> Option<u8> < y {}\n"
+                    "    if z > 0 { crate::beta::b(); }\n"
+                    "}\n",
+                ),
+                (
+                    "unicode_ident_in_cfg_test_if",
+                    "pub fn f() {\n"
+                    "    #[cfg(test)]\n"
+                    "    let 準備 = true;\n"
+                    "    #[cfg(test)]\n"
+                    "    if 準備 { core::hint::black_box(()); };\n"
+                    "    crate::beta::b();\n"
+                    "}\n",
+                ),
             ):
                 with self.subTest(cfg_test_header_expr=case_name):
                     _write_text(src / "alpha.rs", alpha_code)
@@ -1277,7 +1311,7 @@ jobs:
                         "\n".join(m for _, m in res_hdr.items),
                     )
 
-            # 末尾ドット浮動小数点・as キャスト先ジェネリクスを含むテスト本体内部の依存自体は除外される
+            # 末尾ドット浮動小数点・as キャスト先ジェネリクス・Unicode 識別子を含むテスト本体内部の依存自体は除外される
             _write_text(
                 src / "alpha.rs",
                 "pub fn f(x: f64, p: *const u8) {\n"
@@ -1285,6 +1319,12 @@ jobs:
                 "    if x > 1. { crate::beta::b(); }\n"
                 "    #[cfg(test)]\n"
                 "    match p as *const Option<u8> { _ => crate::beta::b() }\n"
+                "    #[cfg(test)]\n"
+                "    let 準備 = true;\n"
+                "    #[cfg(test)]\n"
+                "    if 準備 { crate::beta::b(); };\n"
+                "    let 本番 = true;\n"
+                "    if 本番 { core::hint::black_box(()); }\n"
                 "}\n",
             )
             self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
@@ -1636,7 +1676,75 @@ jobs:
                     )
                     self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
 
-        # lib.rs 直下の extern "<abi>" fn・extern "C" { pub fn ...; } への逆参照を検出する
+            # 6. 排他的な cfg（unix 限定公開マクロ vs windows 限定 use crate::feed; 等）ではモジュールのみ参照として誤報しない
+            _write_text(src / "feed.rs", "pub fn poll() {}\n")
+            for case_name, lib_attr, chat_code in (
+                (
+                    "unix_macro_vs_windows_use",
+                    "#[cfg_attr(unix, macro_export)]",
+                    "#[cfg(windows)]\nuse crate::feed;\n#[cfg(windows)]\npub fn run() { feed::poll(); }\n",
+                ),
+                (
+                    "unix_macro_vs_windows_fn_block",
+                    "#[cfg_attr(unix, macro_export)]",
+                    "#[cfg(windows)]\npub fn run() { use crate::feed; feed::poll(); }\n",
+                ),
+                (
+                    "unix_macro_vs_inner_cfg_windows",
+                    "#[cfg_attr(unix, macro_export)]",
+                    "#![cfg(windows)]\nuse crate::feed;\npub fn run() { feed::poll(); }\n",
+                ),
+                (
+                    "linux_macro_vs_windows_target_os",
+                    '#[cfg_attr(target_os = "linux", macro_export)]',
+                    '#[cfg(target_os = "windows")]\nuse crate::feed;\n',
+                ),
+                (
+                    "cfg_unix_and_macro_export_vs_windows",
+                    "#[cfg(unix)]\n#[macro_export]",
+                    "#[cfg(windows)]\nuse crate::feed;\n",
+                ),
+                (
+                    "feature_macro_vs_not_feature",
+                    '#[cfg_attr(all(not(test), feature = "x"), macro_export)]',
+                    '#[cfg(not(feature = "x"))]\nuse crate::feed;\n',
+                ),
+            ):
+                with self.subTest(cfg_exclusive_macro_export=case_name):
+                    _write_text(
+                        src / "lib.rs",
+                        f"mod feed;\nmod chat;\n{lib_attr}\nmacro_rules! feed {{ () => {{}}; }}\n",
+                    )
+                    _write_text(src / "chat.rs", chat_code)
+                    self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 両立する cfg（any(unix, windows) + #[cfg(windows)] や #[cfg(unix)] 呼び出し）は引き続き逆参照を検出する
+            for case_name, lib_attr, chat_code in (
+                (
+                    "unix_macro_vs_unix_call",
+                    "#[cfg_attr(unix, macro_export)]",
+                    "#[cfg(unix)]\npub fn run() { crate::feed!(); }\n",
+                ),
+                (
+                    "any_unix_windows_macro_vs_windows_use",
+                    "#[cfg_attr(any(unix, windows), macro_export)]",
+                    "#[cfg(windows)]\nuse crate::feed;\n",
+                ),
+            ):
+                with self.subTest(cfg_compatible_macro_export=case_name):
+                    _write_text(
+                        src / "lib.rs",
+                        f"mod feed;\nmod chat;\n{lib_attr}\nmacro_rules! feed {{ () => {{}}; }}\n",
+                    )
+                    _write_text(src / "chat.rs", chat_code)
+                    res_compat = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res_compat.worst(), cdc.ERROR)
+                    self.assertIn(
+                        "ドメイン層 `chat` が上位層 `lib` を逆参照",
+                        "\n".join(m for _, m in res_compat.items),
+                    )
+
+        # lib.rs 直下の extern "<abi>" fn・extern "C" { pub [safe] fn/static ...; } への逆参照を検出する
         with tempfile.TemporaryDirectory() as td:
             src = Path(td)
             _write_text(
@@ -1644,12 +1752,20 @@ jobs:
                 "mod feed;\n"
                 "pub extern \"C\" fn helper() {}\n"
                 "pub extern r#\"C\"# fn raw_helper() {}\n"
-                "extern \"C\" { pub fn foreign_helper(); }\n",
+                "unsafe extern \"C\" {\n"
+                "    pub fn foreign_helper();\n"
+                "    pub safe fn safe_foreign_helper();\n"
+                "    pub safe static SAFE_FOREIGN_VAL: i32;\n"
+                "}\n"
+                "pub const safe: i32 = 1;\n",
             )
             for case_name, feed_code in (
                 ("extern_c_fn", "pub fn run() { crate::helper(); }\n"),
                 ("extern_raw_abi_fn", "pub fn run() { crate::raw_helper(); }\n"),
                 ("extern_c_block_fn", "pub fn run() { unsafe { crate::foreign_helper(); } }\n"),
+                ("extern_c_block_safe_fn", "pub fn run() { crate::safe_foreign_helper(); }\n"),
+                ("extern_c_block_safe_static", "pub fn run() -> i32 { crate::SAFE_FOREIGN_VAL }\n"),
+                ("const_named_safe", "pub fn run() -> i32 { crate::safe }\n"),
             ):
                 with self.subTest(lib_extern_root=case_name):
                     _write_text(src / "feed.rs", feed_code)
