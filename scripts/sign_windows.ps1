@@ -12,7 +12,9 @@ CODE_SIGN_CAPTURE_DIR が設定されている場合は NSIS 一時アンイン�
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [string]$TargetFile
+    [string]$TargetFile,
+
+    [string]$SignToolPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -59,32 +61,39 @@ try {
         $env:CODE_SIGN_TIMESTAMP_URL.Trim()
     }
 
-    $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
-    if (-not (Test-Path -LiteralPath $sdkRoot -PathType Container)) {
-        throw "Windows SDK のインストールディレクトリが見つかりません: $sdkRoot"
-    }
+    if (-not [string]::IsNullOrWhiteSpace($SignToolPath)) {
+        if (-not (Test-Path -LiteralPath $SignToolPath -PathType Leaf)) {
+            throw "指定された SignToolPath が見つかりません: $SignToolPath"
+        }
+        $signTool = (Resolve-Path -LiteralPath $SignToolPath).ProviderPath
+    } else {
+        $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
+        if (-not (Test-Path -LiteralPath $sdkRoot -PathType Container)) {
+            throw "Windows SDK のインストールディレクトリが見つかりません: $sdkRoot"
+        }
 
-    $candidates = @(
-        Get-ChildItem -Path $sdkRoot -Filter 'signtool.exe' -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -like '*\x64\signtool.exe' }
-    )
-    if ($candidates.Count -eq 0) {
-        throw "Windows SDK の x64 signtool.exe が見つかりません: $sdkRoot"
-    }
+        $candidates = @(
+            Get-ChildItem -Path $sdkRoot -Filter 'signtool.exe' -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -like '*\x64\signtool.exe' }
+        )
+        if ($candidates.Count -eq 0) {
+            throw "Windows SDK の x64 signtool.exe が見つかりません: $sdkRoot"
+        }
 
-    $signTool = (
-        $candidates |
-            Sort-Object -Descending -Property {
-                $verDir = Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $_.FullName))
-                $parsed = $null
-                if ([version]::TryParse($verDir, [ref]$parsed)) {
-                    $parsed
-                } else {
-                    [version]'0.0.0.0'
-                }
-            } |
-            Select-Object -First 1
-    ).FullName
+        $signTool = (
+            $candidates |
+                Sort-Object -Descending -Property {
+                    $verDir = Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $_.FullName))
+                    $parsed = $null
+                    if ([version]::TryParse($verDir, [ref]$parsed)) {
+                        $parsed
+                    } else {
+                        [version]'0.0.0.0'
+                    }
+                } |
+                Select-Object -First 1
+        ).FullName
+    }
 
     $maxAttempts = 3
     $retryDelaysSec = @(2, 5)

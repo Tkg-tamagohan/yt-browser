@@ -229,19 +229,75 @@ try {
     }
 
     $auditValidCapDir = Join-Path $sandbox 'audit-valid-cap'
-    $capturedSigned = Join-Path $sandbox 'captured-uninst.exe'
+    $captureValidDir = Join-Path $sandbox 'capture-valid-cap'
     New-Item -ItemType Directory -Path $auditValidCapDir -Force | Out-Null
-    Copy-Item -LiteralPath $signToolPath -Destination $capturedSigned -Force
-    $okUninstId = '22222222222222222222222222222222'
-    [System.IO.File]::WriteAllText((Join-Path $auditValidCapDir "start-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe' } | ConvertTo-Json), $utf8NoBom)
-    [System.IO.File]::WriteAllText((Join-Path $auditValidCapDir "ok-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe'; capturedPath = '' } | ConvertTo-Json), $utf8NoBom)
-    [System.IO.File]::WriteAllText((Join-Path $auditValidCapDir "start-$okUninstId.json"), (@{ id = $okUninstId; target = $capturedSigned; leaf = 'captured-uninst.exe' } | ConvertTo-Json), $utf8NoBom)
-    [System.IO.File]::WriteAllText((Join-Path $auditValidCapDir "ok-$okUninstId.json"), (@{ id = $okUninstId; target = $capturedSigned; leaf = 'captured-uninst.exe'; capturedPath = $capturedSigned } | ConvertTo-Json), $utf8NoBom)
+    New-Item -ItemType Directory -Path $captureValidDir -Force | Out-Null
 
-    $res08b = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $signToolPath, '-AuditDir', $auditValidCapDir)
-    if ($res08b.ExitCode -ne 0) {
-        throw "[WIN-SIGN-08] 正常な監査ログと署名済みアンインストーラキャプチャで検証が失敗しました: $($res08b.Output)"
+    # sign_windows.ps1 の実際の監査・一時アンインストーラ捕捉経路（本体・DLL・一時アンインストーラ・セットアップ）を通す
+    $mockSignTool = Join-Path $sandbox 'mock_signtool.cmd'
+    $mockCmdLines = @(
+        '@echo off',
+        'if /I not "%~1"=="sign" exit /b 91',
+        'if /I not "%~2"=="/s" exit /b 92',
+        'if /I not "%~3"=="My" exit /b 93',
+        'if /I not "%~4"=="/sha1" exit /b 94',
+        'if /I not "%~6"=="/fd" exit /b 95',
+        'if /I not "%~7"=="SHA256" exit /b 96',
+        'if /I not "%~8"=="/tr" exit /b 97',
+        'shift',
+        'shift',
+        'shift',
+        'shift',
+        'shift',
+        'shift',
+        'shift',
+        'shift',
+        'shift',
+        'if /I not "%~1"=="/td" exit /b 98',
+        'if /I not "%~2"=="SHA256" exit /b 99',
+        'if "%~3"=="" exit /b 100',
+        'exit /b 0'
+    )
+    [System.IO.File]::WriteAllText($mockSignTool, (($mockCmdLines -join "`r`n") + "`r`n"), [System.Text.Encoding]::ASCII)
+
+    $simApp = Join-Path $sandbox 'yt-browser.exe'
+    $simDll = Join-Path $sandbox 'nsis_tauri_utils.dll'
+    $simUninst = Join-Path $sandbox 'nsu1234.exe'
+    $simSetup = Join-Path $sandbox 'yt-browser_0.11.11_x64-setup.exe'
+    Copy-Item -LiteralPath $signToolPath -Destination $simApp -Force
+    Copy-Item -LiteralPath $signToolPath -Destination $simDll -Force
+    Copy-Item -LiteralPath $signToolPath -Destination $simUninst -Force
+    Copy-Item -LiteralPath $signToolPath -Destination $simSetup -Force
+
+    $signEnv = @{
+        CODE_SIGN_CERT_THUMBPRINT = ('A' * 40)
+        CODE_SIGN_AUDIT_DIR       = $auditValidCapDir
+        CODE_SIGN_CAPTURE_DIR     = $captureValidDir
     }
+    foreach ($simTarget in @($simApp, $simDll, $simUninst, $simSetup)) {
+        $rSign = Invoke-PsScript -ScriptPath $signScript -ScriptArgs @('-TargetFile', $simTarget, '-SignToolPath', $mockSignTool) -EnvOverrides $signEnv
+        if ($rSign.ExitCode -ne 0) {
+            throw "[WIN-SIGN-08] sign_windows.ps1 の捕捉経路テストに失敗しました ($simTarget, exit=$($rSign.ExitCode)): $($rSign.Output)"
+        }
+    }
+    # NSIS が !uninstfinalize 直後に一時アンインストーラを削除する挙動を再現する
+    Remove-Item -LiteralPath $simUninst -Force
+
+    $capturedFiles = @(Get-ChildItem -LiteralPath $captureValidDir -File -ErrorAction SilentlyContinue)
+    if ($capturedFiles.Count -ne 1 -or $capturedFiles[0].Name -notlike '*-nsu1234.exe') {
+        $names = ($capturedFiles | ForEach-Object { $_.Name }) -join ', '
+        throw "[WIN-SIGN-08] 一時アンインストーラのみが 1 件捕捉されるべきですが実測は ($($capturedFiles.Count) 件: $names) です。"
+    }
+
+    # build_and_sign_windows.ps1 と同様に string[] 配列で複数対象を渡し、捕捉済みアンインストーラまで検証する
+    $verify08Output = (& $verifyScript -TargetPaths @($simApp, $simSetup) -AuditDir $auditValidCapDir *>&1 | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0) {
+        throw "[WIN-SIGN-08] sign_windows.ps1 生成の監査ログ・捕捉アンインストーラ検証が失敗しました: $verify08Output"
+    }
+    if ($verify08Output -notmatch '検証成功:.*nsu1234\.exe') {
+        throw "[WIN-SIGN-08] 捕捉済みアンインストーラ (nsu1234.exe) の検証成功出力が確認できません: $verify08Output"
+    }
+    $okUninstId = '22222222222222222222222222222222'
 
     $auditUnsignedCapDir = Join-Path $sandbox 'audit-unsigned-cap'
     New-Item -ItemType Directory -Path $auditUnsignedCapDir -Force | Out-Null
