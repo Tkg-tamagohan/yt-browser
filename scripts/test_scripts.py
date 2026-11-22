@@ -843,6 +843,279 @@ jobs:
             self.assertEqual(res_sub.worst(), cdc.ERROR)
             self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_sub.items))
 
+    def test_sc06_rust_cfg_field_and_node_stripping(self) -> None:
+        # 1. 構造体宣言と構造体リテラルの #[cfg(test)] フィールド後の本番コード依存を検出
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "chat" / "mod.rs", "use crate::innertube::InnerTube;\npub struct PopupGeometry;\n")
+            _write_text(
+                src / "innertube" / "mod.rs",
+                "pub struct InnerTube {\n"
+                "    client: i32,\n"
+                "    #[cfg(test)]\n"
+                "    ytcfg_url: String,\n"
+                "    #[cfg(test)]\n"
+                "    api_base: String,\n"
+                "}\n"
+                "impl InnerTube {\n"
+                "    pub fn new() -> Self {\n"
+                "        let _ = crate::chat::PopupGeometry;\n"
+                "        Self {\n"
+                "            client: 0,\n"
+                "            #[cfg(test)]\n"
+                "            ytcfg_url: String::new(),\n"
+                "            #[cfg(test)]\n"
+                "            api_base: String::new()\n"
+                "        }\n"
+                "    }\n"
+                "}\n",
+            )
+            res = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res.worst(), cdc.ERROR)
+            self.assertIn("chat -> innertube -> chat", "\n".join(m for _, m in res.items))
+
+        # 2. 構造体リテラルの #[cfg(test)] フィールド直後（末尾カンマ無し含む）の本番依存検出とテスト依存除外
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "beta.rs", "use crate::alpha::S;\npub struct B;\n")
+            _write_text(
+                src / "alpha.rs",
+                "pub struct S {\n"
+                "    #[cfg(test)]\n"
+                "    map: std::collections::HashMap<String, crate::beta::B>,\n"
+                "    #[cfg(test)]\n"
+                "    tail: crate::beta::B\n"
+                "}\n"
+                "pub fn make() -> S {\n"
+                "    S {\n"
+                "        #[cfg(test)]\n"
+                "        map: Default::default(),\n"
+                "        #[cfg(test)]\n"
+                "        tail: crate::beta::B\n"
+                "    }\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 末尾カンマ無しテストフィールドの後に本番メソッド依存を足せば検出される
+            _write_text(
+                src / "alpha.rs",
+                "pub struct S {\n"
+                "    #[cfg(test)]\n"
+                "    tail: String\n"
+                "}\n"
+                "pub fn make() -> S {\n"
+                "    let _s = S {\n"
+                "        #[cfg(test)]\n"
+                "        tail: String::new()\n"
+                "    };\n"
+                "    let _ = crate::beta::B;\n"
+                "    _s\n"
+                "}\n",
+            )
+            res2 = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res2.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res2.items))
+
+        # 3. where 句付き関数・const 値式・match アームの #[cfg(test)] 境界
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "beta.rs", "use crate::alpha::f;\npub fn b() {}\n")
+            _write_text(
+                src / "alpha.rs",
+                "#[cfg(test)]\n"
+                "fn helper<T, U>()\n"
+                "where\n"
+                "    T: Clone,\n"
+                "    U: Default,\n"
+                "{\n"
+                "    crate::beta::b();\n"
+                "}\n"
+                "#[cfg(test)]\n"
+                "const X: () = { let _ = 1; crate::beta::b() };\n"
+                "pub fn f(n: i32) {\n"
+                "    match n {\n"
+                "        #[cfg(test)]\n"
+                "        0 => { crate::beta::b(); }\n"
+                "        _ => {}\n"
+                "    }\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # テスト専用 match アームの次の本番アームは保持されて検出される
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f(n: i32) {\n"
+                "    match n {\n"
+                "        #[cfg(test)]\n"
+                "        0 => { let _ = 1; }\n"
+                "        _ => crate::beta::b(),\n"
+                "    }\n"
+                "}\n",
+            )
+            res3 = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res3.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res3.items))
+
+    def test_sc06_rust_inline_mod_super_depth(self) -> None:
+        # インライン mod 内の use と直接参照の双方でクレート直下へ届く super:: を検出
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "chat" / "mod.rs", "use crate::mpv::ipc;\npub mod popup { pub struct PopupGeometry; pub fn f() {} }\n")
+            _write_text(src / "mpv" / "mod.rs", "pub mod ipc;\n")
+
+            # 1. インライン mod 内の use super::super::super::chat::...
+            _write_text(
+                src / "mpv" / "ipc.rs",
+                "#[cfg(unix)]\n"
+                "mod imp {\n"
+                "    use super::super::super::chat::popup::PopupGeometry as _;\n"
+                "}\n",
+            )
+            res_use = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_use.worst(), cdc.ERROR)
+            self.assertIn("chat -> mpv -> chat", "\n".join(m for _, m in res_use.items))
+
+            # 2. インライン mod 内の直接参照 super::super::super::chat::...
+            _write_text(
+                src / "mpv" / "ipc.rs",
+                "#[cfg(unix)]\n"
+                "mod\n"
+                "    imp\n"
+                "{\n"
+                "    pub fn run() {\n"
+                "        super::super::super::chat::popup::f();\n"
+                "    }\n"
+                "}\n",
+            )
+            res_direct = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_direct.worst(), cdc.ERROR)
+            self.assertIn("chat -> mpv -> chat", "\n".join(m for _, m in res_direct.items))
+
+            # 3. 2 段ネストのインライン mod（depth = 2 + 2 = 4）
+            _write_text(
+                src / "mpv" / "ipc.rs",
+                "mod outer {\n"
+                "    mod inner {\n"
+                "        pub fn run() {\n"
+                "            super::super::super::super::chat::popup::f();\n"
+                "        }\n"
+                "    }\n"
+                "}\n",
+            )
+            res_nested = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_nested.worst(), cdc.ERROR)
+            self.assertIn("chat -> mpv -> chat", "\n".join(m for _, m in res_nested.items))
+
+            # 4. クレート直下に届かない super::super::helper は誤検知しない
+            _write_text(
+                src / "mpv" / "ipc.rs",
+                "mod imp {\n"
+                "    use super::super::helper;\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+    def test_sc06_rust_cfg_boolean_expressions(self) -> None:
+        # 3 値論理の直接検証（test = false 時の評価）
+        self.assertIs(cdc._eval_cfg_non_test("test"), False)
+        self.assertIs(cdc._eval_cfg_non_test("all(test, unix)"), False)
+        self.assertIs(cdc._eval_cfg_non_test("all(test, windows)"), False)
+        self.assertIs(cdc._eval_cfg_non_test('all(test, target_os = "linux")'), False)
+        self.assertIs(cdc._eval_cfg_non_test("any(all(test, unix), all(test, windows))"), False)
+        self.assertIs(cdc._eval_cfg_non_test("not(not(test))"), False)
+        self.assertIs(cdc._eval_cfg_non_test("any(test, unix)"), None)
+        self.assertIs(cdc._eval_cfg_non_test("not(test)"), True)
+        self.assertIs(cdc._eval_cfg_non_test("not(all(test, unix))"), True)
+        self.assertIs(cdc._eval_cfg_non_test("all(unix, not(test))"), None)
+        self.assertIs(cdc._eval_cfg_non_test("unix"), None)
+
+        # OS 別テストモジュール（all(test, unix) / all(test, windows)）は除外し、
+        # any(test, unix) は Unix 本番ビルドでも有効なため除外しない
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "chat" / "mod.rs", "use crate::mpv::ipc;\npub mod popup { pub struct PopupGeometry; }\n")
+            _write_text(src / "mpv" / "mod.rs", "pub mod ipc;\n")
+            _write_text(
+                src / "mpv" / "ipc.rs",
+                "#[cfg(all(test, unix))]\n"
+                "mod unix_tests {\n"
+                "    use crate::chat::popup::PopupGeometry as _;\n"
+                "}\n"
+                "#[cfg(all(test, windows))]\n"
+                "mod win_tests {\n"
+                "    use crate::chat::popup::PopupGeometry as _;\n"
+                "}\n"
+                "#[cfg(all(test, target_os = \"linux\"))]\n"
+                "mod linux_tests {\n"
+                "    use crate::chat::popup::PopupGeometry as _;\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            _write_text(
+                src / "mpv" / "ipc.rs",
+                "#[cfg(any(test, unix))]\n"
+                "mod unix_or_test {\n"
+                "    use crate::chat::popup::PopupGeometry as _;\n"
+                "}\n",
+            )
+            res_any = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_any.worst(), cdc.ERROR)
+            self.assertIn("chat -> mpv -> chat", "\n".join(m for _, m in res_any.items))
+
+            _write_text(
+                src / "mpv" / "ipc.rs",
+                "#[cfg(not(test))]\n"
+                "fn prod_only() {\n"
+                "    let _ = crate::chat::popup::PopupGeometry;\n"
+                "}\n",
+            )
+            res_not = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_not.worst(), cdc.ERROR)
+            self.assertIn("chat -> mpv -> chat", "\n".join(m for _, m in res_not.items))
+
+    def test_sc06_rust_upper_layer_reverse_refs(self) -> None:
+        # ドメイン層・下位共有層から上位層（lib / main / commands / error）への逆参照を検出
+        for upper_mod in ("error", "commands", "lib", "main"):
+            with self.subTest(src_layer="domain", upper=upper_mod):
+                with tempfile.TemporaryDirectory() as td:
+                    src = Path(td)
+                    _write_text(src / "error.rs", "pub struct UiError;\n")
+                    _write_text(src / "commands" / "mod.rs", "use crate::error::UiError;\npub fn cmd() -> UiError { UiError }\n")
+                    _write_text(src / "filter" / "mod.rs", f"use crate::{upper_mod}::Item;\n")
+                    res = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res.worst(), cdc.ERROR)
+                    msgs = "\n".join(m for _, m in res.items)
+                    self.assertIn("ドメイン層 `filter`", msgs)
+                    self.assertIn(f"上位層 `{upper_mod}`", msgs)
+
+        for shared_mod in ("db", "model", "util"):
+            with self.subTest(src_layer="shared", shared=shared_mod):
+                with tempfile.TemporaryDirectory() as td:
+                    src = Path(td)
+                    _write_text(src / "error.rs", "pub struct UiError;\n")
+                    _write_text(src / f"{shared_mod}.rs", "use super::error::UiError;\n")
+                    res = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res.worst(), cdc.ERROR)
+                    msgs = "\n".join(m for _, m in res.items)
+                    self.assertIn(f"下位共有層 `{shared_mod}`", msgs)
+                    self.assertIn("上位層 `error`", msgs)
+
+        # 上位層（commands）から error・ドメイン層・下位共有層への参照、および非循環な一方向ドメイン間参照は OK
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "error.rs", "pub struct UiError;\n")
+            _write_text(src / "db.rs", "pub struct Db;\n")
+            _write_text(src / "innertube.rs", "use crate::db::Db;\npub struct InnerTube(Db);\n")
+            _write_text(src / "chat.rs", "use crate::innertube::InnerTube;\npub struct Chat(InnerTube);\n")
+            _write_text(
+                src / "commands" / "mod.rs",
+                "use crate::chat::Chat;\nuse crate::db::Db;\nuse crate::error::UiError;\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
 
 def _ws_send_frame(conn: socket.socket, opcode: int, payload: bytes) -> None:
     n = len(payload)

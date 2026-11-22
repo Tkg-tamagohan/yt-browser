@@ -187,7 +187,7 @@ pub fn run() {
             // 関連動画の動画系 NG 判定も通るため chat ではなく filter 配下に置く）。
             let ng = std::sync::Arc::new(filter::NgMatcher::new(db.clone(), app.handle().clone()));
             if let Err(e) = ng.refresh() {
-                tracing::warn!(error = e.message, "NG フィルタの初期読み込みに失敗");
+                tracing::warn!(error = %e, "NG フィルタの初期読み込みに失敗");
             }
             app.manage(ng.clone());
 

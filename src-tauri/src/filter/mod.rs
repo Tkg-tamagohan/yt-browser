@@ -10,8 +10,7 @@ use aho_corasick::AhoCorasick;
 use regex::RegexSet;
 use tauri::{AppHandle, Emitter};
 
-use crate::db::Db;
-use crate::error::UiError;
+use crate::db::{Db, DbError};
 use crate::model::{ChatStatus, Filter};
 use crate::util::lock;
 
@@ -203,7 +202,7 @@ impl NgMatcher {
 
     /// `filters` テーブルの現在値で NG 評価器を作り直す。
     /// 起動時と `filter_add` / `filter_remove` の直後に呼ぶ。
-    pub fn refresh(&self) -> Result<(), UiError> {
+    pub fn refresh(&self) -> Result<(), DbError> {
         let _serialize = lock(&self.refresh_lock);
         let rows = self.db.filter_list()?;
         let m = Matcher::rebuild(&rows);

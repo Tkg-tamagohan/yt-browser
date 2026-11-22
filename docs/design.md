@@ -61,8 +61,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `error` | `UiError { code, message }` への直列化と、各エラー型からの変換 |
 
 モジュール間の依存方向は「上位層（`lib`・`main`・`commands`・`error`）→ ドメイン層（`mpv`・`yt`・`feed`・`innertube`・`livewait`・`metaresolve`・`chat`・`filter`・`sponsor`・`ui`・`deep_link`・`deps`・`diag`・`native_host`）→ 下位共有層（`db`・`model`・`util`）」の 3 層一方向に揃える。
-下位共有層からドメイン層への逆参照およびドメイン層内の 2 ノード以上の循環依存を禁止し、ドメイン層間の連携で循環が生じる場合はフックやコールバックを定義して上位層（`lib` / `commands`）から注入する。
-この依存方向と循環禁止は `scripts/check_docs_consistency.py`（check 19）で機械検証する。
+ドメイン層および下位共有層から上位層への逆参照、下位共有層からドメイン層への逆参照、ならびに 2 ノード以上の循環依存を禁止する。
+ドメイン層間の非循環な一方向参照は許容し、連携で循環が生じる場合はフックやコールバックを定義して上位層（`lib` / `commands`）から注入する。
+これら 3 層の逆参照禁止と循環禁止は `scripts/check_docs_consistency.py`（check 19）で機械検証する。
 
 ## 3. IPC 設計（Tauri コマンドとイベント）
 
