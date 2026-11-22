@@ -13,7 +13,7 @@ mod terminal;
 pub(crate) use devices::list_audio_devices;
 pub(crate) use ipc::IpcClient;
 use ipc::{IpcError, IpcEvent};
-pub use manager::{PlayerManager, VideoEndHook, VideoStartHook};
+pub use manager::{HistoryChannelHint, PlayerManager, VideoEndHook, VideoStartHook};
 use thiserror::Error;
 
 /// 未設定時の画質式（設計書 §4.3 の 1080p 上限プリセット）。

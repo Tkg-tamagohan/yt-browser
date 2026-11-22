@@ -217,21 +217,21 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 
 `history_stats` は `watch_history` を集計して累計視聴時間・チャンネル別内訳・日別内訳を返す（FR-65、仕様決定 CP）。ライブラリの統計タブがそのまま表示する。
 1 行の視聴量は「`completed` なら `COALESCE(duration_sec, position_sec)`、それ以外は `position_sec`」で見積もる（暫定解釈: 完了行は位置が 0 へ戻るため動画長で見積もり、再視聴の上乗せはしない）。
-チャンネル別は `channel_id` 単位で視聴時間の降順（未設定は 1 つのまとまりとして扱い、`channel_title` を併記する。上位 50 件までの暫定上限）。
+チャンネル別は `channel_id` 単位（空文字は `NULL` へ正規化）で視聴時間の降順、同率時は `channel_id` 昇順とする（未設定 `NULL` は 1 つのまとまりとして扱い、`channel_title` のみが判明している他動画との混在で視聴時間が特定チャンネル名へ誤帰属するのを防ぐため `channel_title` は `NULL` 固定とする。上位 50 件までの暫定上限）。
 日別は `last_watched_at` の `date()`（UTC 基準の暦日。履歴の日時は `datetime('now')` で UTC 保存のため）の降順。
 
 `data_export` / `data_import` は `channels`、`categories`、`settings`、`playlists`（＋項目）のダンプと復元（FR-62、FR-94、仕様決定 CM、DX）。
 ファイル選択は設定画面から `tauri-plugin-dialog` の保存/開くダイアログで行い、選んだパスをそのままコマンドへ渡す。
 ダンプ形式は `{ version, exportedAt, channels, categories, settings, playlists }` の JSON で、`version` は `EXPORT_FORMAT_VERSION = 1`。
-ローカル環境依存および秘密情報を含む保護 4 キー（`ytdlp.po_token`、`ytdlp.path`、`mpv.extra_args`、`setup.deps_shown`）は `export_dump` の出力から除外し、`import_dump` では単一トランザクション内の `DELETE FROM settings` 直前に既存 DB の同 4 キーを退避してダンプ側の同 4 キーを読み飛ばした上で復元する（回帰テスト DB-LD-31、DB-LD-32）。
+ローカル環境依存および秘密情報を含む保護 4 キー（`ytdlp.po_token`、`ytdlp.path`、`mpv.extra_args`、`setup.deps_shown`）は `export_dump` の出力から除外し、`import_dump` では単一トランザクション内の `DELETE FROM settings` 直前に既存 DB の同 4 キーを退避してダンプ側の同 4 キーを読み飛ばした上で復元する（ローカル未設定時は注入しない。回帰テスト DB-LD-31、DB-LD-32）。
 チャンネル行は `channels` の全列（バックフィル位置・条件付き取得メタを含む）、プレイリスト項目は `position` と `videos` 台帳の表示メタを持つ。
 インポートは「ダンプした時点の状態へ戻す」リストア扱いで、対象テーブルの内容をダンプで置き換える（マージではなく置き換え。ダンプに無い行は消える）。
-書き込みは 1 トランザクションで行い、先に全内容を検証する（形式版の一致、ID の一意性、`category_id` 参照の有効性、項目の `video_id` 重複に加えて、`ExportChannel.channel_id` の `is_channel_id`、`ExportPlaylistItem.video_id` の `is_video_id`、`settings` のキー 128 バイトおよび値 16 KiB 上限、`playlists.name` のトリム後 150 文字上限を検証し、`ExportPlaylistItem.channel_id` の非 UC 値のみ `None` へ正規化する。回帰テスト DB-LD-33）。
+書き込みは 1 トランザクションで行い、先に全内容を検証する（形式版の一致、ID の一意性、`category_id` 参照の有効性、項目の `video_id` 重複に加えて、保護 4 キーを検証ループ先頭で読み飛ばした上で `ExportChannel.channel_id` の `is_channel_id`、`ExportPlaylistItem.video_id` の `is_video_id`、`settings` のキー 1〜128 UTF-8 バイトおよび値 0〜16,384 UTF-8 バイト上限、`playlists.name` のトリム後 1〜150 文字上限とトリム保存を強制し、`ExportPlaylistItem.channel_id` の非 UC 値のみ `None` へ正規化する。回帰テスト DB-LD-33）。
 受理できないダンプは `DbError::Import` で拒否して DB を変更しない。
 `categories.id` / `playlists.id` はダンプの値をそのまま使い（参照の整合だけ取る。AUTOINCREMENT 採番は最大 ID 以降へ進む）、プレイリスト項目の表示メタは `video_upsert` と同じ規則で `videos` 台帳へ補完登録する（既存メタは壊さない）。
 `watch_history` など対象外のユーザーデータは保持する。
-インポート成功後、上位層 `commands::system::data_import` は変化した非保護設定キーへ `settings://changed`（未設定へ戻ったキーは `""`）を送出し、稼働中プレイヤーの `pip.fit_aspect` 即時反映（未設定既定 `true`）、`FeedPoller::sync_after_import`（DB に無い `sched` 除去、自動既読適用、巡回起床）、`MetaResolver::wake_now` を実行する。
-フロント側では `SettingsOpsSection` が DB サイズを再取得し、`handleImported` が設定フォーム、表示設定、ショートカット、カテゴリ一覧、および `DELETE FROM playlists` の `ON DELETE CASCADE` に追従する `refreshQueues` を再同期する。
+インポート成功後、上位層 `commands::system::data_import` は変化した非保護設定キーへ `settings://changed`（未設定へ戻ったキーは `""`）を送出し、テーマ・言語・ショートカット・シークバー区間帯表示（`sponsor.show_segments`）等の購読リスナーへ追従させるとともに、稼働中プレイヤーの `pip.fit_aspect` 即時反映（未設定既定 `true`）、`FeedPoller::sync_after_import`（DB に無い `sched` 除去、自動既読適用、巡回起床）、`MetaResolver::wake_now` を実行する。
+フロント側では `SettingsOpsSection` がインポート開始前に `beginImportQueueGuard` で旧プレイリストキューの遅延永続化・削除を世代ガードと抑止フラグで遮断し（失敗時は `endImportQueueGuard` で解除）、成功後は DB サイズを再取得しつつ `handleImported` から設定フォーム、表示設定、ショートカット、カテゴリ一覧、および `DELETE FROM playlists` の `ON DELETE CASCADE` に追従する `refreshQueues` を再同期する（回帰テスト QS-03）。
 
 `db_size` / `db_vacuum` / `db_cleanup_orphans` は設定画面の運用節が使う DB メンテナンス（FR-66、仕様決定 CQ）。
 `db_size` は `PRAGMA database_list` の `main` ファイルと WAL/SHM サイドファイルの合計バイト数を返す（暫定解釈。ファイルを持たない接続では `page_count × page_size` の近似値）。
@@ -501,7 +501,8 @@ ytdl_hook 経由のストリーム解決にも PO Token が伝わる。起動引
 受信側は 1 ソケットにつき 1 読み取りタスクを持ち、`event` 行を購読者に振り分ける。
 
 視聴履歴のチャンネル情報補完（仕様決定 DY、回帰テスト DB-LD-34）は、`history_upsert` と `history_update_progress` で既存非空値を保持しつつ `videos` → `live_waits` → `queue_items`（`channel_title` のみ）の順で SQL 補完を行う。
-DB にチャンネル情報が無い未購読動画向けには、`PlayerManager` に `VideoStartHook` を設けて `play`、`switch`、連続再生 `continued: true` の 3 契機で `players` ロック解放後に発火し、`lib.rs` から同一 `video_id` の in-flight 重複抑止付きバックグラウンド処理で `watch_history.channel_id` が空かつ削除抑止中でない場合に限り `InnerTube::video_meta` → 失敗時 15 秒タイムアウト付き `yt::video_channel_ref` を呼んで順序非依存 UPSERT の `history_set_channel` で書き戻す（`mpv` から `innertube` への直接依存を持たず、`playing_channel` 第 3 段も同じヘルパを共用する）。
+ライブ待機からの自動再生は仕様決定 BT(3) に従い再生開始前に `live_waits` 行を削除するため、`livewait::auto_play` が削除前に保持していた `LiveWait` の `channel_id`・`channel_title`・`title` を `HistoryChannelHint` として `PlayerManager::play_with_channel_hint` へ渡し、`history_upsert` 直後に `history_set_channel` で書き戻す。
+DB にチャンネル情報が無い未購読動画向けには、`PlayerManager` に `VideoStartHook` を設けて `play`、`switch`、連続再生 `continued: true` の 3 契機で `players` ロック解放後に発火し、`lib.rs` から同一 `video_id` の in-flight 重複抑止（RAII `Drop` 解放の `InFlightSet`）付きバックグラウンド処理で `watch_history.channel_id` が空かつ削除抑止中でない場合に限り `InnerTube::video_meta` → 失敗または UC ID 欠落時は 15 秒タイムアウト付き `yt::video_channel_ref`（単一 JSON 応答から参照候補・`channel_title`・`title` を同時抽出）を呼んで `Db` ロック内で `history_suppressed` を再確認する順序非依存 UPSERT の `history_set_channel` で書き戻す（`mpv` から `innertube` への直接依存を持たず、`playing_channel` 第 3 段も同じヘルパを共用し、購読用 `input` と検証済み正規 UC `channel_id` を型分離する）。
 
 ### 4.2 コマ送り
 
@@ -1520,7 +1521,7 @@ CREATE INDEX idx_videos_meta_resolve
   判定の失敗・未確定はメタの遅延解決基盤が定期的に再試行し、投稿日時の欠落と放送系 kind（`live`/`upcoming`/`premiere`）も同じ経路で後から埋める（FR-53・FR-56・FR-57、仕様決定 CD・CG・CH、§4.18）。
   `kind_state` は kind の判定状態（0=未確定 / 1=確定 / 2=直近の試行が失敗）、`meta_checked` は投稿日時解決のための InnerTube メタ応答の試行済み印（§4.18）。
   `description` は遅延解決で InnerTube `player` 応答の `videoDetails.shortDescription` を保存する説明列（FR-85、仕様決定 DJ。NULL=未解決、''=解決済み・説明なし）。`video_desc` NG フィルタの評価材料で、一覧取得時には返却ペイロードへ入れずフィルタ適用だけに使う。
-- 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）。マイグレーション `v24` で既存 `watch_history` のチャンネル欠損行を `videos` 一致分から一括バックフィルし、あわせて `feed_list_filtered` の全 4 分岐 `(unread_only, channel_id.is_some())` で `SCAN v` 素走査と `USE TEMP B-TREE` を排除するため `idx_videos_unread`・`idx_videos_feed_pub`・`idx_videos_channel_pub` を `(..., published_at DESC, video_id)` 構成へ最適化した（仕様決定 DY、回帰テスト DB-LD-35、DB-LD-36）
+- 履歴の保持は直近 10000 件を上限とし、超過分は最古のものからアプリ起動時に剪定する（仕様決定 AV）。マイグレーション `v24` で既存 `watch_history` のチャンネル欠損行（`NULL` および空文字）を `videos` 一致分から `NULLIF` 正規化しつつ一括バックフィルし、あわせて `feed_list_filtered` の全 4 分岐 `(unread_only, channel_id.is_some())` で `SCAN v` 素走査と `USE TEMP B-TREE` を排除するため `idx_videos_unread`（`(false, true)` と `(true, true)` は `FROM videos v CROSS JOIN channels c`＋`+v.is_read = 0` で `idx_videos_channel_pub` を確定選択、`(true, false)` は `idx_videos_unread`、`(false, false)` は `idx_videos_feed_pub`）を `(..., published_at DESC, video_id)` 構成へ最適化した（仕様決定 DY、回帰テスト DB-LD-35、DB-LD-36 で `ANALYZE` 前後の実行計画を確認）
 - `queue_items` / `queue_state` はキューの永続化（FR-30・FR-48、仕様決定 AY・BY）。`queue_items.position` の連番を主キーとすることで同一動画の重複を許容し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない。`uid` は項目のユニーク ID（BG-10、仕様決定 BK）で、フロントが採番した連番をそのまま保存・復元する。`queue_items` は一時キュー専用で、プレイリストキューの項目列は `playlist_items` を正として複製しない。`queue_state` の `playlist_id` NULL 行（id=1）が一時キューの現在位置、非 NULL 行がプレイリストキューの現在位置を持ち、対象プレイリストの削除で CASCADE する（v17 で単一行制約を外した）
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
 - `video_bookmarks` は動画内ブックマーク（FR-49、仕様決定 BZ、§4.17）。自動採番の `id` を個別削除・ラベル編集の対象 ID とし、UNIQUE (video_id, position_sec) で同位置の重複保存を抑止する（暫定解釈）。表示用タイトルは行に持たず、一覧取得時に `videos` 台帳 → `watch_history` の順で解決する（`video_meta_lookup` と同じ規則）

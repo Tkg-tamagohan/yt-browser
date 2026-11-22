@@ -44,6 +44,7 @@ import {
   restoredIndex,
   restoredPlaylistIndex,
   saveItemsOf,
+  shouldPersistPlaylistQueue,
   shuffleTail,
   type QueueEntry,
   type QueuePersistItem,
@@ -245,20 +246,30 @@ function persistTempQueue(): void {
     });
 }
 
+// `data_import` 実行中および世代更新後に、旧プレイリストキューの進捗保存や削除が
+// 新しく復元された同一 playlistId へ書き戻される競合を防ぐガード（FR-94、仕様決定 DX）。
+let playlistPersistGen = 0;
+let playlistImportSuspended = false;
+
 /// プレイリストキューの現在位置を DB へ保存する（FR-48、仕様決定 BY）。
 /// playlist_id と現在位置のみを書き、項目列は playlist_items を正として
 /// 保存しない。キューが存在する間の各ミューテーションの後に呼ぶ。
 /// 失敗してもメモリ上のキュー操作は完了済みのため、通知だけ出す
 function persistPlaylistQueue(q: QueueState): void {
-  if (q.playlistId === null) return;
+  if (q.playlistId === null || playlistImportSuspended) return;
   const playlistId = q.playlistId;
   const currentIndex = q.index;
+  const gen = playlistPersistGen;
   persistChain = persistChain
-    .then(() =>
-      invoke<unknown>("queue_playlist_save", { playlistId, currentIndex }).then(
-        () => {},
-      ),
-    )
+    .then(() => {
+      if (!shouldPersistPlaylistQueue(gen, playlistPersistGen, playlistImportSuspended)) {
+        return;
+      }
+      return invoke<unknown>("queue_playlist_save", {
+        playlistId,
+        currentIndex,
+      }).then(() => {});
+    })
     .catch((e) => {
       notify(t("queue.persistFailed", { message: asErrorMessage(e) }));
     });
@@ -268,10 +279,17 @@ function persistPlaylistQueue(q: QueueState): void {
 /// 対象プレイリスト自体の削除では DB 側の CASCADE でも行が消えるため、
 /// その場合の呼び出しは空操作になる
 function clearPlaylistPersist(playlistId: number): void {
+  if (playlistImportSuspended) return;
+  const gen = playlistPersistGen;
   persistChain = persistChain
-    .then(() =>
-      invoke<unknown>("queue_playlist_clear", { playlistId }).then(() => {}),
-    )
+    .then(() => {
+      if (!shouldPersistPlaylistQueue(gen, playlistPersistGen, playlistImportSuspended)) {
+        return;
+      }
+      return invoke<unknown>("queue_playlist_clear", { playlistId }).then(
+        () => {},
+      );
+    })
     .catch((e) => {
       notify(t("queue.persistFailed", { message: asErrorMessage(e) }));
     });
@@ -431,11 +449,25 @@ export function initQueue(): Promise<void> {
   return initPromise;
 }
 
+/// データインポート開始前に進行中の永続化を出し切り、以後の旧プレイリストキュー保存を
+/// 世代更新＋抑止フラグで遮断する（FR-94、仕様決定 DX）。
+export async function beginImportQueueGuard(): Promise<void> {
+  playlistImportSuspended = true;
+  playlistPersistGen += 1;
+  await persistChain;
+}
+
+/// データインポート失敗時などにプレイリストキュー永続化抑止を解除する。
+export function endImportQueueGuard(): void {
+  playlistImportSuspended = false;
+}
+
 /// データインポート後にプレイリストキューを DB と再同期する（FR-94、仕様決定 DX）。
 /// `import_dump` の `DELETE FROM playlists` に伴う `ON DELETE CASCADE` で
 /// DB 側のプレイリストキュー保存行が消えるため、メモリ上のプレイリストキューを
 /// すべてデタッチ・破棄し、DB 上に残る行を再復元する。一時キューは保持する
 export async function refreshQueues(): Promise<void> {
+  playlistPersistGen += 1;
   const next = new Map(queues.list);
   let removed = false;
   for (const [key, q] of queues.list) {
@@ -451,6 +483,8 @@ export async function refreshQueues(): Promise<void> {
     }
     pruneMeta();
   }
+  await persistChain;
+  playlistImportSuspended = false;
   try {
     await restorePlaylistQueues();
   } catch (e) {

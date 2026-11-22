@@ -346,6 +346,9 @@ fn validate_dump(dump: &ExportDump) -> Result<(), DbError> {
     }
     let mut setting_keys = std::collections::HashSet::new();
     for s in &dump.settings {
+        if is_local_protected_setting(&s.key) {
+            continue;
+        }
         if s.key.is_empty() {
             return Err(import_error("設定キーが空の行があります"));
         }

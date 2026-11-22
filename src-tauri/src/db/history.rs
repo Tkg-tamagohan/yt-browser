@@ -277,10 +277,13 @@ impl Db {
         let mut by_channel = Vec::new();
         {
             let mut stmt = conn.prepare(&format!(
-                "SELECT channel_id, MAX(channel_title), SUM({SEC_EXPR}), COUNT(*)
+                "SELECT NULLIF(channel_id, '') AS cid,
+                        CASE WHEN NULLIF(channel_id, '') IS NULL THEN NULL
+                             ELSE MAX(NULLIF(channel_title, '')) END,
+                        SUM({SEC_EXPR}), COUNT(*)
                  FROM watch_history
-                 GROUP BY channel_id
-                 ORDER BY SUM({SEC_EXPR}) DESC, channel_id
+                 GROUP BY cid
+                 ORDER BY SUM({SEC_EXPR}) DESC, cid
                  LIMIT ?1"
             ))?;
             let mut rows = stmt.query([HISTORY_STATS_MAX_CHANNELS])?;

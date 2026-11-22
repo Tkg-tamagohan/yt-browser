@@ -334,7 +334,17 @@ impl LiveWaitPoller {
             .try_state::<crate::mpv::PlayerManager>()
             .ok_or(crate::mpv::MpvError::NoSuchInstance(0))?;
         players
-            .play(&wait.video_id, 0.0, ytdl_format, pip)
+            .play_with_channel_hint(
+                &wait.video_id,
+                0.0,
+                ytdl_format,
+                pip,
+                Some(crate::mpv::HistoryChannelHint {
+                    channel_id: wait.channel_id.as_deref(),
+                    channel_title: wait.channel_title.as_deref(),
+                    fallback_title: Some(&wait.title),
+                }),
+            )
             .await
             .map(|_| ())
     }

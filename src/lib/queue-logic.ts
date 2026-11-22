@@ -255,3 +255,13 @@ export function restoredPlaylistIndex(
   if (itemCount === 0) return null;
   return restoredIndex(itemCount, savedIndex);
 }
+
+/// データインポート中に進行中／後続のプレイリストキュー永続化を抑止する判定（FR-94、仕様決定 DX）。
+/// インポート中（`suspended`）または世代が進んだ古い非同期チェーンからの書き込みを拒否する。
+export function shouldPersistPlaylistQueue(
+  capturedGen: number,
+  currentGen: number,
+  suspended: boolean,
+): boolean {
+  return !suspended && capturedGen === currentGen;
+}

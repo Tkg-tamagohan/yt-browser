@@ -387,6 +387,36 @@ fn import_dump_preserves_local_protected_settings_and_cascades_playlist_queues()
             "未設定ローカル DB へ保護キー {protected} が注入されてはならない"
         );
     }
+
+    // 保護キーに 16 KiB 超の値と重複エントリが混入していても読み飛ばされ、
+    // ローカル保護 4 キーを保持しつつ非保護設定・購読・プレイリストが復元される
+    let mut oversized_dup = db.export_dump().unwrap();
+    oversized_dup.settings.push(ExportSetting {
+        key: "mpv.extra_args".to_string(),
+        value: "x".repeat(16 * 1024 + 10),
+    });
+    oversized_dup.settings.push(ExportSetting {
+        key: "mpv.extra_args".to_string(),
+        value: "--dup-ignored".to_string(),
+    });
+    oversized_dup.settings.push(ExportSetting {
+        key: "ytdlp.po_token".to_string(),
+        value: "y".repeat(20 * 1024),
+    });
+    db.import_dump(&oversized_dup).unwrap();
+    assert_eq!(
+        db.setting_get("mpv.extra_args").unwrap().as_deref(),
+        Some("--local-flag")
+    );
+    assert_eq!(
+        db.setting_get("ytdlp.po_token").unwrap().as_deref(),
+        Some("local-secret-token")
+    );
+    assert!(db
+        .channel_get("UCchan000000000000000001")
+        .unwrap()
+        .is_some());
+    assert_eq!(db.playlist_list().unwrap().len(), 1);
 }
 
 /// DB-LD-33: `validate_dump` の境界検証（不正 `channel_id` / 不正 `video_id` /

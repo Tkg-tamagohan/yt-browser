@@ -42,6 +42,15 @@ pub type VideoEndHook = Arc<dyn Fn(&str, bool, bool, bool) + Send + Sync>;
 /// （仕様決定 DY）。必ず `players` ロックを解放してから呼び出す。
 pub type VideoStartHook = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// 呼び出し元（`livewait::auto_play` 等）が再生開始前から保持している
+/// チャンネル情報ヒント。待機削除直後の `history_upsert` に続けて書き戻すために使う。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HistoryChannelHint<'a> {
+    pub channel_id: Option<&'a str>,
+    pub channel_title: Option<&'a str>,
+    pub fallback_title: Option<&'a str>,
+}
+
 /// 全 mpv インスタンスの管理（設計書 §4.5 のマルチビュー前提）。
 /// `play` が発行する `instance_id` が UI 側の操作対象識別子。
 pub struct PlayerManager {
@@ -114,6 +123,19 @@ impl PlayerManager {
         start_sec: f64,
         ytdl_format: Option<String>,
         pip: bool,
+    ) -> Result<u32, MpvError> {
+        self.play_with_channel_hint(video_id, start_sec, ytdl_format, pip, None)
+            .await
+    }
+
+    /// 再生開始元の既知チャンネルヒント付きで mpv を起動する（ライブ待機自動再生用）。
+    pub async fn play_with_channel_hint(
+        &self,
+        video_id: &str,
+        start_sec: f64,
+        ytdl_format: Option<String>,
+        pip: bool,
+        channel_hint: Option<HistoryChannelHint<'_>>,
     ) -> Result<u32, MpvError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let ytdlp_path = self.ytdlp_resolver.resolve(&self.db).await;
@@ -194,6 +216,16 @@ impl PlayerManager {
         // 進捗保存より先に履歴行が存在し、手動削除による保存抑止も解除された状態を保証する。
         if let Err(e) = self.db.history_upsert(video_id) {
             tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
+        }
+        if let Some(hint) = channel_hint {
+            if let Err(e) = self.db.history_set_channel(
+                video_id,
+                hint.channel_id,
+                hint.channel_title,
+                hint.fallback_title,
+            ) {
+                tracing::warn!(video_id, error = %e, "履歴チャンネルヒントの保存に失敗");
+            }
         }
         let emitter = self.spawn_emitter(player.clone());
 

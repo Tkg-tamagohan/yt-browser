@@ -452,22 +452,65 @@ fn history_channel_fill_and_downstream_queries() {
         .unwrap();
     assert!(db.history_get("vid_from_q1").unwrap().is_none());
 
-    // 6) 下流連携: history_stats（チャンネル別集計が NULL に潰れず 3 チャンネルに分かれる）
+    // 5b) channel_id=NULL かつ channel_title のみの行と完全不明行が混在する場合:
+    // history_stats は channel_id=None 1 グループへ合算し channel_title は None にする
+    // （他動画の視聴時間が特定チャンネル名へ誤帰属するのを防ぐ）一方、
+    // history_list のチャンネル名検索では名前を保持してヒットする
+    db.queue_save(
+        &[crate::model::QueueItem {
+            uid: 2,
+            video_id: "vid_from_q2".to_string(),
+            title: "キュー動画2".to_string(),
+            channel_title: Some("キューCH".to_string()),
+            thumbnail_url: None,
+        }],
+        0,
+    )
+    .unwrap();
+    db.history_update_progress("vid_from_q2", "キュー動画2", 25.0, Some(100), false)
+        .unwrap();
+    db.history_update_progress("vid_no_info", "完全不明動画", 40.0, Some(100), false)
+        .unwrap();
+
+    // 5c) live_waits 行が自動再生前に削除された後でも、LiveWait 由来のヒントを
+    // history_upsert → history_set_channel の順で引き継げばチャンネル情報が保存される
+    db.history_upsert("vid_from_lw_hint").unwrap();
+    db.history_set_channel(
+        "vid_from_lw_hint",
+        Some(ch_b),
+        Some("チャンネルBeta"),
+        Some("自動再生タイトル"),
+    )
+    .unwrap();
+    let h_hint = db.history_get("vid_from_lw_hint").unwrap().unwrap();
+    assert_eq!(h_hint.channel_id.as_deref(), Some(ch_b));
+    assert_eq!(h_hint.channel_title.as_deref(), Some("チャンネルBeta"));
+    assert_eq!(h_hint.title, "自動再生タイトル");
+
+    // 6) 下流連携: history_stats（チャンネル別集計が UC ID ごと＋不明 1 グループに分かれる）
     let stats = db.history_stats().unwrap();
-    assert_eq!(stats.entry_count, 3);
-    assert_eq!(stats.total_sec, 300 + 120 + 90);
-    assert_eq!(stats.by_channel.len(), 3);
+    assert_eq!(stats.entry_count, 6);
+    assert_eq!(stats.total_sec, 300 + 120 + 90 + 25 + 40);
+    assert_eq!(stats.by_channel.len(), 4);
     assert_eq!(stats.by_channel[0].channel_id.as_deref(), Some(ch_b));
     assert_eq!(stats.by_channel[0].total_sec, 300);
+    assert_eq!(stats.by_channel[0].entry_count, 2);
     assert_eq!(stats.by_channel[1].channel_id.as_deref(), Some(ch_a));
     assert_eq!(stats.by_channel[1].total_sec, 120);
     assert_eq!(stats.by_channel[2].channel_id.as_deref(), Some(ch_c));
     assert_eq!(stats.by_channel[2].total_sec, 90);
+    assert_eq!(stats.by_channel[3].channel_id, None);
+    assert_eq!(stats.by_channel[3].channel_title, None);
+    assert_eq!(stats.by_channel[3].total_sec, 65);
+    assert_eq!(stats.by_channel[3].entry_count, 2);
 
-    // 7) 下流連携: history_list のチャンネル名検索で未購読動画がヒットする
+    // 7) 下流連携: history_list のチャンネル名検索で未購読動画および名前のみ行がヒットする
     let found = db.history_list(None, Some("未購読Gamma"), 10).unwrap();
     assert_eq!(found.items.len(), 1);
     assert_eq!(found.items[0].video_id, "vid_unsub01");
+    let found_q = db.history_list(None, Some("キューCH"), 10).unwrap();
+    assert_eq!(found_q.items.len(), 1);
+    assert_eq!(found_q.items[0].video_id, "vid_from_q2");
 
     // 8) 下流連携: videos に無い未購読動画でも video_meta_lookup が履歴からチャンネルを返す
     let meta = db.video_meta_lookup("vid_unsub01").unwrap().unwrap();

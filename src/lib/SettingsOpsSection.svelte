@@ -12,6 +12,10 @@
   import { t } from "$lib/i18n";
   import { diagFileName } from "$lib/diag-logic";
   import { asErrorMessage, type DbSize } from "$lib/players.svelte";
+  import {
+    beginImportQueueGuard,
+    endImportQueueGuard,
+  } from "$lib/queue.svelte";
 
   let {
     notify,
@@ -91,12 +95,14 @@
     if (!yes) return;
     busy = true;
     try {
+      await beginImportQueueGuard();
       await invoke("data_import", { path });
       notify(t("settings.ops.imported", { path }));
       await Promise.all([loadSize(), Promise.resolve(onImported?.())]);
     } catch (e) {
       notify(t("settings.ops.importFailed", { message: asErrorMessage(e) }));
     } finally {
+      endImportQueueGuard();
       busy = false;
     }
   }

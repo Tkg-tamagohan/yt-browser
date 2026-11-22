@@ -100,16 +100,28 @@ async fn resolve_video_channel_with_timeout(
         )
         .await
         {
-            Ok(Ok(cands)) => {
+            Ok(Ok(info)) => {
                 // UC ID が取れる候補があれば channel_id / input 双方へ採用し、
-                // 無い場合も @handle 等の受理形を playing_channel の input として拾う
-                channel_id = cands.iter().find_map(|c| match parse_channel_ref(c) {
-                    Some(ChannelRef::Id(cid)) => Some(cid),
-                    _ => None,
+                // 無い場合も @handle 等の受理形を playing_channel の input として拾う。
+                // InnerTube で取れなかった channel_title / title は同一 yt-dlp JSON で補完する。
+                channel_id = info
+                    .candidates
+                    .iter()
+                    .find_map(|c| match parse_channel_ref(c) {
+                        Some(ChannelRef::Id(cid)) => Some(cid),
+                        _ => None,
+                    });
+                input = channel_id.clone().or_else(|| {
+                    info.candidates
+                        .into_iter()
+                        .find(|c| parse_channel_ref(c).is_some())
                 });
-                input = channel_id
-                    .clone()
-                    .or_else(|| cands.into_iter().find(|c| parse_channel_ref(c).is_some()));
+                if channel_title.is_none() {
+                    channel_title = info.channel_title;
+                }
+                if title.is_none() {
+                    title = info.title;
+                }
             }
             Ok(Err(e)) => {
                 tracing::debug!(video_id, error = %e, "yt-dlp video_channel_ref によるチャンネル解決に失敗");
@@ -625,11 +637,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_video_channel_falls_back_to_ytdlp_for_uc_and_handle() {
-        // InnerTube が 500 を返したとき yt-dlp フォールバックで UC ID を拾う
+        // InnerTube が 500 を返したとき yt-dlp フォールバックで UC ID とチャンネル名・題名を同時取得する
         let script_uc = write_fake_ytdlp(
             "uc",
-            "@echo off\r\necho {\"channel_id\":\"UCfall000000000000000001\"}\r\n",
-            "#!/bin/sh\nprintf '%s\\n' '{\"channel_id\":\"UCfall000000000000000001\"}'\n",
+            "@echo off\r\necho {\"channel_id\":\"UCfall000000000000000001\",\"channel\":\"MountainWalk\",\"title\":\"FallbackVideo\"}\r\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"channel_id\":\"UCfall000000000000000001\",\"channel\":\"MountainWalk\",\"title\":\"FallbackVideo\"}'\n",
         );
         let db = Db::connect_in_memory().unwrap();
         db.setting_set(SETTING_YTDLP_PATH, script_uc.0.to_str().unwrap())
@@ -646,14 +658,17 @@ mod tests {
         .await;
         assert_eq!(res.channel_id.as_deref(), Some("UCfall000000000000000001"));
         assert_eq!(res.input.as_deref(), Some("UCfall000000000000000001"));
+        assert_eq!(res.channel_title.as_deref(), Some("MountainWalk"));
+        assert_eq!(res.title.as_deref(), Some("FallbackVideo"));
         srv.abort();
 
-        // InnerTube が channelId 欠落（author/title のみ）で yt-dlp が @handle のみ返したとき、
-        // input は @handle を採りつつ channel_id は非 UC で汚さず None に保つ
+        // InnerTube が channelId 欠落（author/title のみ）で yt-dlp が @handle と別名返したとき、
+        // input は @handle を採りつつ channel_id は非 UC で汚さず None に保ち、
+        // 既に InnerTube で取れた channel_title / title は維持する
         let script_handle = write_fake_ytdlp(
             "handle",
-            "@echo off\r\necho {\"uploader_id\":\"@sample_creator\"}\r\n",
-            "#!/bin/sh\nprintf '%s\\n' '{\"uploader_id\":\"@sample_creator\"}'\n",
+            "@echo off\r\necho {\"uploader_id\":\"@sample_creator\",\"channel\":\"IgnoredFallback\",\"title\":\"IgnoredTitle\"}\r\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"uploader_id\":\"@sample_creator\",\"channel\":\"IgnoredFallback\",\"title\":\"IgnoredTitle\"}'\n",
         );
         db.setting_set(SETTING_YTDLP_PATH, script_handle.0.to_str().unwrap())
             .unwrap();
