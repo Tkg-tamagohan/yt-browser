@@ -1746,6 +1746,7 @@ _RUST_CHAR_LIT_RE = re.compile(
 )
 _RUST_RAW_STR_RE = re.compile(r'(?:b|c)?r(#*)"')
 _RUST_CFG_ATTR_START_RE = re.compile(r"#\s*\[\s*cfg\s*\(")
+_RUST_CFG_ATTR_HEAD_RE = re.compile(r"cfg_attr\s*\(")
 _RUST_MACRO_EXPORT_ATTR_RE = re.compile(r"macro_export(?:\s*\(.*\))?\Z", re.DOTALL)
 _RUST_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _RUST_RAW_OR_IDENT_RE = re.compile(r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*")
@@ -2094,6 +2095,190 @@ def _skip_rust_label(text: str, pos: int) -> int:
     return pos
 
 
+def _skip_rust_abi_string(text: str, pos: int) -> int:
+    """Rust の文字列リテラル（通常文字列・raw 文字列・空白化済み引用符）を読み飛ばす。"""
+    n = len(text)
+    if pos >= n:
+        return pos
+    if text[pos] == '"':
+        p = pos + 1
+        while p < n:
+            if text[p] == "\\":
+                p += 2 if p + 1 < n else 1
+                continue
+            if text[p] == '"':
+                return p + 1
+            p += 1
+        return n
+    if text[pos] == "r":
+        raw_m = _RUST_RAW_STR_RE.match(text, pos)
+        if raw_m is not None:
+            closer = '"' + "#" * len(raw_m.group(1))
+            end_pos = text.find(closer, raw_m.end())
+            return n if end_pos < 0 else end_pos + len(closer)
+    return pos
+
+
+def _skip_rust_item_modifiers(text: str, pos: int) -> tuple[int, bool, bool]:
+    """Rust アイテム修飾子（`default`/`const`/`async`/`unsafe`/`extern ["ABI"]`）を読み飛ばす。
+
+    戻り値: `(修飾子直後の位置, saw_const, saw_extern)`
+    """
+    n = len(text)
+    p = pos
+    saw_const = False
+    saw_extern = False
+    while p < n:
+        while p < n and text[p].isspace():
+            p += 1
+        m = _RUST_IDENT_RE.match(text, p)
+        if m is None:
+            break
+        w = m.group(0)
+        if w in ("default", "const", "async", "unsafe", "extern"):
+            if w == "const":
+                saw_const = True
+            elif w == "extern":
+                saw_extern = True
+            p = m.end()
+            while p < n and text[p].isspace():
+                p += 1
+            if w == "extern":
+                after_abi = _skip_rust_abi_string(text, p)
+                if after_abi != p:
+                    p = after_abi
+                    while p < n and text[p].isspace():
+                        p += 1
+            continue
+        break
+    return p, saw_const, saw_extern
+
+
+def _scan_rust_number_literal(text: str, pos: int) -> int:
+    """`pos` から始まる Rust の整数・浮動小数点リテラル（末尾 `.` 含む）の直後位置を返す。"""
+    n = len(text)
+    p = pos
+    if p >= n or not text[p].isdigit():
+        return pos
+    # 基数接頭辞 0x / 0b / 0o は小数点を持たない
+    if text[p] == "0" and p + 1 < n and text[p + 1] in "xXbBoO":
+        p += 2
+        while p < n and (text[p].isalnum() or text[p] == "_"):
+            p += 1
+        return p
+    # 10 進整数部
+    while p < n and (text[p].isdigit() or text[p] == "_"):
+        p += 1
+    # 小数点部: `1.5`, `1.5e-3_f64`, または末尾ドットの `1.`（`..`・識別子直前を除く）
+    if p < n and text[p] == ".":
+        nxt = text[p + 1] if p + 1 < n else ""
+        if nxt.isdigit():
+            p += 1
+            while p < n and (text[p].isdigit() or text[p] == "_"):
+                p += 1
+            if p < n and text[p] in "eE":
+                exp = p + 1
+                if exp < n and text[exp] in "+-":
+                    exp += 1
+                if exp < n and (text[exp].isdigit() or text[exp] == "_"):
+                    p = exp
+                    while p < n and (text[p].isdigit() or text[p] == "_"):
+                        p += 1
+            while p < n and (text[p].isalnum() or text[p] == "_"):
+                p += 1
+            return p
+        if nxt != "." and nxt != "_" and not nxt.isalpha():
+            return p + 1
+        return p
+    # 小数点なし指数表記: `1e5`, `1e-5_f64`
+    if p < n and text[p] in "eE":
+        exp = p + 1
+        if exp < n and text[exp] in "+-":
+            exp += 1
+        if exp < n and (text[exp].isdigit() or text[exp] == "_"):
+            p = exp
+            while p < n and (text[p].isdigit() or text[p] == "_"):
+                p += 1
+    # 型サフィックス（u8 / usize / f64 等）
+    while p < n and (text[p].isalnum() or text[p] == "_"):
+        p += 1
+    return p
+
+
+def _split_rust_attr_args(text: str) -> list[str]:
+    """Rust 属性括弧内のカンマ区切り引数を括弧・文字列を跨がず分割する。"""
+    parts: list[str] = []
+    p_depth = 0
+    b_depth = 0
+    k_depth = 0
+    start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ('"', "r"):
+            next_i = _skip_rust_abi_string(text, i)
+            if next_i != i:
+                i = next_i
+                continue
+        if ch == "(":
+            p_depth += 1
+        elif ch == ")":
+            p_depth = max(0, p_depth - 1)
+        elif ch == "[":
+            b_depth += 1
+        elif ch == "]":
+            b_depth = max(0, b_depth - 1)
+        elif ch == "{":
+            k_depth += 1
+        elif ch == "}":
+            k_depth = max(0, k_depth - 1)
+        elif ch == "," and p_depth == 0 and b_depth == 0 and k_depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def _attr_grants_macro_export(attr_body: str) -> bool:
+    """外側属性本文が非テスト構成で `macro_export` を付与し得るか判定する。"""
+    body = attr_body.strip()
+    if not body:
+        return False
+    if _RUST_MACRO_EXPORT_ATTR_RE.match(body) is not None:
+        return True
+    m = _RUST_CFG_ATTR_HEAD_RE.match(body)
+    if m is None:
+        return False
+    open_paren = m.end() - 1
+    p = open_paren + 1
+    n = len(body)
+    depth = 1
+    while p < n and depth > 0:
+        ch = body[p]
+        if ch in ('"', "r"):
+            next_p = _skip_rust_abi_string(body, p)
+            if next_p != p:
+                p = next_p
+                continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        p += 1
+    if depth != 0 or body[p:].strip():
+        return False
+    inner = body[open_paren + 1 : p - 1]
+    args = _split_rust_attr_args(inner)
+    if len(args) < 2:
+        return False
+    predicate = args[0].strip()
+    if _eval_cfg_non_test(predicate) is False:
+        return False
+    return any(_attr_grants_macro_export(arg) for arg in args[1:])
+
+
 def _classify_rust_annotated_node(text: str, start: int) -> str:
     """属性直後の Rust 構文ノードの終端種別を判定する。
 
@@ -2135,21 +2320,7 @@ def _classify_rust_annotated_node(text: str, start: int) -> str:
             p2 = skip_ws(_skip_rust_balanced(text, p2, "(", ")"))
         p = p2
 
-    saw_const = False
-    saw_extern = False
-    while p < n:
-        m = _RUST_IDENT_RE.match(text, p)
-        if m is None:
-            break
-        w = m.group(0)
-        if w in ("default", "const", "async", "unsafe", "extern"):
-            if w == "const":
-                saw_const = True
-            elif w == "extern":
-                saw_extern = True
-            p = skip_ws(m.end())
-            continue
-        break
+    p, saw_const, saw_extern = _skip_rust_item_modifiers(text, p)
 
     if p < n and text[p] == "{":
         return "brace_or_semi"
@@ -2257,6 +2428,7 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
     #   "need_expr" : 演算子・キーワード直後（次の `{` は条件内のブロック式またはマクロ引数）
     #   "have_expr" : 完結した条件式の直後（次の `{` が制御構文の本体ブロック）
     head_state = "for_pat" if kw == "for" else "need_expr"
+    in_as_type = False
     body_brace_pos = -1
 
     while p < n:
@@ -2265,35 +2437,29 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
             break
         c = text[p]
         if c == '"':
-            p += 1
-            while p < n:
-                if text[p] == "\\":
-                    p += 2 if p + 1 < n else 1
-                    continue
-                if text[p] == '"':
-                    p += 1
-                    break
-                p += 1
+            p = _skip_rust_abi_string(text, p)
             if head_state == "need_expr":
                 head_state = "have_expr"
             continue
         if c == "'":
-            after_lbl = _skip_rust_label(text, p)
-            if after_lbl != p:
-                sub_end = _find_rust_block_expr_end(text, p)
-                if sub_end is not None:
-                    p = sub_end
-                    if head_state == "need_expr":
-                        head_state = "have_expr"
+            if not in_as_type:
+                after_lbl = _skip_rust_label(text, p)
+                if after_lbl != p:
+                    sub_end = _find_rust_block_expr_end(text, p)
+                    if sub_end is not None:
+                        p = sub_end
+                        if head_state == "need_expr":
+                            head_state = "have_expr"
+                        continue
+                    p = after_lbl
                     continue
-                p = after_lbl
-                continue
             # 空白化済み文字リテラル `'   '` またはライフタイム `'a`
             if p + 1 < n and text[p + 1] in (" ", "'"):
                 q = text.find("'", p + 1)
                 p = (q + 1) if q >= 0 else n
                 if head_state == "need_expr":
                     head_state = "have_expr"
+                in_as_type = False
                 continue
             lt_m = _RUST_RAW_OR_IDENT_RE.match(text, p + 1)
             p = lt_m.end() if lt_m is not None else p + 1
@@ -2315,6 +2481,7 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
             p = _skip_rust_balanced(text, p, "{", "}")
             if head_state == "need_expr":
                 head_state = "have_expr"
+            in_as_type = False
             continue
         if c in (";", ")", "]", "}"):
             return None
@@ -2335,6 +2502,30 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
                 continue
             if word == "let" and kw in ("if", "while") and head_state == "need_expr":
                 head_state = "let_pat"
+                in_as_type = False
+                p = ident_m.end()
+                continue
+            if in_as_type:
+                if word == "for":
+                    p = skip_ws(ident_m.end())
+                    if p < n and text[p] == "<":
+                        angle_end = _match_rust_angle_bracket(text, p)
+                        if angle_end is not None:
+                            p = angle_end
+                    head_state = "need_expr"
+                    continue
+                if word == "extern":
+                    p = skip_ws(ident_m.end())
+                    after_abi = _skip_rust_abi_string(text, p)
+                    if after_abi != p:
+                        p = after_abi
+                    head_state = "need_expr"
+                    continue
+                if word in ("const", "mut", "unsafe", "dyn", "fn", "impl", "as"):
+                    head_state = "need_expr"
+                    p = ident_m.end()
+                    continue
+                head_state = "have_expr"
                 p = ident_m.end()
                 continue
             if word in ("if", "while", "for", "loop", "match"):
@@ -2343,8 +2534,12 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
                     p = sub_end
                     head_state = "have_expr"
                     continue
+            if word == "as":
+                head_state = "need_expr"
+                in_as_type = True
+                p = ident_m.end()
+                continue
             if word in (
-                "as",
                 "in",
                 "return",
                 "break",
@@ -2368,11 +2563,10 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
             continue
 
         if c.isdigit():
-            p += 1
-            while p < n and (text[p].isalnum() or text[p] == "_"):
-                p += 1
+            p = _scan_rust_number_literal(text, p)
             if head_state == "need_expr":
                 head_state = "have_expr"
+            in_as_type = False
             continue
 
         if head_state == "let_pat":
@@ -2385,6 +2579,7 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
                 and (p == 0 or text[p - 1] not in ("!", "<", ">", "="))
             ):
                 head_state = "need_expr"
+                in_as_type = False
             p += 1
             continue
         if head_state == "for_pat":
@@ -2399,26 +2594,43 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
             c == "<"
             and p + 1 < n
             and text[p + 1] not in ("<", "=")
-            and p >= 2
-            and text[p - 2 : p] == "::"
+            and (in_as_type or head_state == "need_expr")
         ):
             angle_end = _match_rust_angle_bracket(text, p)
             if angle_end is not None:
                 p = angle_end
                 head_state = "have_expr"
                 continue
+        if text[p : p + 2] == "->":
+            p += 2
+            head_state = "need_expr"
+            continue
+        if in_as_type and head_state == "need_expr":
+            if text[p : p + 2] == "&&":
+                p += 2
+                continue
+            if c in ("*", "&"):
+                p += 1
+                continue
+            if c == "!":
+                p += 1
+                head_state = "have_expr"
+                continue
         if text[p : p + 3] == "..=":
             p += 3
             head_state = "need_expr"
+            in_as_type = False
             continue
         if text[p : p + 2] == "..":
             # `for x in 0.. { ... }` や `..` の直後は本体 `{` が来得る
             p += 2
             head_state = "have_expr"
+            in_as_type = False
             continue
         if c == "?":
             p += 1
             head_state = "have_expr"
+            in_as_type = False
             continue
         if text[p : p + 2] in (
             "&&",
@@ -2429,7 +2641,6 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
             ">=",
             "<<",
             ">>",
-            "->",
             "+=",
             "-=",
             "*=",
@@ -2441,9 +2652,11 @@ def _find_rust_block_expr_end(text: str, start: int) -> int | None:
         ):
             p += 2
             head_state = "need_expr"
+            in_as_type = False
             continue
         p += 1
         head_state = "need_expr"
+        in_as_type = False
 
     if body_brace_pos < 0:
         return None
@@ -2635,17 +2848,19 @@ def _find_rust_annotated_node_end(text: str, start: int) -> int:
 
     if mode == "control_flow":
         block_end = _find_rust_block_expr_end(text, j)
-        if block_end is not None:
-            cont_kind, next_pos = _classify_post_brace_continuation(
-                text, block_end - 1
-            )
-            if cont_kind in ("dot", "question", "continue", "assign", "pipe"):
-                mode = "expr_or_field"
-                k = next_pos
-            elif cont_kind in ("semi", "comma"):
-                return next_pos
-            else:
-                return block_end
+        if block_end is None:
+            # 制御構文の本体終端を安全に特定できない場合、後続の本番コードまで誤って除外しない
+            return j
+        cont_kind, next_pos = _classify_post_brace_continuation(
+            text, block_end - 1
+        )
+        if cont_kind in ("dot", "question", "continue", "assign", "pipe"):
+            mode = "expr_or_field"
+            k = next_pos
+        elif cont_kind in ("semi", "comma"):
+            return next_pos
+        else:
+            return block_end
 
     def handle_match_arm_body(after_arrow: int) -> tuple[bool, int]:
         """`=>` 直後の match アーム本体を処理する。`(終端確定したか, 次位置)` を返す。"""
@@ -3052,7 +3267,7 @@ def _extract_rust_root_items_detailed(cleaned: str) -> tuple[set[str], set[str]]
                 j += 1
             if not is_inner and attr_depth == 0:
                 attr_body = cleaned[attr_body_start : j - 1].strip()
-                if _RUST_MACRO_EXPORT_ATTR_RE.match(attr_body) is not None:
+                if _attr_grants_macro_export(attr_body):
                     has_macro_export = True
             i = j
             continue
@@ -3075,21 +3290,18 @@ def _extract_rust_root_items_detailed(cleaned: str) -> tuple[set[str], set[str]]
                     p += 1
                 p = skip_ws(p)
 
-        saw_const = False
-        saw_extern = False
-        while p < n:
-            m = _RUST_IDENT_RE.match(cleaned, p)
-            if m is None:
-                break
-            w = m.group(0)
-            if w in ("default", "const", "async", "unsafe", "extern"):
-                if w == "const":
-                    saw_const = True
-                elif w == "extern":
-                    saw_extern = True
-                p = skip_ws(m.end())
-                continue
-            break
+        p, saw_const, saw_extern = _skip_rust_item_modifiers(cleaned, p)
+
+        if saw_extern and p < n and cleaned[p] == "{":
+            block_end = _skip_rust_balanced(cleaned, p, "{", "}")
+            if block_end > p + 1 and cleaned[block_end - 1] == "}":
+                sub_items, sub_types = _extract_rust_root_items_detailed(
+                    cleaned[p + 1 : block_end - 1]
+                )
+                items.update(sub_items)
+                type_items.update(sub_types)
+            i = block_end
+            continue
 
         m = _RUST_RAW_OR_IDENT_RE.match(cleaned, p)
         if m is None:

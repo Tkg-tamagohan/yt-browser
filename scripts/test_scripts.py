@@ -1179,6 +1179,122 @@ jobs:
             self.assertEqual(res_labeled_loop.worst(), cdc.ERROR)
             self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_labeled_loop.items))
 
+            # 10. #[cfg(test)] 付き extern "<abi>" fn / extern "C" { ... } の境界を認識し直後の本番依存を保持する
+            for case_name, alpha_code in (
+                (
+                    "extern_c_fn",
+                    "#[cfg(test)]\n"
+                    "extern \"C\" fn test_only() {}\n"
+                    "pub fn prod() { crate::beta::b(); }\n",
+                ),
+                (
+                    "unsafe_extern_raw_abi_fn",
+                    "#[cfg(test)]\n"
+                    "pub unsafe extern r#\"C\"# fn test_raw_abi() {}\n"
+                    "pub fn prod() { crate::beta::b(); }\n",
+                ),
+                (
+                    "extern_c_block",
+                    "#[cfg(test)]\n"
+                    "extern \"C\" { fn ext_test(); }\n"
+                    "pub fn prod() { crate::beta::b(); }\n",
+                ),
+            ):
+                with self.subTest(cfg_test_extern=case_name):
+                    _write_text(src / "alpha.rs", alpha_code)
+                    res_ext = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res_ext.worst(), cdc.ERROR)
+                    self.assertIn(
+                        "alpha -> beta -> alpha",
+                        "\n".join(m for _, m in res_ext.items),
+                    )
+
+            _write_text(
+                src / "alpha.rs",
+                "#[cfg(test)]\n"
+                "extern \"C\" fn test_only() { crate::beta::b(); }\n"
+                "pub fn prod() {}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 11. 末尾ドット浮動小数点リテラル（1. 等）と as キャスト先ジェネリクス型引数（Option<u8> 等）後の本番依存を保持する
+            for case_name, alpha_code in (
+                (
+                    "trailing_dot_float",
+                    "pub fn f(x: f64) {\n"
+                    "    #[cfg(test)]\n"
+                    "    if x > 1. {}\n"
+                    "    crate::beta::b();\n"
+                    "}\n",
+                ),
+                (
+                    "float_variants",
+                    "pub fn f(x: f64) {\n"
+                    "    #[cfg(test)]\n"
+                    "    if x > 1_000. || x < 1.0e-5 {}\n"
+                    "    crate::beta::b();\n"
+                    "}\n",
+                ),
+                (
+                    "as_cast_generic_match",
+                    "pub fn f(x: *const u8) {\n"
+                    "    #[cfg(test)]\n"
+                    "    match x as *const Option<u8> { _ => () }\n"
+                    "    crate::beta::b();\n"
+                    "}\n",
+                ),
+                (
+                    "as_cast_nested_generic_match",
+                    "pub fn f(x: *const u8) {\n"
+                    "    #[cfg(test)]\n"
+                    "    match x as *const Option<Vec<u8>> { _ => () }\n"
+                    "    crate::beta::b();\n"
+                    "}\n",
+                ),
+                (
+                    "as_cast_generic_if_cmp",
+                    "pub fn f(x: *const u8) {\n"
+                    "    #[cfg(test)]\n"
+                    "    if x as *const Option<u8> != core::ptr::null() {}\n"
+                    "    crate::beta::b();\n"
+                    "}\n",
+                ),
+                (
+                    "as_cast_fn_ptr_return_generic",
+                    "pub fn f(g: unsafe extern \"C\" fn(*const Option<u8>) -> Option<u8>) {\n"
+                    "    #[cfg(test)]\n"
+                    "    match g as unsafe extern \"C\" fn(*const Option<u8>) -> Option<u8> { _ => () }\n"
+                    "    crate::beta::b();\n"
+                    "}\n",
+                ),
+            ):
+                with self.subTest(cfg_test_header_expr=case_name):
+                    _write_text(src / "alpha.rs", alpha_code)
+                    res_hdr = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res_hdr.worst(), cdc.ERROR)
+                    self.assertIn(
+                        "alpha -> beta -> alpha",
+                        "\n".join(m for _, m in res_hdr.items),
+                    )
+
+            # 末尾ドット浮動小数点・as キャスト先ジェネリクスを含むテスト本体内部の依存自体は除外される
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f(x: f64, p: *const u8) {\n"
+                "    #[cfg(test)]\n"
+                "    if x > 1. { crate::beta::b(); }\n"
+                "    #[cfg(test)]\n"
+                "    match p as *const Option<u8> { _ => crate::beta::b() }\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 制御構文ヘッダ終端が判定不能な場合でも後続の本番コードを黙って除外しない
+            stripped_fallback = cdc._strip_cfg_test_items(
+                "pub fn f() { #[cfg(test)] if unclosed_header; crate::beta::b(); }\n"
+            )
+            self.assertIn("crate::beta::b();", stripped_fallback)
+
     def test_sc06_rust_inline_mod_super_depth(self) -> None:
         # インライン mod 内の use と直接参照の双方でクレート直下へ届く super:: を検出
         with tempfile.TemporaryDirectory() as td:
@@ -1480,6 +1596,69 @@ jobs:
             # 3. #[macro_export] があっても use crate::feed::{self}; はモジュールのみ（OK）
             _write_text(src / "chat.rs", "use crate::feed::{self};\npub fn run() { feed::poll(); }\n")
             self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 4. 非テスト構成の #[cfg_attr(..., macro_export)] による条件付き公開マクロを lib 逆参照として検出する
+            for case_name, attr in (
+                ("cfg_attr_unix", "#[cfg_attr(unix, macro_export)]"),
+                ("cfg_attr_multi_args", "#[cfg_attr(unix, allow(unused), macro_export(local_inner_macros))]"),
+                ("cfg_attr_nested_non_test", "#[cfg_attr(unix, cfg_attr(not(test), macro_export))]"),
+                ("cfg_attr_any_test_unix", "#[cfg_attr(any(test, unix), macro_export)]"),
+            ):
+                with self.subTest(cfg_attr_macro_export=case_name):
+                    _write_text(
+                        src / "lib.rs",
+                        f"mod feed;\nmod chat;\n{attr}\nmacro_rules! root_helper {{ () => {{}}; }}\n",
+                    )
+                    _write_text(
+                        src / "feed.rs",
+                        "#[cfg(unix)]\npub fn call_unix() { crate::root_helper!(); }\n",
+                    )
+                    _write_text(src / "chat.rs", "pub fn noop() {}\n")
+                    res_cfg_mac = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res_cfg_mac.worst(), cdc.ERROR)
+                    self.assertIn(
+                        "ドメイン層 `feed` が上位層 `lib` を逆参照",
+                        "\n".join(m for _, m in res_cfg_mac.items),
+                    )
+
+            # 5. テスト構成限定の #[cfg_attr(test, macro_export)] 等は本番公開マクロとして登録しない
+            _write_text(src / "feed.rs", "pub fn poll() {}\n")
+            _write_text(src / "chat.rs", "use crate::feed;\npub fn run() { feed::poll(); }\n")
+            for case_name, attr in (
+                ("cfg_attr_test_only", "#[cfg_attr(test, macro_export)]"),
+                ("cfg_attr_all_test_unix", "#[cfg_attr(all(test, unix), macro_export)]"),
+                ("cfg_attr_nested_test", "#[cfg_attr(unix, cfg_attr(test, macro_export))]"),
+            ):
+                with self.subTest(cfg_attr_test_only_macro=case_name):
+                    _write_text(
+                        src / "lib.rs",
+                        f"mod feed;\nmod chat;\n{attr}\nmacro_rules! feed {{ () => {{}}; }}\n",
+                    )
+                    self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+        # lib.rs 直下の extern "<abi>" fn・extern "C" { pub fn ...; } への逆参照を検出する
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(
+                src / "lib.rs",
+                "mod feed;\n"
+                "pub extern \"C\" fn helper() {}\n"
+                "pub extern r#\"C\"# fn raw_helper() {}\n"
+                "extern \"C\" { pub fn foreign_helper(); }\n",
+            )
+            for case_name, feed_code in (
+                ("extern_c_fn", "pub fn run() { crate::helper(); }\n"),
+                ("extern_raw_abi_fn", "pub fn run() { crate::raw_helper(); }\n"),
+                ("extern_c_block_fn", "pub fn run() { unsafe { crate::foreign_helper(); } }\n"),
+            ):
+                with self.subTest(lib_extern_root=case_name):
+                    _write_text(src / "feed.rs", feed_code)
+                    res_ext_lib = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res_ext_lib.worst(), cdc.ERROR)
+                    self.assertIn(
+                        "ドメイン層 `feed` が上位層 `lib` を逆参照",
+                        "\n".join(m for _, m in res_ext_lib.items),
+                    )
 
         # 上位層モジュールと同名の lib.rs 直下関数（mod commands; + fn commands()）による lib <-> commands 循環も検出する
         with tempfile.TemporaryDirectory() as td:
