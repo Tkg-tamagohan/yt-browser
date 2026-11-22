@@ -2,6 +2,11 @@
 
 use std::sync::{Mutex, MutexGuard};
 
+/// Windows でコンソール系の子プロセス（mpv.exe / yt-dlp.exe）を spawn すると
+/// 黒いコンソール窓が一瞬表示される。CREATE_NO_WINDOW で抑制する。
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Mutex のポイズンを握りつぶしてロックする。ロック保持中にパニックしない
 /// 実装なので安全側に倒す。
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

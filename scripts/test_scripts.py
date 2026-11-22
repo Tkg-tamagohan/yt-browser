@@ -958,6 +958,49 @@ jobs:
             self.assertEqual(res3.worst(), cdc.ERROR)
             self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res3.items))
 
+            # 4. セミコロン省略の波括弧マクロ呼び出し直後の本番依存は保持され、式継続付きマクロは全体を除外
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f() {\n"
+                "    #[cfg(test)]\n"
+                "    assert! { true }\n"
+                "    crate::beta::b();\n"
+                "}\n",
+            )
+            res_mac_stmt = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_mac_stmt.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_mac_stmt.items))
+
+            _write_text(
+                src / "alpha.rs",
+                "#[cfg(test)]\n"
+                "std::assert! { true }\n"
+                "pub fn f() { crate::beta::b(); }\n",
+            )
+            res_mac_item = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_mac_item.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_mac_item.items))
+
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f(cond: bool, n: i32) {\n"
+                "    #[cfg(test)]\n"
+                "    my_macro! { 1 } + crate::beta::b();\n"
+                "    #[cfg(test)]\n"
+                "    my_macro! { 1 }.apply(crate::beta::b());\n"
+                "    match n {\n"
+                "        #[cfg(test)]\n"
+                "        0 => if cond {\n"
+                "            let _ = 1;\n"
+                "        } else {\n"
+                "            crate::beta::b();\n"
+                "        }\n"
+                "        _ => {}\n"
+                "    }\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
     def test_sc06_rust_inline_mod_super_depth(self) -> None:
         # インライン mod 内の use と直接参照の双方でクレート直下へ届く super:: を検出
         with tempfile.TemporaryDirectory() as td:
@@ -1103,18 +1146,77 @@ jobs:
                     self.assertIn(f"下位共有層 `{shared_mod}`", msgs)
                     self.assertIn("上位層 `error`", msgs)
 
-        # 上位層（commands）から error・ドメイン層・下位共有層への参照、および非循環な一方向ドメイン間参照は OK
+        # 上位層（lib / commands / error）から下位層への非循環参照、および非循環な一方向ドメイン間参照は OK
         with tempfile.TemporaryDirectory() as td:
             src = Path(td)
-            _write_text(src / "error.rs", "pub struct UiError;\n")
+            _write_text(
+                src / "lib.rs",
+                "mod commands;\nmod error;\nmod db;\nmod util;\nmod innertube;\nmod chat;\n"
+                "pub fn run() { commands::cmd(); }\n",
+            )
+            _write_text(src / "error.rs", "use crate::db::Db;\npub struct UiError(Db);\n")
             _write_text(src / "db.rs", "pub struct Db;\n")
-            _write_text(src / "innertube.rs", "use crate::db::Db;\npub struct InnerTube(Db);\n")
+            _write_text(
+                src / "util.rs",
+                "#[cfg(windows)]\npub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;\n"
+                "#[macro_export]\nmacro_rules! my_util_mac { () => {}; }\n",
+            )
+            _write_text(
+                src / "innertube.rs",
+                "use crate::db::Db;\nuse std::path::Path;\n"
+                "pub struct InnerTube(Db);\n"
+                "pub fn f() { crate::my_util_mac!(); let _ = (crate::util::CREATE_NO_WINDOW, Path::new(\".\")); }\n",
+            )
             _write_text(src / "chat.rs", "use crate::innertube::InnerTube;\npub struct Chat(InnerTube);\n")
             _write_text(
                 src / "commands" / "mod.rs",
-                "use crate::chat::Chat;\nuse crate::db::Db;\nuse crate::error::UiError;\n",
+                "use crate::chat::Chat;\nuse crate::db::Db;\nuse crate::error::UiError;\n"
+                "pub fn cmd() -> (Chat, Db, UiError) { todo!() }\n",
             )
             self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+        # lib.rs 直下で定義した定数・関数等への crate:: / super:: 参照を上位層 lib への逆参照として検出
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(
+                src / "lib.rs",
+                "mod mpv;\nmod util;\n"
+                "#[cfg(windows)]\npub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;\n"
+                "pub(crate) fn root_helper() {}\n",
+            )
+            _write_text(
+                src / "mpv" / "spawn.rs",
+                "pub fn launch() { let _ = crate::CREATE_NO_WINDOW; }\n",
+            )
+            _write_text(
+                src / "util.rs",
+                "pub fn f() { super::root_helper(); }\n",
+            )
+            res_root = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_root.worst(), cdc.ERROR)
+            msgs_root = "\n".join(m for _, m in res_root.items)
+            self.assertIn("ドメイン層 `mpv` が上位層 `lib` を逆参照", msgs_root)
+            self.assertIn("下位共有層 `util` が上位層 `lib` を逆参照", msgs_root)
+
+        # 上位層内の循環（commands <-> error および lib <-> commands）も検出する
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "commands" / "mod.rs", "use crate::error::UiError;\npub fn cmd() -> UiError { UiError }\n")
+            _write_text(src / "error.rs", "use crate::commands::cmd;\npub struct UiError;\npub fn f() { let _ = cmd(); }\n")
+            res_upper_cycle = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_upper_cycle.worst(), cdc.ERROR)
+            self.assertIn("commands -> error -> commands", "\n".join(m for _, m in res_upper_cycle.items))
+
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(
+                src / "lib.rs",
+                "mod commands;\npub(crate) const ROOT_FLAG: bool = true;\npub fn run() { commands::cmd(); }\n",
+            )
+            _write_text(src / "commands" / "mod.rs", "pub fn cmd() { let _ = crate::ROOT_FLAG; }\n")
+            res_lib_cycle = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_lib_cycle.worst(), cdc.ERROR)
+            self.assertIn("commands -> lib -> commands", "\n".join(m for _, m in res_lib_cycle.items))
 
 
 def _ws_send_frame(conn: socket.socket, opcode: int, payload: bytes) -> None:

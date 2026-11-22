@@ -23,11 +23,6 @@ mod yt;
 
 use std::path::PathBuf;
 
-/// Windows でコンソール系の子プロセス（mpv.exe / yt-dlp.exe）を spawn すると
-/// 黒いコンソール窓が一瞬表示される。CREATE_NO_WINDOW で抑制する。
-#[cfg(windows)]
-pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tracing_appender::non_blocking::WorkerGuard;

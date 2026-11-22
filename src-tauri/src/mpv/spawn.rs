@@ -18,7 +18,7 @@ pub(crate) async fn launch(
     let mut mpv_cmd = tokio::process::Command::new("mpv");
     mpv_cmd.args(args).kill_on_drop(true);
     #[cfg(windows)]
-    mpv_cmd.creation_flags(crate::CREATE_NO_WINDOW);
+    mpv_cmd.creation_flags(crate::util::CREATE_NO_WINDOW);
     let mut child = mpv_cmd.spawn().map_err(MpvError::Spawn)?;
 
     if let Err(e) = wait_for_socket(socket_path, &mut child).await {
