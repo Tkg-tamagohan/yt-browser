@@ -8,7 +8,7 @@ Tauri の bundle.windows.signCommand から呼び出される Windows Authentico
 Windows SDK の signtool.exe で SHA-256 署名と RFC 3161 タイムスタンプを付与する。
 秘密鍵ファイル（.pfx）やパスワードを引数・環境変数へ残さない前提で動作する。
 環境変数 CODE_SIGN_AUDIT_DIR が設定されている場合は開始・成功・失敗の監査 JSON を記録し、
-CODE_SIGN_CAPTURE_DIR が設定されている場合は NSIS 一時アンインストーラの署名済みコピーを保全する。
+CODE_SIGN_CAPTURE_DIR が設定されている場合は NSIS 梱包用アプリ本体と一時アンインストーラの署名済みコピーを保全する。
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -126,12 +126,16 @@ try {
     }
 
     $capturedPath = ''
+    $captureKind = ''
     $captureEnabled = (-not [string]::IsNullOrEmpty($captureDir)) -and (Test-Path -LiteralPath $captureDir -PathType Container)
     if ($captureEnabled) {
-        # NSIS の !uninstfinalize が渡す一時アンインストーラは直後に削除されるため、
-        # 本体・セットアップ・プラグイン DLL 以外の署名済みバイナリを検証用に保全する。
-        $isTransientUninstaller = ($targetExt -ine '.dll') -and ($targetName -ine 'yt-browser.exe') -and ($targetName -inotlike '*-setup.exe')
-        if ($isTransientUninstaller) {
+        # Tauri v2 の NSIS バンドラはビルド完了後に yt-browser.exe を未署名原本へ復元し、
+        # !uninstfinalize が渡す一時アンインストーラは直後に削除されるため、
+        # アプリ本体および一時アンインストーラの署名済みコピーを検証用に保全する。
+        $isAppBinary = ($targetName -ieq 'yt-browser.exe')
+        $isTransientUninstaller = ($targetExt -ine '.dll') -and (-not $isAppBinary) -and ($targetName -inotlike '*-setup.exe')
+        if ($isAppBinary -or $isTransientUninstaller) {
+            $captureKind = if ($isAppBinary) { 'app' } else { 'uninstaller' }
             $captureLeaf = if ($targetExt -ieq '.exe') { "$invocationId-$targetName" } else { "$invocationId-$targetName.exe" }
             $capturedPath = Join-Path $captureDir $captureLeaf
             Copy-Item -LiteralPath $resolvedTarget -Destination $capturedPath -Force
@@ -144,6 +148,7 @@ try {
             target       = $resolvedTarget
             leaf         = $targetName
             ext          = $targetExt
+            captureKind  = $captureKind
             capturedPath = $capturedPath
             completedAt  = [DateTimeOffset]::UtcNow.ToString('o')
         }

@@ -215,18 +215,34 @@ try {
     }
     Write-Host "[WIN-SIGN-07] OK: アンインストーラ署名失敗を監査ログ経由で拒否 (exit=$($res07.ExitCode))"
 
-    # WIN-SIGN-08: アンインストーラ署名キャプチャ欠落時の拒否と、正常キャプチャ存在時の通過
-    $auditMissingCapDir = Join-Path $sandbox 'audit-missing-cap'
-    New-Item -ItemType Directory -Path $auditMissingCapDir -Force | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $auditMissingCapDir "start-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe' } | ConvertTo-Json), $utf8NoBom)
-    [System.IO.File]::WriteAllText((Join-Path $auditMissingCapDir "ok-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe'; capturedPath = '' } | ConvertTo-Json), $utf8NoBom)
+    # WIN-SIGN-08: 本体・アンインストーラの署名キャプチャ欠落拒否と、原本復元後も通過すること
+    $auditMissingUninstDir = Join-Path $sandbox 'audit-missing-uninst-cap'
+    New-Item -ItemType Directory -Path $auditMissingUninstDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $auditMissingUninstDir "start-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'yt-browser.exe' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditMissingUninstDir "ok-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'yt-browser.exe'; captureKind = 'app'; capturedPath = $signToolPath } | ConvertTo-Json), $utf8NoBom)
 
-    $res08a = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $signToolPath, '-AuditDir', $auditMissingCapDir)
+    $res08a = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $signToolPath, '-AuditDir', $auditMissingUninstDir)
     if ($res08a.ExitCode -eq 0) {
         throw "[WIN-SIGN-08] アンインストーラ署名キャプチャ欠落なのに verify_windows_signature.ps1 が成功しました。"
     }
     if ($res08a.Output -notmatch 'uninstfinalize') {
         throw "[WIN-SIGN-08] アンインストーラ欠落エラーの理由が想定外です: $($res08a.Output)"
+    }
+
+    $auditMissingAppDir = Join-Path $sandbox 'audit-missing-app-cap'
+    New-Item -ItemType Directory -Path $auditMissingAppDir -Force | Out-Null
+    $okUninstOnlyId = '11111111111111111111111111111112'
+    [System.IO.File]::WriteAllText((Join-Path $auditMissingAppDir "start-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditMissingAppDir "ok-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe'; captureKind = ''; capturedPath = '' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditMissingAppDir "start-$okUninstOnlyId.json"), (@{ id = $okUninstOnlyId; target = $signToolPath; leaf = 'nst1234.tmp' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditMissingAppDir "ok-$okUninstOnlyId.json"), (@{ id = $okUninstOnlyId; target = $signToolPath; leaf = 'nst1234.tmp'; captureKind = 'uninstaller'; capturedPath = $signToolPath } | ConvertTo-Json), $utf8NoBom)
+
+    $res08a2 = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $signToolPath, '-AuditDir', $auditMissingAppDir)
+    if ($res08a2.ExitCode -eq 0) {
+        throw "[WIN-SIGN-08] アプリ本体署名キャプチャ欠落なのに verify_windows_signature.ps1 が成功しました。"
+    }
+    if ($res08a2.Output -notmatch 'yt-browser\.exe') {
+        throw "[WIN-SIGN-08] アプリ本体欠落エラーの理由が想定外です: $($res08a2.Output)"
     }
 
     $auditValidCapDir = Join-Path $sandbox 'audit-valid-cap'
@@ -297,39 +313,60 @@ try {
             throw "[WIN-SIGN-08] sign_windows.ps1 の捕捉経路テストに失敗しました ($simTarget, exit=$($rSign.ExitCode)): $($rSign.Output)"
         }
     }
-    # NSIS が !uninstfinalize 直後に一時アンインストーラを削除する挙動を再現する
+    # NSIS が !uninstfinalize 直後に一時アンインストーラを削除する挙動と、
+    # Tauri v2 がビルド完了時に yt-browser.exe を未署名原本へ復元する挙動の両方を再現する
     Remove-Item -LiteralPath $simUninst -Force
+    Copy-Item -LiteralPath $unsignedPe -Destination $simApp -Force
 
-    $capturedFiles = @(Get-ChildItem -LiteralPath $captureValidDir -File -ErrorAction SilentlyContinue)
-    if ($capturedFiles.Count -ne 1 -or $capturedFiles[0].Name -notlike '*-nsu1234.exe') {
+    $capturedFiles = @(Get-ChildItem -LiteralPath $captureValidDir -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    $hasAppCapture = @($capturedFiles | Where-Object { $_.Name -like '*-yt-browser.exe' }).Count -eq 1
+    $hasUninstCapture = @($capturedFiles | Where-Object { $_.Name -like '*-nsu1234.exe' }).Count -eq 1
+    if ($capturedFiles.Count -ne 2 -or (-not $hasAppCapture) -or (-not $hasUninstCapture)) {
         $names = ($capturedFiles | ForEach-Object { $_.Name }) -join ', '
-        throw "[WIN-SIGN-08] 一時アンインストーラのみが 1 件捕捉されるべきですが実測は ($($capturedFiles.Count) 件: $names) です。"
+        throw "[WIN-SIGN-08] 本体と一時アンインストーラの 2 件が捕捉されるべきですが実測は ($($capturedFiles.Count) 件: $names) です。"
     }
 
-    # build_and_sign_windows.ps1 と同様に string[] 配列で複数対象を渡し、捕捉済みアンインストーラまで検証する
-    $verify08Output = (& $verifyScript -TargetPaths @($simApp, $simSetup) -AuditDir $auditValidCapDir *>&1 | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+    # build_and_sign_windows.ps1 と同様にセットアップのみ -TargetPaths へ渡し、本体とアンインストーラは監査キャプチャ経由で検証する
+    $verify08Output = (& $verifyScript -TargetPaths @($simSetup) -AuditDir $auditValidCapDir *>&1 | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
     if ($LASTEXITCODE -ne 0) {
-        throw "[WIN-SIGN-08] sign_windows.ps1 生成の監査ログ・捕捉アンインストーラ検証が失敗しました: $verify08Output"
+        throw "[WIN-SIGN-08] sign_windows.ps1 生成の監査ログ・捕捉バイナリ検証が失敗しました: $verify08Output"
     }
-    if ($verify08Output -notmatch '検証成功:.*nsu1234\.exe') {
-        throw "[WIN-SIGN-08] 捕捉済みアンインストーラ (nsu1234.exe) の検証成功出力が確認できません: $verify08Output"
+    foreach ($expectedName in @('yt-browser\.exe', 'nsu1234\.exe', 'yt-browser_0\.11\.11_x64-setup\.exe')) {
+        if ($verify08Output -notmatch "検証成功:.*$expectedName") {
+            throw "[WIN-SIGN-08] 検証成功出力に '$expectedName' が確認できません: $verify08Output"
+        }
     }
     $okUninstId = '22222222222222222222222222222222'
+    $okAppId = '33333333333333333333333333333333'
 
     $auditUnsignedCapDir = Join-Path $sandbox 'audit-unsigned-cap'
     New-Item -ItemType Directory -Path $auditUnsignedCapDir -Force | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedCapDir "start-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe' } | ConvertTo-Json), $utf8NoBom)
-    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedCapDir "ok-$okMainId.json"), (@{ id = $okMainId; target = $signToolPath; leaf = 'signtool.exe'; capturedPath = '' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedCapDir "start-$okAppId.json"), (@{ id = $okAppId; target = $signToolPath; leaf = 'yt-browser.exe' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedCapDir "ok-$okAppId.json"), (@{ id = $okAppId; target = $signToolPath; leaf = 'yt-browser.exe'; captureKind = 'app'; capturedPath = $signToolPath } | ConvertTo-Json), $utf8NoBom)
     [System.IO.File]::WriteAllText((Join-Path $auditUnsignedCapDir "start-$okUninstId.json"), (@{ id = $okUninstId; target = $unsignedPe; leaf = 'unsigned_valid_pe.exe' } | ConvertTo-Json), $utf8NoBom)
-    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedCapDir "ok-$okUninstId.json"), (@{ id = $okUninstId; target = $unsignedPe; leaf = 'unsigned_valid_pe.exe'; capturedPath = $unsignedPe } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedCapDir "ok-$okUninstId.json"), (@{ id = $okUninstId; target = $unsignedPe; leaf = 'unsigned_valid_pe.exe'; captureKind = 'uninstaller'; capturedPath = $unsignedPe } | ConvertTo-Json), $utf8NoBom)
     $res08c = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $signToolPath, '-AuditDir', $auditUnsignedCapDir)
     if ($res08c.ExitCode -eq 0) {
         throw "[WIN-SIGN-08] 未署名のキャプチャ済みアンインストーラで verify_windows_signature.ps1 が成功しました。"
     }
     if ($res08c.Output -notmatch 'No signature found') {
-        throw "[WIN-SIGN-08] 未署名キャプチャの拒否理由が想定外です: $($res08c.Output)"
+        throw "[WIN-SIGN-08] 未署名アンインストーラキャプチャの拒否理由が想定外です: $($res08c.Output)"
     }
-    Write-Host "[WIN-SIGN-08] OK: アンインストーラ欠落拒否・未署名キャプチャ拒否・署名済みキャプチャ通過を確認"
+
+    $auditUnsignedAppCapDir = Join-Path $sandbox 'audit-unsigned-app-cap'
+    New-Item -ItemType Directory -Path $auditUnsignedAppCapDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedAppCapDir "start-$okAppId.json"), (@{ id = $okAppId; target = $unsignedPe; leaf = 'yt-browser.exe' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedAppCapDir "ok-$okAppId.json"), (@{ id = $okAppId; target = $unsignedPe; leaf = 'yt-browser.exe'; captureKind = 'app'; capturedPath = $unsignedPe } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedAppCapDir "start-$okUninstId.json"), (@{ id = $okUninstId; target = $signToolPath; leaf = 'nst1234.tmp' } | ConvertTo-Json), $utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $auditUnsignedAppCapDir "ok-$okUninstId.json"), (@{ id = $okUninstId; target = $signToolPath; leaf = 'nst1234.tmp'; captureKind = 'uninstaller'; capturedPath = $signToolPath } | ConvertTo-Json), $utf8NoBom)
+    $res08d = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $signToolPath, '-AuditDir', $auditUnsignedAppCapDir)
+    if ($res08d.ExitCode -eq 0) {
+        throw "[WIN-SIGN-08] 未署名のキャプチャ済みアプリ本体で verify_windows_signature.ps1 が成功しました。"
+    }
+    if ($res08d.Output -notmatch 'No signature found') {
+        throw "[WIN-SIGN-08] 未署名アプリ本体キャプチャの拒否理由が想定外です: $($res08d.Output)"
+    }
+    Write-Host "[WIN-SIGN-08] OK: 本体・アンインストーラ欠落拒否、未署名キャプチャ拒否、原本復元後の署名検証通過を確認"
 
     # WIN-SIGN-09: 複数証明書 PFX・秘密鍵なし PFX が Import-PfxCertificate 呼び出し前に拒否され、
     # かつ有効な秘密鍵付き単一証明書 PFX のみが EphemeralKeySet 事前検証を通過してスパイへ到達すること

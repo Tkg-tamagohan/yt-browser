@@ -150,7 +150,10 @@ try {
         throw "Tauri updater 用署名 (*.exe.sig) が見つかりません: $nsisDir"
     }
 
-    $verifyTargets = @($appExe) + @($nsisExes | ForEach-Object { $_.FullName })
+    # Tauri v2 の NSIS バンドラは梱包用に yt-browser.exe へ署名したあとビルド終了時に
+    # 未パッチ・未署名の原本へ戻すため、アプリ本体とアンインストーラの署名検証は
+    # -AuditDir 経由のキャプチャ済み署名バイナリ（各 1 件以上必須）で行う。
+    $verifyTargets = @($nsisExes | ForEach-Object { $_.FullName })
     $verifyScript = Join-Path $repoRoot 'scripts\verify_windows_signature.ps1'
     & $verifyScript -TargetPaths $verifyTargets -AuditDir $auditDir -ExpectedThumbprint $thumbprint -TrustCertPath $cerPath
     if ($LASTEXITCODE -ne 0) {

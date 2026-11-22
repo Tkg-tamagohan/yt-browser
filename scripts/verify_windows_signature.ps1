@@ -9,7 +9,7 @@ Windows バイナリの Authenticode 署名（構造・信頼チェーン・SHA-
 CI ランナー上でのみ -TrustCertPath を指定することで、秘密鍵を含まない公開証明書（.cer）を
 Cert:\LocalMachine\Root へ一時登録して検証し、finally で必ず削除する。
 -AuditDir を指定した場合は sign_windows.ps1 の監査ログ（失敗ゼロ・未完了ゼロ・対象一致・
-NSIS アンインストーラのキャプチャ存在）を検証し、キャプチャ済みアンインストーラも署名検証対象へ加える。
+アプリ本体と NSIS アンインストーラのキャプチャ存在）を検証し、両キャプチャも署名検証対象へ加える。
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -61,7 +61,8 @@ if (-not [string]::IsNullOrWhiteSpace($AuditDir)) {
     $okFiles = @(Get-ChildItem -LiteralPath $AuditDir -Filter 'ok-*.json' -File -ErrorAction SilentlyContinue)
     $okById = @{}
     $okTargets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    $capturedPaths = @()
+    $appCapturedPaths = @()
+    $uninstallerCapturedPaths = @()
     foreach ($of in $okFiles) {
         $okObj = [System.IO.File]::ReadAllText($of.FullName, $utf8NoBom) | ConvertFrom-Json
         $okById[$okObj.id] = $okObj
@@ -69,7 +70,19 @@ if (-not [string]::IsNullOrWhiteSpace($AuditDir)) {
             [void]$okTargets.Add($okObj.target)
         }
         if ($null -ne $okObj.PSObject.Properties['capturedPath'] -and -not [string]::IsNullOrWhiteSpace($okObj.capturedPath)) {
-            $capturedPaths += $okObj.capturedPath
+            $kind = ''
+            if ($null -ne $okObj.PSObject.Properties['captureKind'] -and -not [string]::IsNullOrWhiteSpace($okObj.captureKind)) {
+                $kind = $okObj.captureKind.Trim().ToLowerInvariant()
+            } elseif ($null -ne $okObj.PSObject.Properties['leaf'] -and $okObj.leaf -ieq 'yt-browser.exe') {
+                $kind = 'app'
+            } else {
+                $kind = 'uninstaller'
+            }
+            if ($kind -eq 'app') {
+                $appCapturedPaths += $okObj.capturedPath
+            } else {
+                $uninstallerCapturedPaths += $okObj.capturedPath
+            }
         }
     }
 
@@ -86,20 +99,23 @@ if (-not [string]::IsNullOrWhiteSpace($AuditDir)) {
         }
     }
 
-    if ($capturedPaths.Count -eq 0) {
+    if ($appCapturedPaths.Count -eq 0) {
+        throw "署名監査ログにアプリ本体 (yt-browser.exe) の署名キャプチャが見つかりません。"
+    }
+    if ($uninstallerCapturedPaths.Count -eq 0) {
         throw "署名監査ログに NSIS アンインストーラの署名キャプチャが見つかりません (!uninstfinalize の未実行または署名失敗の可能性があります)。"
     }
 
-    foreach ($cap in $capturedPaths) {
+    foreach ($cap in @($appCapturedPaths + $uninstallerCapturedPaths)) {
         if (-not (Test-Path -LiteralPath $cap -PathType Leaf)) {
-            throw "キャプチャ済みアンインストーラが見つかりません: $cap"
+            throw "キャプチャ済み署名ファイルが見つかりません: $cap"
         }
         $resolvedCap = (Resolve-Path -LiteralPath $cap).ProviderPath
         if ($resolvedTargets -notcontains $resolvedCap) {
             $resolvedTargets += $resolvedCap
         }
     }
-    Write-Host "署名監査ログ検証 OK (実行=$($startFiles.Count) 件、失敗=0 件、アンインストーラ捕捉=$($capturedPaths.Count) 件)"
+    Write-Host "署名監査ログ検証 OK (実行=$($startFiles.Count) 件、失敗=0 件、本体捕捉=$($appCapturedPaths.Count) 件、アンインストーラ捕捉=$($uninstallerCapturedPaths.Count) 件)"
 }
 
 $normalizedExpected = ''
