@@ -94,15 +94,17 @@
     });
     if (!yes) return;
     busy = true;
+    let imported = false;
     try {
       await beginImportQueueGuard();
       await invoke("data_import", { path });
+      imported = true;
       notify(t("settings.ops.imported", { path }));
       await Promise.all([loadSize(), Promise.resolve(onImported?.())]);
     } catch (e) {
       notify(t("settings.ops.importFailed", { message: asErrorMessage(e) }));
     } finally {
-      endImportQueueGuard();
+      endImportQueueGuard(imported);
       busy = false;
     }
   }

@@ -245,15 +245,31 @@ pub async fn video_channel_ref(
     )
     .await?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    // 単一動画ではトップレベルにメタが来る。プレイリスト形で返る場合は
-    // entries[0] を同じ優先順で見る
-    let info = extract_video_channel_info(&v);
-    if !info.candidates.is_empty() {
-        return Ok(info);
+    select_video_channel_info(&v)
+}
+
+/// yt-dlp の `--dump-single-json` 応答から `VideoChannelInfo` を選択する（仕様決定 U・DY）。
+/// 単一動画のトップレベルまたは `entries[0]` のいずれかに参照候補があればそれを優先し、
+/// 参照候補が無くても `channel_title` が取れていれば履歴検索用メタとして返す。
+fn select_video_channel_info(v: &serde_json::Value) -> Result<VideoChannelInfo, YtError> {
+    let top = extract_video_channel_info(v);
+    if !top.candidates.is_empty() {
+        return Ok(top);
     }
-    if let Some(first) = v.get("entries").and_then(|e| e.get(0)) {
-        let info = extract_video_channel_info(first);
+    let first = v
+        .get("entries")
+        .and_then(|e| e.get(0))
+        .map(extract_video_channel_info);
+    if let Some(info) = &first {
         if !info.candidates.is_empty() {
+            return Ok(info.clone());
+        }
+    }
+    if top.channel_title.is_some() {
+        return Ok(top);
+    }
+    if let Some(info) = first {
+        if info.channel_title.is_some() {
             return Ok(info);
         }
     }
@@ -706,6 +722,38 @@ mod tests {
         let info2 = extract_video_channel_info(&v2);
         assert_eq!(info2.channel_title.as_deref(), Some("UploaderCH"));
         assert_eq!(info2.title, None);
+
+        // 参照候補が無くチャンネル名のみ存在する応答でも情報を捨てずに返す
+        let name_only = serde_json::json!({
+            "channel": "NameOnlyCH",
+            "title": "NameOnlyTitle",
+        });
+        let selected = select_video_channel_info(&name_only).unwrap();
+        assert!(selected.candidates.is_empty());
+        assert_eq!(selected.channel_title.as_deref(), Some("NameOnlyCH"));
+        assert_eq!(selected.title.as_deref(), Some("NameOnlyTitle"));
+
+        // entries[0] に参照候補がある場合はトップレベルの名前のみより優先する
+        let entries_with_cand = serde_json::json!({
+            "channel": "PlaylistOwner",
+            "entries": [{
+                "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+                "channel": "VideoCH",
+                "title": "VideoTitle"
+            }]
+        });
+        let selected2 = select_video_channel_info(&entries_with_cand).unwrap();
+        assert_eq!(
+            selected2.candidates,
+            vec!["UCuAXFkgsw1L7xaCfnd5JJOw".to_string()]
+        );
+        assert_eq!(selected2.channel_title.as_deref(), Some("VideoCH"));
+
+        // 参照候補もチャンネル名も無い空応答は NoChannelId
+        assert!(matches!(
+            select_video_channel_info(&serde_json::json!({"title": "OnlyTitle"})),
+            Err(YtError::NoChannelId)
+        ));
     }
 
     /// 起動時画質の解決順（実装レベル細目「PiP 画質の解決順」）。

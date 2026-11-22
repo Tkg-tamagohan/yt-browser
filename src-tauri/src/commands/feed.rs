@@ -690,6 +690,30 @@ mod tests {
         assert_eq!(res2.channel_title.as_deref(), Some("CreatorC"));
         assert_eq!(res2.title.as_deref(), Some("動画C"));
         srv2.abort();
+
+        // InnerTube が 500 かつ yt-dlp が参照候補なし・チャンネル名のみ返したとき、
+        // channel_id / input は None のまま履歴検索用 channel_title / title を返す
+        let script_name_only = write_fake_ytdlp(
+            "nameonly",
+            "@echo off\r\necho {\"channel\":\"NameOnlyCH\",\"title\":\"NameOnlyVideo\"}\r\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"channel\":\"NameOnlyCH\",\"title\":\"NameOnlyVideo\"}'\n",
+        );
+        db.setting_set(SETTING_YTDLP_PATH, script_name_only.0.to_str().unwrap())
+            .unwrap();
+        let (tube3, srv3) = spawn_mock_innertube("500 Internal Server Error", "{}").await;
+        let res3 = resolve_video_channel_with_timeout(
+            "vid00000005",
+            &db,
+            &tube3,
+            &resolver,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(res3.channel_id, None);
+        assert_eq!(res3.input, None);
+        assert_eq!(res3.channel_title.as_deref(), Some("NameOnlyCH"));
+        assert_eq!(res3.title.as_deref(), Some("NameOnlyVideo"));
+        srv3.abort();
     }
 
     #[tokio::test]

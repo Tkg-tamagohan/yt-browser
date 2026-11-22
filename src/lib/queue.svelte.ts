@@ -32,6 +32,7 @@ import {
 import { sanitizeMediaTitle } from "./copy-link-logic";
 import {
   armPlanFor,
+  flushDeferredPlaylistPersists,
   headPlayingAfterRemove,
   indexAfterMove,
   indexAfterRemove,
@@ -40,12 +41,14 @@ import {
   persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
+  recordDeferredPlaylistPersist,
   resolveAddTarget,
   restoredIndex,
   restoredPlaylistIndex,
   saveItemsOf,
   shouldPersistPlaylistQueue,
   shuffleTail,
+  type PlaylistPersistOp,
   type QueueEntry,
   type QueuePersistItem,
 } from "./queue-logic";
@@ -248,51 +251,66 @@ function persistTempQueue(): void {
 
 // `data_import` 実行中および世代更新後に、旧プレイリストキューの進捗保存や削除が
 // 新しく復元された同一 playlistId へ書き戻される競合を防ぐガード（FR-94、仕様決定 DX）。
+// ガード中に起きた操作はプレイリスト ID ごとに最後の 1 件を保留し、インポート失敗時は
+// `persistChain` へ戻して保存を復元し、成功時は破棄する。
 let playlistPersistGen = 0;
 let playlistImportSuspended = false;
+const deferredPlaylistPersists = new Map<number, PlaylistPersistOp>();
 
-/// プレイリストキューの現在位置を DB へ保存する（FR-48、仕様決定 BY）。
-/// playlist_id と現在位置のみを書き、項目列は playlist_items を正として
-/// 保存しない。キューが存在する間の各ミューテーションの後に呼ぶ。
-/// 失敗してもメモリ上のキュー操作は完了済みのため、通知だけ出す
-function persistPlaylistQueue(q: QueueState): void {
-  if (q.playlistId === null || playlistImportSuspended) return;
-  const playlistId = q.playlistId;
-  const currentIndex = q.index;
-  const gen = playlistPersistGen;
+function enqueuePlaylistPersistOp(
+  playlistId: number,
+  op: PlaylistPersistOp,
+  gen: number,
+): void {
   persistChain = persistChain
     .then(() => {
-      if (!shouldPersistPlaylistQueue(gen, playlistPersistGen, playlistImportSuspended)) {
+      if (
+        !shouldPersistPlaylistQueue(
+          gen,
+          playlistPersistGen,
+          playlistImportSuspended,
+        )
+      ) {
         return;
       }
-      return invoke<unknown>("queue_playlist_save", {
-        playlistId,
-        currentIndex,
-      }).then(() => {});
+      return op.kind === "save"
+        ? invoke<unknown>("queue_playlist_save", {
+            playlistId,
+            currentIndex: op.currentIndex,
+          }).then(() => {})
+        : invoke<unknown>("queue_playlist_clear", { playlistId }).then(
+            () => {},
+          );
     })
     .catch((e) => {
       notify(t("queue.persistFailed", { message: asErrorMessage(e) }));
     });
 }
 
+/// プレイリストキューの現在位置を DB へ保存する（FR-48、仕様決定 BY）。
+/// playlist_id と現在位置のみを書き、項目列は playlist_items を正として
+/// 保存しない。キューが存在する間の各ミューテーションの後に呼ぶ。
+/// 失敗してもメモリ上のキュー操作は完了済みのため、通知だけ出す
+function persistPlaylistQueue(q: QueueState): void {
+  if (q.playlistId === null) return;
+  const op: PlaylistPersistOp = { kind: "save", currentIndex: q.index };
+  if (playlistImportSuspended) {
+    recordDeferredPlaylistPersist(deferredPlaylistPersists, q.playlistId, op);
+    return;
+  }
+  enqueuePlaylistPersistOp(q.playlistId, op, playlistPersistGen);
+}
+
 /// プレイリストキューの保存行を消す（キュー消滅時）。
 /// 対象プレイリスト自体の削除では DB 側の CASCADE でも行が消えるため、
 /// その場合の呼び出しは空操作になる
 function clearPlaylistPersist(playlistId: number): void {
-  if (playlistImportSuspended) return;
-  const gen = playlistPersistGen;
-  persistChain = persistChain
-    .then(() => {
-      if (!shouldPersistPlaylistQueue(gen, playlistPersistGen, playlistImportSuspended)) {
-        return;
-      }
-      return invoke<unknown>("queue_playlist_clear", { playlistId }).then(
-        () => {},
-      );
-    })
-    .catch((e) => {
-      notify(t("queue.persistFailed", { message: asErrorMessage(e) }));
-    });
+  const op: PlaylistPersistOp = { kind: "clear" };
+  if (playlistImportSuspended) {
+    recordDeferredPlaylistPersist(deferredPlaylistPersists, playlistId, op);
+    return;
+  }
+  enqueuePlaylistPersistOp(playlistId, op, playlistPersistGen);
 }
 
 /// 起動時の一時キュー復元（FR-30、仕様決定 AY）。`queue_load` で
@@ -454,12 +472,26 @@ export function initQueue(): Promise<void> {
 export async function beginImportQueueGuard(): Promise<void> {
   playlistImportSuspended = true;
   playlistPersistGen += 1;
+  deferredPlaylistPersists.clear();
   await persistChain;
 }
 
-/// データインポート失敗時などにプレイリストキュー永続化抑止を解除する。
-export function endImportQueueGuard(): void {
+/// データインポート終了時のプレイリストキュー永続化ガード解除（FR-94、仕様決定 DX）。
+/// `committed` が `false`（検証失敗等で DB 未置換）の場合はガード中に保留した最後の操作を
+/// `persistChain` へ戻して保存し、`true` の場合は旧プレイリスト向け保留分を破棄する。
+export function endImportQueueGuard(committed = false): void {
+  if (!playlistImportSuspended) return;
   playlistImportSuspended = false;
+  const toReplay = flushDeferredPlaylistPersists(
+    deferredPlaylistPersists,
+    committed,
+  );
+  if (!committed && toReplay.length > 0) {
+    const gen = playlistPersistGen;
+    for (const [playlistId, op] of toReplay) {
+      enqueuePlaylistPersistOp(playlistId, op, gen);
+    }
+  }
 }
 
 /// データインポート後にプレイリストキューを DB と再同期する（FR-94、仕様決定 DX）。
@@ -468,6 +500,7 @@ export function endImportQueueGuard(): void {
 /// すべてデタッチ・破棄し、DB 上に残る行を再復元する。一時キューは保持する
 export async function refreshQueues(): Promise<void> {
   playlistPersistGen += 1;
+  flushDeferredPlaylistPersists(deferredPlaylistPersists, true);
   const next = new Map(queues.list);
   let removed = false;
   for (const [key, q] of queues.list) {
