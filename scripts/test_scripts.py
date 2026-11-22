@@ -20,6 +20,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import socket
 import struct
 import subprocess
@@ -2145,11 +2146,13 @@ class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
                         cur_key = cur_stripped.strip()
 
                     if cur_key_indent == key_indent:
-                        if cur_key == "shell: powershell":
+                        key_no_comment = re.split(r"\s+#", cur_key, maxsplit=1)[0].strip()
+                        if key_no_comment == "shell: powershell":
                             has_powershell_shell = True
                         elif cur_key.startswith("run:"):
                             after = cur_key[len("run:") :].strip()
-                            if after in ("|", ">", "|-", ">-", "|+", ">+"):
+                            after_no_comment = re.split(r"\s+#", after, maxsplit=1)[0].strip()
+                            if re.fullmatch(r"[|>](?:[+-]?\d*|\d*[+-]?)", after_no_comment):
                                 body_lines: list[str] = []
                                 k = idx + 1
                                 while k < len(step_lines):
@@ -2229,15 +2232,15 @@ class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
                     f"{wf_name} の shell: powershell run ブロック #{idx} に非 ASCII 文字が含まれています: {non_ascii[:5]}",
                 )
 
-        # 4b. 抽出ヘルパが run: が shell: powershell より前に書かれたステップも見落とさないこと
+        # 4b. 抽出ヘルパが run: 先行や行末コメント付きブロックスカラも見落とさないこと
         synthetic_wf = (
             "jobs:\n"
             "  w:\n"
             "    steps:\n"
-            "      - name: Reversed order\n"
-            "        run: |\n"
+            "      - name: Reversed order with inline comments\n"
+            "        run: |  # inline script\n"
             "          Write-Host '日本語'\n"
-            "        shell: powershell\n"
+            "        shell: powershell  # win\n"
         )
         synthetic_blocks = self._extract_powershell_run_blocks(synthetic_wf)
         self.assertEqual(len(synthetic_blocks), 1)

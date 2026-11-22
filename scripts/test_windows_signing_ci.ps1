@@ -16,8 +16,9 @@ Secrets・管理者権限なしで実行可能な PowerShell 5.1 構文・BOM �
   WIN-SIGN-06: ExpectedThumbprint 不一致時の verify_windows_signature.ps1 拒否
   WIN-SIGN-07: NSIS アンインストーラ署名失敗が監査ログ経由で検出・拒否されること
   WIN-SIGN-08: NSIS アンインストーラ署名キャプチャ欠落・未署名キャプチャ拒否と正常通過
-  WIN-SIGN-09: 複数証明書 PFX がストアへインポートされる前に拒否され残存ゼロであること
+  WIN-SIGN-09: 複数証明書・秘密鍵なし PFX が Import-PfxCertificate 呼び出し前に拒否され、有効秘密鍵 PFX のみ通過すること
   WIN-SIGN-10: cleanup_windows_signing.ps1 が残存 codesign-* と一時 .pfx を掃討すること
+  WIN-SIGN-11: verify_windows_signature.ps1 -TrustCertPath が検証失敗時でも元エラーを保ったまま一時ルート証明書を削除すること
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -351,6 +352,8 @@ try {
     $singleNoKeyPfxB64 = [Convert]::ToBase64String($singleNoKeyPfxBytes)
 
     $rsaTest = [System.Security.Cryptography.RSA]::Create(2048)
+    $tempTrustCer = Join-Path $sandbox 'temp_trust_root.cer'
+    $tempTrustThumb = ''
     try {
         $certReq = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest(
             'CN=yt-browser-ci-ephemeral-test',
@@ -361,6 +364,9 @@ try {
         $selfSigned = $certReq.CreateSelfSigned([DateTimeOffset]::UtcNow.AddMinutes(-5), [DateTimeOffset]::UtcNow.AddHours(1))
         try {
             $validKeyPfxBytes = $selfSigned.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, 'ci-valid-key-test')
+            $publicCerBytes = $selfSigned.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+            [System.IO.File]::WriteAllBytes($tempTrustCer, $publicCerBytes)
+            $tempTrustThumb = $selfSigned.Thumbprint.ToUpperInvariant()
         } finally {
             $selfSigned.Dispose()
         }
@@ -437,8 +443,8 @@ function global:Import-PfxCertificate {
     if ((Test-Path -LiteralPath $marker09b) -or ($res09b.Output -match 'UNEXPECTED_IMPORT_PFX_CERTIFICATE_CALLED')) {
         throw "[WIN-SIGN-09] 秘密鍵なし PFX の事前検証をすり抜けて Import-PfxCertificate が呼ばれました: $($res09b.Output)"
     }
-    if ($res09b.Output -notmatch 'PFX') {
-        throw "[WIN-SIGN-09] 秘密鍵なし PFX 拒否エラーが確認できません: $($res09b.Output)"
+    if ($res09b.Output -notmatch 'HasPrivateKey=False') {
+        throw "[WIN-SIGN-09] 秘密鍵なし PFX 拒否エラー (HasPrivateKey=False) が確認できません: $($res09b.Output)"
     }
     if ((Test-Path -LiteralPath $ghEnv09b) -and ((Get-Item -LiteralPath $ghEnv09b).Length -gt 0)) {
         throw "[WIN-SIGN-09] 秘密鍵なし PFX 拒否なのに GITHUB_ENV へ書き込みが発生しました。"
@@ -488,6 +494,47 @@ function global:Import-PfxCertificate {
         throw "[WIN-SIGN-10] cleanup_windows_signing.ps1 が codesign-leftover-test を削除できませんでした。"
     }
     Write-Host "[WIN-SIGN-10] OK: cleanup_windows_signing.ps1 の残存一時ディレクトリ掃討を確認"
+
+    # WIN-SIGN-11: -TrustCertPath が検証失敗時でも元エラーを保ったまま一時ルート証明書を削除すること
+    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $rootCheckPath = "Cert:\LocalMachine\Root\$tempTrustThumb"
+    if ($isAdmin) {
+        if (Test-Path -LiteralPath $rootCheckPath) {
+            throw "[WIN-SIGN-11] テスト用一時証明書が実行前から Cert:\LocalMachine\Root に存在します: $tempTrustThumb"
+        }
+        try {
+            $res11 = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $unsignedPe, '-TrustCertPath', $tempTrustCer)
+            if ($res11.ExitCode -eq 0) {
+                throw "[WIN-SIGN-11] 未署名 PE に対する -TrustCertPath 検証が想定外に成功しました。"
+            }
+            if ($res11.Output -notmatch [regex]::Escape($tempTrustThumb)) {
+                throw "[WIN-SIGN-11] 一時ルート証明書の登録・削除ログにサムプリント ($tempTrustThumb) が確認できません: $($res11.Output)"
+            }
+            if ($res11.Output -notmatch 'No signature found') {
+                throw "[WIN-SIGN-11] 元の署名検証エラー (No signature found) が保持されていません: $($res11.Output)"
+            }
+            if (Test-Path -LiteralPath $rootCheckPath) {
+                throw "[WIN-SIGN-11] 検証失敗後に一時ルート証明書が Cert:\LocalMachine\Root に残存しています: $tempTrustThumb"
+            }
+        } finally {
+            if (Test-Path -LiteralPath $rootCheckPath) {
+                Remove-Item -LiteralPath $rootCheckPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Host "[WIN-SIGN-11] OK: -TrustCertPath の検証失敗時ロールバックと元エラー保持を確認 ($tempTrustThumb)"
+    } elseif ($env:GITHUB_ACTIONS -eq 'true') {
+        throw "[WIN-SIGN-11] GitHub Actions ランナーで管理者権限がなく -TrustCertPath ロールバック検証を実行できません。"
+    } else {
+        $res11NonAdmin = Invoke-PsScript -ScriptPath $verifyScript -ScriptArgs @('-TargetPaths', $unsignedPe, '-TrustCertPath', $tempTrustCer)
+        if ($res11NonAdmin.ExitCode -eq 0) {
+            throw "[WIN-SIGN-11] 非管理者環境で -TrustCertPath が想定外に成功しました。"
+        }
+        if ($res11NonAdmin.Output -notmatch '-TrustCertPath') {
+            throw "[WIN-SIGN-11] 非管理者拒否メッセージに -TrustCertPath が含まれません: $($res11NonAdmin.Output)"
+        }
+        Write-Host "[WIN-SIGN-11] OK (非管理者ローカル): -TrustCertPath の管理者権限必須チェックを確認 (実ストア登録・削除は管理者 CI ランナーで実行)"
+    }
 } finally {
     if (Test-Path -LiteralPath $sandbox) {
         Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue

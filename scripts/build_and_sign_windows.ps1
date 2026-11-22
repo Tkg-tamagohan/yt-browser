@@ -55,7 +55,7 @@ try {
                 throw "PFX 内の証明書数が想定外です ($($inspectCollection.Count) 件)。"
             }
             if (-not $inspectCollection[0].HasPrivateKey) {
-                throw "PFX 内の証明書に秘密鍵が含まれていません。"
+                throw "PFX 内の証明書に秘密鍵が含まれていません (HasPrivateKey=False)。"
             }
         } finally {
             foreach ($certItem in $inspectCollection) {
