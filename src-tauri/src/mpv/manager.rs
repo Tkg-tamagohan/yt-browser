@@ -310,6 +310,7 @@ impl PlayerManager {
             g.get(&instance_id).map(|e| e.player.clone())
         }
         .ok_or(MpvError::NoSuchInstance(instance_id))?;
+        let prev_video = player.video_id();
         persist_now(&self.db, &player, player.terminal_completed());
         player.begin_replace();
         if let Err(e) = player.load_video(video_id, start_sec).await {
@@ -322,6 +323,11 @@ impl PlayerManager {
             tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
         }
         Self::spawn_sponsor_fetch(&self.db, &self.http, player.clone(), video_id.to_string());
+        if prev_video != video_id {
+            let has_other =
+                has_other_player_for_video(&lock(&self.players), &prev_video, Some(instance_id));
+            maybe_close_popup_for_video(&self.app, &self.db, &prev_video, false, true, has_other);
+        }
         Ok(())
     }
 
@@ -419,6 +425,7 @@ impl PlayerManager {
             tracing::debug!(instance_id, "close 対象のインスタンスは既に存在しない");
             return Ok(());
         };
+        let video_id = player.video_id();
         emitter.abort();
         player.abort_pump().await;
         // 終端理由が eof なら completed を維持して保存する（途中保存で上書きしない）
@@ -431,6 +438,8 @@ impl PlayerManager {
             "player://closed",
             serde_json::json!({ "instanceId": instance_id }),
         );
+        let has_other = has_other_player_for_video(&lock(&self.players), &video_id, None);
+        maybe_close_popup_for_video(&self.app, &self.db, &video_id, true, false, has_other);
         Ok(())
     }
 
@@ -609,10 +618,10 @@ impl PlayerManager {
                             close_instance_on_end(&reason, continued, close_on_eof);
                         let payload = PlayerEnded {
                             instance_id: player.instance_id(),
-                            video_id: ended_video,
+                            video_id: ended_video.clone(),
                             reason,
                             continued,
-                            continued_video_id,
+                            continued_video_id: continued_video_id.clone(),
                             continued_uid,
                             armed_seq: player.armed_seq(),
                             closed: close_instance,
@@ -627,14 +636,33 @@ impl PlayerManager {
                             // 後の再 eof）を受理できるようにする
                             if !continued {
                                 player.rearm_after_eof();
+                            } else if continued_video_id.as_deref() != Some(ended_video.as_str()) {
+                                let has_other = has_other_player_for_video(
+                                    &lock(&players),
+                                    &ended_video,
+                                    Some(player.instance_id()),
+                                );
+                                maybe_close_popup_for_video(
+                                    &app,
+                                    &db,
+                                    &ended_video,
+                                    false,
+                                    true,
+                                    has_other,
+                                );
                             }
                             continue;
                         }
                         // 管理表から外し、ポンプを止めて mpv を終了させる。
                         // close() との競合は先に外した側が掃除を担い、後着側は冪等に成功する。
-                        if let Some(entry) = lock(&players).remove(&player.instance_id()) {
-                            drop(entry.emitter);
-                        }
+                        let has_other = {
+                            let mut g = lock(&players);
+                            if let Some(entry) = g.remove(&player.instance_id()) {
+                                drop(entry.emitter);
+                            }
+                            has_other_player_for_video(&g, &ended_video, None)
+                        };
+                        maybe_close_popup_for_video(&app, &db, &ended_video, true, false, has_other);
                         player.abort_pump().await;
                         player.shutdown().await;
                         break;
@@ -675,5 +703,46 @@ fn sanitize_media_title(title: &str) -> &str {
         ""
     } else {
         t
+    }
+}
+
+/// 稼働中のプレイヤー群に同一動画を再生中の別インスタンスが残っているか判定する。
+/// 遷移元自身を除外する場合は `exclude_instance` にそのインスタンス ID を渡す。
+fn has_other_player_for_video(
+    players: &HashMap<u32, PlayerEntry>,
+    video_id: &str,
+    exclude_instance: Option<u32>,
+) -> bool {
+    let entries: Vec<(u32, String)> = players
+        .iter()
+        .map(|(&id, entry)| (id, entry.player.video_id()))
+        .collect();
+    crate::chat::popup::has_other_video_id(
+        entries.iter().map(|(id, vid)| (*id, vid.as_str())),
+        video_id,
+        exclude_instance,
+    )
+}
+
+/// プレイヤーの終了または別動画への切替時にチャットポップアップ窓を自動で閉じる
+/// （FR-93、仕様決定 DV）。呼び出し前に `players` ロックを解放しておくこと。
+fn maybe_close_popup_for_video(
+    app: &AppHandle,
+    db: &Db,
+    video_id: &str,
+    player_closed: bool,
+    video_changed: bool,
+    has_other_player: bool,
+) {
+    let Some(close_on_end) = crate::chat::popup::read_popup_close_on_end(db) else {
+        return;
+    };
+    if crate::chat::popup::should_close_popup_on_player_end(
+        close_on_end,
+        player_closed,
+        video_changed,
+        has_other_player,
+    ) {
+        crate::chat::popup::close_popup_window(app, video_id);
     }
 }

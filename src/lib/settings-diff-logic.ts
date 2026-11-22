@@ -12,7 +12,7 @@ import {
   type SponsorCategory,
 } from "$lib/settings-consts";
 
-/// 設定画面で「保存」ボタンの対象になる全 33 設定（34 フィールド）の状態。
+/// 設定画面で「保存」ボタンの対象になる全 34 設定（35 フィールド）の状態。
 export type SettingsFormState = {
   selected: string;
   customFormat: string;
@@ -32,6 +32,7 @@ export type SettingsFormState = {
   chatShowAuthor: boolean;
   chatFontSize: string;
   chatOpacity: string;
+  chatCloseOnEnd: boolean;
   initialSpeed: number | undefined;
   initialVolume: number | undefined;
   windowScreen: string;
@@ -93,6 +94,7 @@ export function defaultSettingsFormState(): SettingsFormState {
     chatShowAuthor: false,
     chatFontSize: "",
     chatOpacity: "",
+    chatCloseOnEnd: true,
     initialSpeed: undefined,
     initialVolume: undefined,
     windowScreen: "",
@@ -541,6 +543,13 @@ export function diffSettingsFormState(
     saved.chatOpacity,
     current.chatOpacity,
     (v, isAfter) => optionalResetText(v, isAfter, "1.0"),
+  );
+  pushToggle(
+    "chat.popup_close_on_end",
+    "settings.chatpopup.title",
+    "settings.chatpopup.closeOnEnd",
+    saved.chatCloseOnEnd,
+    current.chatCloseOnEnd,
   );
 
   // 12. 表示

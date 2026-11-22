@@ -40,6 +40,13 @@ const REPLAY_REWIND_KEEP: usize = 1_000;
 /// 収まらないため、超過時は送出が進むまで追加取得を休止する上限
 const REPLAY_BUF_MAX: usize = 2_000;
 
+/// ライブ配信の継続トークン応答からチャット終了かを判定する（FR-93、仕様決定 DV）。
+/// ライブ継続（`ContinuationKind::Live`）のときだけ継続し、継続トークン欠落
+/// またはリプレイ継続への切替（配信終了直後）は終了とみなす。
+pub(crate) fn is_live_continuation_ended(next: Option<crate::innertube::ContinuationKind>) -> bool {
+    !matches!(next, Some(crate::innertube::ContinuationKind::Live))
+}
+
 /// 動画ごとのチャットポーリングを管理する。`tauri::State` に `Arc` で載せる。
 pub struct ChatPoller {
     app: AppHandle,
@@ -147,6 +154,19 @@ impl ChatPoller {
         );
     }
 
+    /// ライブチャット終了時にチャットポップアップ窓を自動で閉じる（FR-93、仕様決定 DV）。
+    /// `consumers` と `sessions` のロック外から呼ばれるため、`WindowEvent::Destroyed` 内の
+    /// `release()` と競合・デッドロックしない。DB 状態が取れない場合は安全側で閉じるのを控える。
+    fn close_popup_on_live_end(&self, video_id: &str) {
+        match self.app.try_state::<crate::db::Db>() {
+            Some(db) => super::popup::close_popup_if_enabled(&self.app, &db, video_id),
+            None => tracing::warn!(
+                video_id,
+                "Db 状態が取得できないためチャットポップアップの自動クローズを見送る"
+            ),
+        }
+    }
+
     /// 1 動画のポーリングループ。終了・エラー・中断のいずれでも
     /// `sessions` から自分を外して終わる。
     /// 初期継続トークンの種別でライブ/リプレイを自動判定する（仕様決定 AQ）。
@@ -236,20 +256,18 @@ impl ChatPoller {
                         commit_pending(&mut seen, &mut order, &mut pending);
                         let _ = self.app.emit("chat://message", &events);
                     }
-                    match lcc.and_then(crate::innertube::next_continuation) {
-                        Some((next, timeout, _)) => {
-                            cont = next;
-                            tokio::time::sleep(Duration::from_millis(timeout.max(MIN_POLL_MS)))
-                                .await;
-                        }
-                        None => {
-                            self.status(
-                                Some(video_id),
-                                "info",
-                                "チャットが終了しました（配信終了またはチャットクローズ）",
-                            );
-                            break;
-                        }
+                    let next = lcc.and_then(crate::innertube::next_continuation);
+                    if is_live_continuation_ended(next.as_ref().map(|(_, _, k)| *k)) {
+                        self.status(
+                            Some(video_id),
+                            "info",
+                            "チャットが終了しました（配信終了またはチャットクローズ）",
+                        );
+                        self.close_popup_on_live_end(video_id);
+                        break;
+                    } else if let Some((next_token, timeout, _)) = next {
+                        cont = next_token;
+                        tokio::time::sleep(Duration::from_millis(timeout.max(MIN_POLL_MS))).await;
                     }
                 }
                 Err(e) => {
@@ -593,4 +611,44 @@ pub(crate) fn first_replay_posted_ms(events: &[ChatEvent]) -> Option<i64> {
         .iter()
         .find(|e| e.kind != ChatKind::Deleted)
         .map(|e| e.posted_at_usec / 1000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_live_continuation_ended;
+    use crate::innertube::next_continuation;
+
+    /// DB-CP-09: `next_continuation` と連携したライブ継続の終了判定（FR-93、仕様決定 DV）。
+    /// `Live` 継続のみ続行（false）とし、継続欠落および `Replay` への遷移は終了（true）とする。
+    #[test]
+    fn live_continuation_ended_classification() {
+        let live_json = serde_json::json!({
+            "continuations": [{
+                "timedContinuationData": {
+                    "continuation": "live-tok",
+                    "timeoutMs": 5000
+                }
+            }]
+        });
+        let live_next = next_continuation(&live_json).map(|(_, _, k)| k);
+        assert!(!is_live_continuation_ended(live_next));
+
+        let empty_json = serde_json::json!({ "continuations": [] });
+        let none_next = next_continuation(&empty_json).map(|(_, _, k)| k);
+        assert!(is_live_continuation_ended(none_next));
+
+        let missing_json = serde_json::json!({});
+        let missing_next = next_continuation(&missing_json).map(|(_, _, k)| k);
+        assert!(is_live_continuation_ended(missing_next));
+
+        let replay_json = serde_json::json!({
+            "continuations": [{
+                "liveChatReplayContinuationData": {
+                    "continuation": "replay-tok"
+                }
+            }]
+        });
+        let replay_next = next_continuation(&replay_json).map(|(_, _, k)| k);
+        assert!(is_live_continuation_ended(replay_next));
+    }
 }
