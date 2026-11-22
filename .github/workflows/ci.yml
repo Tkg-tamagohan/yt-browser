@@ -115,6 +115,11 @@ jobs:
         working-directory: src-tauri
       - run: cargo test --locked
         working-directory: src-tauri
+      - name: PowerShell 5.1 構文と署名スクリプトを検証
+        shell: powershell
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'scripts\test_windows_signing_ci.ps1'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # ルールセットの必須チェックをこのジョブ 1 本に集約する。
   # 必須チェックとして報告される名前はジョブの name（CI）になる。

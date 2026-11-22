@@ -11,6 +11,7 @@
   SC-07: cdp_client のターゲット選択とローカルモック WebSocket 通信
   SC-08: e2e_dev の override 設定生成と --dry-run
   SC-09: e2e_smoke のページ定義整合確認
+  SC-10: release.yml / ci.yml の Windows コード署名セキュリティ契約
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import socket
 import struct
 import subprocess
@@ -2093,6 +2095,190 @@ class TestCdpAndE2eHelpers(unittest.TestCase):
             self.assertTrue(route.startswith("/"))
             self.assertIsInstance(expr, str)
             self.assertTrue(expr.strip())
+
+
+class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
+    """SC-10: release.yml / ci.yml と Windows 署名 PowerShell スクリプト群の契約を検証する。"""
+
+    @staticmethod
+    def _extract_powershell_run_blocks(workflow_text: str) -> list[str]:
+        """`shell: powershell` を持つステップから `run:` 本文一覧を抽出する（キー順序非依存）。"""
+        lines = workflow_text.splitlines()
+        blocks: list[str] = []
+        i = 0
+        while i < len(lines):
+            raw = lines[i]
+            stripped = raw.lstrip(" ")
+            if stripped.startswith("- "):
+                item_indent = len(raw) - len(stripped)
+                # このリスト項目に属する行範囲を集める
+                step_lines = [raw]
+                j = i + 1
+                while j < len(lines):
+                    nxt = lines[j]
+                    nxt_stripped = nxt.lstrip(" ")
+                    if nxt_stripped and not nxt_stripped.startswith("#"):
+                        nxt_indent = len(nxt) - len(nxt_stripped)
+                        if nxt_indent < item_indent or (
+                            nxt_indent == item_indent and nxt_stripped.startswith("- ")
+                        ):
+                            break
+                    step_lines.append(nxt)
+                    j += 1
+
+                # ステップ直下のキーインデント（`- key:` の場合は item_indent + 2）
+                key_indent = item_indent + 2
+                has_powershell_shell = False
+                step_runs: list[str] = []
+                idx = 0
+                while idx < len(step_lines):
+                    cur = step_lines[idx]
+                    if idx == 0:
+                        # `- name: ...` や `- shell: powershell` の先頭行
+                        cur_key = cur[item_indent + 2 :].strip()
+                        cur_key_indent = key_indent
+                    else:
+                        cur_stripped = cur.lstrip(" ")
+                        if not cur_stripped or cur_stripped.startswith("#"):
+                            idx += 1
+                            continue
+                        cur_key_indent = len(cur) - len(cur_stripped)
+                        cur_key = cur_stripped.strip()
+
+                    if cur_key_indent == key_indent:
+                        key_no_comment = re.split(r"\s+#", cur_key, maxsplit=1)[0].strip()
+                        if key_no_comment == "shell: powershell":
+                            has_powershell_shell = True
+                        elif cur_key.startswith("run:"):
+                            after = cur_key[len("run:") :].strip()
+                            after_no_comment = re.split(r"\s+#", after, maxsplit=1)[0].strip()
+                            if re.fullmatch(r"[|>](?:[+-]?\d*|\d*[+-]?)", after_no_comment):
+                                body_lines: list[str] = []
+                                k = idx + 1
+                                while k < len(step_lines):
+                                    b = step_lines[k]
+                                    if b.strip() == "":
+                                        body_lines.append("")
+                                        k += 1
+                                        continue
+                                    b_indent = len(b) - len(b.lstrip(" "))
+                                    if b_indent <= cur_key_indent:
+                                        break
+                                    body_lines.append(b)
+                                    k += 1
+                                step_runs.append("\n".join(body_lines))
+                                idx = k
+                                continue
+                            step_runs.append(after)
+                    idx += 1
+
+                if has_powershell_shell:
+                    blocks.extend(step_runs)
+                i = j
+                continue
+            i += 1
+        return blocks
+
+    def test_sc10_release_and_ci_signing_security_contract(self) -> None:
+        release_yml = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        ci_yml = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        ps_files = {
+            name: (SCRIPTS_DIR / name).read_bytes()
+            for name in (
+                "sign_windows.ps1",
+                "verify_windows_signature.ps1",
+                "build_and_sign_windows.ps1",
+                "cleanup_windows_signing.ps1",
+                "test_windows_signing_ci.ps1",
+            )
+        }
+        ps_texts = {name: raw.decode("utf-8-sig") for name, raw in ps_files.items()}
+
+        # 1. release.yml に pull_request トリガーが存在しないこと（コメント除く）
+        on_section = release_yml.split("permissions:", 1)[0]
+        on_non_comment = "\n".join(
+            line for line in on_section.splitlines() if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("pull_request", on_non_comment)
+
+        # 2. ci.yml がコード署名 Secrets を一切参照しないこと
+        self.assertNotIn("CODE_SIGN_PFX_BASE64", ci_yml)
+        self.assertNotIn("CODE_SIGN_PFX_PASSWORD", ci_yml)
+        self.assertIn("scripts\\test_windows_signing_ci.ps1", ci_yml)
+
+        # 3. release.yml の必須セキュリティ要件（Secrets 検査・PR ガード・always 掃除・release 制限・外部 .ps1 呼び出し）
+        for token in (
+            "CODE_SIGN_PFX_BASE64",
+            "CODE_SIGN_PFX_PASSWORD",
+            "github.event_name != 'pull_request'",
+            "if: always() && runner.os == 'Windows'",
+            "if: github.event_name == 'push'",
+            "scripts\\build_and_sign_windows.ps1",
+            "scripts\\cleanup_windows_signing.ps1",
+        ):
+            self.assertIn(token, release_yml)
+
+        # 4. 全 workflow の shell: powershell run: ブロックが ASCII のみであること
+        # （GitHub Actions は BOM なしで一時 .ps1 を生成し PowerShell 5.1 が CP1252 誤読するため）
+        for wf_name, wf_text in (("release.yml", release_yml), ("ci.yml", ci_yml)):
+            blocks = self._extract_powershell_run_blocks(wf_text)
+            self.assertGreaterEqual(len(blocks), 1, wf_name)
+            for idx, block in enumerate(blocks):
+                non_ascii = [ch for ch in block if ord(ch) > 127]
+                self.assertEqual(
+                    non_ascii,
+                    [],
+                    f"{wf_name} の shell: powershell run ブロック #{idx} に非 ASCII 文字が含まれています: {non_ascii[:5]}",
+                )
+
+        # 4b. 抽出ヘルパが run: 先行や行末コメント付きブロックスカラも見落とさないこと
+        synthetic_wf = (
+            "jobs:\n"
+            "  w:\n"
+            "    steps:\n"
+            "      - name: Reversed order with inline comments\n"
+            "        run: |  # inline script\n"
+            "          Write-Host '日本語'\n"
+            "        shell: powershell  # win\n"
+        )
+        synthetic_blocks = self._extract_powershell_run_blocks(synthetic_wf)
+        self.assertEqual(len(synthetic_blocks), 1)
+        self.assertIn("日本語", synthetic_blocks[0])
+
+        # 5. 全 Windows 署名 PowerShell スクリプトが UTF-8 BOM 付き・5.1 互換（#Requires -Version 5.1 あり・&& なし）であること
+        for name, raw in ps_files.items():
+            self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), f"{name} に UTF-8 BOM がありません")
+            body = ps_texts[name]
+            self.assertIn("#Requires -Version 5.1", body, name)
+            self.assertNotIn("&&", body, name)
+
+        # 6. 分離先スクリプト群のセキュリティ・監査・SHA-256 検証契約
+        build_ps1 = ps_texts["build_and_sign_windows.ps1"]
+        for token in (
+            "try {",
+            "} finally {",
+            "EphemeralKeySet",
+            "CODE_SIGN_CLEANUP_THUMBPRINTS",
+            "CODE_SIGN_AUDIT_DIR",
+            "CODE_SIGN_CAPTURE_DIR",
+            "scripts\\sign_windows.ps1",
+            "scripts\\verify_windows_signature.ps1",
+            "-AuditDir",
+        ):
+            self.assertIn(token, build_ps1, f"build_and_sign_windows.ps1 に {token} がありません")
+
+        verify_ps1 = ps_texts["verify_windows_signature.ps1"]
+        self.assertIn("Hash of file \\(sha256\\)", verify_ps1)
+        self.assertNotIn("Hash Algorithm", verify_ps1)
+        self.assertIn("$AuditDir", verify_ps1)
+
+        cleanup_ps1 = ps_texts["cleanup_windows_signing.ps1"]
+        self.assertIn("CODE_SIGN_CLEANUP_THUMBPRINTS", cleanup_ps1)
+
+        test_ps1 = ps_texts["test_windows_signing_ci.ps1"]
+        self.assertIn("$global:LASTEXITCODE = 0", test_ps1)
+        self.assertIn("function global:Import-PfxCertificate", test_ps1)
 
 
 if __name__ == "__main__":
