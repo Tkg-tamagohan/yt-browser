@@ -83,7 +83,7 @@ impl Db {
 
     /// テスト用のインメモリ接続。
     #[cfg(test)]
-    fn connect_in_memory() -> Result<Self, DbError> {
+    pub(crate) fn connect_in_memory() -> Result<Self, DbError> {
         let conn = Connection::open_in_memory()?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),

@@ -3,7 +3,7 @@
 mpv による軽量な再生と、ローカル完結の購読、履歴、NG 管理を一体化した YouTube 専用ブラウザ（専ブラ）。
 対応 OS は Linux と Windows で、macOS は対象外。
 
-[実装計画](docs/implementation-plan.md)および[実装履歴](docs/implementation-history.md)の全フェーズ（Phase 0〜87）が実装済み（実機検証系の受け入れは一部未検証として残る）。
+[実装計画](docs/implementation-plan.md)および[実装履歴](docs/implementation-history.md)の全フェーズ（Phase 0〜88）が実装済み（実機検証系の受け入れは一部未検証として残る）。
 残る制限と観察メモは実装計画の「残課題」節にまとめている。
 
 ## 主な機能

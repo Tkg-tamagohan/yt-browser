@@ -11,6 +11,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tauri::Manager;
+
 /// `chat.popup_geometry` の値として扱う窓の位置とサイズ。
 /// 単位は論理ピクセル（`Moved` / `Resized` イベントの物理値を
 /// `scale_factor` で換算して保存し、`WebviewWindowBuilder` の
@@ -223,12 +225,88 @@ pub(crate) fn popup_opacity(value: Option<String>) -> f64 {
         .unwrap_or(DEFAULT_POPUP_OPACITY)
 }
 
+/// `chat.popup_close_on_end` の保存値を解釈する（FR-93、仕様決定 DV）。
+/// 明示的な off 系値（`off` / `false` / `0` / `no`、前後空白・大文字小文字を許容）
+/// のみ無効とし、未設定・その他の値は true（自動で閉じる）として扱う。
+pub(crate) fn popup_close_on_end_enabled(value: Option<String>) -> bool {
+    crate::util::setting_off_disabled(value)
+}
+
+/// プレイヤー側の終了または別動画切替時にチャットポップアップ窓を閉じるべきか判定する
+/// （FR-93、仕様決定 DV）。
+pub(crate) fn should_close_popup_on_player_end(
+    close_on_end: bool,
+    player_closed: bool,
+    video_changed: bool,
+    has_other_player: bool,
+) -> bool {
+    if !close_on_end || has_other_player {
+        return false;
+    }
+    player_closed || video_changed
+}
+
+/// DB から `chat.popup_close_on_end` を読み取り解釈する。
+/// 読み取りに失敗した場合はフェイルセーフとして `None`（自動で閉じない）を返す。
+pub(crate) fn read_popup_close_on_end(db: &crate::db::Db) -> Option<bool> {
+    match db.setting_get(super::SETTING_CHAT_POPUP_CLOSE_ON_END) {
+        Ok(opt) => Some(popup_close_on_end_enabled(opt)),
+        Err(e) => {
+            tracing::warn!(error = %e, "chat.popup_close_on_end の読み取りに失敗");
+            None
+        }
+    }
+}
+
+/// 指定動画のチャットポップアップ窓が開いていれば閉じる。
+/// 窓が存在しない場合は何もしない。
+pub(crate) fn close_popup_window(app: &tauri::AppHandle, video_id: &str) {
+    let label = super::popup_label(video_id);
+    if let Some(w) = app.get_webview_window(&label) {
+        if let Err(e) = w.close() {
+            tracing::warn!(video_id, error = %e, "チャットポップアップ窓の自動クローズに失敗");
+        }
+    }
+}
+
+/// 設定 `chat.popup_close_on_end` が有効なときだけチャットポップアップ窓を閉じる。
+/// DB 読み取り失敗時はフェイルセーフで何もしない。
+pub(crate) fn close_popup_if_enabled(app: &tauri::AppHandle, db: &crate::db::Db, video_id: &str) {
+    if read_popup_close_on_end(db) == Some(true) {
+        close_popup_window(app, video_id);
+    }
+}
+
+/// プレイヤー終了または別動画切替通知を受け、条件を満たすときにポップアップ窓を閉じる
+/// （FR-93、仕様決定 DV）。`lib.rs` の `VideoEndHook` 配線から呼び出される。
+pub(crate) fn handle_player_video_end(
+    app: &tauri::AppHandle,
+    db: &crate::db::Db,
+    video_id: &str,
+    player_closed: bool,
+    video_changed: bool,
+    has_other_player: bool,
+) {
+    let Some(close_on_end) = read_popup_close_on_end(db) else {
+        return;
+    };
+    if should_close_popup_on_player_end(
+        close_on_end,
+        player_closed,
+        video_changed,
+        has_other_player,
+    ) {
+        close_popup_window(app, video_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        format_popup_geometry, parse_popup_geometry, popup_font_size, popup_geometry_visible,
-        popup_opacity, popup_show_author_enabled, PopupGeomTracker, PopupGeometry,
-        DEFAULT_POPUP_FONT_SIZE, DEFAULT_POPUP_OPACITY,
+        format_popup_geometry, parse_popup_geometry, popup_close_on_end_enabled, popup_font_size,
+        popup_geometry_visible, popup_opacity, popup_show_author_enabled, read_popup_close_on_end,
+        should_close_popup_on_player_end, PopupGeomTracker, PopupGeometry, DEFAULT_POPUP_FONT_SIZE,
+        DEFAULT_POPUP_OPACITY,
     };
 
     /// DB-CP-01: `chat.popup_geometry` の受理形式（FR-67、仕様決定 CR）。
@@ -441,5 +519,66 @@ mod tests {
                 "{bad} は既定値へ戻すべき"
             );
         }
+    }
+
+    /// DB-CP-07: `chat.popup_close_on_end` の解釈（FR-93、仕様決定 DV）。
+    /// 未設定・on 系・未知値は true（自動で閉じる）、明示的な off 系値のみ false。
+    #[test]
+    fn popup_close_on_end_values() {
+        assert!(popup_close_on_end_enabled(None));
+        for on in ["on", "ON", " true ", "1", "yes", "", "invalid"] {
+            assert!(
+                popup_close_on_end_enabled(Some(on.to_string())),
+                "{on} は自動クローズ有効になるべき"
+            );
+        }
+        for off in ["off", "OFF", " false ", "0", "No"] {
+            assert!(
+                !popup_close_on_end_enabled(Some(off.to_string())),
+                "{off} は自動クローズ無効になるべき"
+            );
+        }
+    }
+
+    /// DB-CP-08: プレイヤー終了・動画切替時のポップアップ自動クローズ判定
+    /// （FR-93、仕様決定 DV）。
+    #[test]
+    fn should_close_popup_on_player_end_cases() {
+        // 設定 off ならいかなる条件でも閉じない
+        for (closed, changed, other) in [
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            assert!(!should_close_popup_on_player_end(
+                false, closed, changed, other
+            ));
+        }
+
+        // 他プレイヤーが同動画を再生中なら閉じない
+        assert!(!should_close_popup_on_player_end(true, true, false, true));
+        assert!(!should_close_popup_on_player_end(true, false, true, true));
+
+        // close_on_eof=off の EOF 残存（閉じておらず動画も変わっていない）では閉じない
+        assert!(!should_close_popup_on_player_end(true, false, false, false));
+
+        // 他プレイヤーが無く、プレイヤー終了または別動画切替なら閉じる
+        assert!(should_close_popup_on_player_end(true, true, false, false));
+        assert!(should_close_popup_on_player_end(true, false, true, false));
+    }
+
+    /// DB-CP-10: `chat.popup_close_on_end` の DB 読み取り往復（FR-93、仕様決定 DV）。
+    /// 未設定で Some(true)、"off" 保存で Some(false)、"on" 保存で Some(true) を返す。
+    #[test]
+    fn popup_close_on_end_db_roundtrip() {
+        let db = crate::db::Db::connect_in_memory().unwrap();
+        assert_eq!(read_popup_close_on_end(&db), Some(true));
+        db.setting_set(crate::chat::SETTING_CHAT_POPUP_CLOSE_ON_END, "off")
+            .unwrap();
+        assert_eq!(read_popup_close_on_end(&db), Some(false));
+        db.setting_set(crate::chat::SETTING_CHAT_POPUP_CLOSE_ON_END, "on")
+            .unwrap();
+        assert_eq!(read_popup_close_on_end(&db), Some(true));
     }
 }

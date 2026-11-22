@@ -151,6 +151,24 @@ pub fn run() {
 
             let ytdlp_resolver = yt::YtDlpResolver::new(app.path().resource_dir().ok());
             app.manage(ytdlp_resolver.clone());
+            // mpv から chat への直接依存を避けるため、動画離脱時のポップアップ自動クローズは
+            // ここでコールバックとして PlayerManager へ注入する（FR-93、仕様決定 DV）
+            let popup_close_hook: mpv::VideoEndHook = {
+                let app_handle = app.handle().clone();
+                let hook_db = db.clone();
+                std::sync::Arc::new(
+                    move |video_id, player_closed, video_changed, has_other_player| {
+                        chat::popup::handle_player_video_end(
+                            &app_handle,
+                            &hook_db,
+                            video_id,
+                            player_closed,
+                            video_changed,
+                            has_other_player,
+                        );
+                    },
+                )
+            };
             app.manage(mpv::PlayerManager::new(
                 app.handle().clone(),
                 db.clone(),
@@ -158,6 +176,7 @@ pub fn run() {
                 ytdlp_resolver,
                 wheel_script,
                 log_dir,
+                popup_close_hook,
             ));
 
             // InnerTube クライアント（設計書 §6.1）。関連動画とチャットが共用する。

@@ -62,6 +62,9 @@ describe("SF-02 filterSectionIds の絞り込み結果", () => {
     const navOnPlay = filterSectionIds("navigate_on_play", defs);
     expect(navOnPlay.has("player")).toBe(true);
     expect(navOnPlay.has("ui")).toBe(false);
+    const popupCloseOnEnd = filterSectionIds("popup_close_on_end", defs);
+    expect(popupCloseOnEnd.has("chatpopup")).toBe(true);
+    expect(popupCloseOnEnd.has("player")).toBe(false);
   });
 
   test("節定義の id は重複しない", () => {

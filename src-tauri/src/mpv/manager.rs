@@ -33,6 +33,11 @@ const WATCHDOG_INTERVAL: Duration = Duration::from_secs(15);
 /// ping 応答タイムアウトの連続回数で無応答と判定する閾値（仕様決定 BE）。
 const WATCHDOG_PING_LIMIT: u32 = 3;
 
+/// プレイヤー終了または別動画切替時に、対象動画の離脱を上位層へ通知するフック型。
+/// 引数は `(video_id, player_closed, video_changed, has_other_player)`。
+/// 必ず `players` ロックを解放してから呼び出す。
+pub type VideoEndHook = Arc<dyn Fn(&str, bool, bool, bool) + Send + Sync>;
+
 /// 全 mpv インスタンスの管理（設計書 §4.5 のマルチビュー前提）。
 /// `play` が発行する `instance_id` が UI 側の操作対象識別子。
 pub struct PlayerManager {
@@ -51,6 +56,8 @@ pub struct PlayerManager {
     log_dir: Option<PathBuf>,
     /// SponsorBlock API 呼び出し用の HTTP クライアント（設計書 §4.4）。
     http: reqwest::Client,
+    /// 動画離脱時の上位通知フック（`mpv` から `chat` への直接依存を避ける）。
+    on_video_end: VideoEndHook,
 }
 
 struct PlayerEntry {
@@ -68,6 +75,7 @@ impl PlayerManager {
         ytdlp_resolver: crate::yt::YtDlpResolver,
         wheel_script: Option<PathBuf>,
         log_dir: Option<PathBuf>,
+        on_video_end: VideoEndHook,
     ) -> Self {
         // mpv ログの掃除は「自アプリの mpv がまだ存在しない」起動時のみ行う。
         // 稼働中インスタンスが書き込み中のログを消すと wedge 記録が失われる
@@ -84,6 +92,7 @@ impl PlayerManager {
             wheel_script,
             log_dir,
             http: reqwest::Client::new(),
+            on_video_end,
         }
     }
 
@@ -310,6 +319,7 @@ impl PlayerManager {
             g.get(&instance_id).map(|e| e.player.clone())
         }
         .ok_or(MpvError::NoSuchInstance(instance_id))?;
+        let prev_video = player.video_id();
         persist_now(&self.db, &player, player.terminal_completed());
         player.begin_replace();
         if let Err(e) = player.load_video(video_id, start_sec).await {
@@ -322,6 +332,11 @@ impl PlayerManager {
             tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
         }
         Self::spawn_sponsor_fetch(&self.db, &self.http, player.clone(), video_id.to_string());
+        if prev_video != video_id {
+            let has_other =
+                has_other_player_for_video(&lock(&self.players), &prev_video, Some(instance_id));
+            (self.on_video_end)(&prev_video, false, true, has_other);
+        }
         Ok(())
     }
 
@@ -419,6 +434,7 @@ impl PlayerManager {
             tracing::debug!(instance_id, "close 対象のインスタンスは既に存在しない");
             return Ok(());
         };
+        let video_id = player.video_id();
         emitter.abort();
         player.abort_pump().await;
         // 終端理由が eof なら completed を維持して保存する（途中保存で上書きしない）
@@ -431,6 +447,8 @@ impl PlayerManager {
             "player://closed",
             serde_json::json!({ "instanceId": instance_id }),
         );
+        let has_other = has_other_player_for_video(&lock(&self.players), &video_id, None);
+        (self.on_video_end)(&video_id, true, false, has_other);
         Ok(())
     }
 
@@ -464,6 +482,7 @@ impl PlayerManager {
         let db = self.db.clone();
         let http = self.http.clone();
         let players = Arc::clone(&self.players);
+        let on_video_end = Arc::clone(&self.on_video_end);
         let mut ended_rx = player.subscribe_ended();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(EMIT_INTERVAL);
@@ -609,10 +628,10 @@ impl PlayerManager {
                             close_instance_on_end(&reason, continued, close_on_eof);
                         let payload = PlayerEnded {
                             instance_id: player.instance_id(),
-                            video_id: ended_video,
+                            video_id: ended_video.clone(),
                             reason,
                             continued,
-                            continued_video_id,
+                            continued_video_id: continued_video_id.clone(),
                             continued_uid,
                             armed_seq: player.armed_seq(),
                             closed: close_instance,
@@ -627,14 +646,26 @@ impl PlayerManager {
                             // 後の再 eof）を受理できるようにする
                             if !continued {
                                 player.rearm_after_eof();
+                            } else if continued_video_id.as_deref() != Some(ended_video.as_str()) {
+                                let has_other = has_other_player_for_video(
+                                    &lock(&players),
+                                    &ended_video,
+                                    Some(player.instance_id()),
+                                );
+                                (on_video_end)(&ended_video, false, true, has_other);
                             }
                             continue;
                         }
                         // 管理表から外し、ポンプを止めて mpv を終了させる。
                         // close() との競合は先に外した側が掃除を担い、後着側は冪等に成功する。
-                        if let Some(entry) = lock(&players).remove(&player.instance_id()) {
-                            drop(entry.emitter);
-                        }
+                        let has_other = {
+                            let mut g = lock(&players);
+                            if let Some(entry) = g.remove(&player.instance_id()) {
+                                drop(entry.emitter);
+                            }
+                            has_other_player_for_video(&g, &ended_video, None)
+                        };
+                        (on_video_end)(&ended_video, true, false, has_other);
                         player.abort_pump().await;
                         player.shutdown().await;
                         break;
@@ -675,5 +706,53 @@ fn sanitize_media_title(title: &str) -> &str {
         ""
     } else {
         t
+    }
+}
+
+/// 稼働中のエントリ列に同一 `video_id` を再生中の別インスタンスが残っているか判定する。
+/// `exclude_instance` を指定すると、遷移直前や切替元の自インスタンスを除外できる。
+fn has_other_video_id<'a>(
+    entries: impl IntoIterator<Item = (u32, &'a str)>,
+    video_id: &str,
+    exclude_instance: Option<u32>,
+) -> bool {
+    entries
+        .into_iter()
+        .any(|(id, vid)| exclude_instance != Some(id) && vid == video_id)
+}
+
+/// 稼働中のプレイヤー群に同一動画を再生中の別インスタンスが残っているか判定する。
+/// 遷移元自身を除外する場合は `exclude_instance` にそのインスタンス ID を渡す。
+fn has_other_player_for_video(
+    players: &HashMap<u32, PlayerEntry>,
+    video_id: &str,
+    exclude_instance: Option<u32>,
+) -> bool {
+    let entries: Vec<(u32, String)> = players
+        .iter()
+        .map(|(&id, entry)| (id, entry.player.video_id()))
+        .collect();
+    has_other_video_id(
+        entries.iter().map(|(id, vid)| (*id, vid.as_str())),
+        video_id,
+        exclude_instance,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_other_video_id;
+
+    /// DB-CP-11: 同動画残存プレイヤー判定の自己インスタンス除外（FR-93、仕様決定 DV）。
+    /// 遷移元自身を除外したうえで他インスタンスの有無を正しく判定する。
+    #[test]
+    fn has_other_video_id_excludes_self() {
+        let entries = [(1_u32, "vidA"), (2_u32, "vidB")];
+        assert!(has_other_video_id(entries, "vidA", None));
+        assert!(!has_other_video_id(entries, "vidA", Some(1)));
+
+        let multi = [(1_u32, "vidA"), (2_u32, "vidA")];
+        assert!(has_other_video_id(multi, "vidA", Some(1)));
+        assert!(!has_other_video_id(multi, "vidC", None));
     }
 }

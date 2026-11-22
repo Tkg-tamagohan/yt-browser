@@ -562,6 +562,9 @@ export const en = {
   "settings.chatpopup.fontSize.desc": "10-32 (empty for default 14)",
   "settings.chatpopup.opacity": "Opacity",
   "settings.chatpopup.opacity.desc": "0.2-1.0 (empty for default 1.0)",
+  "settings.chatpopup.closeOnEnd": "Auto-close when stream or playback ends",
+  "settings.chatpopup.closeOnEnd.desc":
+    "Close the popup window when live chat ends, or when playback closes and no other player is watching the same video",
   "settings.chatpopup.unsaved": "Chat popup changed while saving (save again)",
 
   // Phase 71: テーマと表示密度（FR-76・FR-77、仕様決定 DA・DB）

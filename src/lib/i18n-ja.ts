@@ -548,6 +548,9 @@ export const ja = {
   "settings.chatpopup.fontSize.desc": "10〜32（空欄で既定 14）",
   "settings.chatpopup.opacity": "不透明度",
   "settings.chatpopup.opacity.desc": "0.2〜1.0（空欄で既定 1.0）",
+  "settings.chatpopup.closeOnEnd": "配信・再生終了時に自動で閉じる",
+  "settings.chatpopup.closeOnEnd.desc":
+    "ライブチャット終了時、またはプレイヤー終了時にポップアップ窓を閉じる（プレイヤー終了時は同動画の他プレイヤーが残る間は維持）",
   "settings.chatpopup.unsaved":
     "保存中にチャットポップアップが変更されました（要再保存）",
 

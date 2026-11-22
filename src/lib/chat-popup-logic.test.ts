@@ -3,10 +3,12 @@
 // CP-02: popupFontSize の解釈（10〜32、既定 14）
 // CP-03: popupOpacity の解釈（0.2〜1.0、既定 1.0）
 // CP-04: 非 Rust 形式の数値文字列（16 進など）は既定値へ戻す
+// CP-05: popupCloseOnEndEnabled の受理集合（既定は自動クローズ、off 系のみ無効）
 import { describe, expect, test } from "vitest";
 import {
   POPUP_FONT_SIZE_DEFAULT,
   POPUP_OPACITY_DEFAULT,
+  popupCloseOnEndEnabled,
   popupFontSize,
   popupOpacity,
   popupShowAuthorEnabled,
@@ -75,6 +77,21 @@ describe("CP-04 Rust 非受理形式の数値文字列は既定値へ戻す", ()
       expect(popupOpacity(v), `${v} は既定値になるべき`).toBe(
         POPUP_OPACITY_DEFAULT,
       );
+    }
+  });
+});
+
+describe("CP-05 popupCloseOnEndEnabled の受理集合", () => {
+  test("未設定・on 系・未知値は自動で閉じる（true）", () => {
+    expect(popupCloseOnEndEnabled(null)).toBe(true);
+    for (const v of ["on", "ON", " true ", "1", "yes", "", "  ", "invalid"]) {
+      expect(popupCloseOnEndEnabled(v), `${v} は有効になるべき`).toBe(true);
+    }
+  });
+
+  test("明示的な off 系のみ無効（false）", () => {
+    for (const v of ["off", "OFF", " false ", "0", "No"]) {
+      expect(popupCloseOnEndEnabled(v), `${v} は無効になるべき`).toBe(false);
     }
   });
 });

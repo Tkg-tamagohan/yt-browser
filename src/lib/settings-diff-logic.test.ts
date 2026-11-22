@@ -117,6 +117,40 @@ describe("SD-02 各種設定の差分抽出と日英ラベル解決", () => {
       afterText: "Light",
     });
   });
+
+  test("chat.popup_close_on_end のトグル差分を日英で整形する", () => {
+    const saved = defaultSettingsFormState();
+    const curr = cloneSettingsFormState(saved);
+    curr.chatCloseOnEnd = false;
+
+    const jaItems = diffSettingsFormState(saved, curr, {
+      t: jaT,
+      monitors: sampleMonitors,
+    });
+    expect(jaItems).toEqual([
+      {
+        id: "chat.popup_close_on_end",
+        sectionLabel: "チャットポップアップ",
+        fieldLabel: "配信・再生終了時に自動で閉じる",
+        beforeText: "オン",
+        afterText: "オフ",
+      },
+    ]);
+
+    const enItems = diffSettingsFormState(saved, curr, {
+      t: enT,
+      monitors: sampleMonitors,
+    });
+    expect(enItems).toEqual([
+      {
+        id: "chat.popup_close_on_end",
+        sectionLabel: "Chat popup",
+        fieldLabel: "Auto-close when stream or playback ends",
+        beforeText: "On",
+        afterText: "Off",
+      },
+    ]);
+  });
 });
 
 describe("SD-03 秘匿設定（ytdlp.po_token）のマスク表示", () => {

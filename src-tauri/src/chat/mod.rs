@@ -38,6 +38,10 @@ pub(crate) const SETTING_CHAT_POPUP_FONT_SIZE: &str = "chat.popup_font_size";
 /// フロント側だけで読む設定（理由は上と同じ）。
 #[allow(dead_code)]
 pub(crate) const SETTING_CHAT_POPUP_OPACITY: &str = "chat.popup_opacity";
+/// 設定キー: 配信終了・再生終了時にチャットポップアップ窓を自動で閉じるか
+/// （FR-93、仕様決定 DV）。値は "on" / "off"。
+/// 未設定・その他の値は "on"（自動で閉じる）として扱う。
+pub(crate) const SETTING_CHAT_POPUP_CLOSE_ON_END: &str = "chat.popup_close_on_end";
 /// ポップアップ窓の利用者キー（動画単位に 1 窓のため固定値）。
 pub(crate) const POPUP_CONSUMER: &str = "popup";
 

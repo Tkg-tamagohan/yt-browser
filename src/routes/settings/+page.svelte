@@ -16,7 +16,10 @@
     feedNotifyNewEnabled,
     feedShowShortsEnabled,
   } from "$lib/feed-settings";
-  import { popupShowAuthorEnabled } from "$lib/chat-popup-logic";
+  import {
+    popupCloseOnEndEnabled,
+    popupShowAuthorEnabled,
+  } from "$lib/chat-popup-logic";
   import { closeOnEofEnabled } from "$lib/eof-logic";
   import { shortcutsEnabled as parseShortcutsEnabled } from "$lib/shortcuts-logic";
   import { refreshShortcuts } from "$lib/shortcuts.svelte";
@@ -514,6 +517,23 @@
           invalid = true;
         }
       }
+      if (form.chatCloseOnEnd !== savedSnapshot.chatCloseOnEnd) {
+        const snap = form.chatCloseOnEnd;
+        if (
+          !(await saveToggleSetting(
+            setSetting,
+            "chat.popup_close_on_end",
+            snap,
+            () => form.chatCloseOnEnd,
+            () => notify(t("settings.chatpopup.unsaved")),
+            () => {
+              savedSnapshot.chatCloseOnEnd = snap;
+            },
+          ))
+        ) {
+          invalid = true;
+        }
+      }
 
       // 8. player.*（FR-39/BO、FR-92/DU）
       if (
@@ -906,6 +926,7 @@
     "chat.popup_show_author",
     "chat.popup_font_size",
     "chat.popup_opacity",
+    "chat.popup_close_on_end",
     "player.initial_speed",
     "player.initial_volume",
     "player.navigate_on_play",
@@ -1008,6 +1029,9 @@
     if (chatOpacityRaw !== null) {
       next.chatOpacity = chatOpacityRaw.trim();
     }
+    next.chatCloseOnEnd = popupCloseOnEndEnabled(
+      raw("chat.popup_close_on_end"),
+    );
     next.initialSpeed = parseOptNum(raw("player.initial_speed"));
     next.initialVolume = parseOptNum(raw("player.initial_volume"));
     next.navigateOnPlay = parseNavigateOnPlay(raw("player.navigate_on_play"));
@@ -1293,6 +1317,7 @@
           bind:showAuthor={form.chatShowAuthor}
           bind:fontSize={form.chatFontSize}
           bind:opacity={form.chatOpacity}
+          bind:closeOnEnd={form.chatCloseOnEnd}
         />
       </div>
 

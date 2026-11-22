@@ -106,7 +106,9 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
       "settings.chatpopup.showAuthor",
       "settings.chatpopup.fontSize",
       "settings.chatpopup.opacity",
+      "settings.chatpopup.closeOnEnd",
     ],
+    extraLabels: ["chat.popup_close_on_end"],
   },
   {
     id: "ui",

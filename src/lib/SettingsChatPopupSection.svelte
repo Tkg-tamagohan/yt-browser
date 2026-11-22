@@ -10,11 +10,13 @@
     showAuthor = $bindable(),
     fontSize = $bindable(),
     opacity = $bindable(),
+    closeOnEnd = $bindable(),
   }: {
     loading: boolean;
     showAuthor: boolean;
     fontSize: string;
     opacity: string;
+    closeOnEnd: boolean;
   } = $props();
 </script>
 
@@ -50,6 +52,11 @@
       />
     </label>
     <p class="subtle desc">{t("settings.chatpopup.opacity.desc")}</p>
+    <label class="setting-row">
+      <input type="checkbox" bind:checked={closeOnEnd} />
+      {t("settings.chatpopup.closeOnEnd")}
+    </label>
+    <p class="subtle desc">{t("settings.chatpopup.closeOnEnd.desc")}</p>
   </div>
 </section>
 

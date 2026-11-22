@@ -4,7 +4,7 @@
 // `popup_show_author_enabled` / `popup_font_size` / `popup_opacity`）にあり、
 // ここにあるのは UI 側の同一解釈（pip.ts と mpv/mod.rs の関係と同じ型）。
 
-import { onOffEnabled } from "./feed-settings";
+import { offDisabledEnabled, onOffEnabled } from "./feed-settings";
 
 /// `chat.popup_show_author` の保存値を表示用の boolean に解釈する
 /// （FR-68、仕様決定 CS）。on 系（on/true/1/yes、大小文字・前後空白を
@@ -61,4 +61,12 @@ export function popupOpacity(raw: string | null): number {
     return POPUP_OPACITY_DEFAULT;
   }
   return n;
+}
+
+/// `chat.popup_close_on_end` の保存値を表示用の boolean に解釈する
+/// （FR-93、仕様決定 DV）。未設定・未知値は true（自動で閉じる）とし、
+/// 明示的な off 系値（off/false/0/no、大小文字・前後空白を許容）のみ false。
+/// Rust 側 `popup_close_on_end_enabled`（src-tauri/src/chat/popup.rs）と同一解釈。
+export function popupCloseOnEndEnabled(raw: string | null): boolean {
+  return offDisabledEnabled(raw);
 }

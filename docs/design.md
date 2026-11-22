@@ -290,6 +290,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `chat.popup_show_author` | `on` / `off` | チャットポップアップに投稿者名を表示するか（§6.2、FR-68、仕様決定 CS）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（非表示）。superchat / membership のバッジは設定化の対象外 |
 | `chat.popup_font_size` | 数値 | チャットポップアップの文字サイズ px（§6.2、FR-68、仕様決定 CS）。受理範囲は 10〜32 で、未設定・空・非数・範囲外は既定 `14`（範囲と既定値は暫定） |
 | `chat.popup_opacity` | 数値 | チャットポップアップ内容の不透明度（§6.2、FR-68、仕様決定 CS）。受理範囲は 0.2〜1.0 で、未設定・空・非数・範囲外は既定 `1.0`。内容の CSS opacity へ適用する（適用先は暫定解釈） |
+| `chat.popup_close_on_end` | `on` / `off` | 配信終了および再生終了時にチャットポップアップ窓を自動で閉じるか（§6.2、FR-93、仕様決定 DV）。受理集合は `pip.default` と同一で、未設定・その他の値は `on`（自動で閉じる）。終端や動画切替の時点で都度読み取る |
 | `window.screen` | モニター名 | 再生窓を開くディスプレイ（§4.5、FR-31、仕様決定 AZ）。`monitor_list` が返すモニター名。空・未設定・現在の列挙に無い名前は自動（mpv 既定）。PiP 窓の一括整列の対象ディスプレイ解決でも同じ保存値を使う（§4.12） |
 | `player.initial_speed` | 数値 | 新規インスタンスの初期再生速度（§4.1、FR-39、仕様決定 BO）。mpv `--speed` へ渡す。受理範囲は 0.25〜4.0 で、未設定・空・非数・範囲外は既定 `1.0` |
 | `player.initial_volume` | 数値 | 新規インスタンスの初期音量（§4.1、FR-39、仕様決定 BO）。mpv `--volume` へ渡す。受理範囲は 0〜130 で、未設定・空・非数・範囲外は既定 `100` |
@@ -1311,6 +1312,10 @@ zip 生成の一通り）と DX-01（既定ファイル名の規則）。
 - ポップアップの表示行は投稿時刻と本文のみで、superchat / membership のバッジは出さない（仕様決定 AU）。投稿者名は設定 `chat.popup_show_author` が on 系のときだけ出す（FR-68・仕様決定 CS）。文字サイズ `chat.popup_font_size`（10〜32px、既定 14）と内容の不透明度 `chat.popup_opacity`（0.2〜1.0、既定 1.0）はポップアップ窓側が `settings_get` で読み、ルート要素の `--chat-font-size` カスタムプロパティと `opacity` スタイルへ反映する（不透明度を窓枠ではなく内容の CSS opacity に掛けるのは暫定解釈）。3 設定とも `settings://changed` の購読で開いている窓へ即時に反映する。設定値の解釈の正は Rust 側 `chat/popup.rs` に置き、フロントの `chat-popup-logic.ts` が同一解釈を持つ
 - `chat://message` / `chat://status` / `chat://reset` は埋め込みパネルと同じ経路で購読し、窓ごとの JS コンテキストで動画 ID へ直接振り分ける。窓を開く前に流れた分は受信できず、埋め込みパネルの蓄積分は引き継がない
 - `chat_start` / `chat_stop` は埋め込みパネル利用者の登録・解除として扱い、パネル閉・ポップアップ閉・プレイヤー終了のいずれでも利用者解除を経由する
+- 自動クローズ（FR-93、仕様決定 DV）：設定 `chat.popup_close_on_end`（既定 `on`、`chat/popup.rs` の `popup_close_on_end_enabled` と `chat-popup-logic.ts` の `popupCloseOnEndEnabled` が同一解釈）が有効なとき、バックエンドが対象動画のポップアップ窓へ `WebviewWindow::close` を呼ぶ
+  ライブ配信経路では `ChatPoller::run_live` が `is_live_continuation_ended` により継続欠落またはリプレイ継続への切替を検知し、`chat://status` 通知後に `close_popup_on_live_end` で閉じる（通信エラー再試行や `run_replay` 末尾では閉じない）
+  プレイヤー経路では `PlayerManager::close`、`spawn_emitter`（`close_instance` 終了および別動画への連続再生遷移）、`switch`（別動画読み替え成功後）について、管理表ロック内で `has_other_video_id`（遷移元インスタンスを除外した残存判定）により他プレイヤー不在を確認し、ロック解放後に `lib.rs` で配線した `VideoEndHook` 経由で `chat::popup::handle_player_video_end` を呼び、`should_close_popup_on_player_end` に従って窓を閉じる（`mpv` から `chat` への直接参照を持たない）
+  DB 読み取り失敗時や `Db` 状態未取得時は閉じずに維持する
 
 ### 6.3 NG と送信のパイプライン
 
