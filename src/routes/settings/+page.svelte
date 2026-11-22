@@ -520,16 +520,17 @@
       if (form.chatCloseOnEnd !== savedSnapshot.chatCloseOnEnd) {
         const snap = form.chatCloseOnEnd;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "chat.popup_close_on_end",
             snap,
             () => form.chatCloseOnEnd,
             () => notify(t("settings.chatpopup.unsaved")),
-          )
+            () => {
+              savedSnapshot.chatCloseOnEnd = snap;
+            },
+          ))
         ) {
-          savedSnapshot.chatCloseOnEnd = snap;
-        } else {
           invalid = true;
         }
       }

@@ -69,9 +69,9 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 
 ### Phase 88：配信終了および再生終了時のチャットポップアップ自動クローズ
 
-- [x] `chat.popup_close_on_end`（既定 `on`）を設定キーとして定義し、`chat/popup.rs` へ解釈関数、残存プレイヤー除外付き判定（`has_other_video_id`、`should_close_popup_on_player_end`）、フェイルセーフ付き DB 読み取り、および単体テスト（`DB-CP-07`、`DB-CP-08`、`DB-CP-10`）を実装する（FR-93、仕様決定 DV）
+- [x] `chat.popup_close_on_end`（既定 `on`）を設定キーとして定義し、`chat/popup.rs` へ解釈関数、終了判定（`should_close_popup_on_player_end`）、フェイルセーフ付き DB 読み取り、および単体テスト（`DB-CP-07`、`DB-CP-08`、`DB-CP-10`）を実装する（FR-93、仕様決定 DV）
 - [x] `ChatPoller::run_live` へ `is_live_continuation_ended` とライブ継続終了時（`None` および `Replay` 遷移）のポップアップ自動クローズを組み込み、単体テスト `DB-CP-09` を追加する
-- [x] `PlayerManager::close`、`spawn_emitter`（終了時および別動画への連続再生時）、`switch`（別動画読み替え成功後）へ他プレイヤー残存確認付きのポップアップ自動クローズを組み込む
+- [x] `PlayerManager` へ `has_other_video_id`（単体テスト `DB-CP-11`）と `VideoEndHook` を設け、`close`、`spawn_emitter`（終了時および別動画への連続再生時）、`switch`（別動画読み替え成功後）からロック解放後に `lib.rs` 経由で `chat::popup::handle_player_video_end` を呼ぶよう組み込む
 - [x] 設定画面「チャットポップアップ」節、`chat-popup-logic.ts`、`settings-diff-logic.ts`、`settings-filter.ts`、日英 i18n リソースと各単体テスト（`CP-05`、`SD-02`、`SF-02`）を追加する
 - [ ] 受け入れ：設定画面での切替と即時反映、ライブ終了および再生終了（EOF 自動クローズ、手動クローズ、複数プレイヤー残存維持、連続再生と `player_switch` での別動画切替、リプレイ末尾維持、`off` 時維持）を実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェックは通過済み、GUI 実機検証は未実施）
 

@@ -246,18 +246,6 @@ pub(crate) fn should_close_popup_on_player_end(
     player_closed || video_changed
 }
 
-/// 稼働中のプレイヤー群に、同一 `video_id` を再生中の別インスタンスが残っているか判定する。
-/// `exclude_instance` を指定すると、遷移直前や切替元の自インスタンスを除外できる。
-pub(crate) fn has_other_video_id<'a>(
-    entries: impl IntoIterator<Item = (u32, &'a str)>,
-    video_id: &str,
-    exclude_instance: Option<u32>,
-) -> bool {
-    entries
-        .into_iter()
-        .any(|(id, vid)| exclude_instance != Some(id) && vid == video_id)
-}
-
 /// DB から `chat.popup_close_on_end` を読み取り解釈する。
 /// 読み取りに失敗した場合はフェイルセーフとして `None`（自動で閉じない）を返す。
 pub(crate) fn read_popup_close_on_end(db: &crate::db::Db) -> Option<bool> {
@@ -289,13 +277,36 @@ pub(crate) fn close_popup_if_enabled(app: &tauri::AppHandle, db: &crate::db::Db,
     }
 }
 
+/// プレイヤー終了または別動画切替通知を受け、条件を満たすときにポップアップ窓を閉じる
+/// （FR-93、仕様決定 DV）。`lib.rs` の `VideoEndHook` 配線から呼び出される。
+pub(crate) fn handle_player_video_end(
+    app: &tauri::AppHandle,
+    db: &crate::db::Db,
+    video_id: &str,
+    player_closed: bool,
+    video_changed: bool,
+    has_other_player: bool,
+) {
+    let Some(close_on_end) = read_popup_close_on_end(db) else {
+        return;
+    };
+    if should_close_popup_on_player_end(
+        close_on_end,
+        player_closed,
+        video_changed,
+        has_other_player,
+    ) {
+        close_popup_window(app, video_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        format_popup_geometry, has_other_video_id, parse_popup_geometry,
-        popup_close_on_end_enabled, popup_font_size, popup_geometry_visible, popup_opacity,
-        popup_show_author_enabled, read_popup_close_on_end, should_close_popup_on_player_end,
-        PopupGeomTracker, PopupGeometry, DEFAULT_POPUP_FONT_SIZE, DEFAULT_POPUP_OPACITY,
+        format_popup_geometry, parse_popup_geometry, popup_close_on_end_enabled, popup_font_size,
+        popup_geometry_visible, popup_opacity, popup_show_author_enabled, read_popup_close_on_end,
+        should_close_popup_on_player_end, PopupGeomTracker, PopupGeometry, DEFAULT_POPUP_FONT_SIZE,
+        DEFAULT_POPUP_OPACITY,
     };
 
     /// DB-CP-01: `chat.popup_geometry` の受理形式（FR-67、仕様決定 CR）。
@@ -529,8 +540,8 @@ mod tests {
         }
     }
 
-    /// DB-CP-08: プレイヤー終了・動画切替時のポップアップ自動クローズ判定と
-    /// 同動画残存インスタンスの検出（FR-93、仕様決定 DV）。
+    /// DB-CP-08: プレイヤー終了・動画切替時のポップアップ自動クローズ判定
+    /// （FR-93、仕様決定 DV）。
     #[test]
     fn should_close_popup_on_player_end_cases() {
         // 設定 off ならいかなる条件でも閉じない
@@ -555,14 +566,6 @@ mod tests {
         // 他プレイヤーが無く、プレイヤー終了または別動画切替なら閉じる
         assert!(should_close_popup_on_player_end(true, true, false, false));
         assert!(should_close_popup_on_player_end(true, false, true, false));
-
-        // 残存判定のインスタンス除外（自己一致防止）
-        let entries = [(1_u32, "vidA"), (2_u32, "vidB")];
-        assert!(has_other_video_id(entries, "vidA", None));
-        assert!(!has_other_video_id(entries, "vidA", Some(1)));
-        let multi = [(1_u32, "vidA"), (2_u32, "vidA")];
-        assert!(has_other_video_id(multi, "vidA", Some(1)));
-        assert!(!has_other_video_id(multi, "vidC", None));
     }
 
     /// DB-CP-10: `chat.popup_close_on_end` の DB 読み取り往復（FR-93、仕様決定 DV）。

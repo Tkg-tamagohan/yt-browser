@@ -1314,7 +1314,7 @@ zip 生成の一通り）と DX-01（既定ファイル名の規則）。
 - `chat_start` / `chat_stop` は埋め込みパネル利用者の登録・解除として扱い、パネル閉・ポップアップ閉・プレイヤー終了のいずれでも利用者解除を経由する
 - 自動クローズ（FR-93、仕様決定 DV）：設定 `chat.popup_close_on_end`（既定 `on`、`chat/popup.rs` の `popup_close_on_end_enabled` と `chat-popup-logic.ts` の `popupCloseOnEndEnabled` が同一解釈）が有効なとき、バックエンドが対象動画のポップアップ窓へ `WebviewWindow::close` を呼ぶ
   ライブ配信経路では `ChatPoller::run_live` が `is_live_continuation_ended` により継続欠落またはリプレイ継続への切替を検知し、`chat://status` 通知後に `close_popup_on_live_end` で閉じる（通信エラー再試行や `run_replay` 末尾では閉じない）
-  プレイヤー経路では `PlayerManager::close`、`spawn_emitter`（`close_instance` 終了および別動画への連続再生遷移）、`switch`（別動画読み替え成功後）から、管理表ロック解放後に `should_close_popup_on_player_end` と `has_other_video_id`（遷移元インスタンスを除外した残存判定）で他プレイヤー不在を確認して閉じる
+  プレイヤー経路では `PlayerManager::close`、`spawn_emitter`（`close_instance` 終了および別動画への連続再生遷移）、`switch`（別動画読み替え成功後）について、管理表ロック内で `has_other_video_id`（遷移元インスタンスを除外した残存判定）により他プレイヤー不在を確認し、ロック解放後に `lib.rs` で配線した `VideoEndHook` 経由で `chat::popup::handle_player_video_end` を呼び、`should_close_popup_on_player_end` に従って窓を閉じる（`mpv` から `chat` への直接参照を持たない）
   DB 読み取り失敗時や `Db` 状態未取得時は閉じずに維持する
 
 ### 6.3 NG と送信のパイプライン
