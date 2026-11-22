@@ -115,6 +115,51 @@ jobs:
         working-directory: src-tauri
       - run: cargo test --locked
         working-directory: src-tauri
+      - name: PowerShell 5.1 構文と署名スクリプト異常系を検証
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $scripts = @('scripts\sign_windows.ps1', 'scripts\verify_windows_signature.ps1')
+          foreach ($s in $scripts) {
+              $tokens = $null
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $s).Path, [ref]$tokens, [ref]$errors) | Out-Null
+              if ($errors.Count -gt 0) {
+                  throw "PowerShell 構文エラー ($s): $($errors -join '; ')"
+              }
+          }
+
+          $dummy = Join-Path $env:RUNNER_TEMP 'unsigned_dummy.exe'
+          [System.IO.File]::WriteAllBytes($dummy, [byte[]]@(0x4D, 0x5A, 0x00, 0x00))
+          try {
+              $prevPref = $ErrorActionPreference
+              try {
+                  $ErrorActionPreference = 'Continue'
+
+                  # sign_windows.ps1: サムプリント未設定時は即失敗すること
+                  Remove-Item Env:CODE_SIGN_CERT_THUMBPRINT -ErrorAction SilentlyContinue
+                  $out1 = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'scripts\sign_windows.ps1' -TargetFile $dummy 2>&1
+                  $code1 = $LASTEXITCODE
+                  if ($code1 -eq 0) {
+                      throw "sign_windows.ps1 が CODE_SIGN_CERT_THUMBPRINT 未設定で成功しました。"
+                  }
+                  Write-Host "sign_windows.ps1 異常系確認 OK (exit=$code1)"
+
+                  # verify_windows_signature.ps1: 未署名ファイル時は即失敗すること
+                  $out2 = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'scripts\verify_windows_signature.ps1' -TargetPaths @($dummy) 2>&1
+                  $code2 = $LASTEXITCODE
+                  if ($code2 -eq 0) {
+                      throw "verify_windows_signature.ps1 が未署名ファイルで成功しました。"
+                  }
+                  Write-Host "verify_windows_signature.ps1 異常系確認 OK (exit=$code2)"
+              } finally {
+                  $ErrorActionPreference = $prevPref
+              }
+          } finally {
+              Remove-Item -LiteralPath $dummy -Force -ErrorAction SilentlyContinue
+          }
 
   # ルールセットの必須チェックをこのジョブ 1 本に集約する。
   # 必須チェックとして報告される名前はジョブの name（CI）になる。

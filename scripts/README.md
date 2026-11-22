@@ -12,6 +12,8 @@
 | `bump_version.py` | バージョン 4 箇所の一括更新（リリース準備用・`--expect-tag` でタグ照合） |
 | `make_latest_json.py` | リリースワークフローの `latest.json` 生成 |
 | `verify_release.py` | リリース公開直前の `dist/`・`latest.json`・拡張 zip 検証（`release.yml`） |
+| `sign_windows.ps1` | Tauri `signCommand` 経由で Windows 実行ファイルへ Authenticode 署名する補助（PowerShell 5.1） |
+| `verify_windows_signature.ps1` | Windows 実行ファイルの Authenticode 署名とタイムスタンプを検証する補助（PowerShell 5.1） |
 | `test_scripts.py` | 上記スクリプト群の `unittest` 単体テスト（CI の consistency ジョブで実行） |
 | `cdp_client.py` | CDP（Chrome DevTools Protocol）の薄いクライアント（FR-84） |
 | `e2e_dev.py` | CDP 付き隔離 dev インスタンスの起動補助（FR-84） |

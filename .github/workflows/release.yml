@@ -1,6 +1,7 @@
 name: release
 
-# タグ push (v*) でリリースを作る。Tauri バンドル（Windows は NSIS、
+# タグ push (v*) でリリースを作る。workflow_dispatch は署名ビルドの事前検証用で、
+# release ジョブは走らせず Artifact のみ生成する。Tauri バンドル（Windows は NSIS、
 # Linux は AppImage/deb/rpm）と updater 用の署名付き成果物をビルドし、
 # GitHub Releases に置く。latest.json は両 OS の署名成果物が揃った
 # 状態で release ジョブが生成する（AppImage と NSIS のみ。仕様決定 AB）
@@ -9,19 +10,28 @@ name: release
 # Linux 側のランナーは配布物の動作下限を上げないよう ubuntu-24.04 に
 # 固定する（仕様決定 AI）。新しいイメージでビルドすると AppImage の
 # 要求 glibc と deb/rpm の依存版指定が新しいディストロ基準へ上がるため。
+# PR からの秘密鍵漏洩を防ぐため pull_request トリガーは置かない（仕様決定 DW）。
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      windows_only:
+        description: "Windows 署名ビルドのみ実行する（テスト検証用）"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   # リリースビルド開始前にドキュメント整合・タグと各ファイルのバージョン一致・
-  # 署名秘密鍵の設定有無を数秒で確認し、不整合のまま長時間ビルドへ進むのを防ぐ（仕様決定 DQ）。
+  # 署名秘密鍵の設定有無を数秒で確認し、不整合のまま長時間ビルドへ進むのを防ぐ（仕様決定 DQ・DW）。
   preflight:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      matrix_json: ${{ steps.plan.outputs.matrix_json }}
     steps:
       - uses: actions/checkout@v7
       - run: python3 -m py_compile scripts/*.py
@@ -29,14 +39,55 @@ jobs:
       - run: python3 scripts/check_docs_consistency.py
       - name: タグとバージョンおよび署名鍵を検証
         env:
+          EVENT_NAME: ${{ github.event_name }}
           TAG_NAME: ${{ github.ref_name }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          CODE_SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
+          CODE_SIGN_PFX_PASSWORD: ${{ secrets.CODE_SIGN_PFX_PASSWORD }}
         run: |
-          python3 scripts/bump_version.py --check --expect-tag "$TAG_NAME"
+          if [ "$EVENT_NAME" = "push" ]; then
+            python3 scripts/bump_version.py --check --expect-tag "$TAG_NAME"
+          else
+            python3 scripts/bump_version.py --check
+          fi
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             echo "::error::TAURI_SIGNING_PRIVATE_KEY が未設定のため署名付きリリースを作成できません"
             exit 1
           fi
+          if [ -z "$CODE_SIGN_PFX_BASE64" ] || [ -z "$CODE_SIGN_PFX_PASSWORD" ]; then
+            echo "::error::CODE_SIGN_PFX_BASE64 または CODE_SIGN_PFX_PASSWORD が未設定のため Windows Authenticode 署名を実行できません"
+            exit 1
+          fi
+      - name: ビルドマトリクスを決定
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WINDOWS_ONLY: ${{ inputs.windows_only }}
+        run: |
+          python3 <<'EOF'
+          import json, os
+
+          linux_entry = {
+              "os": "ubuntu-24.04",
+              "bundle_glob": "src-tauri/target/release/bundle/appimage/*.AppImage src-tauri/target/release/bundle/appimage/*.sig src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm",
+              "artifact_name": "linux",
+              "bundles": "appimage,deb,rpm",
+          }
+          windows_entry = {
+              "os": "windows-latest",
+              "bundle_glob": "src-tauri/target/release/bundle/nsis/*.exe src-tauri/target/release/bundle/nsis/*.sig",
+              "artifact_name": "windows",
+              "bundles": "nsis",
+          }
+
+          if os.environ.get("EVENT_NAME") == "workflow_dispatch" and os.environ.get("WINDOWS_ONLY") == "true":
+              matrix = [windows_entry]
+          else:
+              matrix = [linux_entry, windows_entry]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write("matrix_json=" + json.dumps(matrix, separators=(",", ":")) + "\n")
+          EOF
 
   build:
     needs: preflight
@@ -44,19 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            # updater 成果物（バンドル本体 + .sig）と配布物を回収する
-            # （createUpdaterArtifacts は本体に直接署名し tar.gz は作らない）
-            bundle_glob: "src-tauri/target/release/bundle/appimage/*.AppImage src-tauri/target/release/bundle/appimage/*.sig src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm"
-            artifact_name: linux
-            # 配布対象のバンドルだけビルドする（不要な形式で時間を使わない）
-            bundles: "appimage,deb,rpm"
-          - os: windows-latest
-            # MSI は配布廃止のためビルドも回収もしない（仕様決定 AK）
-            bundle_glob: "src-tauri/target/release/bundle/nsis/*.exe src-tauri/target/release/bundle/nsis/*.sig"
-            artifact_name: windows
-            bundles: "nsis"
+        include: ${{ fromJson(needs.preflight.outputs.matrix_json) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -86,11 +125,205 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY が未設定です"
             exit 1
           fi
-      - name: Build bundles and updater artifacts
+      - name: Build bundles and updater artifacts (Linux)
+        if: runner.os == 'Linux'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --ci --bundles ${{ matrix.bundles }} -- --locked
+      - name: Build, Authenticode-sign and verify Windows bundles
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        shell: powershell
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CODE_SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
+          CODE_SIGN_PFX_PASSWORD: ${{ secrets.CODE_SIGN_PFX_PASSWORD }}
+          CODE_SIGN_TIMESTAMP_URL: ${{ vars.CODE_SIGN_TIMESTAMP_URL }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $workDir = ''
+          $pfxPath = ''
+          $thumbprint = ''
+
+          try {
+              if ([string]::IsNullOrWhiteSpace($env:CODE_SIGN_PFX_BASE64) -or [string]::IsNullOrWhiteSpace($env:CODE_SIGN_PFX_PASSWORD)) {
+                  throw "CODE_SIGN_PFX_BASE64 または CODE_SIGN_PFX_PASSWORD が未設定です。"
+              }
+              if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+                  throw "TAURI_SIGNING_PRIVATE_KEY が未設定です。"
+              }
+
+              $workDir = Join-Path $env:RUNNER_TEMP ("codesign-" + [guid]::NewGuid().ToString('N'))
+              New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+
+              $pfxPath = Join-Path $workDir 'codesign.pfx'
+              $cerPath = Join-Path $workDir 'codesign.cer'
+              $signConfigPath = Join-Path $workDir 'tauri-sign.json'
+
+              $pfxBytes = [Convert]::FromBase64String($env:CODE_SIGN_PFX_BASE64.Trim())
+              [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+              [Array]::Clear($pfxBytes, 0, $pfxBytes.Length)
+
+              $securePass = ConvertTo-SecureString -String $env:CODE_SIGN_PFX_PASSWORD -AsPlainText -Force
+              $importedCerts = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password $securePass)
+              if ($importedCerts.Count -ne 1) {
+                  throw "PFX 内の証明書数が想定外です ($($importedCerts.Count) 件)。"
+              }
+              $importedCert = $importedCerts[0]
+              $thumbprint = $importedCert.Thumbprint.ToUpperInvariant()
+
+              Export-Certificate -Cert $importedCert -FilePath $cerPath -Force | Out-Null
+
+              # 後続の保険クリーンアップステップ用（公開サムプリントのみ記録）
+              [System.IO.File]::AppendAllText(
+                  $env:GITHUB_ENV,
+                  "CODE_SIGN_CLEANUP_THUMBPRINT=$thumbprint`n",
+                  [System.Text.UTF8Encoding]::new($false)
+              )
+
+              # ビルド前に PFX ファイルと Secrets 環境変数を破棄し、子プロセスへ渡さない
+              $pfxLen = (Get-Item -LiteralPath $pfxPath).Length
+              [System.IO.File]::WriteAllBytes($pfxPath, (New-Object byte[] $pfxLen))
+              Remove-Item -LiteralPath $pfxPath -Force
+              $securePass = $null
+              Remove-Item Env:CODE_SIGN_PFX_BASE64 -ErrorAction SilentlyContinue
+              Remove-Item Env:CODE_SIGN_PFX_PASSWORD -ErrorAction SilentlyContinue
+
+              $repoRoot = (Get-Location).ProviderPath
+              $signScript = (Join-Path $repoRoot 'scripts\sign_windows.ps1').Replace('\', '/')
+              $signCfg = @{
+                  bundle = @{
+                      windows = @{
+                          signCommand = @{
+                              cmd = 'powershell.exe'
+                              args = @(
+                                  '-NoProfile',
+                                  '-NonInteractive',
+                                  '-ExecutionPolicy',
+                                  'Bypass',
+                                  '-File',
+                                  $signScript,
+                                  '%1'
+                              )
+                          }
+                      }
+                  }
+              }
+              $signJson = $signCfg | ConvertTo-Json -Depth 10
+              [System.IO.File]::WriteAllText($signConfigPath, $signJson, [System.Text.UTF8Encoding]::new($false))
+
+              $env:CODE_SIGN_CERT_THUMBPRINT = $thumbprint
+              Write-Host "Tauri Windows ビルドと Authenticode 署名を開始します (Thumbprint=$thumbprint)"
+              # Windows PowerShell では pnpm.ps1 が実行ポリシー制約を受け得るため pnpm.cmd を明示する
+              & pnpm.cmd tauri build --ci --bundles nsis --config $signConfigPath -- --locked
+              if ($LASTEXITCODE -ne 0) {
+                  throw "pnpm.cmd tauri build が終了コード $LASTEXITCODE で失敗しました。"
+              }
+
+              $appExe = Join-Path $repoRoot 'src-tauri\target\release\yt-browser.exe'
+              if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
+                  throw "ビルド済みバイナリが見つかりません: $appExe"
+              }
+              $nsisDir = Join-Path $repoRoot 'src-tauri\target\release\bundle\nsis'
+              $nsisExes = @(Get-ChildItem -Path $nsisDir -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue)
+              if ($nsisExes.Count -eq 0) {
+                  throw "NSIS インストーラが見つかりません: $nsisDir"
+              }
+              $nsisSigs = @(Get-ChildItem -Path $nsisDir -Filter '*.exe.sig' -File -ErrorAction SilentlyContinue)
+              if ($nsisSigs.Count -eq 0) {
+                  throw "Tauri updater 用署名 (*.exe.sig) が見つかりません: $nsisDir"
+              }
+
+              $verifyTargets = @($appExe) + @($nsisExes | ForEach-Object { $_.FullName })
+              $verifyScript = Join-Path $repoRoot 'scripts\verify_windows_signature.ps1'
+              & $verifyScript -TargetPaths $verifyTargets -ExpectedThumbprint $thumbprint -TrustCertPath $cerPath
+              if ($LASTEXITCODE -ne 0) {
+                  throw "verify_windows_signature.ps1 が終了コード $LASTEXITCODE で失敗しました。"
+              }
+          } finally {
+              Remove-Item Env:CODE_SIGN_PFX_BASE64 -ErrorAction SilentlyContinue
+              Remove-Item Env:CODE_SIGN_PFX_PASSWORD -ErrorAction SilentlyContinue
+              Remove-Item Env:CODE_SIGN_CERT_THUMBPRINT -ErrorAction SilentlyContinue
+
+              if (-not [string]::IsNullOrEmpty($pfxPath) -and (Test-Path -LiteralPath $pfxPath -PathType Leaf)) {
+                  try {
+                      $len = (Get-Item -LiteralPath $pfxPath).Length
+                      [System.IO.File]::WriteAllBytes($pfxPath, (New-Object byte[] $len))
+                      Remove-Item -LiteralPath $pfxPath -Force
+                  } catch {
+                      Write-Warning "一時 PFX の削除に失敗しました: $($_.Exception.Message)"
+                  }
+              }
+
+              if (-not [string]::IsNullOrEmpty($workDir) -and (Test-Path -LiteralPath $workDir)) {
+                  try {
+                      Remove-Item -LiteralPath $workDir -Recurse -Force
+                  } catch {
+                      Write-Warning "一時作業ディレクトリの削除に失敗しました: $($_.Exception.Message)"
+                  }
+              }
+
+              if (-not [string]::IsNullOrEmpty($thumbprint)) {
+                  try {
+                      $myPath = "Cert:\CurrentUser\My\$thumbprint"
+                      if (Test-Path -LiteralPath $myPath) {
+                          Remove-Item -LiteralPath $myPath -Force
+                      }
+                      if (Test-Path -LiteralPath $myPath) {
+                          & certutil.exe -user -delstore My $thumbprint | Out-Null
+                      }
+                  } catch {
+                      Write-Warning "CurrentUser\My の一時証明書削除に失敗しました: $($_.Exception.Message)"
+                  }
+              }
+          }
+      - name: Cleanup Windows signing artifacts (failsafe)
+        if: always() && runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $leftoverDirs = @(Get-ChildItem -Path $env:RUNNER_TEMP -Filter 'codesign-*' -Directory -ErrorAction SilentlyContinue)
+          foreach ($dir in $leftoverDirs) {
+              $pfxLeftovers = @(Get-ChildItem -Path $dir.FullName -Filter '*.pfx' -File -Recurse -ErrorAction SilentlyContinue)
+              foreach ($f in $pfxLeftovers) {
+                  $len = $f.Length
+                  [System.IO.File]::WriteAllBytes($f.FullName, (New-Object byte[] $len))
+                  Remove-Item -LiteralPath $f.FullName -Force
+              }
+              Remove-Item -LiteralPath $dir.FullName -Recurse -Force
+              Write-Host "保険クリーンアップで一時ディレクトリを削除しました: $($dir.FullName)"
+          }
+
+          $tp = $env:CODE_SIGN_CLEANUP_THUMBPRINT
+          if (-not [string]::IsNullOrWhiteSpace($tp)) {
+              $tp = $tp.Trim().ToUpperInvariant()
+              $myPath = "Cert:\CurrentUser\My\$tp"
+              if (Test-Path -LiteralPath $myPath) {
+                  Remove-Item -LiteralPath $myPath -Force
+                  if (Test-Path -LiteralPath $myPath) {
+                      & certutil.exe -user -delstore My $tp | Out-Null
+                  }
+              }
+              $rootPath = "Cert:\LocalMachine\Root\$tp"
+              if (Test-Path -LiteralPath $rootPath) {
+                  Remove-Item -LiteralPath $rootPath -Force
+              }
+
+              if ((Test-Path -LiteralPath $myPath) -or (Test-Path -LiteralPath $rootPath)) {
+                  throw "証明書ストアに一時証明書が残存しています ($tp)。"
+              }
+          }
+
+          $remainingDirs = @(Get-ChildItem -Path $env:RUNNER_TEMP -Filter 'codesign-*' -Directory -ErrorAction SilentlyContinue)
+          if ($remainingDirs.Count -gt 0) {
+              throw "RUNNER_TEMP に codesign-* が残存しています。"
+          }
+          Write-Host "Windows 署名一時ファイルの残存ゼロを確認しました。"
       - name: Collect bundles
         shell: bash
         run: |
@@ -103,10 +336,12 @@ jobs:
         with:
           name: bundles-${{ matrix.artifact_name }}
           path: dist/
+          retention-days: ${{ github.event_name == 'workflow_dispatch' && 7 || 90 }}
           if-no-files-found: error
 
   release:
-    # 両プラットフォームのビルドが成功してからだけ公開する
+    # タグ push 時かつ両プラットフォームのビルドが成功してからだけ公開する
+    if: github.event_name == 'push'
     needs: build
     permissions:
       contents: write

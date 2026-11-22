@@ -11,6 +11,7 @@
   SC-07: cdp_client のターゲット選択とローカルモック WebSocket 通信
   SC-08: e2e_dev の override 設定生成と --dry-run
   SC-09: e2e_smoke のページ定義整合確認
+  SC-10: release.yml / ci.yml の Windows コード署名セキュリティ契約
 """
 
 from __future__ import annotations
@@ -2093,6 +2094,46 @@ class TestCdpAndE2eHelpers(unittest.TestCase):
             self.assertTrue(route.startswith("/"))
             self.assertIsInstance(expr, str)
             self.assertTrue(expr.strip())
+
+
+class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
+    """SC-10: release.yml / ci.yml の Windows コード署名セキュリティ契約を検証する。"""
+
+    def test_sc10_release_and_ci_signing_security_contract(self) -> None:
+        release_yml = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        ci_yml = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        sign_ps1 = (SCRIPTS_DIR / "sign_windows.ps1").read_text(encoding="utf-8")
+        verify_ps1 = (SCRIPTS_DIR / "verify_windows_signature.ps1").read_text(encoding="utf-8")
+
+        # 1. release.yml に pull_request トリガーが存在しないこと（コメント除く）
+        on_section = release_yml.split("permissions:", 1)[0]
+        on_non_comment = "\n".join(
+            line for line in on_section.splitlines() if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("pull_request", on_non_comment)
+
+        # 2. ci.yml がコード署名 Secrets を一切参照しないこと
+        self.assertNotIn("CODE_SIGN_PFX_BASE64", ci_yml)
+        self.assertNotIn("CODE_SIGN_PFX_PASSWORD", ci_yml)
+
+        # 3. release.yml の必須セキュリティ要件（Secrets 検査・PR ガード・try/finally・always 掃除・release 制限）
+        for token in (
+            "CODE_SIGN_PFX_BASE64",
+            "CODE_SIGN_PFX_PASSWORD",
+            "github.event_name != 'pull_request'",
+            "try {",
+            "} finally {",
+            "if: always() && runner.os == 'Windows'",
+            "if: github.event_name == 'push'",
+            "scripts\\sign_windows.ps1",
+            "scripts\\verify_windows_signature.ps1",
+        ):
+            self.assertIn(token, release_yml)
+
+        # 4. PowerShell スクリプトが 5.1 互換前提（#Requires -Version 5.1 あり・&& なし）であること
+        for name, body in (("sign_windows.ps1", sign_ps1), ("verify_windows_signature.ps1", verify_ps1)):
+            self.assertIn("#Requires -Version 5.1", body, name)
+            self.assertNotIn("&&", body, name)
 
 
 if __name__ == "__main__":

@@ -51,3 +51,21 @@ FR-15 / 仕様決定 AB の導入に必要なユーザー側の作業手順書�
 - リリースの公開はワークフローが自動で行う（既存運用と同じ。ドラフト作成→アセット添付→公開の順で、添付途中の不完全な公開は出ない）。ビルドジョブが途中で失敗した場合はリリース自体が作られないので、直してからタグを打ち直す
 - 公開前やビルド失敗時は `latest.json` が公開 URL に出ないため、更新確認は「更新なし／確認失敗」に見える（正常）
 - CI のビルド成果物検証（署名・latest.json の中身）は release ワークフロー実行時に初めて行われる。初回リリース時はリリースの添付物一覧で `latest.json` があり、その `platforms` に linux-x86_64 と windows-x86_64 の両エントリ（各 `signature` 付き）が入っているか確認する（`*.sig` 自体はアセットに添付しない。仕様決定 AK）
+
+## Windows Authenticode コード署名（自己署名証明書）
+
+Windows 配布物（`yt-browser.exe`、NSIS アンインストーラ、および `*-setup.exe`）には、手元 Windows 端末の監視ツール等へ署名者ベースの信頼を維持するため、自己署名証明書による Authenticode 署名と RFC 3161 タイムスタンプを付与する（仕様決定 DW）。
+
+### GitHub Secrets とワークフロー連携
+
+1. `CODE_SIGN_PFX_BASE64`（`.pfx` の Base64 文字列）と `CODE_SIGN_PFX_PASSWORD`（PFX パスワード）を GitHub リポジトリの Actions Secrets へ登録する。
+   秘密値を画面出力やチャット欄へ残さないよう、`gh secret set` の標準入力パイプで登録する。
+2. `release.yml` の `build`（`windows-latest`）は、一時展開した `.pfx` をビルド前に `Cert:\CurrentUser\My` へ非エクスポートでインポートして `.pfx` とパスワード環境変数を即消去し、一時 `--config` JSON で `scripts/sign_windows.ps1` を `bundle.windows.signCommand` へ注入する。
+   これによりアプリ本体・アンインストーラ・NSIS インストーラへ順に署名され、署名済みインストーラに対して Tauri updater 用の `*.exe.sig` が生成される。
+3. 署名後は `scripts/verify_windows_signature.ps1` が `signtool verify /pa /v` と `Get-AuthenticodeSignature` で SHA256 署名とタイムスタンプを検証し、`finally` と `if: always()` のクリーンアップで一時ファイルと証明書ストアを消去する。
+
+### 事前検証と手元端末での確認
+
+- タグ公開前に署名ビルドだけを検証するときは、GitHub Actions の `release` ワークフローを `workflow_dispatch`（既定 `windows_only: true`）で起動し、公開ジョブを動かさずに署名済み Artifact を取得する。
+- 手元 Windows 端末では、秘密鍵を含まない公開証明書（`.cer`）だけを管理者 PowerShell で `Cert:\LocalMachine\Root` へ登録（`HasPrivateKey: False`）し、配置済み実行ファイルに対して `Get-AuthenticodeSignature` で `Status = Valid` を確認する。
+- 証明書の有効期限（5 年）を更新する際は新しい自己署名証明書を再発行し、GitHub Secrets の 2 項目、手元端末の `Cert:\LocalMachine\Root`、および監視ツールのルートサムプリント設定を差し替える。
