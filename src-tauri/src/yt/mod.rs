@@ -249,29 +249,22 @@ pub async fn video_channel_ref(
 }
 
 /// yt-dlp の `--dump-single-json` 応答から `VideoChannelInfo` を選択する（仕様決定 U・DY）。
-/// 単一動画のトップレベルまたは `entries[0]` のいずれかに参照候補があればそれを優先し、
-/// 参照候補が無くても `channel_title` が取れていれば履歴検索用メタとして返す。
+/// `entries` 配列を含むプレイリスト形式応答ではトップレベルのプレイリスト所有者情報を
+/// 動画へ誤帰属させないよう `entries[0]` のみを判定し、単一動画 JSON ではトップレベルを判定する。
+/// 参照候補が無い場合でも、対象動画に `channel_title` が取れていれば履歴検索用メタとして返す。
 fn select_video_channel_info(v: &serde_json::Value) -> Result<VideoChannelInfo, YtError> {
+    if let Some(entries) = v.get("entries").and_then(|e| e.as_array()) {
+        if let Some(first) = entries.first() {
+            let info = extract_video_channel_info(first);
+            if !info.candidates.is_empty() || info.channel_title.is_some() {
+                return Ok(info);
+            }
+        }
+        return Err(YtError::NoChannelId);
+    }
     let top = extract_video_channel_info(v);
-    if !top.candidates.is_empty() {
+    if !top.candidates.is_empty() || top.channel_title.is_some() {
         return Ok(top);
-    }
-    let first = v
-        .get("entries")
-        .and_then(|e| e.get(0))
-        .map(extract_video_channel_info);
-    if let Some(info) = &first {
-        if !info.candidates.is_empty() {
-            return Ok(info.clone());
-        }
-    }
-    if top.channel_title.is_some() {
-        return Ok(top);
-    }
-    if let Some(info) = first {
-        if info.channel_title.is_some() {
-            return Ok(info);
-        }
     }
     Err(YtError::NoChannelId)
 }
@@ -748,6 +741,35 @@ mod tests {
             vec!["UCuAXFkgsw1L7xaCfnd5JJOw".to_string()]
         );
         assert_eq!(selected2.channel_title.as_deref(), Some("VideoCH"));
+
+        // entries あり＋参照候補なしのときも、entries[0] の動画チャンネル名を返し
+        // トップレベルの PlaylistOwner は採用しない
+        let entries_name_only = serde_json::json!({
+            "channel": "PlaylistOwner",
+            "title": "PlaylistTitle",
+            "entries": [{
+                "channel": "VideoCH",
+                "title": "VideoTitle"
+            }]
+        });
+        let selected3 = select_video_channel_info(&entries_name_only).unwrap();
+        assert!(selected3.candidates.is_empty());
+        assert_eq!(selected3.channel_title.as_deref(), Some("VideoCH"));
+        assert_eq!(selected3.title.as_deref(), Some("VideoTitle"));
+
+        // entries あり＋entries[0] にチャンネル情報が無いときはトップレベルの
+        // PlaylistOwner を動画へ誤帰属させず NoChannelId とする
+        let entries_owner_only = serde_json::json!({
+            "channel": "PlaylistOwner",
+            "title": "PlaylistTitle",
+            "entries": [{
+                "title": "VideoWithoutChannel"
+            }]
+        });
+        assert!(matches!(
+            select_video_channel_info(&entries_owner_only),
+            Err(YtError::NoChannelId)
+        ));
 
         // 参照候補もチャンネル名も無い空応答は NoChannelId
         assert!(matches!(
