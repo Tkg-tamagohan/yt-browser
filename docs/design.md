@@ -57,9 +57,12 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `ui` | 表示設定（`ui.*` キー）の解釈の正。配色・一覧密度・UI 言語はフロントだけで使う（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF） |
 | `db` | 接続、マイグレーション、クエリ |
 | `model` | `Video`、`ChatEvent`、`FeedItem` などの共通型 |
+| `util` | ロック取得、設定値解釈などの共通補助関数 |
 | `error` | `UiError { code, message }` への直列化と、各エラー型からの変換 |
 
-依存方向は `commands` → 各モジュール → `db` / `model` の一方向に揃え、モジュール間の直接参照を避ける。
+モジュール間の依存方向は「上位層（`lib`・`main`・`commands`・`error`）→ ドメイン層（`mpv`・`yt`・`feed`・`innertube`・`livewait`・`metaresolve`・`chat`・`filter`・`sponsor`・`ui`・`deep_link`・`deps`・`diag`・`native_host`）→ 下位共有層（`db`・`model`・`util`）」の 3 層一方向に揃える。
+下位共有層からドメイン層への逆参照およびドメイン層内の 2 ノード以上の循環依存を禁止し、ドメイン層間の連携で循環が生じる場合はフックやコールバックを定義して上位層（`lib` / `commands`）から注入する。
+この依存方向と循環禁止は `scripts/check_docs_consistency.py`（check 19）で機械検証する。
 
 ## 3. IPC 設計（Tauri コマンドとイベント）
 
@@ -1593,6 +1596,8 @@ WebKitGTK 環境で今後同じ症状が観測された場合も、同じ方針�
 ```text
 yt-browser/
   AGENTS.md / README.md / LICENSE
+  .agents/
+    invariants.json   # invariant-gate 向けのカスタム不変条件定義
   docs/               # 要件定義・設計書・決定記録・実装計画・実装履歴・検証手順・利用手引
   src-tauri/
     Cargo.toml

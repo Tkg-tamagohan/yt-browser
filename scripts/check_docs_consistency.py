@@ -30,6 +30,7 @@ consistency ジョブ）の双方から実行できる。
     16. decision-records.md の Markdown 表構文
     17. 実装計画・実装履歴・README のフェーズ整合
     18. テキスト健全性（U+FFFD・競合マーカー）と JSON/XML 構文
+    19. Rust モジュールの循環依存と下位共有層からの逆参照
 チェック 3（§8 DDL と適用後スキーマの照合）は実マイグレーション経路を
 通す必要があるため Rust 側テストとして src-tauri/src/db/tests/ddl.rs にある。
 
@@ -74,6 +75,9 @@ SCRIPTS_DIR = ROOT / "scripts"
 OK = "OK"
 WARN = "WARN"
 ERROR = "ERROR"
+
+RUST_UPPER_MODULES = frozenset({"lib", "main", "commands", "error"})
+RUST_SHARED_MODULES = frozenset({"db", "model", "util"})
 
 
 @dataclass
@@ -1734,6 +1738,437 @@ def check_text_and_syntax(root: Path = ROOT) -> Findings:
 
 
 # ---------------------------------------------------------------------------
+# チェック 19: Rust モジュールの循環依存と下位共有層からの逆参照
+# ---------------------------------------------------------------------------
+
+_RUST_CHAR_LIT_RE = re.compile(
+    r"b?'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[^'\n])|[^'\\\n])'"
+)
+_RUST_RAW_STR_RE = re.compile(r'(?:b|c)?r(#*)"')
+_RUST_CFG_TEST_RE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+_RUST_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _is_ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _blank_rust_comments_and_strings(text: str) -> str:
+    """Rust ソースのコメントと文字列/文字リテラルを行数維持で空白化する。"""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        # 行コメント // ...
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        # ブロックコメント /* ... */（ネスト対応）
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            depth = 1
+            out.extend((" ", " "))
+            i += 2
+            while i < n and depth > 0:
+                if text[i : i + 2] == "/*":
+                    depth += 1
+                    out.extend((" ", " "))
+                    i += 2
+                elif text[i : i + 2] == "*/":
+                    depth -= 1
+                    out.extend((" ", " "))
+                    i += 2
+                else:
+                    out.append("\n" if text[i] == "\n" else " ")
+                    i += 1
+            continue
+        # raw 文字列 (b|c)?r#*"..."#*
+        if (
+            ch in ("r", "b", "c")
+            and (i == 0 or not _is_ident_char(text[i - 1]))
+        ):
+            raw_m = _RUST_RAW_STR_RE.match(text, i)
+            if raw_m is not None:
+                closer = '"' + "#" * len(raw_m.group(1))
+                end_pos = text.find(closer, raw_m.end())
+                limit = n if end_pos < 0 else end_pos + len(closer)
+                for k in range(i, limit):
+                    out.append("\n" if text[k] == "\n" else " ")
+                i = limit
+                continue
+        # byte / C / 通常文字列
+        if ch == '"' or (
+            ch in ("b", "c")
+            and i + 1 < n
+            and text[i + 1] == '"'
+            and (i == 0 or not _is_ident_char(text[i - 1]))
+        ):
+            start = i if ch == '"' else i + 1
+            for k in range(i, start + 1):
+                out.append(" ")
+            i = start + 1
+            while i < n:
+                c2 = text[i]
+                if c2 == "\\":
+                    out.append(" ")
+                    i += 1
+                    if i < n:
+                        out.append("\n" if text[i] == "\n" else " ")
+                        i += 1
+                    continue
+                out.append("\n" if c2 == "\n" else " ")
+                i += 1
+                if c2 == '"':
+                    break
+            continue
+        # 文字リテラル ('x', '"', '\u{...}', b'x')。ライフタイム ('a) は維持する
+        if ch == "'" or (
+            ch == "b"
+            and i + 1 < n
+            and text[i + 1] == "'"
+            and (i == 0 or not _is_ident_char(text[i - 1]))
+        ):
+            char_m = _RUST_CHAR_LIT_RE.match(text, i)
+            if char_m is not None:
+                out.extend(" " for _ in range(char_m.end() - i))
+                i = char_m.end()
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _strip_cfg_test_items(text: str) -> str:
+    """`#[cfg(test)]` 直後の 1 アイテムのみを行数維持で空白化する。"""
+    out: list[str] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        m = _RUST_CFG_TEST_RE.search(text, pos)
+        if m is None:
+            out.append(text[pos:])
+            break
+        out.append(text[pos : m.start()])
+        j = m.end()
+        # 後続の外側属性 #[...] をスキップ
+        while j < n:
+            while j < n and text[j].isspace():
+                j += 1
+            if text[j : j + 2] == "#[":
+                j += 2
+                attr_depth = 1
+                while j < n and attr_depth > 0:
+                    if text[j] == "[":
+                        attr_depth += 1
+                    elif text[j] == "]":
+                        attr_depth -= 1
+                    j += 1
+                continue
+            break
+        # 直後の 1 アイテムのみ波括弧/セミコロン単位で終端を検出
+        brace_depth = 0
+        paren_depth = 0
+        bracket_depth = 0
+        saw_brace = False
+        while j < n:
+            c = text[j]
+            if c == "(":
+                paren_depth += 1
+            elif c == ")":
+                paren_depth = max(0, paren_depth - 1)
+            elif c == "[":
+                bracket_depth += 1
+            elif c == "]":
+                bracket_depth = max(0, bracket_depth - 1)
+            elif c == "{":
+                brace_depth += 1
+                saw_brace = True
+            elif c == "}":
+                brace_depth = max(0, brace_depth - 1)
+                if (
+                    saw_brace
+                    and brace_depth == 0
+                    and paren_depth == 0
+                    and bracket_depth == 0
+                ):
+                    j += 1
+                    break
+            elif (
+                c == ";"
+                and brace_depth == 0
+                and paren_depth == 0
+                and bracket_depth == 0
+            ):
+                j += 1
+                break
+            j += 1
+        for k in range(m.start(), j):
+            out.append("\n" if text[k] == "\n" else " ")
+        pos = j
+    return "".join(out)
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for idx, ch in enumerate(text):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append(text[start:idx])
+            start = idx + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _expand_use_tree(body: str) -> list[list[str]]:
+    paths: list[list[str]] = []
+    for raw_item in _split_top_level_commas(body):
+        item = raw_item.strip()
+        if not item:
+            continue
+        open_idx = item.find("{")
+        if open_idx >= 0:
+            depth = 0
+            close_idx = -1
+            for k in range(open_idx, len(item)):
+                if item[k] == "{":
+                    depth += 1
+                elif item[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        close_idx = k
+                        break
+            if close_idx > open_idx:
+                prefix = [
+                    seg.strip()
+                    for seg in item[:open_idx].split("::")
+                    if seg.strip()
+                ]
+                inner = item[open_idx + 1 : close_idx]
+                for sub in _expand_use_tree(inner):
+                    if sub == ["self"]:
+                        if prefix:
+                            paths.append(prefix)
+                    else:
+                        paths.append(prefix + sub)
+                continue
+        item = re.sub(
+            r"\s+as\s+(?:[A-Za-z_][A-Za-z0-9_]*|_)\s*$", "", item
+        ).strip()
+        segs = [seg.strip() for seg in item.split("::") if seg.strip()]
+        if segs:
+            paths.append(segs)
+    return paths
+
+
+def _target_from_path_segments(
+    segs: list[str], current_depth: int
+) -> str | None:
+    if not segs:
+        return None
+    if segs[0] == "crate":
+        if len(segs) >= 2 and segs[1] not in {"self", "super", "*"}:
+            return segs[1]
+        return None
+    super_count = 0
+    while super_count < len(segs) and segs[super_count] == "super":
+        super_count += 1
+    if (
+        super_count > 0
+        and super_count == current_depth
+        and len(segs) > super_count
+        and segs[super_count] not in {"self", "super", "crate", "*"}
+    ):
+        return segs[super_count]
+    return None
+
+
+def _extract_rust_crate_targets(
+    cleaned: str, file_depth: int
+) -> list[tuple[str, int]]:
+    """前処理済み Rust コードからクレート内参照先モジュール名と行番号を抽出する。"""
+    targets: list[tuple[str, int]] = []
+    brace_stack: list[bool] = []
+    pending_inline_mod = False
+    line_no = 1
+    i = 0
+    n = len(cleaned)
+
+    while i < n:
+        ch = cleaned[i]
+        if ch == "\n":
+            line_no += 1
+            i += 1
+            continue
+        if (ch.isalpha() or ch == "_") and (
+            i == 0 or (not _is_ident_char(cleaned[i - 1]) and cleaned[i - 1] != ":")
+        ):
+            m = _RUST_IDENT_RE.match(cleaned, i)
+            assert m is not None
+            ident = m.group(0)
+            j = m.end()
+            if ident == "mod":
+                k = j
+                while k < n and cleaned[k].isspace():
+                    k += 1
+                name_m = _RUST_IDENT_RE.match(cleaned, k)
+                if name_m is not None:
+                    k2 = name_m.end()
+                    while k2 < n and cleaned[k2].isspace():
+                        k2 += 1
+                    pending_inline_mod = k2 < n and cleaned[k2] == "{"
+                else:
+                    pending_inline_mod = False
+                i = j
+                continue
+            if ident == "use" and j < n and cleaned[j].isspace():
+                semi = cleaned.find(";", j)
+                end = n if semi < 0 else semi + 1
+                body = cleaned[j : end - (1 if semi >= 0 else 0)]
+                current_depth = file_depth + sum(1 for x in brace_stack if x)
+                for segs in _expand_use_tree(body):
+                    target = _target_from_path_segments(segs, current_depth)
+                    if target is not None:
+                        targets.append((target, line_no))
+                line_no += cleaned[i:end].count("\n")
+                i = end
+                pending_inline_mod = False
+                continue
+            if ident == "crate" and cleaned[j : j + 2] == "::":
+                next_m = _RUST_IDENT_RE.match(cleaned, j + 2)
+                if next_m is not None:
+                    target = next_m.group(0)
+                    if target not in {"self", "super"}:
+                        targets.append((target, line_no))
+                    i = next_m.end()
+                    pending_inline_mod = False
+                    continue
+            if ident == "super" and cleaned[j : j + 2] == "::":
+                super_count = 1
+                pos = j + 2
+                while cleaned[pos : pos + 7] == "super::":
+                    super_count += 1
+                    pos += 7
+                next_m = _RUST_IDENT_RE.match(cleaned, pos)
+                current_depth = file_depth + sum(1 for x in brace_stack if x)
+                if next_m is not None and super_count == current_depth:
+                    target = next_m.group(0)
+                    if target not in {"self", "super", "crate"}:
+                        targets.append((target, line_no))
+                i = next_m.end() if next_m is not None else pos
+                pending_inline_mod = False
+                continue
+            pending_inline_mod = False
+            i = j
+            continue
+        if ch == "{":
+            brace_stack.append(pending_inline_mod)
+            pending_inline_mod = False
+            i += 1
+            continue
+        if ch == "}":
+            if brace_stack:
+                brace_stack.pop()
+            pending_inline_mod = False
+            i += 1
+            continue
+        if not ch.isspace():
+            pending_inline_mod = False
+        i += 1
+
+    return targets
+
+
+def _is_rust_test_file(rel: Path) -> bool:
+    if "tests" in rel.parts[:-1]:
+        return True
+    return rel.stem == "tests" or rel.stem.endswith("_tests")
+
+
+def _find_rust_cycles(adj: dict[str, set[str]]) -> list[tuple[str, ...]]:
+    """有向グラフ内の 2 ノード以上の基本循環を最小ノード先頭で列挙する。"""
+    nodes = sorted(adj)
+    cycles: set[tuple[str, ...]] = set()
+
+    def dfs(start: str, curr: str, path: list[str], on_path: set[str]) -> None:
+        for nxt in sorted(adj.get(curr, ())):
+            if nxt == start:
+                if len(path) >= 2:
+                    cycles.add(tuple(path))
+            elif nxt > start and nxt not in on_path:
+                on_path.add(nxt)
+                path.append(nxt)
+                dfs(start, nxt, path, on_path)
+                path.pop()
+                on_path.remove(nxt)
+
+    for start in nodes:
+        dfs(start, start, [start], {start})
+    return sorted(cycles)
+
+
+def check_rust_module_cycles(src_tauri: Path = SRC_TAURI) -> Findings:
+    """Rust モジュール間の循環依存と下位共有層からの逆参照を検出する。"""
+    f = Findings([])
+    if not src_tauri.exists():
+        f.error(f"Rust ソースディレクトリが存在しない: {src_tauri}")
+        return f
+
+    prod_files: list[tuple[Path, Path, str, int]] = []
+    all_top_mods: set[str] = set()
+    for path in sorted(src_tauri.rglob("*.rs")):
+        rel = path.relative_to(src_tauri)
+        if _is_rust_test_file(rel):
+            continue
+        parts = rel.parts
+        top_mod = parts[0] if len(parts) >= 2 else path.stem
+        file_depth = len(parts) - 1 if path.name == "mod.rs" else len(parts)
+        all_top_mods.add(top_mod)
+        prod_files.append((path, rel, top_mod, file_depth))
+
+    known_modules = all_top_mods - {"lib", "main"}
+    adj: dict[str, set[str]] = {}
+    reported_reverse: set[tuple[str, str]] = set()
+    checked_files = 0
+
+    for path, rel, top_mod, file_depth in prod_files:
+        if top_mod in RUST_UPPER_MODULES:
+            continue
+        checked_files += 1
+        raw = read_text(path)
+        cleaned = _strip_cfg_test_items(_blank_rust_comments_and_strings(raw))
+        for dst, line_no in _extract_rust_crate_targets(cleaned, file_depth):
+            if dst == top_mod or dst in RUST_UPPER_MODULES or dst not in known_modules:
+                continue
+            if top_mod in RUST_SHARED_MODULES and dst not in RUST_SHARED_MODULES:
+                pair = (top_mod, dst)
+                if pair not in reported_reverse:
+                    reported_reverse.add(pair)
+                    f.error(
+                        f"下位共有層 `{top_mod}` がドメイン層 `{dst}` を"
+                        f"逆参照（{rel.as_posix()}:{line_no}）"
+                    )
+                continue
+            adj.setdefault(top_mod, set()).add(dst)
+
+    for cycle in _find_rust_cycles(adj):
+        f.error(f"Rust モジュール循環依存: {' -> '.join([*cycle, cycle[0]])}")
+
+    if f.worst() == OK:
+        f.ok(
+            f"非テスト Rust {checked_files} ファイルに循環依存・"
+            f"下位共有層逆参照なし"
+        )
+    return f
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -1758,6 +2193,7 @@ def main() -> int:
     checks.append(("check 16: 決定記録表構文", check_decision_tables()))
     checks.append(("check 17: 実装計画フェーズ番号", check_implementation_phases()))
     checks.append(("check 18: テキスト健全性と構文", check_text_and_syntax()))
+    checks.append(("check 19: Rust モジュール循環依存・層方向", check_rust_module_cycles()))
     # チェック 3（§8 DDL ↔ 適用後スキーマ）は src-tauri の
     # ddl_matches_design_section8 テストが担う
 

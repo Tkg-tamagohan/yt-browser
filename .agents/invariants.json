@@ -1,0 +1,24 @@
+{
+  "questions": {
+    "settings_save_on_committed": {
+      "instructions": "Does ANY added or modified call site in the Git diff violate the onCommitted rule for settings persistence? Specifically: does the diff add or modify any call to saveToggleSetting, saveStringSetting, saveOptionalRangeSetting, or saveSettingBatch (or a direct setSetting call in settings) where savedSnapshot is updated only after awaiting the helper's boolean return value instead of inside the onCommitted callback, OR where the onCommitted callback is a no-op (such as () => {}) or omits updating the corresponding savedSnapshot field? Answer Yes if even a single call site in the diff violates this, even when other hunks in the same file are compliant.",
+      "criteria": {
+        "true_description": "At least one added or modified settings save call in the diff passes an empty/no-op onCommitted callback (e.g. () => {}) or updates savedSnapshot outside onCommitted (such as inside an if (await save*Setting(...)) branch).",
+        "false_description": "Every added or modified settings save call in the diff updates the corresponding savedSnapshot field inside its onCommitted callback immediately after DB write succeeds, or the diff does not modify settings save call sites."
+      },
+      "path_globs": ["src/**/*.ts", "src/**/*.svelte"],
+      "threshold": 0.70,
+      "warn_threshold": 0.40
+    },
+    "rust_no_module_cycle_and_hook_wiring": {
+      "instructions": "Does ANY added or modified Rust code in the Git diff violate the 3-layer module dependency rule for src-tauri/src/? Specifically: (1) a lower shared module (db, model, or util) imports or references any domain module (such as mpv, chat, feed, livewait, metaresolve, innertube, filter, sponsor, yt, ui, deep_link, deps, diag, or native_host), OR (2) a domain module (such as mpv, yt, sponsor, innertube, or filter) directly imports or calls a peer domain module (for example mpv importing or calling crate::chat::*) instead of injecting a hook/callback or trait from lib.rs or commands, OR (3) the diff introduces a mutual/circular dependency between domain modules.",
+      "criteria": {
+        "true_description": "The diff adds or modifies Rust code under src-tauri/src/ that introduces a reverse dependency from db/model/util to a domain module, a direct import or call from mpv (or another domain module) into crate::chat::* (or another peer domain module that should be decoupled via a hook/callback from lib.rs or commands), or a circular dependency between modules.",
+        "false_description": "All added or modified Rust imports and calls respect the 3-layer direction (upper lib/main/commands/error -> domain -> shared db/model/util) and use hooks/callbacks injected from lib.rs or commands for cross-domain reactions, or the diff does not modify src-tauri/src/**/*.rs."
+      },
+      "path_globs": ["src-tauri/src/**/*.rs"],
+      "threshold": 0.70,
+      "warn_threshold": 0.40
+    }
+  }
+}

@@ -681,6 +681,168 @@ jobs:
             self.assertEqual(missing_res.worst(), cdc.ERROR)
             self.assertIn("が見つからない", "\n".join(msg for _, msg in missing_res.items))
 
+    def test_sc06_rust_module_cycles(self) -> None:
+        # 現行リポジトリの非テスト Rust コードに循環・逆参照が無いこと
+        self.assertEqual(cdc.check_rust_module_cycles().worst(), cdc.OK)
+
+        # 1. 自己参照・共有層への一方向参照・テスト/文字列/コメント除外は OK
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "db" / "mod.rs", "pub fn ok() {}\n")
+            _write_text(
+                src / "alpha" / "mod.rs",
+                "mod sub;\nuse crate::alpha::sub::helper;\nuse crate::db::ok;\npub fn top() { helper(); ok(); }\n",
+            )
+            _write_text(
+                src / "alpha" / "sub.rs",
+                "use super::top;\npub fn helper() { crate::alpha::top(); }\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+        # 2. 2 ノード循環・3 ノード循環の検出
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "a.rs", "use crate::b::fb;\npub fn fa() { fb(); }\n")
+            _write_text(src / "b.rs", "use crate::a::fa;\npub fn fb() { fa(); }\n")
+            res2 = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res2.worst(), cdc.ERROR)
+            msgs2 = "\n".join(msg for _, msg in res2.items)
+            self.assertIn("a -> b -> a", msgs2)
+
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "a.rs", "pub fn f() { crate::b::f(); }\n")
+            _write_text(src / "b.rs", "pub fn f() { crate::c::f(); }\n")
+            _write_text(src / "c.rs", "pub fn f() { crate::a::f(); }\n")
+            res3 = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res3.worst(), cdc.ERROR)
+            msgs3 = "\n".join(msg for _, msg in res3.items)
+            self.assertIn("a -> b -> c -> a", msgs3)
+
+        # 3. 下位共有層 (db, model, util) からの逆参照検出
+        for shared_mod, domain_mod in (("db", "mpv"), ("model", "chat"), ("util", "yt")):
+            with self.subTest(shared=shared_mod, domain=domain_mod):
+                with tempfile.TemporaryDirectory() as td:
+                    src = Path(td)
+                    _write_text(
+                        src / f"{shared_mod}.rs",
+                        f"use crate::{domain_mod}::Item;\n",
+                    )
+                    _write_text(src / f"{domain_mod}.rs", "pub struct Item;\n")
+                    res = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res.worst(), cdc.ERROR)
+                    msgs = "\n".join(msg for _, msg in res.items)
+                    self.assertIn(f"下位共有層 `{shared_mod}`", msgs)
+                    self.assertIn(f"ドメイン層 `{domain_mod}`", msgs)
+
+        # 4. ネスト use crate::{...} と深度計算 super::
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "beta.rs", "use crate::alpha::A;\npub struct B;\n")
+            _write_text(src / "alpha" / "mod.rs", "pub struct A;\nmod sub;\n")
+            # 同一モジュール内の super::helper / super::super::helper は OK
+            _write_text(
+                src / "alpha" / "sub" / "deep.rs",
+                "use super::helper;\nuse super::super::A;\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # ネスト use と depth=3 の super::super::super::beta を検出
+            _write_text(
+                src / "alpha" / "sub" / "deep.rs",
+                "use crate::{alpha::A, beta::{B as B2}};\n",
+            )
+            res_nested = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_nested.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_nested.items))
+
+            _write_text(
+                src / "alpha" / "sub" / "deep.rs",
+                "use super::super::super::beta::B;\n",
+            )
+            res_super3 = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_super3.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_super3.items))
+
+            # depth=1 のルートファイル alpha.rs では super::beta がクレート直下参照
+            (src / "alpha" / "sub" / "deep.rs").unlink()
+            (src / "alpha" / "mod.rs").unlink()
+            (src / "alpha" / "sub").rmdir()
+            (src / "alpha").rmdir()
+            _write_text(src / "alpha.rs", "use super::beta::B;\npub struct A;\n")
+            res_super1 = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_super1.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_super1.items))
+
+        # 5. 文字列・raw 文字列・文字リテラル '"' による非誤検知
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "beta.rs", "use crate::alpha::ok;\npub fn b() { ok(); }\n")
+            _write_text(
+                src / "alpha.rs",
+                'pub fn ok() {\n'
+                '    let q = \'"\';\n'
+                '    let s1 = "use crate::beta::b;";\n'
+                '    let s2 = r#"crate::beta::b()"#;\n'
+                '    let s3 = br##"super::beta::b()"##;\n'
+                '    let _ = (q, s1, s2, s3);\n'
+                '}\n',
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+        # 6. コメント内 #[cfg(test)] の後ろを誤消去せず、途中 #[cfg(test)] 後の本番コード保持
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "beta.rs", "use crate::alpha::f;\n")
+            _write_text(
+                src / "alpha.rs",
+                "// #[cfg(test)]\n"
+                "/* #[cfg(test)] */\n"
+                "pub fn f() { crate::beta::g(); }\n",
+            )
+            res_cmt = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_cmt.worst(), cdc.ERROR)
+
+            _write_text(
+                src / "alpha.rs",
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    use crate::beta::g;\n"
+                "}\n"
+                "pub fn f() {}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            _write_text(
+                src / "alpha.rs",
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    use super::f;\n"
+                "}\n"
+                "pub fn f() { crate::beta::g(); }\n",
+            )
+            res_after_cfg = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_after_cfg.worst(), cdc.ERROR)
+
+        # 7. tests/ 除外とサブディレクトリ再帰帰属
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "alpha.rs", "pub struct Y;\n")
+            _write_text(src / "db" / "mod.rs", "pub fn d() {}\n")
+            _write_text(src / "db" / "tests" / "foo.rs", "use crate::alpha::Y;\n")
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            _write_text(src / "beta.rs", "use crate::alpha::Y;\n")
+            _write_text(src / "alpha" / "mod.rs", "pub struct Y;\n")
+            (src / "alpha.rs").unlink()
+            _write_text(
+                src / "alpha" / "nested" / "leaf.rs",
+                "use crate::beta;\n",
+            )
+            res_sub = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_sub.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_sub.items))
+
 
 def _ws_send_frame(conn: socket.socket, opcode: int, payload: bytes) -> None:
     n = len(payload)

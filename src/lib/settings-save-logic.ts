@@ -68,10 +68,10 @@ export async function saveToggleSetting(
   snapshot: boolean,
   getCurrent: () => boolean,
   onUnsaved: () => void,
-  onCommitted?: () => void,
+  onCommitted: () => void,
 ): Promise<boolean> {
   await setSetting(key, snapshot ? "on" : "off");
-  onCommitted?.();
+  onCommitted();
   if (getCurrent() !== snapshot) {
     onUnsaved();
     return false;
@@ -86,10 +86,10 @@ export async function saveStringSetting(
   snapshot: string,
   getCurrent: () => string,
   onUnsaved: () => void,
-  onCommitted?: () => void,
+  onCommitted: () => void,
 ): Promise<boolean> {
   await setSetting(key, snapshot);
-  onCommitted?.();
+  onCommitted();
   if (getCurrent() !== snapshot) {
     onUnsaved();
     return false;
@@ -107,14 +107,14 @@ export async function saveOptionalRangeSetting(
   max: number,
   onFailed: (raw: string) => void,
   onUnsaved: () => void,
-  onCommitted?: () => void,
+  onCommitted: () => void,
 ): Promise<boolean> {
   const snapshot = normalizeOptionalRaw(snapshotRaw);
   const res = validateOptionalRange(snapshot, min, max);
   let ok = true;
   if (res.ok) {
     await setSetting(key, res.value);
-    onCommitted?.();
+    onCommitted();
   } else {
     ok = false;
     onFailed(res.raw);
@@ -131,7 +131,7 @@ export type BatchEntry = {
   snapshot: string;
   writeValue?: string;
   getCurrent: () => string;
-  onCommitted?: () => void;
+  onCommitted: () => void;
 };
 
 /// 先に全スナップショットを確定した複数キーを順次保存し、コミット済みキーから確定する
@@ -142,7 +142,7 @@ export async function saveSettingBatch(
 ): Promise<boolean> {
   for (const e of entries) {
     await setSetting(e.key, e.writeValue ?? e.snapshot);
-    e.onCommitted?.();
+    e.onCommitted();
   }
   if (entries.some((e) => e.getCurrent() !== e.snapshot)) {
     onUnsaved();
