@@ -93,7 +93,7 @@
     try {
       await invoke("data_import", { path });
       notify(t("settings.ops.imported", { path }));
-      await onImported?.();
+      await Promise.all([loadSize(), Promise.resolve(onImported?.())]);
     } catch (e) {
       notify(t("settings.ops.importFailed", { message: asErrorMessage(e) }));
     } finally {
@@ -165,6 +165,9 @@
       <div class="ops-text">
         <div id="ops-import-label">{t("settings.ops.import.label")}</div>
         <div class="subtle">{t("settings.ops.import.desc")}</div>
+        <div class="subtle ops-protected-note">
+          {t("settings.ops.protectedNote")}
+        </div>
       </div>
       <button
         id="ops-import-btn"
@@ -253,6 +256,10 @@
 
   .ops-text .subtle {
     font-size: 0.8rem;
+  }
+
+  .ops-protected-note {
+    margin-top: 4px;
   }
 
   .size {

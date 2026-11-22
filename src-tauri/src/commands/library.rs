@@ -5,7 +5,7 @@ use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{
     FavoriteEntry, HistoryCursor, HistoryPage, HistoryStats, LibrarySearchItem, Playlist,
-    PlaylistEntry, VideoRef, WatchHistory, WatchLaterEntry,
+    PlaylistEntry, VideoRef, WatchHistory, WatchLaterEntry, MAX_PLAYLIST_NAME_LEN,
 };
 use crate::yt::{self, YtDlpResolver};
 use tauri::{AppHandle, Emitter, State};
@@ -22,8 +22,6 @@ pub async fn history_get(
 
 /// 履歴一覧の既定・最大件数。
 const HISTORY_LIST_LIMIT: u32 = 500;
-/// プレイリスト名の最大長。
-const MAX_PLAYLIST_NAME_LEN: usize = 100;
 /// 動画タイトル等の上限（`videos.title` の入力値）。
 const MAX_VIDEO_FIELD_LEN: usize = 1024;
 
@@ -313,7 +311,29 @@ pub async fn playlist_item_restore(
     Ok(db.playlist_item_restore(playlist_id, &v, entry.position)?)
 }
 
-/// `playlist_import`（FR-10、仕様決定 R）。
+/// `playlist_import` で使用するプレイリスト名を決める（FR-10、仕様決定 R・DZ）。
+/// - `name: Some(n)` のときは明示入力として `validate_playlist_name` を通す（150 文字超はエラー）。
+/// - `name: None` のときは `fetched_title` を前後トリムし、空なら「取り込みプレイリスト」、
+///   非空なら Unicode スカラ値単位で 150 文字上限へ単純切り詰めした上で検証する。
+pub(crate) fn resolve_imported_playlist_name(
+    name: Option<&str>,
+    fetched_title: Option<&str>,
+) -> Result<String, UiError> {
+    match name {
+        Some(n) => validate_playlist_name(n),
+        None => {
+            let t = fetched_title.unwrap_or_default().trim();
+            if t.is_empty() {
+                Ok("取り込みプレイリスト".to_string())
+            } else {
+                let truncated: String = t.chars().take(MAX_PLAYLIST_NAME_LEN).collect();
+                validate_playlist_name(&truncated)
+            }
+        }
+    }
+}
+
+/// `playlist_import`（FR-10、仕様決定 R・DZ）。
 /// YouTube プレイリストを yt-dlp の `--flat-playlist` で取り込み、
 /// ローカルのプレイリストへ登録する。各項目は `video_upsert` 経由で
 /// `videos` 台帳に集約し、`published_at` は未取得のまま（ソート時は末尾）。
@@ -358,18 +378,7 @@ pub async fn playlist_import(
             "プレイリストから動画を取得できませんでした",
         ));
     }
-    let name = match name {
-        Some(n) => validate_playlist_name(&n)?,
-        None => {
-            let t = fetched_title.unwrap_or_default();
-            let t = t.trim();
-            if t.is_empty() {
-                "取り込みプレイリスト".to_string()
-            } else {
-                validate_playlist_name(t)?
-            }
-        }
-    };
+    let name = resolve_imported_playlist_name(name.as_deref(), fetched_title.as_deref())?;
     let db = db.inner().clone();
     let playlist = tokio::task::spawn_blocking(move || -> Result<Playlist, UiError> {
         let mut playlist = db.playlist_create(&name)?;
@@ -486,4 +495,50 @@ pub async fn playlist_reverse(playlist_id: i64, db: State<'_, Db>) -> Result<(),
             .await
             .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DB-LD-37: プレイリスト名上限 150 文字（Unicode スカラ値単位）の境界検証と、
+    /// `playlist_import` の `name: None` 分岐における 160 文字→150 文字単純切り詰めを
+    /// 検証する（FR-7・FR-10、仕様決定 R・DZ）。
+    #[test]
+    fn playlist_name_limit_150_and_import_truncation() {
+        let ok_150 = "あ".repeat(150);
+        let over_151 = "あ".repeat(151);
+        let fetched_160 = "あ".repeat(160);
+
+        // 明示指定: 150 文字（マルチバイト）は受理、151 文字は拒否
+        assert_eq!(validate_playlist_name(&ok_150).unwrap(), ok_150);
+        assert!(validate_playlist_name(&over_151).is_err());
+        assert_eq!(
+            resolve_imported_playlist_name(Some(&ok_150), None).unwrap(),
+            ok_150
+        );
+        assert!(resolve_imported_playlist_name(Some(&over_151), None).is_err());
+
+        // name: None 分岐: 160 文字の取得タイトルは省略記号なしで先頭 150 文字へ切り詰め
+        let truncated = resolve_imported_playlist_name(None, Some(&fetched_160)).unwrap();
+        assert_eq!(truncated.chars().count(), 150);
+        assert_eq!(truncated, ok_150);
+
+        // 前後空白のトリム後に 150 文字ちょうどなら欠損なくそのまま通る
+        let padded = format!("  {ok_150}  ");
+        assert_eq!(
+            resolve_imported_playlist_name(None, Some(&padded)).unwrap(),
+            ok_150
+        );
+
+        // 空白のみ・None は既定名へフォールバック
+        assert_eq!(
+            resolve_imported_playlist_name(None, Some("   ")).unwrap(),
+            "取り込みプレイリスト"
+        );
+        assert_eq!(
+            resolve_imported_playlist_name(None, None).unwrap(),
+            "取り込みプレイリスト"
+        );
+    }
 }

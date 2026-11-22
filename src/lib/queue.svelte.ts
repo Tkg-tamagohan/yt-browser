@@ -431,6 +431,33 @@ export function initQueue(): Promise<void> {
   return initPromise;
 }
 
+/// データインポート後にプレイリストキューを DB と再同期する（FR-94、仕様決定 DX）。
+/// `import_dump` の `DELETE FROM playlists` に伴う `ON DELETE CASCADE` で
+/// DB 側のプレイリストキュー保存行が消えるため、メモリ上のプレイリストキューを
+/// すべてデタッチ・破棄し、DB 上に残る行を再復元する。一時キューは保持する
+export async function refreshQueues(): Promise<void> {
+  const next = new Map(queues.list);
+  let removed = false;
+  for (const [key, q] of queues.list) {
+    if (key === null) continue;
+    detachInstance(q);
+    next.delete(key);
+    removed = true;
+  }
+  if (removed) {
+    queues.list = next;
+    if (queuePanel.selected !== null && !queues.list.has(queuePanel.selected)) {
+      queuePanel.selected = null;
+    }
+    pruneMeta();
+  }
+  try {
+    await restorePlaylistQueues();
+  } catch (e) {
+    notify(t("queue.restoreFailed", { message: asErrorMessage(e) }));
+  }
+}
+
 /// ループ状態（仕様決定 AA）。「なし」「プレイリスト全体」「1 項目」の 3 状態。
 export type LoopMode = "none" | "all" | "one";
 

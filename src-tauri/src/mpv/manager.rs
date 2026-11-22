@@ -38,6 +38,10 @@ const WATCHDOG_PING_LIMIT: u32 = 3;
 /// 必ず `players` ロックを解放してから呼び出す。
 pub type VideoEndHook = Arc<dyn Fn(&str, bool, bool, bool) + Send + Sync>;
 
+/// 動画再生開始・別動画切替・連続再生の次項目開始時に、対象動画 ID を上位層へ通知するフック型
+/// （仕様決定 DY）。必ず `players` ロックを解放してから呼び出す。
+pub type VideoStartHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// 全 mpv インスタンスの管理（設計書 §4.5 のマルチビュー前提）。
 /// `play` が発行する `instance_id` が UI 側の操作対象識別子。
 pub struct PlayerManager {
@@ -58,6 +62,8 @@ pub struct PlayerManager {
     http: reqwest::Client,
     /// 動画離脱時の上位通知フック（`mpv` から `chat` への直接依存を避ける）。
     on_video_end: VideoEndHook,
+    /// 動画開始時の上位通知フック（`mpv` から `innertube` 等への直接依存を避ける、仕様決定 DY）。
+    on_video_start: VideoStartHook,
 }
 
 struct PlayerEntry {
@@ -68,6 +74,7 @@ struct PlayerEntry {
 }
 
 impl PlayerManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         app: AppHandle,
         db: Db,
@@ -76,6 +83,7 @@ impl PlayerManager {
         wheel_script: Option<PathBuf>,
         log_dir: Option<PathBuf>,
         on_video_end: VideoEndHook,
+        on_video_start: VideoStartHook,
     ) -> Self {
         // mpv ログの掃除は「自アプリの mpv がまだ存在しない」起動時のみ行う。
         // 稼働中インスタンスが書き込み中のログを消すと wedge 記録が失われる
@@ -93,6 +101,7 @@ impl PlayerManager {
             log_dir,
             http: reqwest::Client::new(),
             on_video_end,
+            on_video_start,
         }
     }
 
@@ -180,6 +189,12 @@ impl PlayerManager {
             ),
         };
         let player = MpvPlayer::spawn(id, &self.socket_dir, opts, self.app.clone()).await?;
+        // 再生開始時点で履歴行を確保（タイトルは media-title 変化で追従）。
+        // emitter 起動前に行うことで、`player://state` 受信直後の `playing_channel` や
+        // 進捗保存より先に履歴行が存在し、手動削除による保存抑止も解除された状態を保証する。
+        if let Err(e) = self.db.history_upsert(video_id) {
+            tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
+        }
         let emitter = self.spawn_emitter(player.clone());
 
         Self::spawn_sponsor_fetch(&self.db, &self.http, player.clone(), video_id.to_string());
@@ -196,10 +211,7 @@ impl PlayerManager {
         // 保存された変更は届かない。登録時点の DB 値を読み直して反映する
         // （変化がなければ set_pip_fit 側で早期 return する）
         player.set_pip_fit(self.pip_fit_aspect()).await;
-        // 再生開始時点で履歴行を確保（タイトルは media-title 変化で追従）
-        if let Err(e) = self.db.history_upsert(video_id) {
-            tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
-        }
+        (self.on_video_start)(video_id);
         Ok(id)
     }
 
@@ -331,6 +343,7 @@ impl PlayerManager {
         if let Err(e) = self.db.history_upsert(video_id) {
             tracing::warn!(video_id, error = %e, "履歴行の作成に失敗");
         }
+        (self.on_video_start)(video_id);
         Self::spawn_sponsor_fetch(&self.db, &self.http, player.clone(), video_id.to_string());
         if prev_video != video_id {
             let has_other =
@@ -483,6 +496,7 @@ impl PlayerManager {
         let http = self.http.clone();
         let players = Arc::clone(&self.players);
         let on_video_end = Arc::clone(&self.on_video_end);
+        let on_video_start = Arc::clone(&self.on_video_start);
         let mut ended_rx = player.subscribe_ended();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(EMIT_INTERVAL);
@@ -609,6 +623,7 @@ impl PlayerManager {
                                     if let Err(e) = db.history_upsert(&next_id) {
                                         tracing::warn!(video_id = %next_id, error = %e, "履歴行の作成に失敗");
                                     }
+                                    (on_video_start)(&next_id);
                                     Self::spawn_sponsor_fetch(&db, &http, player.clone(), next_id);
                                 }
                                 Err(e) => {

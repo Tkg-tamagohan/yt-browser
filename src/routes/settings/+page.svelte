@@ -23,6 +23,7 @@
   import { closeOnEofEnabled } from "$lib/eof-logic";
   import { shortcutsEnabled as parseShortcutsEnabled } from "$lib/shortcuts-logic";
   import { refreshShortcuts } from "$lib/shortcuts.svelte";
+  import { refreshQueues } from "$lib/queue.svelte";
   import {
     decideUnsavedLeave,
     playerNavigateOnPlay as parseNavigateOnPlay,
@@ -1147,8 +1148,16 @@
     await loadSettings();
   });
 
+  let categoriesSection: SettingsCategoriesSection | undefined;
+
   async function handleImported(): Promise<void> {
-    await Promise.all([loadSettings(), refreshUiPrefs(), refreshShortcuts()]);
+    await Promise.all([
+      loadSettings(),
+      refreshUiPrefs(),
+      refreshShortcuts(),
+      refreshQueues(),
+      categoriesSection?.reload(),
+    ]);
   }
 
   // 未保存の変更がある状態で別タブやアプリ外へ移動しようとしたときの警告
@@ -1313,7 +1322,7 @@
       </div>
 
       <div class:hidden={!visibleSectionIds.has("categories")}>
-        <SettingsCategoriesSection {notify} />
+        <SettingsCategoriesSection bind:this={categoriesSection} {notify} />
       </div>
 
       <div class:hidden={!visibleSectionIds.has("livewait")}>

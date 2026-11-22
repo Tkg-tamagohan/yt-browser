@@ -976,8 +976,15 @@ fn parse_time_value(v: &str) -> Option<f64> {
     (total >= 0.0).then_some(total)
 }
 
+/// 設定キーの最大長（バイト）。`settings_set` と `validate_dump` で共有する。
+pub(crate) const MAX_SETTING_KEY_LEN: usize = 128;
+/// 設定値の最大長（バイト）。`settings_set` と `validate_dump` で共有する。
+pub(crate) const MAX_SETTING_VALUE_LEN: usize = 16 * 1024;
+/// プレイリスト名の最大長（Unicode スカラ値単位、YouTube 本家上限と同じ 150 文字、仕様決定 DZ）。
+pub(crate) const MAX_PLAYLIST_NAME_LEN: usize = 150;
+
 /// YouTube 動画 ID の形式チェック（英数字・`-`・`_` の 11 文字）。
-fn is_video_id(s: &str) -> bool {
+pub(crate) fn is_video_id(s: &str) -> bool {
     s.len() == 11
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')

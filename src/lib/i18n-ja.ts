@@ -633,6 +633,8 @@ export const ja = {
     "現在の購読・カテゴリ・設定・プレイリストをファイルの内容で上書きします。この操作は取り消せません。",
   "settings.ops.imported": "インポートしました: {path}",
   "settings.ops.importFailed": "インポートに失敗: {message}",
+  "settings.ops.protectedNote":
+    "ローカル保護設定（ytdlp.po_token / ytdlp.path / mpv.extra_args / setup.deps_shown）はエクスポートから除外され、インポート時も現在の値を保持します。",
   "settings.ops.dbSize": "データベースサイズ",
   "settings.ops.dbSize.desc": "DB 本体 + WAL の合計",
   "settings.ops.dbSize.failed": "サイズの取得に失敗: {message}",

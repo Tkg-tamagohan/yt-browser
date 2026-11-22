@@ -5,7 +5,7 @@
 
 mod bookmark;
 mod channels;
-mod export;
+pub(crate) mod export;
 mod feed;
 mod filters;
 mod history;

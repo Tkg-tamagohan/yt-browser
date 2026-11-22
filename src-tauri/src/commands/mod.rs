@@ -6,7 +6,7 @@ mod bookmark;
 mod chat;
 mod deep_link;
 mod diag;
-mod feed;
+pub(crate) mod feed;
 mod filter;
 mod library;
 mod livewait;

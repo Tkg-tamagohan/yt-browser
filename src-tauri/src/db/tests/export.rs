@@ -8,7 +8,7 @@ use crate::model::{
 fn seed(db: &Db) -> (Category, i64) {
     let cat = db.category_create("音楽").unwrap();
     db.feed_subscribe(&SubscribeArgs {
-        channel_id: "UCchan000000000000001",
+        channel_id: "UCchan000000000000000001",
         title: "テストCH",
         thumbnail_url: Some("https://example.com/ch.jpg"),
         category_id: Some(cat.id),
@@ -52,7 +52,10 @@ fn export_import_roundtrip() {
     // 別 DB へ復元する
     let dst = Db::connect_in_memory().unwrap();
     dst.import_dump(&dump).unwrap();
-    let ch = dst.channel_get("UCchan000000000000001").unwrap().unwrap();
+    let ch = dst
+        .channel_get("UCchan000000000000000001")
+        .unwrap()
+        .unwrap();
     assert_eq!(ch.title, "テストCH");
     assert_eq!(ch.category_id, Some(cat.id));
     assert_eq!(dst.category_list().unwrap()[0].name, "音楽");
@@ -120,7 +123,7 @@ fn import_replaces_target_tables_and_rejects_invalid() {
     );
     // ダンプ側の内容に揃う
     assert!(db
-        .channel_get("UCchan000000000000001")
+        .channel_get("UCchan000000000000000001")
         .unwrap()
         .unwrap()
         .category_id
@@ -246,4 +249,216 @@ fn history_stats_aggregates_watch_history() {
     assert_eq!(stats.entry_count, 0);
     assert!(stats.by_channel.is_empty());
     assert!(stats.by_day.is_empty());
+}
+
+/// DB-LD-31: ローカル保護 4 キー（`ytdlp.po_token` / `ytdlp.path` /
+/// `mpv.extra_args` / `setup.deps_shown`）は `export_dump` の出力 `settings`
+/// から除外され、非保護キーのみが出力される（FR-94、仕様決定 DX）。
+#[test]
+fn export_dump_excludes_local_protected_settings() {
+    let db = Db::connect_in_memory().unwrap();
+    db.setting_set("ytdlp.po_token", "web.gvs+SECRET_TOKEN")
+        .unwrap();
+    db.setting_set("ytdlp.path", "C:\\tools\\yt-dlp.exe")
+        .unwrap();
+    db.setting_set("mpv.extra_args", "--profile=fast").unwrap();
+    db.setting_set("setup.deps_shown", "on").unwrap();
+    db.setting_set("feed.show_shorts", "off").unwrap();
+    db.setting_set("ui.theme", "dark").unwrap();
+
+    let dump = db.export_dump().unwrap();
+    let keys: Vec<&str> = dump.settings.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(keys, vec!["feed.show_shorts", "ui.theme"]);
+    for protected in crate::db::export::LOCAL_PROTECTED_SETTINGS {
+        assert!(
+            !keys.contains(protected),
+            "保護キー {protected} がダンプへ露出してはならない"
+        );
+    }
+}
+
+/// DB-LD-32: 別値の保護 4 キーを含む旧形式ダンプを `import_dump` で
+/// 取り込んでも、ローカルの保護 4 キー既存値が保持され（ローカル未設定時は注入されない）、
+/// 非保護設定の前後差分だけが返り、`DELETE FROM playlists` に伴う `queue_state` の
+/// `ON DELETE CASCADE` と一時キュー保持が正しく機能する（FR-94、仕様決定 DX）。
+#[test]
+fn import_dump_preserves_local_protected_settings_and_cascades_playlist_queues() {
+    let db = Db::connect_in_memory().unwrap();
+    let (_cat, pl_id) = seed(&db);
+    // ローカル保護 4 キーと追加の非保護キー、一時キュー＋プレイリストキューを仕込む
+    db.setting_set("ytdlp.po_token", "local-secret-token")
+        .unwrap();
+    db.setting_set("ytdlp.path", "C:\\local\\yt-dlp.exe")
+        .unwrap();
+    db.setting_set("mpv.extra_args", "--local-flag").unwrap();
+    db.setting_set("setup.deps_shown", "on").unwrap();
+    db.setting_set("obsolete.key", "remove-me").unwrap();
+    db.queue_save(
+        &[crate::model::QueueItem {
+            uid: 1,
+            video_id: "aaaaaaaaaa1".to_string(),
+            title: "一時キュー動画".to_string(),
+            channel_title: Some("CH".to_string()),
+            thumbnail_url: None,
+        }],
+        0,
+    )
+    .unwrap();
+    db.queue_playlist_save(pl_id, 1).unwrap();
+    assert_eq!(db.queue_playlist_load().unwrap().len(), 1);
+
+    // 保護 4 キーに別値を混入させた旧形式/外部ダンプを組み立てる
+    let mut dump = db.export_dump().unwrap();
+    dump.settings.retain(|s| s.key != "obsolete.key");
+    for s in &mut dump.settings {
+        if s.key == "feed.show_shorts" {
+            s.value = "on".to_string();
+        }
+    }
+    dump.settings.push(ExportSetting {
+        key: "ui.theme".to_string(),
+        value: "light".to_string(),
+    });
+    dump.settings.push(ExportSetting {
+        key: "ytdlp.po_token".to_string(),
+        value: "evil-token".to_string(),
+    });
+    dump.settings.push(ExportSetting {
+        key: "ytdlp.path".to_string(),
+        value: "/evil/yt-dlp".to_string(),
+    });
+    dump.settings.push(ExportSetting {
+        key: "mpv.extra_args".to_string(),
+        value: "--script=/evil.lua".to_string(),
+    });
+    dump.settings.push(ExportSetting {
+        key: "setup.deps_shown".to_string(),
+        value: "off".to_string(),
+    });
+
+    let changed = db.import_dump(&dump).unwrap();
+
+    // ローカル保護 4 キーは既存値がそのまま保持される
+    assert_eq!(
+        db.setting_get("ytdlp.po_token").unwrap().as_deref(),
+        Some("local-secret-token")
+    );
+    assert_eq!(
+        db.setting_get("ytdlp.path").unwrap().as_deref(),
+        Some("C:\\local\\yt-dlp.exe")
+    );
+    assert_eq!(
+        db.setting_get("mpv.extra_args").unwrap().as_deref(),
+        Some("--local-flag")
+    );
+    assert_eq!(
+        db.setting_get("setup.deps_shown").unwrap().as_deref(),
+        Some("on")
+    );
+    // 非保護設定の反映と前後差分（保護キーと無変化キーは含まれない）
+    assert_eq!(
+        db.setting_get("feed.show_shorts").unwrap().as_deref(),
+        Some("on")
+    );
+    assert_eq!(
+        db.setting_get("ui.theme").unwrap().as_deref(),
+        Some("light")
+    );
+    assert!(db.setting_get("obsolete.key").unwrap().is_none());
+    assert_eq!(
+        changed,
+        vec![
+            ("feed.show_shorts".to_string(), Some("on".to_string())),
+            ("obsolete.key".to_string(), None),
+            ("ui.theme".to_string(), Some("light".to_string())),
+        ]
+    );
+    // DELETE FROM playlists の ON DELETE CASCADE でプレイリストキュー行は削除され、
+    // 一時キューは保持される
+    assert!(db.queue_playlist_load().unwrap().is_empty());
+    assert_eq!(db.queue_load().unwrap().items.len(), 1);
+
+    // ローカル未設定の DB へ保護 4 キー入りダンプを取り込んでも注入されない
+    let clean = Db::connect_in_memory().unwrap();
+    clean.import_dump(&dump).unwrap();
+    for protected in crate::db::export::LOCAL_PROTECTED_SETTINGS {
+        assert!(
+            clean.setting_get(protected).unwrap().is_none(),
+            "未設定ローカル DB へ保護キー {protected} が注入されてはならない"
+        );
+    }
+}
+
+/// DB-LD-33: `validate_dump` の境界検証（不正 `channel_id` / 不正 `video_id` /
+/// 129 バイトキー / 16 KiB 超値 / 151 文字プレイリスト名の拒否、未知非保護キーと
+/// 境界上限値の受理）および `ExportPlaylistItem.channel_id` 非 UC 値の `None`
+/// 正規化を検証する（FR-94、仕様決定 DX・DZ）。
+#[test]
+fn validate_dump_enforces_boundaries_and_normalizes_playlist_channel_id() {
+    let db = Db::connect_in_memory().unwrap();
+    let (_cat, _pl) = seed(&db);
+    let base = db.export_dump().unwrap();
+
+    // 不正な ExportChannel.channel_id（21 文字・非 UC）は拒否
+    let mut bad = base.clone();
+    bad.channels[0].channel_id = "UCchan000000000000001".to_string();
+    assert!(matches!(db.import_dump(&bad), Err(DbError::Import(_))));
+    let mut bad = base.clone();
+    bad.channels[0].channel_id = "XXchan000000000000000001".to_string();
+    assert!(matches!(db.import_dump(&bad), Err(DbError::Import(_))));
+
+    // 不正な ExportPlaylistItem.video_id（10 文字・記号不正）は拒否
+    let mut bad = base.clone();
+    bad.playlists[0].items[0].video_id = "short12345".to_string();
+    assert!(matches!(db.import_dump(&bad), Err(DbError::Import(_))));
+    let mut bad = base.clone();
+    bad.playlists[0].items[0].video_id = "bad!video01".to_string();
+    assert!(matches!(db.import_dump(&bad), Err(DbError::Import(_))));
+
+    // settings key 129 バイトは拒否、128 バイトの未知非保護キーは受理
+    let mut bad = base.clone();
+    bad.settings.push(ExportSetting {
+        key: "k".repeat(129),
+        value: "v".to_string(),
+    });
+    assert!(matches!(db.import_dump(&bad), Err(DbError::Import(_))));
+
+    // settings value 16 KiB + 1 バイトは拒否
+    let mut bad = base.clone();
+    bad.settings.push(ExportSetting {
+        key: "custom.unknown_key".to_string(),
+        value: "v".repeat(16 * 1024 + 1),
+    });
+    assert!(matches!(db.import_dump(&bad), Err(DbError::Import(_))));
+
+    // playlists.name 151 文字（マルチバイト）は拒否
+    let mut bad = base.clone();
+    bad.playlists[0].name = "あ".repeat(151);
+    assert!(matches!(db.import_dump(&bad), Err(DbError::Import(_))));
+
+    // 境界上限（128B 未知キー・16 KiB 値・前後空白付き 150 文字プレイリスト名）と
+    // ExportPlaylistItem.channel_id の非 UC 値→None 正規化を受理し、プレイリスト名はトリム保存される
+    let mut ok = base;
+    ok.settings.push(ExportSetting {
+        key: "k".repeat(128),
+        value: "v".repeat(16 * 1024),
+    });
+    ok.playlists[0].name = format!("   {}   ", "あ".repeat(150));
+    ok.playlists[0].items[0].channel_id = Some("@not_a_uc_id".to_string());
+    ok.playlists[0].items[1].channel_id = Some("UCvalid00000000000000001".to_string());
+
+    let dst = Db::connect_in_memory().unwrap();
+    dst.import_dump(&ok).unwrap();
+    assert_eq!(dst.playlist_list().unwrap()[0].name, "あ".repeat(150));
+    assert_eq!(
+        dst.setting_get(&"k".repeat(128)).unwrap().map(|v| v.len()),
+        Some(16 * 1024)
+    );
+    // 非 UC の channel_id は None（videos テーブル上は空文字 → video_channel で None）に正規化
+    assert_eq!(dst.video_channel("aaaaaaaaaa1").unwrap().0, None);
+    // 正規 UC の channel_id はそのまま保持される
+    assert_eq!(
+        dst.video_channel("bbbbbbbbbb2").unwrap().0.as_deref(),
+        Some("UCvalid00000000000000001")
+    );
 }

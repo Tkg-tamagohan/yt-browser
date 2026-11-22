@@ -497,4 +497,24 @@ pub const MIGRATIONS: &[Migration] = &[
   ON videos (first_seen_at DESC, video_id)
   WHERE kind_state <> 1 OR (published_at IS NULL AND meta_checked = 0) OR description IS NULL;",
     },
+    // Phase 89: 既存 watch_history のチャンネル情報バックフィル（仕様決定 DY）と
+    // feed_list_filtered 向け複合・部分インデックス最適化（F-08）。
+    Migration {
+        version: 24,
+        name: "history_backfill_and_feed_indexes",
+        sql: "UPDATE watch_history
+              SET channel_id = COALESCE(NULLIF(watch_history.channel_id, ''), NULLIF(v.channel_id, '')),
+                  channel_title = COALESCE(NULLIF(watch_history.channel_title, ''), NULLIF(v.channel_title, ''))
+              FROM videos v
+              WHERE v.video_id = watch_history.video_id
+                AND (watch_history.channel_id IS NULL
+                     OR watch_history.channel_id = ''
+                     OR watch_history.channel_title IS NULL
+                     OR watch_history.channel_title = '');
+              DROP INDEX IF EXISTS idx_videos_unread;
+              CREATE INDEX idx_videos_unread ON videos(is_read, published_at DESC, video_id) WHERE is_read = 0;
+              CREATE INDEX idx_videos_feed_pub ON videos(published_at DESC, video_id) WHERE ingested = 1;
+              DROP INDEX IF EXISTS idx_videos_channel_pub;
+              CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC, video_id);",
+    },
 ];
