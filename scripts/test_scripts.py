@@ -2272,6 +2272,22 @@ class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
         self.assertIn("Hash of file \\(sha256\\)", verify_ps1)
         self.assertNotIn("Hash Algorithm", verify_ps1)
         self.assertIn("$AuditDir", verify_ps1)
+        self.assertIn("appCapturedPaths", verify_ps1)
+        self.assertIn("uninstallerCapturedPaths", verify_ps1)
+
+        sign_ps1 = ps_texts["sign_windows.ps1"]
+        for token in ("captureKind", "'app'", "'uninstaller'"):
+            self.assertIn(token, sign_ps1, f"sign_windows.ps1 に {token} がありません")
+
+        # Tauri v2 により原本復元される $appExe を $verifyTargets へ直接含めないこと
+        verify_targets_matches = re.findall(
+            r"^\s*\$verifyTargets\s*=\s*(.+)$",
+            build_ps1,
+            re.MULTILINE,
+        )
+        self.assertEqual(len(verify_targets_matches), 1)
+        self.assertIn("$nsisExes", verify_targets_matches[0])
+        self.assertNotIn("$appExe", verify_targets_matches[0])
 
         cleanup_ps1 = ps_texts["cleanup_windows_signing.ps1"]
         self.assertIn("CODE_SIGN_CLEANUP_THUMBPRINTS", cleanup_ps1)
