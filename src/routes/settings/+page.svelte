@@ -250,16 +250,17 @@
       if (form.sponsorShowSegments !== savedSnapshot.sponsorShowSegments) {
         const snapShow = form.sponsorShowSegments;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "sponsor.show_segments",
             snapShow,
             () => form.sponsorShowSegments,
             () => notify(t("settings.failed", { message: "sponsor.show_segments" })),
-          )
+            () => {
+              savedSnapshot.sponsorShowSegments = snapShow;
+            },
+          ))
         ) {
-          savedSnapshot.sponsorShowSegments = snapShow;
-        } else {
           invalid = true;
         }
       }
@@ -290,32 +291,34 @@
       if (form.pipDefault !== savedSnapshot.pipDefault) {
         const snap = form.pipDefault;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "pip.default",
             snap,
             () => form.pipDefault,
             () => notify(t("settings.pip.unsaved")),
-          )
+            () => {
+              savedSnapshot.pipDefault = snap;
+            },
+          ))
         ) {
-          savedSnapshot.pipDefault = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.pipFitAspect !== savedSnapshot.pipFitAspect) {
         const snap = form.pipFitAspect;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "pip.fit_aspect",
             snap,
             () => form.pipFitAspect,
             () => notify(t("settings.pip.unsaved")),
-          )
+            () => {
+              savedSnapshot.pipFitAspect = snap;
+            },
+          ))
         ) {
-          savedSnapshot.pipFitAspect = snap;
-        } else {
           invalid = true;
         }
       }
@@ -347,16 +350,17 @@
       if (form.pipQuality.trim() !== savedSnapshot.pipQuality.trim()) {
         const snap = form.pipQuality.trim();
         if (
-          await saveStringSetting(
+          !(await saveStringSetting(
             setSetting,
             "pip.quality.format",
             snap,
             () => form.pipQuality.trim(),
             () => notify(t("settings.pip.unsaved")),
-          )
+            () => {
+              savedSnapshot.pipQuality = snap;
+            },
+          ))
         ) {
-          savedSnapshot.pipQuality = snap;
-        } else {
           invalid = true;
         }
       }
@@ -365,48 +369,51 @@
       if (form.feedShowShorts !== savedSnapshot.feedShowShorts) {
         const snap = form.feedShowShorts;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "feed.show_shorts",
             snap,
             () => form.feedShowShorts,
             () => notify(t("settings.feed.unsaved")),
-          )
+            () => {
+              savedSnapshot.feedShowShorts = snap;
+            },
+          ))
         ) {
-          savedSnapshot.feedShowShorts = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.feedNotifyNew !== savedSnapshot.feedNotifyNew) {
         const snap = form.feedNotifyNew;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "feed.notify_new",
             snap,
             () => form.feedNotifyNew,
             () => notify(t("settings.feed.unsaved")),
-          )
+            () => {
+              savedSnapshot.feedNotifyNew = snap;
+            },
+          ))
         ) {
-          savedSnapshot.feedNotifyNew = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.feedAutoReadPlayed !== savedSnapshot.feedAutoReadPlayed) {
         const snap = form.feedAutoReadPlayed;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "feed.auto_read_played",
             snap,
             () => form.feedAutoReadPlayed,
             () => notify(t("settings.feed.unsaved")),
-          )
+            () => {
+              savedSnapshot.feedAutoReadPlayed = snap;
+            },
+          ))
         ) {
-          savedSnapshot.feedAutoReadPlayed = snap;
-        } else {
           invalid = true;
         }
       }
@@ -432,32 +439,34 @@
       if (form.liveWaitAction !== savedSnapshot.liveWaitAction) {
         const snap = form.liveWaitAction;
         if (
-          await saveStringSetting(
+          !(await saveStringSetting(
             setSetting,
             "live_wait.action",
             snap,
             () => form.liveWaitAction,
             () => notify(t("settings.livewait.unsaved")),
-          )
+            () => {
+              savedSnapshot.liveWaitAction = snap;
+            },
+          ))
         ) {
-          savedSnapshot.liveWaitAction = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.shortcutsOn !== savedSnapshot.shortcutsOn) {
         const snap = form.shortcutsOn;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "ui.shortcuts",
             snap,
             () => form.shortcutsOn,
             () => notify(t("settings.shortcuts.unsaved")),
-          )
+            () => {
+              savedSnapshot.shortcutsOn = snap;
+            },
+          ))
         ) {
-          savedSnapshot.shortcutsOn = snap;
-        } else {
           invalid = true;
         }
       }
@@ -466,23 +475,24 @@
       if (form.chatShowAuthor !== savedSnapshot.chatShowAuthor) {
         const snap = form.chatShowAuthor;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "chat.popup_show_author",
             snap,
             () => form.chatShowAuthor,
             () => notify(t("settings.chatpopup.unsaved")),
-          )
+            () => {
+              savedSnapshot.chatShowAuthor = snap;
+            },
+          ))
         ) {
-          savedSnapshot.chatShowAuthor = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.chatFontSize.trim() !== savedSnapshot.chatFontSize.trim()) {
         const snap = form.chatFontSize.trim();
         if (
-          await saveOptionalRangeSetting(
+          !(await saveOptionalRangeSetting(
             setSetting,
             "chat.popup_font_size",
             snap,
@@ -491,17 +501,18 @@
             32,
             (raw) => failKey(`chat.popup_font_size: ${raw}`),
             () => notify(t("settings.chatpopup.unsaved")),
-          )
+            () => {
+              savedSnapshot.chatFontSize = snap;
+            },
+          ))
         ) {
-          savedSnapshot.chatFontSize = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.chatOpacity.trim() !== savedSnapshot.chatOpacity.trim()) {
         const snap = form.chatOpacity.trim();
         if (
-          await saveOptionalRangeSetting(
+          !(await saveOptionalRangeSetting(
             setSetting,
             "chat.popup_opacity",
             snap,
@@ -510,10 +521,11 @@
             1.0,
             (raw) => failKey(`chat.popup_opacity: ${raw}`),
             () => notify(t("settings.chatpopup.unsaved")),
-          )
+            () => {
+              savedSnapshot.chatOpacity = snap;
+            },
+          ))
         ) {
-          savedSnapshot.chatOpacity = snap;
-        } else {
           invalid = true;
         }
       }
@@ -589,16 +601,17 @@
       if (form.navigateOnPlay !== savedSnapshot.navigateOnPlay) {
         const snap = form.navigateOnPlay;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "player.navigate_on_play",
             snap,
             () => form.navigateOnPlay,
             () => notify(t("settings.player.unsaved")),
-          )
+            () => {
+              savedSnapshot.navigateOnPlay = snap;
+            },
+          ))
         ) {
-          savedSnapshot.navigateOnPlay = snap;
-        } else {
           invalid = true;
         }
       }
@@ -607,32 +620,34 @@
       if (form.windowScreen !== savedSnapshot.windowScreen) {
         const snap = form.windowScreen;
         if (
-          await saveStringSetting(
+          !(await saveStringSetting(
             setSetting,
             "window.screen",
             snap,
             () => form.windowScreen,
             () => notify(t("settings.window.unsaved")),
-          )
+            () => {
+              savedSnapshot.windowScreen = snap;
+            },
+          ))
         ) {
-          savedSnapshot.windowScreen = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.closeOnEof !== savedSnapshot.closeOnEof) {
         const snap = form.closeOnEof;
         if (
-          await saveToggleSetting(
+          !(await saveToggleSetting(
             setSetting,
             "player.close_on_eof",
             snap,
             () => form.closeOnEof,
             () => notify(t("settings.window.unsaved")),
-          )
+            () => {
+              savedSnapshot.closeOnEof = snap;
+            },
+          ))
         ) {
-          savedSnapshot.closeOnEof = snap;
-        } else {
           invalid = true;
         }
       }
@@ -743,16 +758,17 @@
       if (form.mpvExtraArgs.trim() !== savedSnapshot.mpvExtraArgs.trim()) {
         const snap = form.mpvExtraArgs.trim();
         if (
-          await saveStringSetting(
+          !(await saveStringSetting(
             setSetting,
             "mpv.extra_args",
             snap,
             () => form.mpvExtraArgs.trim(),
             () => notify(t("settings.hdr.unsaved")),
-          )
+            () => {
+              savedSnapshot.mpvExtraArgs = snap;
+            },
+          ))
         ) {
-          savedSnapshot.mpvExtraArgs = snap;
-        } else {
           invalid = true;
         }
       }
@@ -789,16 +805,17 @@
       if (form.mpvHwdec !== savedSnapshot.mpvHwdec) {
         const snap = form.mpvHwdec;
         if (
-          await saveStringSetting(
+          !(await saveStringSetting(
             setSetting,
             "mpv.hwdec",
             snap,
             () => form.mpvHwdec,
             () => notify(t("settings.hdr.unsaved")),
-          )
+            () => {
+              savedSnapshot.mpvHwdec = snap;
+            },
+          ))
         ) {
-          savedSnapshot.mpvHwdec = snap;
-        } else {
           invalid = true;
         }
       }
@@ -807,32 +824,34 @@
       if (form.ytdlpPath.trim() !== savedSnapshot.ytdlpPath.trim()) {
         const snap = form.ytdlpPath.trim();
         if (
-          await saveStringSetting(
+          !(await saveStringSetting(
             setSetting,
             "ytdlp.path",
             snap,
             () => form.ytdlpPath.trim(),
             () => notify(t("settings.deps.unsaved")),
-          )
+            () => {
+              savedSnapshot.ytdlpPath = snap;
+            },
+          ))
         ) {
-          savedSnapshot.ytdlpPath = snap;
-        } else {
           invalid = true;
         }
       }
       if (form.poToken.trim() !== savedSnapshot.poToken.trim()) {
         const snap = form.poToken.trim();
         if (
-          await saveStringSetting(
+          !(await saveStringSetting(
             setSetting,
             "ytdlp.po_token",
             snap,
             () => form.poToken.trim(),
             () => notify(t("settings.deps.unsaved")),
-          )
+            () => {
+              savedSnapshot.poToken = snap;
+            },
+          ))
         ) {
-          savedSnapshot.poToken = snap;
-        } else {
           invalid = true;
         }
       }

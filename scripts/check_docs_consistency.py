@@ -30,6 +30,7 @@ consistency ジョブ）の双方から実行できる。
     16. decision-records.md の Markdown 表構文
     17. 実装計画・実装履歴・README のフェーズ整合
     18. テキスト健全性（U+FFFD・競合マーカー）と JSON/XML 構文
+    19. Rust モジュールの循環依存と下位共有層からの逆参照
 チェック 3（§8 DDL と適用後スキーマの照合）は実マイグレーション経路を
 通す必要があるため Rust 側テストとして src-tauri/src/db/tests/ddl.rs にある。
 
@@ -74,6 +75,9 @@ SCRIPTS_DIR = ROOT / "scripts"
 OK = "OK"
 WARN = "WARN"
 ERROR = "ERROR"
+
+RUST_UPPER_MODULES = frozenset({"lib", "main", "commands", "error"})
+RUST_SHARED_MODULES = frozenset({"db", "model", "util"})
 
 
 @dataclass
@@ -1734,6 +1738,2784 @@ def check_text_and_syntax(root: Path = ROOT) -> Findings:
 
 
 # ---------------------------------------------------------------------------
+# チェック 19: Rust モジュールの循環依存と層逆参照
+# ---------------------------------------------------------------------------
+
+_RUST_CHAR_LIT_RE = re.compile(
+    r"b?'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[^'\n])|[^'\\\n])'"
+)
+_RUST_RAW_STR_RE = re.compile(r'(?:b|c)?r(#*)"')
+_RUST_CFG_ATTR_START_RE = re.compile(r"#\s*\[\s*cfg\s*\(")
+_RUST_CFG_HEAD_RE = re.compile(r"cfg\s*\(")
+_RUST_CFG_ATTR_HEAD_RE = re.compile(r"cfg_attr\s*\(")
+_RUST_MACRO_EXPORT_ATTR_RE = re.compile(r"macro_export(?:\s*\(.*\))?\Z", re.DOTALL)
+_RUST_IDENT_RE = re.compile(r"[^\W\d]\w*")
+_RUST_RAW_OR_IDENT_RE = re.compile(r"(?:r#)?[^\W\d]\w*")
+_RUST_CFG_TOKEN_RE = re.compile(
+    r'\s*(?:([(),=])|(?:r(#*)"(?:.|\n)*?"\2|"(?:\\.|[^"\\])*")|([^\W\d]\w*))'
+)
+# std / core / alloc 直下で型・モジュール名前空間に属することが確定している標準モジュール
+_RUST_STD_MODULES: frozenset[str] = frozenset({
+    "alloc", "any", "arch", "array", "ascii", "backtrace", "borrow", "boxed",
+    "cell", "char", "clone", "cmp", "collections", "convert", "default", "env",
+    "error", "f32", "f64", "ffi", "fmt", "fs", "future", "hash", "hint",
+    "i8", "i16", "i32", "i64", "i128", "io", "isize", "iter", "marker", "mem",
+    "net", "num", "ops", "option", "os", "panic", "path", "pin", "prelude",
+    "primitive", "process", "ptr", "rc", "result", "slice", "str", "string",
+    "sync", "task", "thread", "time", "u8", "u16", "u32", "u64", "u128",
+    "usize", "vec",
+})
+
+
+def _is_ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _blank_rust_comments_and_strings(text: str) -> str:
+    """Rust ソースのコメントを空白化し、文字列/文字リテラルは引用符のみ残して中身を行数維持で空白化する。"""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        # 行コメント // ...
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        # ブロックコメント /* ... */（ネスト対応）
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            depth = 1
+            out.extend((" ", " "))
+            i += 2
+            while i < n and depth > 0:
+                if text[i : i + 2] == "/*":
+                    depth += 1
+                    out.extend((" ", " "))
+                    i += 2
+                elif text[i : i + 2] == "*/":
+                    depth -= 1
+                    out.extend((" ", " "))
+                    i += 2
+                else:
+                    out.append("\n" if text[i] == "\n" else " ")
+                    i += 1
+            continue
+        # raw 文字列 (b|c)?r#*"..."#*
+        if (
+            ch in ("r", "b", "c")
+            and (i == 0 or not _is_ident_char(text[i - 1]))
+        ):
+            raw_m = _RUST_RAW_STR_RE.match(text, i)
+            if raw_m is not None:
+                closer = '"' + "#" * len(raw_m.group(1))
+                end_pos = text.find(closer, raw_m.end())
+                limit = n if end_pos < 0 else end_pos + len(closer)
+                if limit - i >= 2 and end_pos >= 0:
+                    out.append('"')
+                    for k in range(i + 1, limit - 1):
+                        out.append("\n" if text[k] == "\n" else " ")
+                    out.append('"')
+                else:
+                    for k in range(i, limit):
+                        out.append("\n" if text[k] == "\n" else " ")
+                i = limit
+                continue
+        # byte / C / 通常文字列
+        if ch == '"' or (
+            ch in ("b", "c")
+            and i + 1 < n
+            and text[i + 1] == '"'
+            and (i == 0 or not _is_ident_char(text[i - 1]))
+        ):
+            lit_start = i
+            start = i if ch == '"' else i + 1
+            i = start + 1
+            closed = False
+            while i < n:
+                c2 = text[i]
+                if c2 == "\\":
+                    i += 2 if i + 1 < n else 1
+                    continue
+                i += 1
+                if c2 == '"':
+                    closed = True
+                    break
+            if closed and i - lit_start >= 2:
+                out.append('"')
+                for k in range(lit_start + 1, i - 1):
+                    out.append("\n" if text[k] == "\n" else " ")
+                out.append('"')
+            else:
+                for k in range(lit_start, i):
+                    out.append("\n" if text[k] == "\n" else " ")
+            continue
+        # 文字リテラル ('x', '"', '\u{...}', b'x')。ライフタイム ('a) は維持する
+        if ch == "'" or (
+            ch == "b"
+            and i + 1 < n
+            and text[i + 1] == "'"
+            and (i == 0 or not _is_ident_char(text[i - 1]))
+        ):
+            char_m = _RUST_CHAR_LIT_RE.match(text, i)
+            if char_m is not None:
+                span = char_m.end() - i
+                if span >= 2:
+                    out.append("'")
+                    out.extend(" " for _ in range(span - 2))
+                    out.append("'")
+                else:
+                    out.extend(" " for _ in range(span))
+                i = char_m.end()
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+class _CfgParseError(Exception):
+    pass
+
+
+_CFG_TRUE: tuple = ("BOOL", True)
+_CFG_FALSE: tuple = ("BOOL", False)
+_CFG_UNKNOWN: tuple = ("UNKNOWN",)
+
+# Rust で単一値のみを取り得る標準 cfg キー（同一キーの異なる値は両立しない）
+_RUST_SINGLE_VALUE_CFG_KEYS: frozenset[str] = frozenset({
+    "target_os",
+    "target_arch",
+    "target_env",
+    "target_endian",
+    "target_pointer_width",
+    "target_vendor",
+})
+
+# Rust で `unix` ファミリを含意する主要 target_os
+_RUST_UNIX_TARGET_OS: frozenset[str] = frozenset({
+    "linux",
+    "macos",
+    "ios",
+    "freebsd",
+    "dragonfly",
+    "openbsd",
+    "netbsd",
+    "android",
+    "solaris",
+    "illumos",
+    "redox",
+    "aix",
+    "hurd",
+    "haiku",
+    "l4re",
+    "tvos",
+    "watchos",
+    "visionos",
+    "cygwin",
+})
+
+
+def _unblank_rust_slice(
+    cleaned: str,
+    raw_source: str | None,
+    start: int,
+    end: int,
+    base_offset: int = 0,
+) -> str:
+    """`cleaned[start:end]` のコメント空白化を保ちつつ文字列リテラル中身を `raw_source` から復元する。"""
+    if raw_source is None or base_offset + end > len(raw_source):
+        return cleaned[start:end]
+    out: list[str] = []
+    i = start
+    while i < end:
+        if cleaned[i] == '"':
+            q = cleaned.find('"', i + 1, end)
+            if q >= 0:
+                out.append(raw_source[base_offset + i : base_offset + q + 1])
+                i = q + 1
+                continue
+        out.append(cleaned[i])
+        i += 1
+    return "".join(out)
+
+
+def _decode_rust_cfg_string(tok: str) -> str:
+    """`cfg(...)` 内の通常・raw 文字列トークンから中身を取り出す。"""
+    if tok.startswith("r"):
+        first_q = tok.find('"')
+        last_q = tok.rfind('"')
+        if first_q >= 0 and last_q > first_q:
+            return tok[first_q + 1 : last_q]
+    if len(tok) >= 2 and tok[0] == '"' and tok[-1] == '"':
+        inner = tok[1:-1]
+        if "\\" not in inner:
+            return inner
+        chars: list[str] = []
+        i = 0
+        while i < len(inner):
+            if inner[i] == "\\" and i + 1 < len(inner):
+                nxt = inner[i + 1]
+                chars.append({"n": "\n", "r": "\r", "t": "\t"}.get(nxt, nxt))
+                i += 2
+                continue
+            chars.append(inner[i])
+            i += 1
+        return "".join(chars)
+    return tok
+
+
+def _cfg_not(node: tuple) -> tuple:
+    if node == _CFG_TRUE:
+        return _CFG_FALSE
+    if node == _CFG_FALSE:
+        return _CFG_TRUE
+    if node[0] == "NOT":
+        return node[1]
+    return ("NOT", node)
+
+
+def _cfg_all(nodes: tuple[tuple, ...]) -> tuple:
+    flat: list[tuple] = []
+    seen: set[tuple] = set()
+    for item in nodes:
+        if item == _CFG_FALSE:
+            return _CFG_FALSE
+        if item == _CFG_TRUE:
+            continue
+        subs = item[1] if item[0] == "ALL" else (item,)
+        for sub in subs:
+            if sub == _CFG_FALSE:
+                return _CFG_FALSE
+            if sub == _CFG_TRUE:
+                continue
+            if sub == _CFG_UNKNOWN or sub not in seen:
+                flat.append(sub)
+                if sub != _CFG_UNKNOWN:
+                    seen.add(sub)
+    if not flat:
+        return _CFG_TRUE
+    if len(flat) == 1:
+        return flat[0]
+    return ("ALL", tuple(flat))
+
+
+def _cfg_any(nodes: tuple[tuple, ...]) -> tuple:
+    flat: list[tuple] = []
+    seen: set[tuple] = set()
+    for item in nodes:
+        if item == _CFG_TRUE:
+            return _CFG_TRUE
+        if item == _CFG_FALSE:
+            continue
+        subs = item[1] if item[0] == "ANY" else (item,)
+        for sub in subs:
+            if sub == _CFG_TRUE:
+                return _CFG_TRUE
+            if sub == _CFG_FALSE:
+                continue
+            if sub == _CFG_UNKNOWN or sub not in seen:
+                flat.append(sub)
+                if sub != _CFG_UNKNOWN:
+                    seen.add(sub)
+    if not flat:
+        return _CFG_FALSE
+    if len(flat) == 1:
+        return flat[0]
+    return ("ANY", tuple(flat))
+
+
+def _simplify_cfg_non_test(node: tuple) -> tuple:
+    """`test = False` を代入し、同値な target_family 表記を正規化して cfg AST を簡約する。"""
+    kind = node[0]
+    if kind in ("BOOL", "UNKNOWN"):
+        return node
+    if kind == "ATOM":
+        if node[1] == "test":
+            return _CFG_FALSE
+        return node
+    if kind == "KV":
+        if node[1] == "target_family" and node[2] in ("unix", "windows"):
+            return ("ATOM", node[2])
+        return node
+    if kind == "NOT":
+        return _cfg_not(_simplify_cfg_non_test(node[1]))
+    if kind == "ALL":
+        return _cfg_all(tuple(_simplify_cfg_non_test(c) for c in node[1]))
+    if kind == "ANY":
+        return _cfg_any(tuple(_simplify_cfg_non_test(c) for c in node[1]))
+    return _CFG_UNKNOWN
+
+
+def _parse_rust_cfg_expr(expr: str, *, from_raw: bool = True) -> tuple:
+    """`cfg(...)` 式を AST タプルへ構文解析する。解析不能時は `_CFG_UNKNOWN` を返す。"""
+    tokens: list[tuple[str, str]] = []
+    pos = 0
+    n = len(expr)
+    while pos < n:
+        if expr[pos].isspace():
+            pos += 1
+            continue
+        m = _RUST_CFG_TOKEN_RE.match(expr, pos)
+        if m is None:
+            return _CFG_UNKNOWN
+        if m.group(1) is not None:
+            tokens.append(("PUNCT", m.group(1)))
+        elif m.group(3) is not None:
+            tokens.append(("IDENT", m.group(3)))
+        else:
+            tokens.append(("STR", m.group(0).strip()))
+        pos = m.end()
+
+    if not tokens:
+        return _CFG_UNKNOWN
+
+    idx = 0
+    tlen = len(tokens)
+
+    def peek() -> tuple[str, str] | None:
+        return tokens[idx] if idx < tlen else None
+
+    def consume() -> tuple[str, str]:
+        nonlocal idx
+        if idx >= tlen:
+            raise _CfgParseError()
+        tok = tokens[idx]
+        idx += 1
+        return tok
+
+    def parse_pred() -> tuple:
+        tok = consume()
+        if tok[0] != "IDENT":
+            raise _CfgParseError()
+        name = tok[1]
+        nxt = peek()
+        if name in ("all", "any") and nxt == ("PUNCT", "("):
+            consume()
+            vals: list[tuple] = []
+            while True:
+                p = peek()
+                if p is None:
+                    raise _CfgParseError()
+                if p == ("PUNCT", ")"):
+                    consume()
+                    break
+                vals.append(parse_pred())
+                sep = peek()
+                if sep == ("PUNCT", ","):
+                    consume()
+                elif sep == ("PUNCT", ")"):
+                    continue
+                else:
+                    raise _CfgParseError()
+            return _cfg_all(tuple(vals)) if name == "all" else _cfg_any(tuple(vals))
+
+        if name == "not" and nxt == ("PUNCT", "("):
+            consume()
+            val = parse_pred()
+            if peek() == ("PUNCT", ","):
+                consume()
+            if peek() != ("PUNCT", ")"):
+                raise _CfgParseError()
+            consume()
+            return _cfg_not(val)
+
+        if nxt == ("PUNCT", "="):
+            consume()
+            val_tok = peek()
+            if val_tok is not None and val_tok[0] in ("STR", "IDENT"):
+                consume()
+                if val_tok[0] == "STR":
+                    decoded = _decode_rust_cfg_string(val_tok[1])
+                    if not from_raw and decoded and decoded.isspace():
+                        return _CFG_UNKNOWN
+                    return ("KV", name, decoded)
+                return ("KV", name, val_tok[1])
+            return _CFG_UNKNOWN
+
+        if nxt == ("PUNCT", "("):
+            consume()
+            depth = 1
+            while depth > 0:
+                t = consume()
+                if t == ("PUNCT", "("):
+                    depth += 1
+                elif t == ("PUNCT", ")"):
+                    depth -= 1
+            return _CFG_UNKNOWN
+
+        if name == "true":
+            return _CFG_TRUE
+        if name == "false":
+            return _CFG_FALSE
+        return ("ATOM", name)
+
+    try:
+        res = parse_pred()
+        if peek() == ("PUNCT", ","):
+            consume()
+        if idx != tlen:
+            return _CFG_UNKNOWN
+        return res
+    except _CfgParseError:
+        return _CFG_UNKNOWN
+
+
+def _cfgs_compatible_non_test(cfg_a: tuple, cfg_b: tuple) -> bool:
+    """2 つの cfg AST が非テスト構成（`test = False`）のもとで同時に真になり得るか判定する。"""
+    expr = _simplify_cfg_non_test(_cfg_all((cfg_a, cfg_b)))
+    if expr == _CFG_FALSE:
+        return False
+    if expr == _CFG_TRUE:
+        return True
+
+    # 各 UNKNOWN 出現には独立した変数 ID を割り当て、安全側（両立可能寄り）に評価する
+    unknown_counter = 0
+
+    def assign_unknowns(node: tuple) -> tuple:
+        nonlocal unknown_counter
+        kind = node[0]
+        if kind == "UNKNOWN":
+            unknown_counter += 1
+            return ("UNK", unknown_counter)
+        if kind == "NOT":
+            return ("NOT", assign_unknowns(node[1]))
+        if kind in ("ALL", "ANY"):
+            return (kind, tuple(assign_unknowns(c) for c in node[1]))
+        return node
+
+    expr = assign_unknowns(expr)
+    atoms: list[tuple] = []
+    atom_set: set[tuple] = set()
+
+    def collect_atoms(node: tuple) -> None:
+        kind = node[0]
+        if kind in ("ATOM", "KV", "UNK"):
+            if node not in atom_set:
+                atom_set.add(node)
+                atoms.append(node)
+        elif kind == "NOT":
+            collect_atoms(node[1])
+        elif kind in ("ALL", "ANY"):
+            for c in node[1]:
+                collect_atoms(c)
+
+    collect_atoms(expr)
+    # 変数が多い複雑な式は安全側（両立可能）へフォールバックする
+    if len(atoms) > 8:
+        return True
+
+    def eval_expr(node: tuple, env: dict[tuple, bool]) -> bool:
+        kind = node[0]
+        if kind == "BOOL":
+            return bool(node[1])
+        if kind in ("ATOM", "KV", "UNK"):
+            return env[node]
+        if kind == "NOT":
+            return not eval_expr(node[1], env)
+        if kind == "ALL":
+            return all(eval_expr(c, env) for c in node[1])
+        if kind == "ANY":
+            return any(eval_expr(c, env) for c in node[1])
+        return True
+
+    def is_valid_env(env: dict[tuple, bool]) -> bool:
+        unix_val = env.get(("ATOM", "unix"))
+        win_val = env.get(("ATOM", "windows"))
+        if unix_val is True and win_val is True:
+            return False
+        seen_single: dict[str, str] = {}
+        for atom, val in env.items():
+            if not val or atom[0] != "KV":
+                continue
+            key, kval = atom[1], atom[2]
+            if key in _RUST_SINGLE_VALUE_CFG_KEYS:
+                if key in seen_single and seen_single[key] != kval:
+                    return False
+                seen_single[key] = kval
+            if key == "target_os":
+                if kval == "windows":
+                    if unix_val is True or win_val is False:
+                        return False
+                elif kval in _RUST_UNIX_TARGET_OS:
+                    if win_val is True or unix_val is False:
+                        return False
+        return True
+
+    n_atoms = len(atoms)
+    for mask in range(1 << n_atoms):
+        env = {atoms[bit]: bool((mask >> bit) & 1) for bit in range(n_atoms)}
+        if not is_valid_env(env):
+            continue
+        if eval_expr(expr, env):
+            return True
+    return False
+
+
+def _eval_cfg_non_test(expr: str) -> bool | None:
+    """`cfg(...)` 式を `test = False`（他の条件は不定）の 3 値論理で評価する。
+
+    戻り値:
+        True  : `test = False` で必ず有効
+        False : `test = False` では有効になり得ない（テスト専用）
+        None  : 他の条件（OS・feature 等）次第で本番でも有効になり得る
+    """
+    node = _simplify_cfg_non_test(_parse_rust_cfg_expr(expr, from_raw=False))
+    if node == _CFG_TRUE:
+        return True
+    if node == _CFG_FALSE:
+        return False
+    return None
+
+
+def _match_rust_angle_bracket(text: str, start: int) -> int | None:
+    """`start` の `<` に対応するジェネリクスの閉じ `>` の直後位置を返す。"""
+    n = len(text)
+    angle_depth = 1
+    paren_depth = 0
+    bracket_depth = 0
+    brace_depth = 0
+    k = start + 1
+    while k < n:
+        c = text[k]
+        if c == "(":
+            paren_depth += 1
+        elif c == ")":
+            if paren_depth == 0:
+                return None
+            paren_depth -= 1
+        elif c == "[":
+            bracket_depth += 1
+        elif c == "]":
+            if bracket_depth == 0:
+                return None
+            bracket_depth -= 1
+        elif c == "{":
+            brace_depth += 1
+        elif c == "}":
+            if brace_depth == 0:
+                return None
+            brace_depth -= 1
+        elif paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+            two = text[k : k + 2]
+            if two in ("->", "=>", "<=", "<<"):
+                k += 2
+                continue
+            if c == ";":
+                return None
+            if c == "<":
+                angle_depth += 1
+            elif c == ">":
+                angle_depth -= 1
+                if angle_depth == 0:
+                    return k + 1
+        k += 1
+    return None
+
+
+def _skip_rust_balanced(
+    text: str, pos: int, open_ch: str, close_ch: str
+) -> int:
+    """`pos` の `open_ch` に対応する `close_ch` の直後位置を返す。"""
+    n = len(text)
+    if pos >= n or text[pos] != open_ch:
+        return pos
+    depth = 1
+    p = pos + 1
+    while p < n and depth > 0:
+        c = text[p]
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+        p += 1
+    return p
+
+
+def _skip_rust_label(text: str, pos: int) -> int:
+    """`'label:`（または `'r#label:`）があればその直後の非空白位置を返す。"""
+    n = len(text)
+    if pos >= n or text[pos] != "'":
+        return pos
+    lbl_m = _RUST_RAW_OR_IDENT_RE.match(text, pos + 1)
+    if lbl_m is None:
+        return pos
+    after_lbl = lbl_m.end()
+    while after_lbl < n and text[after_lbl].isspace():
+        after_lbl += 1
+    if (
+        after_lbl < n
+        and text[after_lbl] == ":"
+        and text[after_lbl : after_lbl + 2] != "::"
+    ):
+        p = after_lbl + 1
+        while p < n and text[p].isspace():
+            p += 1
+        return p
+    return pos
+
+
+def _skip_rust_abi_string(text: str, pos: int) -> int:
+    """Rust の文字列リテラル（通常文字列・raw 文字列・空白化済み引用符）を読み飛ばす。"""
+    n = len(text)
+    if pos >= n:
+        return pos
+    if text[pos] == '"':
+        p = pos + 1
+        while p < n:
+            if text[p] == "\\":
+                p += 2 if p + 1 < n else 1
+                continue
+            if text[p] == '"':
+                return p + 1
+            p += 1
+        return n
+    if text[pos] == "r":
+        raw_m = _RUST_RAW_STR_RE.match(text, pos)
+        if raw_m is not None:
+            closer = '"' + "#" * len(raw_m.group(1))
+            end_pos = text.find(closer, raw_m.end())
+            return n if end_pos < 0 else end_pos + len(closer)
+    return pos
+
+
+def _skip_rust_item_modifiers(
+    text: str, pos: int, *, in_extern_block: bool = False
+) -> tuple[int, bool, bool]:
+    """Rust アイテム修飾子（`default`/`const`/`async`/`unsafe`/`safe`/`extern ["ABI"]`）を読み飛ばす。
+
+    戻り値: `(修飾子直後の位置, saw_const, saw_extern)`
+    """
+    n = len(text)
+    p = pos
+    saw_const = False
+    saw_extern = False
+    while p < n:
+        while p < n and text[p].isspace():
+            p += 1
+        m = _RUST_IDENT_RE.match(text, p)
+        if m is None:
+            break
+        w = m.group(0)
+        if w in ("default", "const", "async", "unsafe", "extern"):
+            if w == "const":
+                saw_const = True
+            elif w == "extern":
+                saw_extern = True
+            p = m.end()
+            while p < n and text[p].isspace():
+                p += 1
+            if w == "extern":
+                after_abi = _skip_rust_abi_string(text, p)
+                if after_abi != p:
+                    p = after_abi
+                    while p < n and text[p].isspace():
+                        p += 1
+            continue
+        if w == "safe":
+            after_safe = m.end()
+            while after_safe < n and text[after_safe].isspace():
+                after_safe += 1
+            nxt_m = _RUST_IDENT_RE.match(text, after_safe)
+            if in_extern_block or (
+                nxt_m is not None and nxt_m.group(0) in ("fn", "static")
+            ):
+                p = after_safe
+                continue
+        break
+    return p, saw_const, saw_extern
+
+
+def _scan_rust_number_literal(text: str, pos: int) -> int:
+    """`pos` から始まる Rust の整数・浮動小数点リテラル（末尾 `.` 含む）の直後位置を返す。"""
+    n = len(text)
+    p = pos
+    if p >= n or not text[p].isdigit():
+        return pos
+    # 基数接頭辞 0x / 0b / 0o は小数点を持たない
+    if text[p] == "0" and p + 1 < n and text[p + 1] in "xXbBoO":
+        p += 2
+        while p < n and (text[p].isalnum() or text[p] == "_"):
+            p += 1
+        return p
+    # 10 進整数部
+    while p < n and (text[p].isdigit() or text[p] == "_"):
+        p += 1
+    # 小数点部: `1.5`, `1.5e-3_f64`, または末尾ドットの `1.`（`..`・識別子直前を除く）
+    if p < n and text[p] == ".":
+        nxt = text[p + 1] if p + 1 < n else ""
+        if nxt.isdigit():
+            p += 1
+            while p < n and (text[p].isdigit() or text[p] == "_"):
+                p += 1
+            if p < n and text[p] in "eE":
+                exp = p + 1
+                if exp < n and text[exp] in "+-":
+                    exp += 1
+                if exp < n and (text[exp].isdigit() or text[exp] == "_"):
+                    p = exp
+                    while p < n and (text[p].isdigit() or text[p] == "_"):
+                        p += 1
+            while p < n and (text[p].isalnum() or text[p] == "_"):
+                p += 1
+            return p
+        if nxt != "." and nxt != "_" and not nxt.isalpha():
+            return p + 1
+        return p
+    # 小数点なし指数表記: `1e5`, `1e-5_f64`
+    if p < n and text[p] in "eE":
+        exp = p + 1
+        if exp < n and text[exp] in "+-":
+            exp += 1
+        if exp < n and (text[exp].isdigit() or text[exp] == "_"):
+            p = exp
+            while p < n and (text[p].isdigit() or text[p] == "_"):
+                p += 1
+    # 型サフィックス（u8 / usize / f64 等）
+    while p < n and (text[p].isalnum() or text[p] == "_"):
+        p += 1
+    return p
+
+
+def _split_rust_attr_arg_spans(
+    text: str, start: int, end: int
+) -> list[tuple[int, int]]:
+    """`text[start:end]` 内のカンマ区切り引数の `(開始位置, 終了位置)` を括弧・文字列を跨がず分割する。"""
+    spans: list[tuple[int, int]] = []
+    p_depth = 0
+    b_depth = 0
+    k_depth = 0
+    seg_start = start
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch in ('"', "r"):
+            next_i = _skip_rust_abi_string(text, i)
+            if next_i != i:
+                i = min(next_i, end)
+                continue
+        if ch == "(":
+            p_depth += 1
+        elif ch == ")":
+            p_depth = max(0, p_depth - 1)
+        elif ch == "[":
+            b_depth += 1
+        elif ch == "]":
+            b_depth = max(0, b_depth - 1)
+        elif ch == "{":
+            k_depth += 1
+        elif ch == "}":
+            k_depth = max(0, k_depth - 1)
+        elif ch == "," and p_depth == 0 and b_depth == 0 and k_depth == 0:
+            spans.append((seg_start, i))
+            seg_start = i + 1
+        i += 1
+    spans.append((seg_start, end))
+    return spans
+
+
+def _split_rust_attr_args(text: str) -> list[str]:
+    """Rust 属性括弧内のカンマ区切り引数を括弧・文字列を跨がず分割する。"""
+    return [text[s:e] for s, e in _split_rust_attr_arg_spans(text, 0, len(text))]
+
+
+def _match_rust_attr_paren_body(
+    text: str, head_re: re.Pattern[str], start: int, end: int
+) -> tuple[int, int] | None:
+    """`text[start:end]` 全体が `head_re ... )` に一致すれば括弧内 `(inner_start, inner_end)` を返す。"""
+    s = start
+    while s < end and text[s].isspace():
+        s += 1
+    e = end
+    while e > s and text[e - 1].isspace():
+        e -= 1
+    m = head_re.match(text, s)
+    if m is None or m.end() > e:
+        return None
+    open_paren = m.end() - 1
+    p = open_paren + 1
+    depth = 1
+    while p < e and depth > 0:
+        ch = text[p]
+        if ch in ('"', "r"):
+            next_p = _skip_rust_abi_string(text, p)
+            if next_p != p:
+                p = min(next_p, e)
+                continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        p += 1
+    if depth != 0 or text[p:e].strip():
+        return None
+    return open_paren + 1, p - 1
+
+
+def _attr_cfg_expr(
+    cleaned: str,
+    raw_source: str | None,
+    body_start: int,
+    body_end: int,
+    *,
+    base_offset: int = 0,
+) -> tuple | None:
+    """属性本文 `cleaned[body_start:body_end]` が `cfg(...)` なら簡約済み cfg AST を返す。"""
+    inner = _match_rust_attr_paren_body(cleaned, _RUST_CFG_HEAD_RE, body_start, body_end)
+    if inner is None:
+        return None
+    expr_str = _unblank_rust_slice(
+        cleaned, raw_source, inner[0], inner[1], base_offset=base_offset
+    )
+    return _simplify_cfg_non_test(
+        _parse_rust_cfg_expr(expr_str, from_raw=(raw_source is not None))
+    )
+
+
+def _attr_macro_export_cfg(
+    cleaned: str,
+    raw_source: str | None,
+    body_start: int,
+    body_end: int,
+    *,
+    base_offset: int = 0,
+) -> tuple | None:
+    """外側属性本文が非テスト構成で `macro_export` を付与する条件（cfg AST）を返す。付与不可なら None。"""
+    body = cleaned[body_start:body_end].strip()
+    if not body:
+        return None
+    if _RUST_MACRO_EXPORT_ATTR_RE.match(body) is not None:
+        return _CFG_TRUE
+    inner = _match_rust_attr_paren_body(
+        cleaned, _RUST_CFG_ATTR_HEAD_RE, body_start, body_end
+    )
+    if inner is None:
+        return None
+    arg_spans = _split_rust_attr_arg_spans(cleaned, inner[0], inner[1])
+    if len(arg_spans) < 2:
+        return None
+    pred_s, pred_e = arg_spans[0]
+    pred_str = _unblank_rust_slice(
+        cleaned, raw_source, pred_s, pred_e, base_offset=base_offset
+    )
+    pred_cfg = _simplify_cfg_non_test(
+        _parse_rust_cfg_expr(pred_str, from_raw=(raw_source is not None))
+    )
+    if not _cfgs_compatible_non_test(pred_cfg, _CFG_TRUE):
+        return None
+    sub_cfgs: list[tuple] = []
+    for arg_s, arg_e in arg_spans[1:]:
+        sub = _attr_macro_export_cfg(
+            cleaned, raw_source, arg_s, arg_e, base_offset=base_offset
+        )
+        if sub is not None:
+            sub_cfgs.append(sub)
+    if not sub_cfgs:
+        return None
+    combined = _simplify_cfg_non_test(_cfg_all((pred_cfg, _cfg_any(tuple(sub_cfgs)))))
+    if not _cfgs_compatible_non_test(combined, _CFG_TRUE):
+        return None
+    return combined
+
+
+def _attr_grants_macro_export(attr_body: str) -> bool:
+    """外側属性本文が非テスト構成で `macro_export` を付与し得るか判定する。"""
+    return _attr_macro_export_cfg(attr_body, attr_body, 0, len(attr_body)) is not None
+
+
+def _classify_rust_annotated_node(text: str, start: int) -> str:
+    """属性直後の Rust 構文ノードの終端種別を判定する。
+
+    戻り値:
+        "semi_only"     : `;` のみで終端する構文（use / type / static / const 値 / let 等）
+        "brace_or_semi" : `{ ... }` または `;` で終端するアイテム・ブロック
+        "brace_macro"   : `path! { ... }` の波括弧マクロ呼び出し
+        "control_flow"  : `if` / `while` / `for` / `loop` / `match`・ラベル付きブロック（`else` 連鎖対応）
+        "expr_or_field" : フィールド・バリアント・引数・match アーム・式文等
+    """
+    n = len(text)
+    p = start
+
+    def skip_ws(pos: int) -> int:
+        while pos < n and text[pos].isspace():
+            pos += 1
+        return pos
+
+    p = skip_ws(p)
+    if p >= n:
+        return "expr_or_field"
+    if text[p] == "{":
+        return "brace_or_semi"
+
+    # ラベル付きブロック・ループ `'label: { ... }` / `'label: loop/while/for ...`
+    after_label = _skip_rust_label(text, p)
+    if after_label != p:
+        if after_label < n and text[after_label] == "{":
+            return "control_flow"
+        lm = _RUST_IDENT_RE.match(text, after_label)
+        if lm is not None and lm.group(0) in ("loop", "while", "for"):
+            return "control_flow"
+
+    # 可視性修飾子 pub / pub(...) をスキップ
+    m = _RUST_IDENT_RE.match(text, p)
+    if m is not None and m.group(0) == "pub":
+        p2 = skip_ws(m.end())
+        if p2 < n and text[p2] == "(":
+            p2 = skip_ws(_skip_rust_balanced(text, p2, "(", ")"))
+        p = p2
+
+    p, saw_const, saw_extern = _skip_rust_item_modifiers(text, p)
+
+    if p < n and text[p] == "{":
+        return "brace_or_semi"
+
+    m = _RUST_IDENT_RE.match(text, p)
+    kw = m.group(0) if m is not None else ""
+    after_kw = skip_ws(m.end()) if m is not None else p
+
+    if kw == "fn":
+        # 関数ポインタ型 `fn(i32)` と関数アイテム `fn name(...)` を区別する
+        if _RUST_IDENT_RE.match(text, after_kw) is not None:
+            return "brace_or_semi"
+        return "expr_or_field"
+    if kw in ("struct", "enum", "trait", "impl", "mod"):
+        return "brace_or_semi"
+    if kw == "union" and _RUST_IDENT_RE.match(text, after_kw) is not None:
+        return "brace_or_semi"
+    if kw == "macro_rules" and after_kw < n and text[after_kw] == "!":
+        return "brace_or_semi"
+    if kw in ("use", "type", "static", "let", "return", "break", "continue"):
+        return "semi_only"
+    if saw_const:
+        return "semi_only"
+    if saw_extern and kw == "crate":
+        return "semi_only"
+    if kw in ("if", "while", "for", "loop", "match"):
+        return "control_flow"
+
+    # パス付きまたは単独の波括弧マクロ呼び出し `[::] path (! { ... })` を識別する
+    mp = skip_ws(start)
+    if mp + 1 < n and text[mp : mp + 2] == "::":
+        mp = skip_ws(mp + 2)
+    seg = _RUST_RAW_OR_IDENT_RE.match(text, mp)
+    if seg is not None:
+        mp = skip_ws(seg.end())
+        while mp + 1 < n and text[mp : mp + 2] == "::":
+            mp = skip_ws(mp + 2)
+            seg = _RUST_RAW_OR_IDENT_RE.match(text, mp)
+            if seg is None:
+                mp = -1
+                break
+            mp = skip_ws(seg.end())
+        if mp >= 0 and mp < n and text[mp] == "!":
+            mp = skip_ws(mp + 1)
+            if mp < n and text[mp] == "{":
+                return "brace_macro"
+    return "expr_or_field"
+
+
+def _find_rust_block_expr_end(text: str, start: int) -> int | None:
+    """`start` がブロック式（`{}` / `if` / `match` / `loop` / `while` / `for`）で始まる場合、
+    条件部やパターン内の `{ ... }` と本体ブロックを区別して式全体の直後位置を返す。"""
+    n = len(text)
+
+    def skip_ws(idx: int) -> int:
+        while idx < n and text[idx].isspace():
+            idx += 1
+        return idx
+
+    def skip_outer_attrs(idx: int) -> int:
+        idx = skip_ws(idx)
+        while idx < n and text[idx : idx + 2] == "#[":
+            idx = skip_ws(_skip_rust_balanced(text, idx + 1, "[", "]"))
+        return idx
+
+    p = skip_outer_attrs(start)
+    # 任意ラベル `'label:` をスキップ
+    p = _skip_rust_label(text, p)
+
+    # ブロック修飾子（const / async / move / unsafe / try / gen）をスキップ
+    while p < n:
+        m = _RUST_IDENT_RE.match(text, p)
+        if m is None:
+            break
+        if m.group(0) in ("const", "async", "move", "unsafe", "try", "gen"):
+            p = skip_ws(m.end())
+            continue
+        break
+
+    if p >= n:
+        return None
+    if text[p] == "{":
+        end = _skip_rust_balanced(text, p, "{", "}")
+        return end if end > p and text[end - 1] == "}" else None
+
+    kw_m = _RUST_IDENT_RE.match(text, p)
+    if kw_m is None:
+        return None
+    kw = kw_m.group(0)
+    if kw not in ("if", "match", "loop", "while", "for"):
+        return None
+
+    p = skip_ws(kw_m.end())
+    if kw == "loop":
+        p = skip_outer_attrs(p)
+        if p >= n or text[p] != "{":
+            return None
+        end = _skip_rust_balanced(text, p, "{", "}")
+        return end if end > p and text[end - 1] == "}" else None
+
+    # `if` / `while` / `for` / `match` のヘッダ部（条件式・パターン・イテレータ）を走査して本体 `{` を特定する
+    # head_state:
+    #   "for_pat"   : `for <pat> in` の `in` 待ち
+    #   "let_pat"   : `if/while let <pat> =` の `=` 待ち
+    #   "need_expr" : 演算子・キーワード直後（次の `{` は条件内のブロック式またはマクロ引数）
+    #   "have_expr" : 完結した条件式の直後（次の `{` が制御構文の本体ブロック）
+    head_state = "for_pat" if kw == "for" else "need_expr"
+    in_as_type = False
+    as_allow_angle = False
+    body_brace_pos = -1
+
+    while p < n:
+        p = skip_ws(p)
+        if p >= n:
+            break
+        c = text[p]
+        if c == '"':
+            p = _skip_rust_abi_string(text, p)
+            if head_state == "need_expr":
+                head_state = "have_expr"
+            as_allow_angle = False
+            continue
+        if c == "'":
+            if not in_as_type:
+                after_lbl = _skip_rust_label(text, p)
+                if after_lbl != p:
+                    sub_end = _find_rust_block_expr_end(text, p)
+                    if sub_end is not None:
+                        p = sub_end
+                        if head_state == "need_expr":
+                            head_state = "have_expr"
+                        continue
+                    p = after_lbl
+                    continue
+            # 空白化済み文字リテラル `'   '` またはライフタイム `'a`
+            if p + 1 < n and text[p + 1] in (" ", "'"):
+                q = text.find("'", p + 1)
+                p = (q + 1) if q >= 0 else n
+                if head_state == "need_expr":
+                    head_state = "have_expr"
+                in_as_type = False
+                as_allow_angle = False
+                continue
+            lt_m = _RUST_RAW_OR_IDENT_RE.match(text, p + 1)
+            p = lt_m.end() if lt_m is not None else p + 1
+            as_allow_angle = False
+            continue
+        if c == "(":
+            p = _skip_rust_balanced(text, p, "(", ")")
+            if head_state == "need_expr":
+                head_state = "have_expr"
+            as_allow_angle = False
+            continue
+        if c == "[":
+            p = _skip_rust_balanced(text, p, "[", "]")
+            if head_state == "need_expr":
+                head_state = "have_expr"
+            as_allow_angle = False
+            continue
+        if c == "{":
+            if head_state == "have_expr":
+                body_brace_pos = p
+                break
+            p = _skip_rust_balanced(text, p, "{", "}")
+            if head_state == "need_expr":
+                head_state = "have_expr"
+            in_as_type = False
+            as_allow_angle = False
+            continue
+        if c in (";", ")", "]", "}"):
+            return None
+        if c == "#" and text[p : p + 2] == "#[":
+            p = _skip_rust_balanced(text, p + 1, "[", "]")
+            continue
+
+        ident_m = _RUST_RAW_OR_IDENT_RE.match(text, p)
+        if ident_m is not None:
+            word = ident_m.group(0)
+            if head_state == "for_pat":
+                if word == "in":
+                    head_state = "need_expr"
+                p = ident_m.end()
+                continue
+            if head_state == "let_pat":
+                p = ident_m.end()
+                continue
+            if word == "let" and kw in ("if", "while") and head_state == "need_expr":
+                head_state = "let_pat"
+                in_as_type = False
+                as_allow_angle = False
+                p = ident_m.end()
+                continue
+            if in_as_type:
+                if word == "for":
+                    p = skip_ws(ident_m.end())
+                    if p < n and text[p] == "<":
+                        angle_end = _match_rust_angle_bracket(text, p)
+                        if angle_end is not None:
+                            p = angle_end
+                    head_state = "need_expr"
+                    as_allow_angle = False
+                    continue
+                if word == "extern":
+                    p = skip_ws(ident_m.end())
+                    after_abi = _skip_rust_abi_string(text, p)
+                    if after_abi != p:
+                        p = after_abi
+                    head_state = "need_expr"
+                    as_allow_angle = False
+                    continue
+                if word in ("const", "mut", "unsafe", "dyn", "fn", "impl", "as"):
+                    head_state = "need_expr"
+                    as_allow_angle = False
+                    p = ident_m.end()
+                    continue
+                head_state = "have_expr"
+                as_allow_angle = True
+                p = ident_m.end()
+                continue
+            if word in ("if", "while", "for", "loop", "match"):
+                sub_end = _find_rust_block_expr_end(text, p)
+                if sub_end is not None:
+                    p = sub_end
+                    head_state = "have_expr"
+                    continue
+            if word == "as":
+                head_state = "need_expr"
+                in_as_type = True
+                as_allow_angle = False
+                p = ident_m.end()
+                continue
+            if word in (
+                "in",
+                "return",
+                "break",
+                "continue",
+                "yield",
+                "ref",
+                "mut",
+                "move",
+                "async",
+                "const",
+                "unsafe",
+                "try",
+                "gen",
+                "dyn",
+                "box",
+            ):
+                head_state = "need_expr"
+            else:
+                head_state = "have_expr"
+            p = ident_m.end()
+            continue
+
+        if c.isdigit():
+            p = _scan_rust_number_literal(text, p)
+            if head_state == "need_expr":
+                head_state = "have_expr"
+            in_as_type = False
+            as_allow_angle = False
+            continue
+
+        if head_state == "let_pat":
+            if text[p : p + 3] == "..=":
+                p += 3
+                continue
+            if (
+                c == "="
+                and text[p : p + 2] not in ("==", "=>")
+                and (p == 0 or text[p - 1] not in ("!", "<", ">", "="))
+            ):
+                head_state = "need_expr"
+                in_as_type = False
+                as_allow_angle = False
+            p += 1
+            continue
+        if head_state == "for_pat":
+            p += 1
+            continue
+
+        if text[p : p + 2] == "::":
+            p += 2
+            head_state = "need_expr"
+            as_allow_angle = False
+            continue
+        if (
+            c == "<"
+            and p + 1 < n
+            and text[p + 1] not in ("<", "=")
+            and (as_allow_angle or head_state == "need_expr")
+        ):
+            angle_end = _match_rust_angle_bracket(text, p)
+            if angle_end is not None:
+                p = angle_end
+                head_state = "have_expr"
+                as_allow_angle = False
+                continue
+        if text[p : p + 2] == "->":
+            p += 2
+            head_state = "need_expr"
+            as_allow_angle = False
+            continue
+        if in_as_type and head_state == "need_expr":
+            if text[p : p + 2] == "&&":
+                p += 2
+                continue
+            if c in ("*", "&"):
+                p += 1
+                continue
+            if c == "!":
+                p += 1
+                head_state = "have_expr"
+                as_allow_angle = False
+                continue
+        if text[p : p + 3] == "..=":
+            p += 3
+            head_state = "need_expr"
+            in_as_type = False
+            as_allow_angle = False
+            continue
+        if text[p : p + 2] == "..":
+            # `for x in 0.. { ... }` や `..` の直後は本体 `{` が来得る
+            p += 2
+            head_state = "have_expr"
+            in_as_type = False
+            as_allow_angle = False
+            continue
+        if c == "?":
+            p += 1
+            head_state = "have_expr"
+            in_as_type = False
+            as_allow_angle = False
+            continue
+        if text[p : p + 2] in (
+            "&&",
+            "||",
+            "==",
+            "!=",
+            "<=",
+            ">=",
+            "<<",
+            ">>",
+            "+=",
+            "-=",
+            "*=",
+            "/=",
+            "%=",
+            "&=",
+            "|=",
+            "^=",
+        ):
+            p += 2
+            head_state = "need_expr"
+            in_as_type = False
+            as_allow_angle = False
+            continue
+        p += 1
+        head_state = "need_expr"
+        in_as_type = False
+        as_allow_angle = False
+
+    if body_brace_pos < 0:
+        return None
+    end = _skip_rust_balanced(text, body_brace_pos, "{", "}")
+    if end <= body_brace_pos or text[end - 1] != "}":
+        return None
+
+    # `if ... { ... } else ...` 連鎖を末尾まで消費する
+    if kw == "if":
+        after = skip_ws(end)
+        else_m = _RUST_IDENT_RE.match(text, after)
+        if else_m is not None and else_m.group(0) == "else":
+            else_end = _find_rust_block_expr_end(text, else_m.end())
+            if else_end is not None:
+                return else_end
+    return end
+
+
+def _classify_post_brace_continuation(
+    text: str, close_brace_pos: int
+) -> tuple[str, int]:
+    """`}` 直後の後続トークンから、式・構文が継続するか終端するかを判定する。"""
+    n = len(text)
+    p = close_brace_pos + 1
+    crossed_newline = False
+    while p < n and text[p].isspace():
+        if text[p] == "\n":
+            crossed_newline = True
+        p += 1
+    if p >= n:
+        return ("stop", close_brace_pos + 1)
+
+    ident_m = _RUST_IDENT_RE.match(text, p)
+    if ident_m is not None:
+        word = ident_m.group(0)
+        if word == "else":
+            return ("else", ident_m.end())
+        if word == "if":
+            return ("if", ident_m.end())
+        if word == "as":
+            return ("continue", ident_m.end())
+        return ("stop", close_brace_pos + 1)
+
+    two = text[p : p + 2]
+    if two == "=>":
+        return ("fat_arrow", p + 2)
+    if two == "..":
+        return ("range", p + 2)
+    if two in (
+        "==",
+        "!=",
+        "<=",
+        ">=",
+        "&&",
+        "||",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "&=",
+        "|=",
+        "^=",
+        "<<",
+        ">>",
+    ):
+        return ("continue", p + 2)
+
+    ch = text[p]
+    if ch == ".":
+        return ("dot", p + 1)
+    if ch == "?":
+        return ("question", p + 1)
+    if ch == "=":
+        return ("assign", p + 1)
+    if ch == "|":
+        return ("pipe_nl" if crossed_newline else "pipe", p + 1)
+    if ch in ("+", "/", "%", "^", "<", ">"):
+        return ("continue", p + 1)
+    if not crossed_newline and ch in ("-", "*", "&"):
+        return ("continue", p + 1)
+    if not crossed_newline and ch in ("[", "("):
+        return ("continue", p)
+    if ch == ";":
+        return ("semi", p + 1)
+    if ch == ",":
+        return ("comma", p + 1)
+    return ("stop", close_brace_pos + 1)
+
+
+def _has_match_guard_or_pattern_fat_arrow(
+    text: str, start: int, in_guard: bool = False
+) -> bool:
+    """波括弧マクロ直後の `if` / `|` が match アームのガード・OR パターン（トップレベル `=>` に到達）かを判定する。"""
+    n = len(text)
+    p = start
+    b_depth = 0
+    p_depth = 0
+    k_depth = 0
+    while p < n:
+        c = text[p]
+        if b_depth == 0 and p_depth == 0 and k_depth == 0:
+            if text[p : p + 2] == "=>":
+                return True
+            if c in (";", ","):
+                return False
+            if (
+                not in_guard
+                and c == "i"
+                and text[p : p + 2] == "if"
+                and (
+                    p == 0
+                    or (
+                        not _is_ident_char(text[p - 1])
+                        and text[p - 1] not in (".", ":")
+                    )
+                )
+                and not (p >= 2 and text[p - 2 : p] == "r#")
+                and (p + 2 >= n or not _is_ident_char(text[p + 2]))
+            ):
+                in_guard = True
+                p += 2
+                continue
+        if c == "(":
+            p_depth += 1
+        elif c == ")":
+            if p_depth == 0:
+                return False
+            p_depth -= 1
+        elif c == "[":
+            k_depth += 1
+        elif c == "]":
+            if k_depth == 0:
+                return False
+            k_depth -= 1
+        elif c == "{":
+            b_depth += 1
+        elif c == "}":
+            if b_depth == 0:
+                return False
+            b_depth -= 1
+            if b_depth == 0 and p_depth == 0 and k_depth == 0:
+                cont_kind, next_pos = _classify_post_brace_continuation(text, p)
+                if cont_kind == "fat_arrow":
+                    return True
+                if not in_guard:
+                    if cont_kind == "if":
+                        in_guard = True
+                        p = next_pos
+                        continue
+                    if cont_kind in ("pipe", "pipe_nl"):
+                        p = next_pos
+                        continue
+                    return False
+                if cont_kind in (
+                    "else",
+                    "continue",
+                    "dot",
+                    "question",
+                    "assign",
+                    "pipe",
+                ):
+                    p = next_pos
+                    continue
+                return False
+        p += 1
+    return False
+
+
+def _find_rust_annotated_node_end(text: str, start: int) -> int:
+    """`#[cfg(...)]` 直後に続く単一 Rust 構文ノードの終端位置を返す。"""
+    n = len(text)
+    j = start
+    # 後続の外側属性 #[...] をスキップ
+    while j < n:
+        while j < n and text[j].isspace():
+            j += 1
+        if text[j : j + 2] == "#[":
+            j = _skip_rust_balanced(text, j + 1, "[", "]")
+            continue
+        break
+
+    mode = _classify_rust_annotated_node(text, j)
+    brace_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
+    saw_brace = False
+    k = j
+
+    if mode == "control_flow":
+        block_end = _find_rust_block_expr_end(text, j)
+        if block_end is None:
+            # 制御構文の本体終端を安全に特定できない場合、後続の本番コードまで誤って除外しない
+            return j
+        cont_kind, next_pos = _classify_post_brace_continuation(
+            text, block_end - 1
+        )
+        if cont_kind in ("dot", "question", "continue", "assign", "pipe"):
+            mode = "expr_or_field"
+            k = next_pos
+        elif cont_kind in ("semi", "comma"):
+            return next_pos
+        else:
+            return block_end
+
+    def handle_match_arm_body(after_arrow: int) -> tuple[bool, int]:
+        """`=>` 直後の match アーム本体を処理する。`(終端確定したか, 次位置)` を返す。"""
+        block_end = _find_rust_block_expr_end(text, after_arrow)
+        if block_end is None:
+            return (False, after_arrow)
+        cont_kind, next_pos = _classify_post_brace_continuation(
+            text, block_end - 1
+        )
+        if cont_kind in ("dot", "question"):
+            # ブロック式の後置 `.` / `?` 以降は非ブロック式となり `,` または外側 `}` まで継続する
+            return (False, next_pos)
+        if cont_kind == "comma":
+            return (True, next_pos)
+        return (True, block_end)
+
+    while k < n:
+        c = text[k]
+        if (
+            mode == "expr_or_field"
+            and c == "<"
+            and brace_depth == 0
+            and paren_depth == 0
+            and bracket_depth == 0
+            and k + 1 < n
+            and text[k + 1] not in ("<", "=")
+            and k > j
+            and (text[k - 1].isalnum() or text[k - 1] in "_:")
+        ):
+            angle_end = _match_rust_angle_bracket(text, k)
+            if angle_end is not None:
+                k = angle_end
+                continue
+
+        if (
+            mode == "expr_or_field"
+            and c == "="
+            and k + 1 < n
+            and text[k + 1] == ">"
+            and brace_depth == 0
+            and paren_depth == 0
+            and bracket_depth == 0
+        ):
+            done, next_k = handle_match_arm_body(k + 2)
+            if done:
+                return next_k
+            k = next_k
+            continue
+
+        if c == "(":
+            paren_depth += 1
+        elif c == ")":
+            if paren_depth == 0:
+                return k
+            paren_depth -= 1
+        elif c == "[":
+            bracket_depth += 1
+        elif c == "]":
+            if bracket_depth == 0:
+                return k
+            bracket_depth -= 1
+        elif c == "{":
+            brace_depth += 1
+            saw_brace = True
+        elif c == "}":
+            if brace_depth == 0:
+                # 構造体宣言・構造体リテラル等の外側閉じ括弧は残す
+                return k
+            brace_depth -= 1
+            if (
+                brace_depth == 0
+                and paren_depth == 0
+                and bracket_depth == 0
+            ):
+                if mode == "brace_or_semi" and saw_brace:
+                    return k + 1
+                if mode == "brace_macro" and saw_brace:
+                    cont_kind, next_pos = _classify_post_brace_continuation(text, k)
+                    if cont_kind == "fat_arrow":
+                        mode = "expr_or_field"
+                        done, next_k = handle_match_arm_body(next_pos)
+                        if done:
+                            return next_k
+                        k = next_k
+                        continue
+                    if cont_kind in ("if", "pipe", "pipe_nl"):
+                        if _has_match_guard_or_pattern_fat_arrow(
+                            text, next_pos, in_guard=(cont_kind == "if")
+                        ):
+                            mode = "expr_or_field"
+                            k = next_pos
+                            continue
+                        return k + 1
+                    if cont_kind in ("dot", "question", "continue", "assign"):
+                        mode = "expr_or_field"
+                        k = next_pos
+                        continue
+                    if cont_kind in ("semi", "comma"):
+                        return next_pos
+                    return k + 1
+        elif (
+            c == ";"
+            and brace_depth == 0
+            and paren_depth == 0
+            and bracket_depth == 0
+        ):
+            return k + 1
+        elif (
+            mode == "expr_or_field"
+            and c == ","
+            and brace_depth == 0
+            and paren_depth == 0
+            and bracket_depth == 0
+        ):
+            return k + 1
+        k += 1
+    return k
+
+
+def _rewind_preceding_outer_attrs(text: str, floor: int, attr_start: int) -> int:
+    """`#[cfg(...)]` 直前に付随する同一アイテムの外側属性 `#[...]`（`#![...]` 除く）の開始位置まで巻き戻す。"""
+    strip_start = attr_start
+    cur = attr_start
+    while cur > floor:
+        while cur > floor and text[cur - 1].isspace():
+            cur -= 1
+        if cur <= floor or text[cur - 1] != "]":
+            break
+        depth = 1
+        p = cur - 2
+        while p >= floor and depth > 0:
+            if text[p] == "]":
+                depth += 1
+            elif text[p] == "[":
+                depth -= 1
+            p -= 1
+        if depth != 0:
+            break
+        # `p + 1` が対応する `[`
+        open_bracket = p + 1
+        q = open_bracket - 1
+        while q >= floor and text[q].isspace():
+            q -= 1
+        if q >= floor and text[q] == "#":
+            # 内側属性 `#![...]` は巻き戻さない
+            strip_start = q
+            cur = q
+            continue
+        break
+    return strip_start
+
+
+def _strip_cfg_test_items(text: str) -> str:
+    """`test = false` で有効になり得ない `#[cfg(...)]` 付き構文ノードを行数維持で空白化する。"""
+    out: list[str] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        m = _RUST_CFG_ATTR_START_RE.search(text, pos)
+        if m is None:
+            out.append(text[pos:])
+            break
+        # `cfg(...)` の対応する閉じ丸括弧と `]` を探索
+        expr_start = m.end()
+        k = expr_start
+        pdepth = 1
+        while k < n and pdepth > 0:
+            if text[k] == "(":
+                pdepth += 1
+            elif text[k] == ")":
+                pdepth -= 1
+            k += 1
+        if pdepth != 0:
+            out.append(text[pos : m.end()])
+            pos = m.end()
+            continue
+        expr_end = k - 1
+        while k < n and text[k].isspace():
+            k += 1
+        if k >= n or text[k] != "]":
+            out.append(text[pos:k])
+            pos = k
+            continue
+        attr_end = k + 1
+
+        # `test = false` で有効になり得る場合は除外せずそのまま残す
+        if _eval_cfg_non_test(text[expr_start:expr_end]) is not False:
+            out.append(text[pos:attr_end])
+            pos = attr_end
+            continue
+
+        strip_start = _rewind_preceding_outer_attrs(text, pos, m.start())
+        out.append(text[pos:strip_start])
+        node_end = _find_rust_annotated_node_end(text, attr_end)
+        for idx in range(strip_start, node_end):
+            out.append("\n" if text[idx] == "\n" else " ")
+        pos = node_end
+    return "".join(out)
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for idx, ch in enumerate(text):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append(text[start:idx])
+            start = idx + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _expand_use_tree(body: str) -> list[tuple[list[str], bool]]:
+    """`use` ツリーを `(パスセグメント列, 末尾 {self} 明示フラグ)` の列へ展開する。"""
+    paths: list[tuple[list[str], bool]] = []
+    for raw_item in _split_top_level_commas(body):
+        item = raw_item.strip()
+        if not item:
+            continue
+        open_idx = item.find("{")
+        if open_idx >= 0:
+            depth = 0
+            close_idx = -1
+            for k in range(open_idx, len(item)):
+                if item[k] == "{":
+                    depth += 1
+                elif item[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        close_idx = k
+                        break
+            if close_idx > open_idx:
+                prefix = [
+                    seg.strip()
+                    for seg in item[:open_idx].split("::")
+                    if seg.strip()
+                ]
+                inner = item[open_idx + 1 : close_idx]
+                for sub_segs, sub_is_self in _expand_use_tree(inner):
+                    if sub_segs == ["self"]:
+                        if prefix:
+                            paths.append((prefix, True))
+                    else:
+                        paths.append((prefix + sub_segs, sub_is_self))
+                continue
+        item = re.sub(
+            r"\s+as\s+(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*|_)\s*$", "", item
+        ).strip()
+        segs = [seg.strip() for seg in item.split("::") if seg.strip()]
+        if segs:
+            paths.append((segs, False))
+    return paths
+
+
+def _extract_use_bindings_with_paths(
+    body: str,
+    prefix: list[str] | None = None,
+    has_leading_colon: bool = False,
+) -> list[tuple[list[str], str, bool, bool]]:
+    """`use` ツリーが束縛する `(参照先パスセグメント列, 束縛識別子名, 末尾 {self} か, 先頭 :: 付きか)` の列を抽出する。"""
+    bindings: list[tuple[list[str], str, bool, bool]] = []
+    base = prefix or []
+    for raw_item in _split_top_level_commas(body):
+        item = raw_item.strip()
+        if not item:
+            continue
+        item_leading_colon = (
+            has_leading_colon if prefix is not None else item.startswith("::")
+        )
+        open_idx = item.find("{")
+        if open_idx >= 0:
+            depth = 0
+            close_idx = -1
+            for k in range(open_idx, len(item)):
+                if item[k] == "{":
+                    depth += 1
+                elif item[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        close_idx = k
+                        break
+            if close_idx > open_idx:
+                sub_prefix = base + [
+                    seg.strip()
+                    for seg in item[:open_idx].split("::")
+                    if seg.strip()
+                ]
+                bindings.extend(
+                    _extract_use_bindings_with_paths(
+                        item[open_idx + 1 : close_idx],
+                        sub_prefix,
+                        has_leading_colon=item_leading_colon,
+                    )
+                )
+                continue
+        as_m = re.search(r"\s+as\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*|_)\s*$", item)
+        alias: str | None = None
+        path_part = item
+        if as_m is not None:
+            raw_alias = as_m.group(1)
+            if raw_alias == "_":
+                continue
+            alias = raw_alias[2:] if raw_alias.startswith("r#") else raw_alias
+            path_part = item[: as_m.start()].strip()
+        segs = [seg.strip() for seg in path_part.split("::") if seg.strip()]
+        if not segs:
+            continue
+        is_module_self = False
+        if segs == ["self"]:
+            if not base:
+                continue
+            full_segs = list(base)
+            is_module_self = True
+        else:
+            full_segs = base + segs
+        if alias is None:
+            leaf = full_segs[-1]
+            if leaf in {"*", "self", "super", "crate", "_"}:
+                continue
+            alias = leaf[2:] if leaf.startswith("r#") else leaf
+        bindings.append((full_segs, alias, is_module_self, item_leading_colon))
+    return bindings
+
+
+def _extract_use_bound_names(
+    body: str, prefix: list[str] | None = None
+) -> set[str]:
+    """トップレベル `use ...;` がクレート直下に束縛する識別子名を抽出する。"""
+    return {
+        alias for _, alias, _, _ in _extract_use_bindings_with_paths(body, prefix)
+    }
+
+
+def _extract_rust_root_items_with_cfgs(
+    cleaned: str,
+    raw_source: str | None = None,
+    *,
+    base_offset: int = 0,
+    in_extern_block: bool = False,
+) -> tuple[set[str], set[str], dict[str, tuple]]:
+    """前処理済み `lib.rs` のトップレベルでパス参照可能な非モジュール項目名・型名前空間項目名・項目別 cfg 条件を返す。"""
+    items: set[str] = set()
+    type_items: set[str] = set()
+    item_cfgs: dict[str, tuple] = {}
+    n = len(cleaned)
+    i = 0
+    scope_cfgs: list[tuple] = []
+    pending_item_cfgs: list[tuple] = []
+    pending_macro_export_cfgs: list[tuple] = []
+
+    def add_item(name: str, cfg: tuple, *, is_type: bool = False) -> None:
+        eff = _simplify_cfg_non_test(_cfg_all(tuple(scope_cfgs) + (cfg,)))
+        if not _cfgs_compatible_non_test(eff, _CFG_TRUE):
+            return
+        items.add(name)
+        if is_type:
+            type_items.add(name)
+        if name in item_cfgs:
+            item_cfgs[name] = _simplify_cfg_non_test(_cfg_any((item_cfgs[name], eff)))
+        else:
+            item_cfgs[name] = eff
+
+    def skip_ws(pos: int) -> int:
+        while pos < n and cleaned[pos].isspace():
+            pos += 1
+        return pos
+
+    def skip_to_item_end(pos: int, semi_only: bool = False) -> int:
+        b_depth = 0
+        p_depth = 0
+        k_depth = 0
+        while pos < n:
+            c = cleaned[pos]
+            if c == "(":
+                p_depth += 1
+            elif c == ")":
+                p_depth = max(0, p_depth - 1)
+            elif c == "[":
+                k_depth += 1
+            elif c == "]":
+                k_depth = max(0, k_depth - 1)
+            elif c == "{":
+                b_depth += 1
+            elif c == "}":
+                if b_depth > 0:
+                    b_depth -= 1
+                    if (
+                        not semi_only
+                        and b_depth == 0
+                        and p_depth == 0
+                        and k_depth == 0
+                    ):
+                        return pos + 1
+                else:
+                    return pos + 1
+            elif c == ";" and b_depth == 0 and p_depth == 0 and k_depth == 0:
+                return pos + 1
+            pos += 1
+        return pos
+
+    while i < n:
+        i = skip_ws(i)
+        if i >= n:
+            break
+        if cleaned[i] == ";":
+            pending_item_cfgs.clear()
+            pending_macro_export_cfgs.clear()
+            i += 1
+            continue
+        # 属性 #[...] / #![...] を走査し、cfg 条件と外側属性の macro_export 条件を記録する
+        if cleaned[i] == "#":
+            k = skip_ws(i + 1)
+            is_inner = False
+            if k < n and cleaned[k] == "!":
+                is_inner = True
+                k = skip_ws(k + 1)
+            if k < n and cleaned[k] == "[":
+                j = k + 1
+                attr_body_start = j
+                attr_depth = 1
+                while j < n and attr_depth > 0:
+                    if cleaned[j] == "[":
+                        attr_depth += 1
+                    elif cleaned[j] == "]":
+                        attr_depth -= 1
+                    j += 1
+                if attr_depth == 0:
+                    attr_body_end = j - 1
+                    cfg_ast = _attr_cfg_expr(
+                        cleaned,
+                        raw_source,
+                        attr_body_start,
+                        attr_body_end,
+                        base_offset=base_offset,
+                    )
+                    if is_inner:
+                        if cfg_ast is not None:
+                            scope_cfgs.append(cfg_ast)
+                    else:
+                        if cfg_ast is not None:
+                            pending_item_cfgs.append(cfg_ast)
+                        mac_cfg = _attr_macro_export_cfg(
+                            cleaned,
+                            raw_source,
+                            attr_body_start,
+                            attr_body_end,
+                            base_offset=base_offset,
+                        )
+                        if mac_cfg is not None:
+                            pending_macro_export_cfgs.append(mac_cfg)
+                i = j
+                continue
+
+        item_cfg = _simplify_cfg_non_test(_cfg_all(tuple(pending_item_cfgs)))
+        item_macro_export_cfgs = list(pending_macro_export_cfgs)
+        pending_item_cfgs.clear()
+        pending_macro_export_cfgs.clear()
+
+        p = i
+        m = _RUST_IDENT_RE.match(cleaned, p)
+        if m is not None and m.group(0) == "pub":
+            p = skip_ws(m.end())
+            if p < n and cleaned[p] == "(":
+                depth = 1
+                p += 1
+                while p < n and depth > 0:
+                    if cleaned[p] == "(":
+                        depth += 1
+                    elif cleaned[p] == ")":
+                        depth -= 1
+                    p += 1
+                p = skip_ws(p)
+
+        p, saw_const, saw_extern = _skip_rust_item_modifiers(
+            cleaned, p, in_extern_block=in_extern_block
+        )
+
+        if saw_extern and p < n and cleaned[p] == "{":
+            block_end = _skip_rust_balanced(cleaned, p, "{", "}")
+            if block_end > p + 1 and cleaned[block_end - 1] == "}":
+                sub_items, sub_types, sub_cfgs = _extract_rust_root_items_with_cfgs(
+                    cleaned[p + 1 : block_end - 1],
+                    raw_source=raw_source,
+                    base_offset=base_offset + p + 1,
+                    in_extern_block=True,
+                )
+                for sub_name in sub_items:
+                    sub_cfg = sub_cfgs.get(sub_name, _CFG_TRUE)
+                    add_item(
+                        sub_name,
+                        _cfg_all((item_cfg, sub_cfg)),
+                        is_type=(sub_name in sub_types),
+                    )
+            i = block_end
+            continue
+
+        m = _RUST_RAW_OR_IDENT_RE.match(cleaned, p)
+        if m is None:
+            i = skip_to_item_end(p)
+            continue
+        raw_kw = m.group(0)
+        kw = raw_kw[2:] if raw_kw.startswith("r#") else raw_kw
+        after_kw = skip_ws(m.end())
+
+        if kw == "mod":
+            # サブモジュール宣言自体は lib 直下項目に含めない
+            i = skip_to_item_end(after_kw)
+            continue
+        if kw == "use":
+            semi = cleaned.find(";", after_kw)
+            end = n if semi < 0 else semi + 1
+            body = cleaned[after_kw : end - (1 if semi >= 0 else 0)]
+            for bound_name in _extract_use_bound_names(body):
+                add_item(bound_name, item_cfg)
+            i = end
+            continue
+        if saw_extern and kw == "crate":
+            semi = cleaned.find(";", after_kw)
+            end = n if semi < 0 else semi + 1
+            body = cleaned[after_kw : end - (1 if semi >= 0 else 0)].strip()
+            for bound_name in _extract_use_bound_names(body):
+                add_item(bound_name, item_cfg, is_type=True)
+            i = end
+            continue
+        if kw in ("fn", "struct", "enum", "trait", "type", "union"):
+            nm = _RUST_RAW_OR_IDENT_RE.match(cleaned, after_kw)
+            if nm is not None:
+                name = nm.group(0)
+                norm_name = name[2:] if name.startswith("r#") else name
+                add_item(norm_name, item_cfg, is_type=(kw != "fn"))
+            i = skip_to_item_end(after_kw, semi_only=(kw == "type"))
+            continue
+        if kw == "static":
+            nm = _RUST_RAW_OR_IDENT_RE.match(cleaned, after_kw)
+            if nm is not None and nm.group(0) == "mut":
+                after_kw = skip_ws(nm.end())
+                nm = _RUST_RAW_OR_IDENT_RE.match(cleaned, after_kw)
+            if nm is not None:
+                name = nm.group(0)
+                if name != "_":
+                    add_item(name[2:] if name.startswith("r#") else name, item_cfg)
+            i = skip_to_item_end(after_kw, semi_only=True)
+            continue
+        if saw_const:
+            if kw != "_":
+                add_item(kw, item_cfg)
+            i = skip_to_item_end(after_kw, semi_only=True)
+            continue
+        if kw == "macro_rules" and after_kw < n and cleaned[after_kw] == "!":
+            # `#[macro_export]` / `#[cfg_attr(..., macro_export)]` がない `macro_rules!` はパス参照対象にならない
+            if item_macro_export_cfgs:
+                nm = _RUST_RAW_OR_IDENT_RE.match(cleaned, skip_ws(after_kw + 1))
+                if nm is not None:
+                    name = nm.group(0)
+                    norm_name = name[2:] if name.startswith("r#") else name
+                    export_cfg = _cfg_all(
+                        (item_cfg, _cfg_any(tuple(item_macro_export_cfgs)))
+                    )
+                    add_item(norm_name, export_cfg)
+            i = skip_to_item_end(after_kw + 1)
+            continue
+
+        i = skip_to_item_end(after_kw)
+
+    return items, type_items, item_cfgs
+
+
+def _extract_rust_root_items_detailed(cleaned: str) -> tuple[set[str], set[str]]:
+    """前処理済み `lib.rs` のトップレベルでパス参照可能な非モジュール項目名と、
+    そのうち型名前空間に属する項目名の集合を返す。"""
+    items, type_items, _ = _extract_rust_root_items_with_cfgs(cleaned)
+    return items, type_items
+
+
+def _extract_rust_root_items(cleaned: str) -> set[str]:
+    """前処理済み `lib.rs` のトップレベルでパス参照可能な非モジュール項目名を抽出する。"""
+    items, _ = _extract_rust_root_items_detailed(cleaned)
+    return items
+
+
+def _is_guaranteed_type_ns_use(
+    segs: list[str],
+    alias: str,
+    is_module_self: bool,
+    has_leading_colon: bool,
+    known_modules: set[str] | None,
+    lib_root_type_items: set[str] | None,
+) -> bool:
+    """`use` 束縛が型・モジュール名前空間に属し、同名トップレベルモジュールを確実に遮蔽するか判定する。"""
+    if not segs:
+        return False
+    norm0 = segs[0][2:] if segs[0].startswith("r#") else segs[0]
+    norm1 = (
+        (segs[1][2:] if segs[1].startswith("r#") else segs[1])
+        if len(segs) >= 2
+        else ""
+    )
+    # 同名クレート直下モジュール自身（またはその配下）を指す use は遮蔽扱いしない
+    if (not has_leading_colon and len(segs) == 1 and norm0 == alias) or (
+        not has_leading_colon
+        and norm0 in ("crate", "self")
+        and len(segs) >= 2
+        and norm1 == alias
+    ):
+        return False
+    if is_module_self:
+        return True
+    if has_leading_colon and len(segs) == 1:
+        return True
+    if not has_leading_colon and len(segs) == 1:
+        if norm0 in ("std", "core", "alloc"):
+            return True
+        if known_modules and norm0 in known_modules and norm0 != alias:
+            return True
+        if lib_root_type_items and norm0 in lib_root_type_items:
+            return True
+        return False
+    if not has_leading_colon and norm0 in ("crate", "self") and len(segs) == 2:
+        if known_modules and norm1 in known_modules and norm1 != alias:
+            return True
+        if lib_root_type_items and norm1 in lib_root_type_items:
+            return True
+        return False
+    if (
+        norm0 in ("std", "core", "alloc")
+        and len(segs) == 2
+        and norm1 in _RUST_STD_MODULES
+    ):
+        return True
+    return False
+
+
+def _collect_block_local_shadows(
+    cleaned: str,
+    known_modules: set[str] | None = None,
+    lib_root_type_items: set[str] | None = None,
+) -> dict[int, set[str]]:
+    """`lib.rs` の各スコープ（`-1` = トップレベル、各 `{` 位置 = ブロックスコープ）で
+    型・モジュール名前空間において同名トップレベルモジュールを確実に遮蔽する宣言・別名を収集する。"""
+    shadows: dict[int, set[str]] = {}
+    brace_open_stack: list[int] = [-1]
+    assoc_stack: list[bool] = [False]
+    paren_depth = 0
+    bracket_depth = 0
+    pending_assoc_container = False
+    n = len(cleaned)
+    i = 0
+
+    def is_item_keyword_start(pos: int) -> bool:
+        q = pos - 1
+        while q >= 0 and cleaned[q].isspace():
+            q -= 1
+        if q < 0 or cleaned[q] in (";", "{", "}", "]"):
+            return True
+        if cleaned[q] == ")":
+            # `pub(...) trait` 等
+            return True
+        if _is_ident_char(cleaned[q]):
+            s = q
+            while s > 0 and _is_ident_char(cleaned[s - 1]):
+                s -= 1
+            return cleaned[s : q + 1] in ("pub", "unsafe", "default", "auto")
+        return False
+
+    while i < n:
+        ch = cleaned[i]
+        if ch == "(":
+            paren_depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+            i += 1
+            continue
+        if ch == "[":
+            bracket_depth += 1
+            i += 1
+            continue
+        if ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+            i += 1
+            continue
+        if ch == "{":
+            brace_open_stack.append(i)
+            assoc_stack.append(pending_assoc_container)
+            pending_assoc_container = False
+            i += 1
+            continue
+        if ch == "}":
+            if len(brace_open_stack) > 1:
+                brace_open_stack.pop()
+                assoc_stack.pop()
+            pending_assoc_container = False
+            i += 1
+            continue
+        if ch == ";":
+            pending_assoc_container = False
+            i += 1
+            continue
+        if (
+            (ch.isalpha() or ch == "_")
+            and (
+                i == 0
+                or (
+                    not _is_ident_char(cleaned[i - 1])
+                    and cleaned[i - 1] not in (".", ":")
+                )
+            )
+            and not (i >= 2 and cleaned[i - 2 : i] == "r#")
+        ):
+            m = _RUST_IDENT_RE.match(cleaned, i)
+            if m is None:
+                i += 1
+                continue
+            ident = m.group(0)
+            j = m.end()
+            if (
+                ident == "impl"
+                and paren_depth == 0
+                and bracket_depth == 0
+                and is_item_keyword_start(i)
+            ):
+                pending_assoc_container = True
+                i = j
+                continue
+            if ident == "fn" and paren_depth == 0 and bracket_depth == 0:
+                pending_assoc_container = False
+                i = j
+                continue
+            if ident == "use" and j < n and cleaned[j].isspace():
+                semi = cleaned.find(";", j)
+                end = n if semi < 0 else semi + 1
+                body = cleaned[j : end - (1 if semi >= 0 else 0)]
+                scope_key = brace_open_stack[-1]
+                for (
+                    segs,
+                    alias,
+                    is_mod_self,
+                    has_leading_colon,
+                ) in _extract_use_bindings_with_paths(body):
+                    if _is_guaranteed_type_ns_use(
+                        segs,
+                        alias,
+                        is_mod_self,
+                        has_leading_colon,
+                        known_modules,
+                        lib_root_type_items,
+                    ):
+                        shadows.setdefault(scope_key, set()).add(alias)
+                pending_assoc_container = False
+                i = end
+                continue
+            if ident == "extern" and j < n and cleaned[j].isspace():
+                k = j
+                while k < n and cleaned[k].isspace():
+                    k += 1
+                cm = _RUST_IDENT_RE.match(cleaned, k)
+                if (
+                    cm is not None
+                    and cm.group(0) == "crate"
+                    and cm.end() < n
+                    and cleaned[cm.end()].isspace()
+                ):
+                    semi = cleaned.find(";", cm.end())
+                    end = n if semi < 0 else semi + 1
+                    body = cleaned[cm.end() : end - (1 if semi >= 0 else 0)]
+                    scope_key = brace_open_stack[-1]
+                    for _, alias, _, _ in _extract_use_bindings_with_paths(body):
+                        shadows.setdefault(scope_key, set()).add(alias)
+                    pending_assoc_container = False
+                    i = end
+                    continue
+            if (
+                ident == "trait"
+                and paren_depth == 0
+                and bracket_depth == 0
+                and is_item_keyword_start(i)
+            ):
+                pending_assoc_container = True
+            if len(brace_open_stack) > 1 and ident in (
+                "struct",
+                "enum",
+                "trait",
+                "type",
+                "union",
+                "mod",
+            ):
+                # impl / trait ブロック直下の関連型 `type Foo = ...;` はモジュール名を遮蔽しない
+                if ident == "type" and assoc_stack[-1]:
+                    i = j
+                    continue
+                k = j
+                while k < n and cleaned[k].isspace():
+                    k += 1
+                nm = _RUST_RAW_OR_IDENT_RE.match(cleaned, k)
+                if nm is not None:
+                    raw_name = nm.group(0)
+                    name = raw_name[2:] if raw_name.startswith("r#") else raw_name
+                    shadows.setdefault(brace_open_stack[-1], set()).add(name)
+                    i = nm.end()
+                    continue
+            i = j
+            continue
+        i += 1
+    return shadows
+
+
+def _is_module_qualified_after(cleaned: str, end_pos: int) -> bool:
+    """識別子直後が `::` に続く非ターボフィッシュ（`::<` 以外）のパス修飾か判定する。"""
+    n = len(cleaned)
+    p = end_pos
+    while p < n and cleaned[p].isspace():
+        p += 1
+    if cleaned[p : p + 2] != "::":
+        return False
+    p += 2
+    while p < n and cleaned[p].isspace():
+        p += 1
+    return not (p < n and cleaned[p] == "<")
+
+
+def _target_from_path_segments(
+    segs: list[str],
+    is_module_self: bool,
+    current_depth: int,
+    known_modules: set[str] | None = None,
+    shadowed: set[str] | None = None,
+) -> tuple[str, str] | None:
+    if not segs:
+        return None
+    if segs[0] == "crate":
+        if len(segs) >= 2 and segs[1] not in {"self", "super", "*"}:
+            ref_kind = (
+                "qualified" if (len(segs) >= 3 or is_module_self) else "bare_use"
+            )
+            return (segs[1], ref_kind)
+        return None
+    if current_depth == 0:
+        if (
+            segs[0] == "self"
+            and len(segs) >= 2
+            and segs[1] not in {"self", "super", "crate", "*"}
+        ):
+            ref_kind = (
+                "qualified" if (len(segs) >= 3 or is_module_self) else "bare_use"
+            )
+            return (segs[1], ref_kind)
+        if (
+            known_modules
+            and segs[0] in known_modules
+            and (not shadowed or segs[0] not in shadowed)
+        ):
+            ref_kind = (
+                "qualified" if (len(segs) >= 2 or is_module_self) else "bare_use"
+            )
+            return (segs[0], ref_kind)
+    super_count = 0
+    while super_count < len(segs) and segs[super_count] == "super":
+        super_count += 1
+    if (
+        super_count > 0
+        and super_count == current_depth
+        and len(segs) > super_count
+        and segs[super_count] not in {"self", "super", "crate", "*"}
+    ):
+        ref_kind = (
+            "qualified"
+            if (len(segs) > super_count + 1 or is_module_self)
+            else "bare_use"
+        )
+        return (segs[super_count], ref_kind)
+    return None
+
+
+def _extract_rust_crate_targets_with_cfgs(
+    cleaned: str,
+    file_depth: int,
+    known_modules: set[str] | None = None,
+    lib_root_type_items: set[str] | None = None,
+    raw_source: str | None = None,
+) -> list[tuple[str, int, str, tuple]]:
+    """前処理済み Rust コードからクレート内参照先（識別子, 行番号, 参照形態, 適用中 cfg AST）を抽出する。"""
+    targets: list[tuple[str, int, str, tuple]] = []
+    brace_stack: list[bool] = []
+    brace_open_stack: list[int] = []
+    active_cfg_scopes: list[tuple[int, tuple]] = []
+    block_shadows = (
+        _collect_block_local_shadows(
+            cleaned,
+            known_modules=known_modules,
+            lib_root_type_items=lib_root_type_items,
+        )
+        if known_modules
+        else {}
+    )
+    shadow_stack: list[set[str]] = [set(block_shadows.get(-1, ()))]
+    pending_inline_mod = False
+    line_no = 1
+    i = 0
+    n = len(cleaned)
+
+    def current_shadowed() -> set[str]:
+        if not block_shadows:
+            return set()
+        merged: set[str] = set()
+        for scope_set in shadow_stack:
+            merged.update(scope_set)
+        return merged
+
+    def current_cfg() -> tuple:
+        if not active_cfg_scopes:
+            return _CFG_TRUE
+        return _simplify_cfg_non_test(_cfg_all(tuple(c for _, c in active_cfg_scopes)))
+
+    while i < n:
+        if active_cfg_scopes:
+            active_cfg_scopes = [
+                (end_pos, cfg_ast)
+                for end_pos, cfg_ast in active_cfg_scopes
+                if end_pos > i
+            ]
+        ch = cleaned[i]
+        if ch == "\n":
+            line_no += 1
+            i += 1
+            continue
+        if ch == "#":
+            k = i + 1
+            while k < n and cleaned[k].isspace():
+                k += 1
+            is_inner = False
+            if k < n and cleaned[k] == "!":
+                is_inner = True
+                k += 1
+                while k < n and cleaned[k].isspace():
+                    k += 1
+            if k < n and cleaned[k] == "[":
+                attr_end = _skip_rust_balanced(cleaned, k, "[", "]")
+                if attr_end > k + 1 and cleaned[attr_end - 1] == "]":
+                    cfg_ast = _attr_cfg_expr(
+                        cleaned, raw_source, k + 1, attr_end - 1
+                    )
+                    if cfg_ast is not None:
+                        if is_inner:
+                            scope_end = (
+                                _skip_rust_balanced(
+                                    cleaned, brace_open_stack[-1], "{", "}"
+                                )
+                                if brace_open_stack
+                                else n
+                            )
+                            active_cfg_scopes.append((scope_end, cfg_ast))
+                        else:
+                            node_end = _find_rust_annotated_node_end(
+                                cleaned, attr_end
+                            )
+                            active_cfg_scopes.append((node_end, cfg_ast))
+                        line_no += cleaned[i:attr_end].count("\n")
+                        i = attr_end
+                        pending_inline_mod = False
+                        continue
+        if (ch.isalpha() or ch == "_") and (
+            i == 0 or (not _is_ident_char(cleaned[i - 1]) and cleaned[i - 1] != ":")
+        ):
+            is_raw = i >= 2 and cleaned[i - 2 : i] == "r#"
+            m = _RUST_IDENT_RE.match(cleaned, i)
+            if m is None:
+                i += 1
+                continue
+            ident = m.group(0)
+            j = m.end()
+            # 制限付き可視性 `pub(in crate::feed)` / `pub(crate)` 等は祖先モジュール指定のため依存対象から除外する
+            if not is_raw and ident == "pub":
+                k = j
+                while k < n and cleaned[k].isspace():
+                    k += 1
+                if k < n and cleaned[k] == "(":
+                    end_vis = _skip_rust_balanced(cleaned, k, "(", ")")
+                    line_no += cleaned[i:end_vis].count("\n")
+                    i = end_vis
+                    pending_inline_mod = False
+                    continue
+            if not is_raw and ident == "mod":
+                k = j
+                while k < n and cleaned[k].isspace():
+                    k += 1
+                name_m = _RUST_RAW_OR_IDENT_RE.match(cleaned, k)
+                if name_m is not None:
+                    k2 = name_m.end()
+                    while k2 < n and cleaned[k2].isspace():
+                        k2 += 1
+                    if k2 < n and cleaned[k2] == "{":
+                        pending_inline_mod = True
+                        line_no += cleaned[i:k2].count("\n")
+                        i = k2
+                        continue
+                pending_inline_mod = False
+                i = j
+                continue
+            if not is_raw and ident == "use" and j < n and cleaned[j].isspace():
+                semi = cleaned.find(";", j)
+                end = n if semi < 0 else semi + 1
+                body = cleaned[j : end - (1 if semi >= 0 else 0)]
+                current_depth = file_depth + sum(1 for x in brace_stack if x)
+                shadowed = current_shadowed()
+                ref_cfg = current_cfg()
+                for segs, is_mod_self in _expand_use_tree(body):
+                    resolved = _target_from_path_segments(
+                        segs, is_mod_self, current_depth, known_modules, shadowed
+                    )
+                    if resolved is not None:
+                        targets.append((resolved[0], line_no, resolved[1], ref_cfg))
+                line_no += cleaned[i:end].count("\n")
+                i = end
+                pending_inline_mod = False
+                continue
+            if not is_raw and ident == "crate" and cleaned[j : j + 2] == "::":
+                next_m = _RUST_IDENT_RE.match(cleaned, j + 2)
+                if next_m is not None:
+                    target = next_m.group(0)
+                    if target not in {"self", "super"}:
+                        ref_kind = (
+                            "qualified"
+                            if _is_module_qualified_after(cleaned, next_m.end())
+                            else "bare_path"
+                        )
+                        targets.append((target, line_no, ref_kind, current_cfg()))
+                    i = next_m.end()
+                    pending_inline_mod = False
+                    continue
+            if not is_raw and ident == "self" and cleaned[j : j + 2] == "::":
+                current_depth = file_depth + sum(1 for x in brace_stack if x)
+                next_m = _RUST_IDENT_RE.match(cleaned, j + 2)
+                if current_depth == 0 and next_m is not None:
+                    target = next_m.group(0)
+                    if target not in {"self", "super", "crate"}:
+                        ref_kind = (
+                            "qualified"
+                            if _is_module_qualified_after(cleaned, next_m.end())
+                            else "bare_path"
+                        )
+                        targets.append((target, line_no, ref_kind, current_cfg()))
+                    i = next_m.end()
+                    pending_inline_mod = False
+                    continue
+            if not is_raw and ident == "super" and cleaned[j : j + 2] == "::":
+                super_count = 1
+                pos = j + 2
+                while cleaned[pos : pos + 7] == "super::":
+                    super_count += 1
+                    pos += 7
+                next_m = _RUST_IDENT_RE.match(cleaned, pos)
+                current_depth = file_depth + sum(1 for x in brace_stack if x)
+                if next_m is not None and super_count == current_depth:
+                    target = next_m.group(0)
+                    if target not in {"self", "super", "crate"}:
+                        ref_kind = (
+                            "qualified"
+                            if _is_module_qualified_after(cleaned, next_m.end())
+                            else "bare_path"
+                        )
+                        targets.append((target, line_no, ref_kind, current_cfg()))
+                i = next_m.end() if next_m is not None else pos
+                pending_inline_mod = False
+                continue
+            if (
+                known_modules
+                and ident in known_modules
+                and _is_module_qualified_after(cleaned, j)
+                and (i == 0 or cleaned[i - 1] != ".")
+            ):
+                current_depth = file_depth + sum(1 for x in brace_stack if x)
+                if current_depth == 0 and ident not in current_shadowed():
+                    targets.append((ident, line_no, "qualified", current_cfg()))
+            pending_inline_mod = False
+            i = j
+            continue
+        if ch == "{":
+            brace_stack.append(pending_inline_mod)
+            brace_open_stack.append(i)
+            if block_shadows:
+                shadow_stack.append(set(block_shadows.get(i, ())))
+            pending_inline_mod = False
+            i += 1
+            continue
+        if ch == "}":
+            if brace_stack:
+                brace_stack.pop()
+            if brace_open_stack:
+                brace_open_stack.pop()
+            if block_shadows and len(shadow_stack) > 1:
+                shadow_stack.pop()
+            pending_inline_mod = False
+            i += 1
+            continue
+        if not ch.isspace():
+            pending_inline_mod = False
+        i += 1
+
+    return targets
+
+
+def _extract_rust_crate_targets(
+    cleaned: str,
+    file_depth: int,
+    known_modules: set[str] | None = None,
+    lib_root_type_items: set[str] | None = None,
+) -> list[tuple[str, int, str]]:
+    """前処理済み Rust コードからクレート内参照先（識別子, 行番号, 参照形態）を抽出する。"""
+    return [
+        (dst, line_no, ref_kind)
+        for dst, line_no, ref_kind, _ in _extract_rust_crate_targets_with_cfgs(
+            cleaned,
+            file_depth,
+            known_modules=known_modules,
+            lib_root_type_items=lib_root_type_items,
+        )
+    ]
+
+
+def _is_rust_test_file(rel: Path) -> bool:
+    if "tests" in rel.parts[:-1]:
+        return True
+    return rel.stem == "tests" or rel.stem.endswith("_tests")
+
+
+def _find_rust_cycles(adj: dict[str, set[str]]) -> list[tuple[str, ...]]:
+    """有向グラフ内の 2 ノード以上の基本循環を最小ノード先頭で列挙する。"""
+    nodes = sorted(adj)
+    cycles: set[tuple[str, ...]] = set()
+
+    def dfs(start: str, curr: str, path: list[str], on_path: set[str]) -> None:
+        for nxt in sorted(adj.get(curr, ())):
+            if nxt == start:
+                if len(path) >= 2:
+                    cycles.add(tuple(path))
+            elif nxt > start and nxt not in on_path:
+                on_path.add(nxt)
+                path.append(nxt)
+                dfs(start, nxt, path, on_path)
+                path.pop()
+                on_path.remove(nxt)
+
+    for start in nodes:
+        dfs(start, start, [start], {start})
+    return sorted(cycles)
+
+
+def check_rust_module_cycles(src_tauri: Path = SRC_TAURI) -> Findings:
+    """Rust モジュール間の循環依存と層逆参照（下位共有層→ドメイン層・ドメイン層/下位共有層→上位層）を検出する。"""
+    f = Findings([])
+    if not src_tauri.exists():
+        f.error(f"Rust ソースディレクトリが存在しない: {src_tauri}")
+        return f
+
+    prod_files: list[tuple[Path, Path, str, int]] = []
+    all_top_mods: set[str] = set()
+    for path in sorted(src_tauri.rglob("*.rs")):
+        rel = path.relative_to(src_tauri)
+        if _is_rust_test_file(rel):
+            continue
+        parts = rel.parts
+        top_mod = parts[0] if len(parts) >= 2 else path.stem
+        if len(parts) == 1 and path.name in {"lib.rs", "main.rs"}:
+            file_depth = 0
+        elif path.name == "mod.rs":
+            file_depth = len(parts) - 1
+        else:
+            file_depth = len(parts)
+        all_top_mods.add(top_mod)
+        prod_files.append((path, rel, top_mod, file_depth))
+
+    known_modules = all_top_mods - {"lib", "main"}
+    raw_cache: dict[Path, str] = {}
+    cleaned_cache: dict[Path, str] = {}
+    lib_root_items: set[str] = set()
+    lib_root_type_items: set[str] = set()
+    lib_root_item_cfgs: dict[str, tuple] = {}
+    lib_path = src_tauri / "lib.rs"
+    if lib_path.exists():
+        lib_raw = read_text(lib_path)
+        lib_cleaned = _strip_cfg_test_items(
+            _blank_rust_comments_and_strings(lib_raw)
+        )
+        raw_cache[lib_path] = lib_raw
+        cleaned_cache[lib_path] = lib_cleaned
+        (
+            raw_root_items,
+            raw_root_type_items,
+            raw_root_item_cfgs,
+        ) = _extract_rust_root_items_with_cfgs(lib_cleaned, raw_source=lib_raw)
+        lib_root_items = raw_root_items - {"lib", "main"}
+        lib_root_type_items = raw_root_type_items - {"lib", "main"}
+        lib_root_item_cfgs = {
+            k: v for k, v in raw_root_item_cfgs.items() if k not in {"lib", "main"}
+        }
+
+    adj: dict[str, set[str]] = {}
+    reported_reverse: set[tuple[str, str]] = set()
+    checked_files = 0
+
+    for path, rel, top_mod, file_depth in prod_files:
+        checked_files += 1
+        cleaned = cleaned_cache.get(path)
+        raw = raw_cache.get(path)
+        if cleaned is None:
+            raw = read_text(path)
+            cleaned = _strip_cfg_test_items(
+                _blank_rust_comments_and_strings(raw)
+            )
+        root_known = known_modules if top_mod == "lib" else None
+        root_types = lib_root_type_items if top_mod == "lib" else None
+        for raw_dst, line_no, ref_kind, ref_cfg in _extract_rust_crate_targets_with_cfgs(
+            cleaned,
+            file_depth,
+            known_modules=root_known,
+            lib_root_type_items=root_types,
+            raw_source=raw,
+        ):
+            is_known_mod = raw_dst in known_modules or raw_dst in RUST_UPPER_MODULES
+            item_cfg = lib_root_item_cfgs.get(raw_dst)
+            is_root_item = (
+                top_mod != "main"
+                and raw_dst in lib_root_items
+                and item_cfg is not None
+                and _cfgs_compatible_non_test(item_cfg, ref_cfg)
+            )
+            if is_root_item and not is_known_mod:
+                resolved_dsts = ["lib"]
+            elif is_root_item and is_known_mod:
+                if ref_kind == "bare_path":
+                    resolved_dsts = ["lib"]
+                elif ref_kind == "bare_use":
+                    # `use crate::feed;` は値名前空間（lib 直下項目）と型名前空間（feed モジュール）の双方を取り込むため安全側で両方検査
+                    resolved_dsts = ["lib", raw_dst]
+                else:
+                    resolved_dsts = [raw_dst]
+            else:
+                resolved_dsts = [raw_dst]
+
+            for dst in resolved_dsts:
+                if dst == top_mod:
+                    continue
+                if top_mod in RUST_UPPER_MODULES:
+                    if dst in all_top_mods:
+                        adj.setdefault(top_mod, set()).add(dst)
+                    continue
+                if dst in RUST_UPPER_MODULES:
+                    pair = (top_mod, dst)
+                    if pair not in reported_reverse:
+                        reported_reverse.add(pair)
+                        src_layer = (
+                            "下位共有層" if top_mod in RUST_SHARED_MODULES else "ドメイン層"
+                        )
+                        f.error(
+                            f"{src_layer} `{top_mod}` が上位層 `{dst}` を"
+                            f"逆参照（{rel.as_posix()}:{line_no}）"
+                        )
+                    continue
+                if dst not in known_modules:
+                    continue
+                if top_mod in RUST_SHARED_MODULES and dst not in RUST_SHARED_MODULES:
+                    pair = (top_mod, dst)
+                    if pair not in reported_reverse:
+                        reported_reverse.add(pair)
+                        f.error(
+                            f"下位共有層 `{top_mod}` がドメイン層 `{dst}` を"
+                            f"逆参照（{rel.as_posix()}:{line_no}）"
+                        )
+                    continue
+                adj.setdefault(top_mod, set()).add(dst)
+
+    for cycle in _find_rust_cycles(adj):
+        f.error(f"Rust モジュール循環依存: {' -> '.join([*cycle, cycle[0]])}")
+
+    if f.worst() == OK:
+        f.ok(
+            f"非テスト Rust {checked_files} ファイルに循環依存・層逆参照なし"
+        )
+    return f
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -1758,6 +4540,7 @@ def main() -> int:
     checks.append(("check 16: 決定記録表構文", check_decision_tables()))
     checks.append(("check 17: 実装計画フェーズ番号", check_implementation_phases()))
     checks.append(("check 18: テキスト健全性と構文", check_text_and_syntax()))
+    checks.append(("check 19: Rust モジュール循環依存・層方向", check_rust_module_cycles()))
     # チェック 3（§8 DDL ↔ 適用後スキーマ）は src-tauri の
     # ddl_matches_design_section8 テストが担う
 

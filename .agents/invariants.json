@@ -1,0 +1,24 @@
+{
+  "questions": {
+    "settings_save_on_committed": {
+      "instructions": "Does ANY added or modified production call site in the Git diff violate the onCommitted rule for settings persistence? Unit test files (such as *.test.ts or *.spec.ts) that invoke the helpers only to assert callback behavior are explicitly out of scope and must NOT be flagged as violations. Specifically, in production code (non-test .ts and .svelte files): does the diff add or modify any call to saveToggleSetting, saveStringSetting, saveOptionalRangeSetting, or saveSettingBatch (or a direct setSetting call in settings) where savedSnapshot is updated only after awaiting the helper's boolean return value instead of inside the onCommitted callback, OR where the onCommitted callback is a no-op (such as () => {}) or omits updating the corresponding savedSnapshot field? Answer Yes if even a single production call site in the diff violates this, even when other hunks in the same file are compliant.",
+      "criteria": {
+        "true_description": "At least one added or modified production (non-test) settings save call in the diff passes an empty/no-op onCommitted callback (e.g. () => {}) or updates savedSnapshot outside onCommitted (such as inside an if (await save*Setting(...)) branch).",
+        "false_description": "Every added or modified production settings save call in the diff updates the corresponding savedSnapshot field inside its onCommitted callback immediately after DB write succeeds, or the diff only touches unit test files (*.test.ts / *.spec.ts) or does not modify production settings save call sites."
+      },
+      "path_globs": ["src/**/*.ts", "src/**/*.svelte"],
+      "threshold": 0.70,
+      "warn_threshold": 0.40
+    },
+    "rust_no_module_cycle_and_hook_wiring": {
+      "instructions": "Does ANY added or modified non-test Rust code in the Git diff violate the 3-layer module dependency rule for src-tauri/src/? Specifically, answer Yes if the diff introduces ANY of: (1) a reverse reference from a lower shared module (db, model, or util) to any domain module or upper layer module (lib, main, commands, error), OR (2) a reverse reference from a domain module (such as mpv, chat, feed, livewait, metaresolve, innertube, filter, sponsor, yt, ui, deep_link, deps, diag, or native_host) to an upper layer module (lib, main, commands, or error, e.g. crate::error::UiError or crate::commands::*), OR (3) a direct cross-domain reference that creates a circular/mutual dependency of 2 or more modules (for example mpv directly importing or calling crate::chat::* when chat already depends on mpv) instead of injecting a hook/callback or trait from lib.rs or commands. Acyclic one-way references between domain modules (e.g. chat -> innertube or chat -> filter without a reverse edge) and test-only code (#[cfg(test)], #[cfg(all(test, ...))], tests/*) are ALLOWED and must NOT be flagged.",
+      "criteria": {
+        "true_description": "The diff adds or modifies non-test Rust code under src-tauri/src/ that introduces: a reverse reference from db/model/util to a domain or upper layer module, a reverse reference from a domain module to an upper layer module (lib/main/commands/error), or a direct peer-module reference that forms a circular dependency (such as mpv importing crate::chat::* while chat depends on mpv) instead of using a hook/callback injected from lib.rs or commands.",
+        "false_description": "All added or modified non-test Rust imports and calls respect the 3-layer direction (upper lib/main/commands/error -> domain -> shared db/model/util), contain no reverse references to upper layers or from shared to domain, and contain only acyclic one-way domain references or hook/callback wiring from lib.rs/commands; or the diff only touches test code or does not modify src-tauri/src/**/*.rs."
+      },
+      "path_globs": ["src-tauri/src/**/*.rs"],
+      "threshold": 0.70,
+      "warn_threshold": 0.40
+    }
+  }
+}

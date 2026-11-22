@@ -73,7 +73,7 @@ async fn run_version(name: &str) -> Option<std::process::Output> {
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     #[cfg(windows)]
-    cmd.creation_flags(crate::CREATE_NO_WINDOW);
+    cmd.creation_flags(crate::util::CREATE_NO_WINDOW);
     match tokio::time::timeout(PROBE_TIMEOUT, cmd.output()).await {
         Ok(res) => res.ok(),
         Err(_) => None,

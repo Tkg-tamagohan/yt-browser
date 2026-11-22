@@ -70,7 +70,7 @@ pub(crate) async fn list_audio_devices() -> Result<Vec<AudioDevice>, MpvError> {
     let mut cmd = tokio::process::Command::new("mpv");
     cmd.arg("--audio-device=help");
     #[cfg(windows)]
-    cmd.creation_flags(crate::CREATE_NO_WINDOW);
+    cmd.creation_flags(crate::util::CREATE_NO_WINDOW);
     let Some(stdout) = collect_command_stdout(cmd, AUDIO_DEVICE_TIMEOUT).await? else {
         return Ok(Vec::new());
     };
@@ -136,7 +136,7 @@ mod tests {
         let cmd = {
             let mut c = tokio::process::Command::new("cmd");
             c.args(["/C", "ping -n 6 127.0.0.1 >NUL"]);
-            c.creation_flags(crate::CREATE_NO_WINDOW);
+            c.creation_flags(crate::util::CREATE_NO_WINDOW);
             c
         };
         #[cfg(not(windows))]

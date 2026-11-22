@@ -23,11 +23,6 @@ mod yt;
 
 use std::path::PathBuf;
 
-/// Windows でコンソール系の子プロセス（mpv.exe / yt-dlp.exe）を spawn すると
-/// 黒いコンソール窓が一瞬表示される。CREATE_NO_WINDOW で抑制する。
-#[cfg(windows)]
-pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -187,7 +182,7 @@ pub fn run() {
             // 関連動画の動画系 NG 判定も通るため chat ではなく filter 配下に置く）。
             let ng = std::sync::Arc::new(filter::NgMatcher::new(db.clone(), app.handle().clone()));
             if let Err(e) = ng.refresh() {
-                tracing::warn!(error = e.message, "NG フィルタの初期読み込みに失敗");
+                tracing::warn!(error = %e, "NG フィルタの初期読み込みに失敗");
             }
             app.manage(ng.clone());
 

@@ -411,7 +411,7 @@ async fn which_exists(name: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     #[cfg(windows)]
-    cmd.creation_flags(crate::CREATE_NO_WINDOW);
+    cmd.creation_flags(crate::util::CREATE_NO_WINDOW);
     match tokio::time::timeout(Duration::from_secs(10), cmd.status()).await {
         Ok(res) => res.map(|s| s.success()).unwrap_or(false),
         Err(_) => false,
@@ -424,7 +424,7 @@ async fn which_exists(name: &str) -> bool {
 async fn run_with_timeout(cmd: &mut Command) -> Result<std::process::Output, YtError> {
     cmd.kill_on_drop(true);
     #[cfg(windows)]
-    cmd.creation_flags(crate::CREATE_NO_WINDOW);
+    cmd.creation_flags(crate::util::CREATE_NO_WINDOW);
     match tokio::time::timeout(PROCESS_TIMEOUT, cmd.output()).await {
         Ok(res) => res.map_err(YtError::Spawn),
         Err(_) => Err(YtError::Timeout),
