@@ -234,6 +234,8 @@ try {
     New-Item -ItemType Directory -Path $captureValidDir -Force | Out-Null
 
     # sign_windows.ps1 の実際の監査・一時アンインストーラ捕捉経路（本体・DLL・一時アンインストーラ・セットアップ）を通す
+    # モックは全 12 引数（サムプリント・タイムスタンプ URL・対象ファイルパス・余剰引数なし）を厳密照合し、
+    # 一致したときのみ未署名ファイルを署名済みフィクスチャへ置換することで「署名後に捕捉していること」まで検証する
     $mockSignTool = Join-Path $sandbox 'mock_signtool.cmd'
     $mockCmdLines = @(
         '@echo off',
@@ -241,9 +243,11 @@ try {
         'if /I not "%~2"=="/s" exit /b 92',
         'if /I not "%~3"=="My" exit /b 93',
         'if /I not "%~4"=="/sha1" exit /b 94',
-        'if /I not "%~6"=="/fd" exit /b 95',
-        'if /I not "%~7"=="SHA256" exit /b 96',
-        'if /I not "%~8"=="/tr" exit /b 97',
+        'if /I not "%~5"=="%MOCK_EXPECT_THUMBPRINT%" exit /b 95',
+        'if /I not "%~6"=="/fd" exit /b 96',
+        'if /I not "%~7"=="SHA256" exit /b 97',
+        'if /I not "%~8"=="/tr" exit /b 98',
+        'if not "%~9"=="%MOCK_EXPECT_TIMESTAMP_URL%" exit /b 99',
         'shift',
         'shift',
         'shift',
@@ -253,9 +257,12 @@ try {
         'shift',
         'shift',
         'shift',
-        'if /I not "%~1"=="/td" exit /b 98',
-        'if /I not "%~2"=="SHA256" exit /b 99',
-        'if "%~3"=="" exit /b 100',
+        'if /I not "%~1"=="/td" exit /b 100',
+        'if /I not "%~2"=="SHA256" exit /b 101',
+        'if /I not "%~3"=="%MOCK_EXPECT_TARGET%" exit /b 102',
+        'if not "%~4"=="" exit /b 103',
+        'copy /Y "%MOCK_SIGNED_FIXTURE%" "%~3" >nul',
+        'if errorlevel 1 exit /b 104',
         'exit /b 0'
     )
     [System.IO.File]::WriteAllText($mockSignTool, (($mockCmdLines -join "`r`n") + "`r`n"), [System.Text.Encoding]::ASCII)
@@ -264,17 +271,26 @@ try {
     $simDll = Join-Path $sandbox 'nsis_tauri_utils.dll'
     $simUninst = Join-Path $sandbox 'nsu1234.exe'
     $simSetup = Join-Path $sandbox 'yt-browser_0.11.11_x64-setup.exe'
-    Copy-Item -LiteralPath $signToolPath -Destination $simApp -Force
-    Copy-Item -LiteralPath $signToolPath -Destination $simDll -Force
-    Copy-Item -LiteralPath $signToolPath -Destination $simUninst -Force
-    Copy-Item -LiteralPath $signToolPath -Destination $simSetup -Force
+    # 初期状態は未署名 PE とし、sign_windows.ps1 が正しい引数で署名コマンドを呼んだ後のみ署名済みになることを担保する
+    Copy-Item -LiteralPath $unsignedPe -Destination $simApp -Force
+    Copy-Item -LiteralPath $unsignedPe -Destination $simDll -Force
+    Copy-Item -LiteralPath $unsignedPe -Destination $simUninst -Force
+    Copy-Item -LiteralPath $unsignedPe -Destination $simSetup -Force
 
-    $signEnv = @{
-        CODE_SIGN_CERT_THUMBPRINT = ('A' * 40)
-        CODE_SIGN_AUDIT_DIR       = $auditValidCapDir
-        CODE_SIGN_CAPTURE_DIR     = $captureValidDir
-    }
+    $expectedThumb = 'A' * 40
+    $expectedTsUrl = 'http://timestamp.example.invalid/rfc3161'
     foreach ($simTarget in @($simApp, $simDll, $simUninst, $simSetup)) {
+        $resolvedSimTarget = (Resolve-Path -LiteralPath $simTarget).ProviderPath
+        $signEnv = @{
+            CODE_SIGN_CERT_THUMBPRINT  = $expectedThumb
+            CODE_SIGN_TIMESTAMP_URL    = $expectedTsUrl
+            CODE_SIGN_AUDIT_DIR        = $auditValidCapDir
+            CODE_SIGN_CAPTURE_DIR      = $captureValidDir
+            MOCK_EXPECT_THUMBPRINT     = $expectedThumb
+            MOCK_EXPECT_TIMESTAMP_URL  = $expectedTsUrl
+            MOCK_EXPECT_TARGET         = $resolvedSimTarget
+            MOCK_SIGNED_FIXTURE        = $signToolPath
+        }
         $rSign = Invoke-PsScript -ScriptPath $signScript -ScriptArgs @('-TargetFile', $simTarget, '-SignToolPath', $mockSignTool) -EnvOverrides $signEnv
         if ($rSign.ExitCode -ne 0) {
             throw "[WIN-SIGN-08] sign_windows.ps1 の捕捉経路テストに失敗しました ($simTarget, exit=$($rSign.ExitCode)): $($rSign.Output)"
