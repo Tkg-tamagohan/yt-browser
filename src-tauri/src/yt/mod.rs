@@ -743,9 +743,11 @@ mod tests {
         assert_eq!(selected2.channel_title.as_deref(), Some("VideoCH"));
 
         // entries あり＋参照候補なしのときも、entries[0] の動画チャンネル名を返し
-        // トップレベルの PlaylistOwner は採用しない
+        // トップレベルの PlaylistOwner（channel / channel_id / uploader_id）は採用しない
         let entries_name_only = serde_json::json!({
             "channel": "PlaylistOwner",
+            "channel_id": "UCowner00000000000000001",
+            "uploader_id": "@playlist_owner",
             "title": "PlaylistTitle",
             "entries": [{
                 "channel": "VideoCH",
@@ -758,9 +760,11 @@ mod tests {
         assert_eq!(selected3.title.as_deref(), Some("VideoTitle"));
 
         // entries あり＋entries[0] にチャンネル情報が無いときはトップレベルの
-        // PlaylistOwner を動画へ誤帰属させず NoChannelId とする
+        // PlaylistOwner（channel / channel_id / uploader_id）を動画へ誤帰属させず NoChannelId とする
         let entries_owner_only = serde_json::json!({
             "channel": "PlaylistOwner",
+            "channel_id": "UCowner00000000000000001",
+            "uploader_id": "@playlist_owner",
             "title": "PlaylistTitle",
             "entries": [{
                 "title": "VideoWithoutChannel"

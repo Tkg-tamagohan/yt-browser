@@ -86,6 +86,9 @@ describe("QS-04 プレイリストキュー永続化ガードの IPC 連携（FR
           },
         ]);
       }
+      if (cmd === "player_set_queue") {
+        return Promise.resolve(true);
+      }
       return Promise.resolve(null);
     });
 
@@ -167,6 +170,14 @@ describe("QS-04 プレイリストキュー永続化ガードの IPC 連携（FR
     expect(
       invokeMock.mock.calls.filter(([cmd]) => cmd === "queue_playlist_save"),
     ).toHaveLength(0);
+    expect(
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "player_set_queue"),
+    ).toEqual([
+      [
+        "player_set_queue",
+        { instanceId: 101, items: [], loopAll: false, baseSeq: 2 },
+      ],
+    ]);
     expect(queues.list.has(7)).toBe(false);
   });
 });
