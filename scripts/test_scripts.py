@@ -1099,6 +1099,86 @@ jobs:
             self.assertEqual(res_mac_then_if.worst(), cdc.ERROR)
             self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_mac_then_if.items))
 
+            # 7. OR パターン内の構造体パターン直後に if ガード・改行 | が続く波括弧マクロアーム全体を除く
+            _write_text(
+                src / "alpha.rs",
+                "pub enum Value { Zero, Other { x: i32 } }\n"
+                "pub fn f(v: Value, ready: bool) {\n"
+                "    match v {\n"
+                "        #[cfg(test)]\n"
+                "        zero!{} | Value::Other { .. } if ready => crate::beta::b(),\n"
+                "        #[cfg(test)]\n"
+                "        zero!{} | Value::Other { .. }\n"
+                "        | Value::Zero => crate::beta::b(),\n"
+                "        _ => {}\n"
+                "    }\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 8. if 条件内のブロック式（`.` / `&&` / 単独 `{}` / 文字列比較）と本体ブロックを区別する
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f(n: i32, opt: Option<i32>, s: &str) {\n"
+                "    match n {\n"
+                "        #[cfg(test)]\n"
+                "        0 => if { opt }.is_some() {}\n"
+                "        1 => { crate::beta::b(); }\n"
+                "        _ => {}\n"
+                "    }\n"
+                "    let _ = s;\n"
+                "}\n",
+            )
+            res_if_cond_dot = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_if_cond_dot.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_if_cond_dot.items))
+
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f(n: i32, s: &str) {\n"
+                "    match n {\n"
+                "        #[cfg(test)]\n"
+                "        0 => if s == \"abc\" {}\n"
+                "        1 => { crate::beta::b(); }\n"
+                "        _ => {}\n"
+                "    }\n"
+                "}\n",
+            )
+            res_if_cond_str = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_if_cond_str.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_if_cond_str.items))
+
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f(n: i32, cond: bool, opt: Option<i32>) {\n"
+                "    match n {\n"
+                "        #[cfg(test)]\n"
+                "        0 => if { cond } && true { crate::beta::b(); }\n"
+                "        #[cfg(test)]\n"
+                "        1 => if { cond } { crate::beta::b(); }\n"
+                "        #[cfg(test)]\n"
+                "        2 => if cond {} else if { opt }.is_some() { crate::beta::b(); } else {}\n"
+                "        _ => {}\n"
+                "    }\n"
+                "    #[cfg(test)]\n"
+                "    if { cond } { crate::beta::b(); }\n"
+                "}\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 9. ラベル付き loop 文直後の本番依存は保持する
+            _write_text(
+                src / "alpha.rs",
+                "pub fn f() {\n"
+                "    #[cfg(test)]\n"
+                "    'a: loop { break 'a; }\n"
+                "    crate::beta::b();\n"
+                "}\n",
+            )
+            res_labeled_loop = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_labeled_loop.worst(), cdc.ERROR)
+            self.assertIn("alpha -> beta -> alpha", "\n".join(m for _, m in res_labeled_loop.items))
+
     def test_sc06_rust_inline_mod_super_depth(self) -> None:
         # インライン mod 内の use と直接参照の双方でクレート直下へ届く super:: を検出
         with tempfile.TemporaryDirectory() as td:
@@ -1352,6 +1432,55 @@ jobs:
                     _write_text(src / "chat.rs", chat_code)
                     self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
 
+            # 3. 制限付き可視性 `pub(in crate::feed)` は祖先モジュール指定であり fn feed() への逆参照ではない
+            _write_text(
+                src / "feed.rs",
+                "mod inner { pub(in crate::feed) fn poll() {} }\n"
+                "pub fn run() { inner::poll(); }\n",
+            )
+            _write_text(src / "chat.rs", "pub fn f() { crate::feed::run(); }\n")
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+        # 未公開 macro_rules! と #[macro_export] 付き macro_rules! が同名モジュールと共存する場合を区別する
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td)
+            _write_text(src / "feed.rs", "pub fn poll() {}\n")
+            _write_text(src / "chat.rs", "use crate::feed;\npub fn run() { feed::poll(); }\n")
+
+            # 1. 未公開 macro_rules! feed（および直前の #[macro_export] #[cfg(test)] 除外後）は lib 逆参照にしない
+            _write_text(
+                src / "lib.rs",
+                "mod feed;\nmod chat;\n"
+                "#[macro_export]\n#[cfg(test)]\nmacro_rules! test_only { () => {}; }\n"
+                "macro_rules! feed { () => {}; }\n",
+            )
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
+            # 2. #[macro_export] 付き macro_rules! feed は use crate::feed; / crate::feed!() を lib 逆参照として検出
+            _write_text(
+                src / "lib.rs",
+                "mod feed;\nmod chat;\n"
+                "#[macro_export]\nmacro_rules! feed { () => {}; }\n",
+            )
+            res_mac_use = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_mac_use.worst(), cdc.ERROR)
+            self.assertIn(
+                "ドメイン層 `chat` が上位層 `lib` を逆参照",
+                "\n".join(m for _, m in res_mac_use.items),
+            )
+
+            _write_text(src / "chat.rs", "pub fn run() { crate::feed!(); }\n")
+            res_mac_call = cdc.check_rust_module_cycles(src)
+            self.assertEqual(res_mac_call.worst(), cdc.ERROR)
+            self.assertIn(
+                "ドメイン層 `chat` が上位層 `lib` を逆参照",
+                "\n".join(m for _, m in res_mac_call.items),
+            )
+
+            # 3. #[macro_export] があっても use crate::feed::{self}; はモジュールのみ（OK）
+            _write_text(src / "chat.rs", "use crate::feed::{self};\npub fn run() { feed::poll(); }\n")
+            self.assertEqual(cdc.check_rust_module_cycles(src).worst(), cdc.OK)
+
         # 上位層モジュールと同名の lib.rs 直下関数（mod commands; + fn commands()）による lib <-> commands 循環も検出する
         with tempfile.TemporaryDirectory() as td:
             src = Path(td)
@@ -1432,6 +1561,49 @@ jobs:
                 "commands -> lib -> commands",
                 "\n".join(m for _, m in res_explicit_crate.items),
             )
+
+            # 値名前空間の別名（use std::mem::drop as commands; / use drop as commands;）や impl 関連型はモジュールを遮蔽しない
+            for case_name, lib_code in (
+                (
+                    "value_fn_alias",
+                    "mod commands;\n"
+                    "pub(crate) fn root_helper() {}\n"
+                    "pub fn run() {\n"
+                    "    use std::mem::drop as commands;\n"
+                    "    commands(1);\n"
+                    "    commands::cmd();\n"
+                    "}\n",
+                ),
+                (
+                    "prelude_value_alias",
+                    "mod commands;\n"
+                    "pub(crate) fn root_helper() {}\n"
+                    "pub fn run() {\n"
+                    "    use drop as commands;\n"
+                    "    commands(1);\n"
+                    "    commands::cmd();\n"
+                    "}\n",
+                ),
+                (
+                    "impl_assoc_type",
+                    "mod commands;\n"
+                    "pub(crate) fn root_helper() {}\n"
+                    "pub struct S;\n"
+                    "pub trait T { type commands; fn f(); }\n"
+                    "impl T for S {\n"
+                    "    type commands = i32;\n"
+                    "    fn f() { commands::cmd(); }\n"
+                    "}\n",
+                ),
+            ):
+                with self.subTest(non_shadowing=case_name):
+                    _write_text(src / "lib.rs", lib_code)
+                    res_non_shadow = cdc.check_rust_module_cycles(src)
+                    self.assertEqual(res_non_shadow.worst(), cdc.ERROR)
+                    self.assertIn(
+                        "commands -> lib -> commands",
+                        "\n".join(m for _, m in res_non_shadow.items),
+                    )
 
 
 def _ws_send_frame(conn: socket.socket, opcode: int, payload: bytes) -> None:
