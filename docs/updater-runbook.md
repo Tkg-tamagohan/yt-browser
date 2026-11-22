@@ -60,9 +60,9 @@ Windows 配布物（`yt-browser.exe`、NSIS アンインストーラ、および
 
 1. `CODE_SIGN_PFX_BASE64`（`.pfx` の Base64 文字列）と `CODE_SIGN_PFX_PASSWORD`（PFX パスワード）を GitHub リポジトリの Actions Secrets へ登録する。
    秘密値を画面出力やチャット欄へ残さないよう、`gh secret set` の標準入力パイプで登録する。
-2. `release.yml` の `build`（`windows-latest`）は、一時展開した `.pfx` をビルド前に `Cert:\CurrentUser\My` へ非エクスポートでインポートして `.pfx` とパスワード環境変数を即消去し、一時 `--config` JSON で `scripts/sign_windows.ps1` を `bundle.windows.signCommand` へ注入する。
+2. `release.yml` の `build`（`windows-latest`）は `scripts/build_and_sign_windows.ps1` を呼び出し、PFX の証明書数と秘密鍵をメモリ上（`EphemeralKeySet`）で事前検証してから `Cert:\CurrentUser\My` へ非エクスポートでインポートし、`.pfx` とパスワード環境変数を即消去したうえで、一時 `--config` JSON から `scripts/sign_windows.ps1` を `bundle.windows.signCommand` へ注入する。
    これによりアプリ本体・アンインストーラ・NSIS インストーラへ順に署名され、署名済みインストーラに対して Tauri updater 用の `*.exe.sig` が生成される。
-3. 署名後は `scripts/verify_windows_signature.ps1` が `signtool verify /pa /v` と `Get-AuthenticodeSignature` で SHA256 署名とタイムスタンプを検証し、`finally` と `if: always()` のクリーンアップで一時ファイルと証明書ストアを消去する。
+3. 署名後は `scripts/verify_windows_signature.ps1` が署名監査ログ（失敗・未完了・アンインストーラ捕捉漏れゼロ）と本体・捕捉済みアンインストーラ・セットアップの `signtool verify /pa /v`（SHA256 ハッシュ確認）および `Get-AuthenticodeSignature` を検証し、`finally` と `if: always()`（`scripts/cleanup_windows_signing.ps1`）で一時ファイルと証明書ストアを消去する。
 
 ### 事前検証と手元端末での確認
 
