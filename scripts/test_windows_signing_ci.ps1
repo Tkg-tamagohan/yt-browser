@@ -330,7 +330,8 @@ try {
     }
     Write-Host "[WIN-SIGN-08] OK: アンインストーラ欠落拒否・未署名キャプチャ拒否・署名済みキャプチャ通過を確認"
 
-    # WIN-SIGN-09: 複数証明書 PFX が Cert:\CurrentUser\My へインポートされず事前拒否され残存ゼロであること
+    # WIN-SIGN-09: 複数証明書 PFX・秘密鍵なし PFX が Import-PfxCertificate 呼び出し前に拒否され、
+    # かつ有効な秘密鍵付き単一証明書 PFX のみが EphemeralKeySet 事前検証を通過してスパイへ到達すること
     $rootCerts = @(Get-ChildItem -Path 'Cert:\LocalMachine\Root' | Select-Object -First 2)
     if ($rootCerts.Count -lt 2) {
         throw "[WIN-SIGN-09] テスト用の公開ルート証明書を 2 件取得できませんでした。"
@@ -343,21 +344,72 @@ try {
     }
     $multiPfxBytes = $multiCol.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, 'ci-multi-cert-test')
     $multiPfxB64 = [Convert]::ToBase64String($multiPfxBytes)
+
+    $singleNoKeyCol = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+    [void]$singleNoKeyCol.Add($rootCerts[0])
+    $singleNoKeyPfxBytes = $singleNoKeyCol.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, 'ci-nokey-cert-test')
+    $singleNoKeyPfxB64 = [Convert]::ToBase64String($singleNoKeyPfxBytes)
+
+    $rsaTest = [System.Security.Cryptography.RSA]::Create(2048)
+    try {
+        $certReq = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest(
+            'CN=yt-browser-ci-ephemeral-test',
+            $rsaTest,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+        )
+        $selfSigned = $certReq.CreateSelfSigned([DateTimeOffset]::UtcNow.AddMinutes(-5), [DateTimeOffset]::UtcNow.AddHours(1))
+        try {
+            $validKeyPfxBytes = $selfSigned.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12, 'ci-valid-key-test')
+        } finally {
+            $selfSigned.Dispose()
+        }
+    } finally {
+        $rsaTest.Dispose()
+    }
+    $validKeyPfxB64 = [Convert]::ToBase64String($validKeyPfxBytes)
+
     $isolatedRunnerTemp = Join-Path $sandbox 'runner-temp'
     New-Item -ItemType Directory -Path $isolatedRunnerTemp -Force | Out-Null
 
-    $res09 = Invoke-PsScript -ScriptPath $buildScript -EnvOverrides @{
+    # Import-PfxCertificate を同名関数でシャドウし、事前検証突破時にのみ発火するスパイラッパーを用意する
+    $spyWrapper = Join-Path $sandbox 'win_sign_09_import_spy.ps1'
+    $spyCode = @'
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$TargetScript,
+    [Parameter(Mandatory = $true)]
+    [string]$MarkerPath
+)
+function global:Import-PfxCertificate {
+    [System.IO.File]::WriteAllText($MarkerPath, 'CALLED', [System.Text.UTF8Encoding]::new($false))
+    throw 'UNEXPECTED_IMPORT_PFX_CERTIFICATE_CALLED'
+}
+& $TargetScript
+'@
+    [System.IO.File]::WriteAllText($spyWrapper, $spyCode, [System.Text.UTF8Encoding]::new($true))
+
+    # 9a: 複数証明書 PFX は Import-PfxCertificate 呼び出し前に拒否される
+    $marker09a = Join-Path $sandbox 'import-called-09a.txt'
+    $ghEnv09a = Join-Path $sandbox 'github-env-09a.txt'
+    $res09a = Invoke-PsScript -ScriptPath $spyWrapper -ScriptArgs @('-TargetScript', $buildScript, '-MarkerPath', $marker09a) -EnvOverrides @{
         CODE_SIGN_PFX_BASE64      = $multiPfxB64
         CODE_SIGN_PFX_PASSWORD    = 'ci-multi-cert-test'
         TAURI_SIGNING_PRIVATE_KEY = 'dummy-tauri-key-for-pfx-precheck'
         RUNNER_TEMP               = $isolatedRunnerTemp
-        GITHUB_ENV                = $null
+        GITHUB_ENV                = $ghEnv09a
     }
-    if ($res09.ExitCode -eq 0) {
+    if ($res09a.ExitCode -eq 0) {
         throw "[WIN-SIGN-09] 複数証明書 PFX で build_and_sign_windows.ps1 が成功しました。"
     }
-    if ($res09.Output -notmatch '2') {
-        throw "[WIN-SIGN-09] 複数証明書拒否エラーが確認できません: $($res09.Output)"
+    if ((Test-Path -LiteralPath $marker09a) -or ($res09a.Output -match 'UNEXPECTED_IMPORT_PFX_CERTIFICATE_CALLED')) {
+        throw "[WIN-SIGN-09] 複数証明書 PFX の事前検証をすり抜けて Import-PfxCertificate が呼ばれました: $($res09a.Output)"
+    }
+    if ($res09a.Output -notmatch '\(2\s') {
+        throw "[WIN-SIGN-09] 複数証明書拒否エラー (2 件) が確認できません: $($res09a.Output)"
+    }
+    if ((Test-Path -LiteralPath $ghEnv09a) -and ((Get-Item -LiteralPath $ghEnv09a).Length -gt 0)) {
+        throw "[WIN-SIGN-09] インポート前拒否なのに GITHUB_ENV へ書き込みが発生しました。"
     }
     foreach ($tp in $multiThumbs) {
         if (Test-Path -LiteralPath "Cert:\CurrentUser\My\$tp") {
@@ -368,7 +420,56 @@ try {
     if ($leftoverDirs.Count -gt 0) {
         throw "[WIN-SIGN-09] 一時ディレクトリ codesign-* が残存しています。"
     }
-    Write-Host "[WIN-SIGN-09] OK: 複数証明書 PFX をインポート前に拒否しストア・一時領域ともに残存ゼロを確認"
+
+    # 9b: 秘密鍵を含まない単一証明書 PFX も Import-PfxCertificate 呼び出し前に拒否される
+    $marker09b = Join-Path $sandbox 'import-called-09b.txt'
+    $ghEnv09b = Join-Path $sandbox 'github-env-09b.txt'
+    $res09b = Invoke-PsScript -ScriptPath $spyWrapper -ScriptArgs @('-TargetScript', $buildScript, '-MarkerPath', $marker09b) -EnvOverrides @{
+        CODE_SIGN_PFX_BASE64      = $singleNoKeyPfxB64
+        CODE_SIGN_PFX_PASSWORD    = 'ci-nokey-cert-test'
+        TAURI_SIGNING_PRIVATE_KEY = 'dummy-tauri-key-for-pfx-precheck'
+        RUNNER_TEMP               = $isolatedRunnerTemp
+        GITHUB_ENV                = $ghEnv09b
+    }
+    if ($res09b.ExitCode -eq 0) {
+        throw "[WIN-SIGN-09] 秘密鍵なし単一証明書 PFX で build_and_sign_windows.ps1 が成功しました。"
+    }
+    if ((Test-Path -LiteralPath $marker09b) -or ($res09b.Output -match 'UNEXPECTED_IMPORT_PFX_CERTIFICATE_CALLED')) {
+        throw "[WIN-SIGN-09] 秘密鍵なし PFX の事前検証をすり抜けて Import-PfxCertificate が呼ばれました: $($res09b.Output)"
+    }
+    if ($res09b.Output -notmatch 'PFX') {
+        throw "[WIN-SIGN-09] 秘密鍵なし PFX 拒否エラーが確認できません: $($res09b.Output)"
+    }
+    if ((Test-Path -LiteralPath $ghEnv09b) -and ((Get-Item -LiteralPath $ghEnv09b).Length -gt 0)) {
+        throw "[WIN-SIGN-09] 秘密鍵なし PFX 拒否なのに GITHUB_ENV へ書き込みが発生しました。"
+    }
+    $leftoverDirs = @(Get-ChildItem -LiteralPath $isolatedRunnerTemp -Filter 'codesign-*' -Directory -ErrorAction SilentlyContinue)
+    if ($leftoverDirs.Count -gt 0) {
+        throw "[WIN-SIGN-09] 秘密鍵なし PFX 拒否後に一時ディレクトリ codesign-* が残存しています。"
+    }
+
+    # 9c: 陽性対照として実 RSA 秘密鍵付き単一証明書 PFX は EphemeralKeySet 検証を通過し、
+    # スパイが Import-PfxCertificate 呼び出しを確実に捕捉することと finally の一時領域掃討を確認する
+    $marker09c = Join-Path $sandbox 'import-called-09c.txt'
+    $ghEnv09c = Join-Path $sandbox 'github-env-09c.txt'
+    $res09c = Invoke-PsScript -ScriptPath $spyWrapper -ScriptArgs @('-TargetScript', $buildScript, '-MarkerPath', $marker09c) -EnvOverrides @{
+        CODE_SIGN_PFX_BASE64      = $validKeyPfxB64
+        CODE_SIGN_PFX_PASSWORD    = 'ci-valid-key-test'
+        TAURI_SIGNING_PRIVATE_KEY = 'dummy-tauri-key-for-pfx-precheck'
+        RUNNER_TEMP               = $isolatedRunnerTemp
+        GITHUB_ENV                = $ghEnv09c
+    }
+    if ($res09c.ExitCode -eq 0) {
+        throw "[WIN-SIGN-09] スパイ制御下の有効 PFX テストが想定外に成功しました。"
+    }
+    if (-not (Test-Path -LiteralPath $marker09c) -or ($res09c.Output -notmatch 'UNEXPECTED_IMPORT_PFX_CERTIFICATE_CALLED')) {
+        throw "[WIN-SIGN-09] 実 RSA 秘密鍵付き単一証明書 PFX が EphemeralKeySet 検証通過後にスパイへ到達しませんでした: $($res09c.Output)"
+    }
+    $leftoverDirs = @(Get-ChildItem -LiteralPath $isolatedRunnerTemp -Filter 'codesign-*' -Directory -ErrorAction SilentlyContinue)
+    if ($leftoverDirs.Count -gt 0) {
+        throw "[WIN-SIGN-09] Import-PfxCertificate 例外後に一時ディレクトリ codesign-* が残存しています。"
+    }
+    Write-Host "[WIN-SIGN-09] OK: 複数証明書・秘密鍵なし PFX のインポート前直接拒否と有効秘密鍵 PFX の EphemeralKeySet 通過を確認"
 
     # WIN-SIGN-10: cleanup_windows_signing.ps1 が残存 codesign-* と一時 .pfx を掃討すること
     $cleanupScript = Join-Path $repoRoot 'scripts\cleanup_windows_signing.ps1'

@@ -139,38 +139,38 @@ $signTool = (
 
 $addedToRoot = $false
 $trustThumbprint = ''
-
-if (-not [string]::IsNullOrWhiteSpace($TrustCertPath)) {
-    if (-not (Test-Path -LiteralPath $TrustCertPath -PathType Leaf)) {
-        throw "一時信頼登録用の証明書ファイルが見つかりません: $TrustCertPath"
-    }
-    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "-TrustCertPath の使用には管理者権限が必要です。"
-    }
-
-    $certObj = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2((Resolve-Path -LiteralPath $TrustCertPath).ProviderPath)
-    try {
-        if ($certObj.HasPrivateKey) {
-            throw "-TrustCertPath に秘密鍵を含む証明書は指定できません。"
-        }
-        $trustThumbprint = $certObj.Thumbprint.ToUpperInvariant()
-    } finally {
-        $certObj.Dispose()
-    }
-
-    $rootStorePath = "Cert:\LocalMachine\Root\$trustThumbprint"
-    if (-not (Test-Path -LiteralPath $rootStorePath)) {
-        Import-Certificate -FilePath $TrustCertPath -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null
-        $addedToRoot = $true
-        Write-Host "CI 検証用に公開証明書を一時登録しました: $trustThumbprint"
-    } else {
-        Write-Host "公開証明書は既に Cert:\LocalMachine\Root に登録済みです: $trustThumbprint"
-    }
-}
-
 $verificationSucceeded = $false
+
 try {
+    if (-not [string]::IsNullOrWhiteSpace($TrustCertPath)) {
+        if (-not (Test-Path -LiteralPath $TrustCertPath -PathType Leaf)) {
+            throw "一時信頼登録用の証明書ファイルが見つかりません: $TrustCertPath"
+        }
+        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw "-TrustCertPath の使用には管理者権限が必要です。"
+        }
+
+        $certObj = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2((Resolve-Path -LiteralPath $TrustCertPath).ProviderPath)
+        try {
+            if ($certObj.HasPrivateKey) {
+                throw "-TrustCertPath に秘密鍵を含む証明書は指定できません。"
+            }
+            $trustThumbprint = $certObj.Thumbprint.ToUpperInvariant()
+        } finally {
+            $certObj.Dispose()
+        }
+
+        $rootStorePath = "Cert:\LocalMachine\Root\$trustThumbprint"
+        if (-not (Test-Path -LiteralPath $rootStorePath)) {
+            Import-Certificate -FilePath $TrustCertPath -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null
+            $addedToRoot = $true
+            Write-Host "CI 検証用に公開証明書を一時登録しました: $trustThumbprint"
+        } else {
+            Write-Host "公開証明書は既に Cert:\LocalMachine\Root に登録済みです: $trustThumbprint"
+        }
+    }
+
     foreach ($target in $resolvedTargets) {
         Write-Host "署名検証中: $target"
         $prevPref = $ErrorActionPreference

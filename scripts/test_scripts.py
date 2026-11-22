@@ -2101,46 +2101,76 @@ class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
 
     @staticmethod
     def _extract_powershell_run_blocks(workflow_text: str) -> list[str]:
-        """`shell: powershell` ステップに属する `run:` ブロックの本文一覧を抽出する。"""
+        """`shell: powershell` を持つステップから `run:` 本文一覧を抽出する（キー順序非依存）。"""
         lines = workflow_text.splitlines()
         blocks: list[str] = []
         i = 0
         while i < len(lines):
-            stripped = lines[i].strip()
-            if stripped == "shell: powershell":
-                step_indent = len(lines[i]) - len(lines[i].lstrip(" "))
+            raw = lines[i]
+            stripped = raw.lstrip(" ")
+            if stripped.startswith("- "):
+                item_indent = len(raw) - len(stripped)
+                # このリスト項目に属する行範囲を集める
+                step_lines = [raw]
                 j = i + 1
                 while j < len(lines):
-                    cur = lines[j]
-                    cur_stripped = cur.strip()
-                    if cur_stripped and not cur_stripped.startswith("#"):
-                        cur_indent = len(cur) - len(cur.lstrip(" "))
-                        if cur_indent < step_indent or (
-                            cur_indent == step_indent and cur_stripped.startswith("- ")
+                    nxt = lines[j]
+                    nxt_stripped = nxt.lstrip(" ")
+                    if nxt_stripped and not nxt_stripped.startswith("#"):
+                        nxt_indent = len(nxt) - len(nxt_stripped)
+                        if nxt_indent < item_indent or (
+                            nxt_indent == item_indent and nxt_stripped.startswith("- ")
                         ):
                             break
-                    if cur_stripped.startswith("run:"):
-                        after = cur_stripped[len("run:") :].strip()
-                        if after in ("|", ">", "|-", ">-"):
-                            run_indent = len(cur) - len(cur.lstrip(" "))
-                            body_lines: list[str] = []
-                            k = j + 1
-                            while k < len(lines):
-                                b = lines[k]
-                                if b.strip() == "":
-                                    body_lines.append("")
-                                    k += 1
-                                    continue
-                                b_indent = len(b) - len(b.lstrip(" "))
-                                if b_indent <= run_indent:
-                                    break
-                                body_lines.append(b)
-                                k += 1
-                            blocks.append("\n".join(body_lines))
-                            j = k
-                            continue
-                        blocks.append(after)
+                    step_lines.append(nxt)
                     j += 1
+
+                # ステップ直下のキーインデント（`- key:` の場合は item_indent + 2）
+                key_indent = item_indent + 2
+                has_powershell_shell = False
+                step_runs: list[str] = []
+                idx = 0
+                while idx < len(step_lines):
+                    cur = step_lines[idx]
+                    if idx == 0:
+                        # `- name: ...` や `- shell: powershell` の先頭行
+                        cur_key = cur[item_indent + 2 :].strip()
+                        cur_key_indent = key_indent
+                    else:
+                        cur_stripped = cur.lstrip(" ")
+                        if not cur_stripped or cur_stripped.startswith("#"):
+                            idx += 1
+                            continue
+                        cur_key_indent = len(cur) - len(cur_stripped)
+                        cur_key = cur_stripped.strip()
+
+                    if cur_key_indent == key_indent:
+                        if cur_key == "shell: powershell":
+                            has_powershell_shell = True
+                        elif cur_key.startswith("run:"):
+                            after = cur_key[len("run:") :].strip()
+                            if after in ("|", ">", "|-", ">-", "|+", ">+"):
+                                body_lines: list[str] = []
+                                k = idx + 1
+                                while k < len(step_lines):
+                                    b = step_lines[k]
+                                    if b.strip() == "":
+                                        body_lines.append("")
+                                        k += 1
+                                        continue
+                                    b_indent = len(b) - len(b.lstrip(" "))
+                                    if b_indent <= cur_key_indent:
+                                        break
+                                    body_lines.append(b)
+                                    k += 1
+                                step_runs.append("\n".join(body_lines))
+                                idx = k
+                                continue
+                            step_runs.append(after)
+                    idx += 1
+
+                if has_powershell_shell:
+                    blocks.extend(step_runs)
                 i = j
                 continue
             i += 1
@@ -2199,6 +2229,20 @@ class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
                     f"{wf_name} の shell: powershell run ブロック #{idx} に非 ASCII 文字が含まれています: {non_ascii[:5]}",
                 )
 
+        # 4b. 抽出ヘルパが run: が shell: powershell より前に書かれたステップも見落とさないこと
+        synthetic_wf = (
+            "jobs:\n"
+            "  w:\n"
+            "    steps:\n"
+            "      - name: Reversed order\n"
+            "        run: |\n"
+            "          Write-Host '日本語'\n"
+            "        shell: powershell\n"
+        )
+        synthetic_blocks = self._extract_powershell_run_blocks(synthetic_wf)
+        self.assertEqual(len(synthetic_blocks), 1)
+        self.assertIn("日本語", synthetic_blocks[0])
+
         # 5. 全 Windows 署名 PowerShell スクリプトが UTF-8 BOM 付き・5.1 互換（#Requires -Version 5.1 あり・&& なし）であること
         for name, raw in ps_files.items():
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), f"{name} に UTF-8 BOM がありません")
@@ -2231,6 +2275,7 @@ class TestWindowsCodeSigningWorkflowContract(unittest.TestCase):
 
         test_ps1 = ps_texts["test_windows_signing_ci.ps1"]
         self.assertIn("$global:LASTEXITCODE = 0", test_ps1)
+        self.assertIn("function global:Import-PfxCertificate", test_ps1)
 
 
 if __name__ == "__main__":
