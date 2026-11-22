@@ -2128,6 +2128,56 @@ def _classify_rust_annotated_node(text: str, start: int) -> str:
     return "expr_or_field"
 
 
+def _starts_with_rust_block_expr(text: str, pos: int) -> bool:
+    """`=>` 直後の match アーム本体がブロック式（末尾コンマ省略可能）で始まるか判定する。"""
+    n = len(text)
+
+    def skip_ws(idx: int) -> int:
+        while idx < n and text[idx].isspace():
+            idx += 1
+        return idx
+
+    p = skip_ws(pos)
+    # 先頭の外側属性 #[...] をスキップ
+    while p < n and text[p : p + 2] == "#[":
+        p += 2
+        attr_depth = 1
+        while p < n and attr_depth > 0:
+            if text[p] == "[":
+                attr_depth += 1
+            elif text[p] == "]":
+                attr_depth -= 1
+            p += 1
+        p = skip_ws(p)
+
+    # 任意ラベル `'label:` をスキップ
+    if p < n and text[p] == "'":
+        lbl_m = _RUST_IDENT_RE.match(text, p + 1)
+        if lbl_m is not None:
+            after_lbl = skip_ws(lbl_m.end())
+            if (
+                after_lbl < n
+                and text[after_lbl] == ":"
+                and text[after_lbl : after_lbl + 2] != "::"
+            ):
+                p = skip_ws(after_lbl + 1)
+
+    # ブロック修飾子（const / async / move / unsafe / try）をスキップ
+    while p < n:
+        m = _RUST_IDENT_RE.match(text, p)
+        if m is None:
+            break
+        if m.group(0) in ("const", "async", "move", "unsafe", "try"):
+            p = skip_ws(m.end())
+            continue
+        break
+
+    if p < n and text[p] == "{":
+        return True
+    m = _RUST_IDENT_RE.match(text, p)
+    return m is not None and m.group(0) in ("if", "match", "loop", "while", "for")
+
+
 def _classify_post_brace_continuation(
     text: str, close_brace_pos: int
 ) -> tuple[str, int]:
@@ -2147,6 +2197,8 @@ def _classify_post_brace_continuation(
         word = ident_m.group(0)
         if word == "else":
             return ("else", ident_m.end())
+        if word == "if":
+            return ("if", ident_m.end())
         if word == "as":
             return ("continue", ident_m.end())
         return ("stop", close_brace_pos + 1)
@@ -2154,6 +2206,8 @@ def _classify_post_brace_continuation(
     two = text[p : p + 2]
     if two == "=>":
         return ("fat_arrow", p + 2)
+    if two == "..":
+        return ("range", p + 2)
     if two in (
         "==",
         "!=",
@@ -2175,9 +2229,17 @@ def _classify_post_brace_continuation(
         return ("continue", p + 2)
 
     ch = text[p]
-    if ch in (".", "?", "+", "/", "%", "^", "=", "<", ">"):
+    if ch == ".":
+        return ("dot", p + 1)
+    if ch == "?":
+        return ("question", p + 1)
+    if ch == "=":
+        return ("assign", p + 1)
+    if ch == "|":
+        return ("pipe_nl" if crossed_newline else "pipe", p + 1)
+    if ch in ("+", "/", "%", "^", "<", ">"):
         return ("continue", p + 1)
-    if not crossed_newline and ch in ("-", "*", "&", "|"):
+    if not crossed_newline and ch in ("-", "*", "&"):
         return ("continue", p + 1)
     if not crossed_newline and ch in ("[", "("):
         return ("continue", p)
@@ -2186,6 +2248,57 @@ def _classify_post_brace_continuation(
     if ch == ",":
         return ("comma", p + 1)
     return ("stop", close_brace_pos + 1)
+
+
+def _has_match_guard_or_pattern_fat_arrow(text: str, start: int) -> bool:
+    """波括弧マクロ直後の `if` / `|` が match アームのガード・OR パターン（トップレベル `=>` に到達）かを判定する。"""
+    n = len(text)
+    p = start
+    b_depth = 0
+    p_depth = 0
+    k_depth = 0
+    while p < n:
+        c = text[p]
+        if b_depth == 0 and p_depth == 0 and k_depth == 0:
+            if text[p : p + 2] == "=>":
+                return True
+            if c in (";", ","):
+                return False
+        if c == "(":
+            p_depth += 1
+        elif c == ")":
+            if p_depth == 0:
+                return False
+            p_depth -= 1
+        elif c == "[":
+            k_depth += 1
+        elif c == "]":
+            if k_depth == 0:
+                return False
+            k_depth -= 1
+        elif c == "{":
+            b_depth += 1
+        elif c == "}":
+            if b_depth == 0:
+                return False
+            b_depth -= 1
+            if b_depth == 0 and p_depth == 0 and k_depth == 0:
+                cont_kind, next_pos = _classify_post_brace_continuation(text, p)
+                if cont_kind == "fat_arrow":
+                    return True
+                if cont_kind in (
+                    "else",
+                    "continue",
+                    "dot",
+                    "question",
+                    "assign",
+                    "pipe",
+                ):
+                    p = next_pos
+                    continue
+                return False
+        p += 1
+    return False
 
 
 def _find_rust_annotated_node_end(text: str, start: int) -> int:
@@ -2214,6 +2327,7 @@ def _find_rust_annotated_node_end(text: str, start: int) -> int:
     bracket_depth = 0
     saw_brace = False
     saw_fat_arrow = False
+    arm_body_is_block = False
     k = j
 
     while k < n:
@@ -2244,6 +2358,7 @@ def _find_rust_annotated_node_end(text: str, start: int) -> int:
             and bracket_depth == 0
         ):
             saw_fat_arrow = True
+            arm_body_is_block = _starts_with_rust_block_expr(text, k + 2)
             k += 2
             continue
 
@@ -2279,9 +2394,18 @@ def _find_rust_annotated_node_end(text: str, start: int) -> int:
                     if cont_kind == "fat_arrow":
                         mode = "expr_or_field"
                         saw_fat_arrow = True
+                        arm_body_is_block = _starts_with_rust_block_expr(
+                            text, next_pos
+                        )
                         k = next_pos
                         continue
-                    if cont_kind == "continue":
+                    if cont_kind in ("if", "pipe", "pipe_nl"):
+                        if _has_match_guard_or_pattern_fat_arrow(text, next_pos):
+                            mode = "expr_or_field"
+                            k = next_pos
+                            continue
+                        return k + 1
+                    if cont_kind in ("dot", "question", "continue", "assign"):
                         mode = "expr_or_field"
                         k = next_pos
                         continue
@@ -2294,16 +2418,21 @@ def _find_rust_annotated_node_end(text: str, start: int) -> int:
                         saw_brace = False
                         k = next_pos
                         continue
-                    if cont_kind == "continue":
+                    if cont_kind in ("dot", "question", "continue", "assign", "pipe"):
                         mode = "expr_or_field"
                         k = next_pos
                         continue
                     if cont_kind in ("semi", "comma"):
                         return next_pos
                     return k + 1
-                if mode == "expr_or_field" and saw_fat_arrow:
+                if mode == "expr_or_field" and saw_fat_arrow and arm_body_is_block:
                     cont_kind, next_pos = _classify_post_brace_continuation(text, k)
-                    if cont_kind in ("else", "continue"):
+                    if cont_kind in ("else", "assign"):
+                        k = next_pos
+                        continue
+                    if cont_kind in ("dot", "question"):
+                        # ブロック式の後置 `.` / `?` 以降は非ブロック式となり `,` または外側 `}` まで継続する
+                        arm_body_is_block = False
                         k = next_pos
                         continue
                     if cont_kind == "comma":
@@ -2391,8 +2520,9 @@ def _split_top_level_commas(text: str) -> list[str]:
     return parts
 
 
-def _expand_use_tree(body: str) -> list[list[str]]:
-    paths: list[list[str]] = []
+def _expand_use_tree(body: str) -> list[tuple[list[str], bool]]:
+    """`use` ツリーを `(パスセグメント列, 末尾 {self} 明示フラグ)` の列へ展開する。"""
+    paths: list[tuple[list[str], bool]] = []
     for raw_item in _split_top_level_commas(body):
         item = raw_item.strip()
         if not item:
@@ -2416,27 +2546,27 @@ def _expand_use_tree(body: str) -> list[list[str]]:
                     if seg.strip()
                 ]
                 inner = item[open_idx + 1 : close_idx]
-                for sub in _expand_use_tree(inner):
-                    if sub == ["self"]:
+                for sub_segs, sub_is_self in _expand_use_tree(inner):
+                    if sub_segs == ["self"]:
                         if prefix:
-                            paths.append(prefix)
+                            paths.append((prefix, True))
                     else:
-                        paths.append(prefix + sub)
+                        paths.append((prefix + sub_segs, sub_is_self))
                 continue
         item = re.sub(
-            r"\s+as\s+(?:[A-Za-z_][A-Za-z0-9_]*|_)\s*$", "", item
+            r"\s+as\s+(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*|_)\s*$", "", item
         ).strip()
         segs = [seg.strip() for seg in item.split("::") if seg.strip()]
         if segs:
-            paths.append(segs)
+            paths.append((segs, False))
     return paths
 
 
-def _extract_use_bound_names(
+def _extract_use_bindings_with_paths(
     body: str, prefix: list[str] | None = None
-) -> set[str]:
-    """トップレベル `use ...;` がクレート直下に束縛する識別子名を抽出する。"""
-    names: set[str] = set()
+) -> list[tuple[list[str], str]]:
+    """`use` ツリーが束縛する `(参照先パスセグメント列, 束縛識別子名)` の列を抽出する。"""
+    bindings: list[tuple[list[str], str]] = []
     base = prefix or []
     for raw_item in _split_top_level_commas(body):
         item = raw_item.strip()
@@ -2460,31 +2590,44 @@ def _extract_use_bound_names(
                     for seg in item[:open_idx].split("::")
                     if seg.strip()
                 ]
-                names.update(
-                    _extract_use_bound_names(
+                bindings.extend(
+                    _extract_use_bindings_with_paths(
                         item[open_idx + 1 : close_idx], sub_prefix
                     )
                 )
                 continue
         as_m = re.search(r"\s+as\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*|_)\s*$", item)
+        alias: str | None = None
+        path_part = item
         if as_m is not None:
-            alias = as_m.group(1)
-            if alias != "_":
-                names.add(alias[2:] if alias.startswith("r#") else alias)
-            continue
-        segs = [seg.strip() for seg in item.split("::") if seg.strip()]
+            raw_alias = as_m.group(1)
+            if raw_alias == "_":
+                continue
+            alias = raw_alias[2:] if raw_alias.startswith("r#") else raw_alias
+            path_part = item[: as_m.start()].strip()
+        segs = [seg.strip() for seg in path_part.split("::") if seg.strip()]
         if not segs:
             continue
-        leaf = segs[-1]
-        if leaf == "self":
-            if base:
-                leaf = base[-1]
-            else:
+        if segs == ["self"]:
+            if not base:
                 continue
-        if leaf in {"*", "self", "super", "crate", "_"}:
-            continue
-        names.add(leaf[2:] if leaf.startswith("r#") else leaf)
-    return names
+            full_segs = list(base)
+        else:
+            full_segs = base + segs
+        if alias is None:
+            leaf = full_segs[-1]
+            if leaf in {"*", "self", "super", "crate", "_"}:
+                continue
+            alias = leaf[2:] if leaf.startswith("r#") else leaf
+        bindings.append((full_segs, alias))
+    return bindings
+
+
+def _extract_use_bound_names(
+    body: str, prefix: list[str] | None = None
+) -> set[str]:
+    """トップレベル `use ...;` がクレート直下に束縛する識別子名を抽出する。"""
+    return {alias for _, alias in _extract_use_bindings_with_paths(body, prefix)}
 
 
 def _extract_rust_root_items(cleaned: str) -> set[str]:
@@ -2644,16 +2787,132 @@ def _extract_rust_root_items(cleaned: str) -> set[str]:
     return items
 
 
+def _collect_block_local_shadows(cleaned: str) -> dict[int, set[str]]:
+    """`lib.rs` の各スコープ（`-1` = トップレベル、各 `{` 位置 = ブロックスコープ）で
+    同名トップレベルモジュールをシャドウする `use` 別名・ローカル型/モジュール宣言を収集する。"""
+    shadows: dict[int, set[str]] = {}
+    brace_open_stack: list[int] = [-1]
+    n = len(cleaned)
+    i = 0
+
+    while i < n:
+        ch = cleaned[i]
+        if ch == "{":
+            brace_open_stack.append(i)
+            i += 1
+            continue
+        if ch == "}":
+            if len(brace_open_stack) > 1:
+                brace_open_stack.pop()
+            i += 1
+            continue
+        if (
+            (ch.isalpha() or ch == "_")
+            and (
+                i == 0
+                or (
+                    not _is_ident_char(cleaned[i - 1])
+                    and cleaned[i - 1] not in (".", ":")
+                )
+            )
+            and not (i >= 2 and cleaned[i - 2 : i] == "r#")
+        ):
+            m = _RUST_IDENT_RE.match(cleaned, i)
+            assert m is not None
+            ident = m.group(0)
+            j = m.end()
+            if ident == "use" and j < n and cleaned[j].isspace():
+                semi = cleaned.find(";", j)
+                end = n if semi < 0 else semi + 1
+                body = cleaned[j : end - (1 if semi >= 0 else 0)]
+                scope_key = brace_open_stack[-1]
+                for segs, alias in _extract_use_bindings_with_paths(body):
+                    norm0 = segs[0][2:] if segs[0].startswith("r#") else segs[0]
+                    norm1 = (
+                        (segs[1][2:] if segs[1].startswith("r#") else segs[1])
+                        if len(segs) >= 2
+                        else ""
+                    )
+                    # 同名クレート直下モジュール自身（またはその配下）を指す use はシャドウ扱いしない
+                    if norm0 == alias or (
+                        norm0 in ("crate", "self") and norm1 == alias
+                    ):
+                        continue
+                    shadows.setdefault(scope_key, set()).add(alias)
+                i = end
+                continue
+            if ident == "extern" and j < n and cleaned[j].isspace():
+                k = j
+                while k < n and cleaned[k].isspace():
+                    k += 1
+                cm = _RUST_IDENT_RE.match(cleaned, k)
+                if (
+                    cm is not None
+                    and cm.group(0) == "crate"
+                    and cm.end() < n
+                    and cleaned[cm.end()].isspace()
+                ):
+                    semi = cleaned.find(";", cm.end())
+                    end = n if semi < 0 else semi + 1
+                    body = cleaned[cm.end() : end - (1 if semi >= 0 else 0)]
+                    scope_key = brace_open_stack[-1]
+                    for _, alias in _extract_use_bindings_with_paths(body):
+                        shadows.setdefault(scope_key, set()).add(alias)
+                    i = end
+                    continue
+            if len(brace_open_stack) > 1 and ident in (
+                "struct",
+                "enum",
+                "trait",
+                "type",
+                "union",
+                "mod",
+            ):
+                k = j
+                while k < n and cleaned[k].isspace():
+                    k += 1
+                nm = _RUST_RAW_OR_IDENT_RE.match(cleaned, k)
+                if nm is not None:
+                    raw_name = nm.group(0)
+                    name = raw_name[2:] if raw_name.startswith("r#") else raw_name
+                    shadows.setdefault(brace_open_stack[-1], set()).add(name)
+                    i = nm.end()
+                    continue
+            i = j
+            continue
+        i += 1
+    return shadows
+
+
+def _is_module_qualified_after(cleaned: str, end_pos: int) -> bool:
+    """識別子直後が `::` に続く非ターボフィッシュ（`::<` 以外）のパス修飾か判定する。"""
+    n = len(cleaned)
+    p = end_pos
+    while p < n and cleaned[p].isspace():
+        p += 1
+    if cleaned[p : p + 2] != "::":
+        return False
+    p += 2
+    while p < n and cleaned[p].isspace():
+        p += 1
+    return not (p < n and cleaned[p] == "<")
+
+
 def _target_from_path_segments(
     segs: list[str],
+    is_module_self: bool,
     current_depth: int,
     known_modules: set[str] | None = None,
-) -> str | None:
+    shadowed: set[str] | None = None,
+) -> tuple[str, str] | None:
     if not segs:
         return None
     if segs[0] == "crate":
         if len(segs) >= 2 and segs[1] not in {"self", "super", "*"}:
-            return segs[1]
+            ref_kind = (
+                "qualified" if (len(segs) >= 3 or is_module_self) else "bare_use"
+            )
+            return (segs[1], ref_kind)
         return None
     if current_depth == 0:
         if (
@@ -2661,9 +2920,19 @@ def _target_from_path_segments(
             and len(segs) >= 2
             and segs[1] not in {"self", "super", "crate", "*"}
         ):
-            return segs[1]
-        if known_modules and segs[0] in known_modules:
-            return segs[0]
+            ref_kind = (
+                "qualified" if (len(segs) >= 3 or is_module_self) else "bare_use"
+            )
+            return (segs[1], ref_kind)
+        if (
+            known_modules
+            and segs[0] in known_modules
+            and (not shadowed or segs[0] not in shadowed)
+        ):
+            ref_kind = (
+                "qualified" if (len(segs) >= 2 or is_module_self) else "bare_use"
+            )
+            return (segs[0], ref_kind)
     super_count = 0
     while super_count < len(segs) and segs[super_count] == "super":
         super_count += 1
@@ -2673,7 +2942,12 @@ def _target_from_path_segments(
         and len(segs) > super_count
         and segs[super_count] not in {"self", "super", "crate", "*"}
     ):
-        return segs[super_count]
+        ref_kind = (
+            "qualified"
+            if (len(segs) > super_count + 1 or is_module_self)
+            else "bare_use"
+        )
+        return (segs[super_count], ref_kind)
     return None
 
 
@@ -2681,14 +2955,24 @@ def _extract_rust_crate_targets(
     cleaned: str,
     file_depth: int,
     known_modules: set[str] | None = None,
-) -> list[tuple[str, int]]:
-    """前処理済み Rust コードからクレート内参照先モジュール名と行番号を抽出する。"""
-    targets: list[tuple[str, int]] = []
+) -> list[tuple[str, int, str]]:
+    """前処理済み Rust コードからクレート内参照先（識別子, 行番号, 参照形態）を抽出する。"""
+    targets: list[tuple[str, int, str]] = []
     brace_stack: list[bool] = []
+    block_shadows = _collect_block_local_shadows(cleaned) if known_modules else {}
+    shadow_stack: list[set[str]] = [set(block_shadows.get(-1, ()))]
     pending_inline_mod = False
     line_no = 1
     i = 0
     n = len(cleaned)
+
+    def current_shadowed() -> set[str]:
+        if not block_shadows:
+            return set()
+        merged: set[str] = set()
+        for scope_set in shadow_stack:
+            merged.update(scope_set)
+        return merged
 
     while i < n:
         ch = cleaned[i]
@@ -2725,12 +3009,13 @@ def _extract_rust_crate_targets(
                 end = n if semi < 0 else semi + 1
                 body = cleaned[j : end - (1 if semi >= 0 else 0)]
                 current_depth = file_depth + sum(1 for x in brace_stack if x)
-                for segs in _expand_use_tree(body):
-                    target = _target_from_path_segments(
-                        segs, current_depth, known_modules
+                shadowed = current_shadowed()
+                for segs, is_mod_self in _expand_use_tree(body):
+                    resolved = _target_from_path_segments(
+                        segs, is_mod_self, current_depth, known_modules, shadowed
                     )
-                    if target is not None:
-                        targets.append((target, line_no))
+                    if resolved is not None:
+                        targets.append((resolved[0], line_no, resolved[1]))
                 line_no += cleaned[i:end].count("\n")
                 i = end
                 pending_inline_mod = False
@@ -2740,7 +3025,12 @@ def _extract_rust_crate_targets(
                 if next_m is not None:
                     target = next_m.group(0)
                     if target not in {"self", "super"}:
-                        targets.append((target, line_no))
+                        ref_kind = (
+                            "qualified"
+                            if _is_module_qualified_after(cleaned, next_m.end())
+                            else "bare_path"
+                        )
+                        targets.append((target, line_no, ref_kind))
                     i = next_m.end()
                     pending_inline_mod = False
                     continue
@@ -2750,7 +3040,12 @@ def _extract_rust_crate_targets(
                 if current_depth == 0 and next_m is not None:
                     target = next_m.group(0)
                     if target not in {"self", "super", "crate"}:
-                        targets.append((target, line_no))
+                        ref_kind = (
+                            "qualified"
+                            if _is_module_qualified_after(cleaned, next_m.end())
+                            else "bare_path"
+                        )
+                        targets.append((target, line_no, ref_kind))
                     i = next_m.end()
                     pending_inline_mod = False
                     continue
@@ -2765,30 +3060,39 @@ def _extract_rust_crate_targets(
                 if next_m is not None and super_count == current_depth:
                     target = next_m.group(0)
                     if target not in {"self", "super", "crate"}:
-                        targets.append((target, line_no))
+                        ref_kind = (
+                            "qualified"
+                            if _is_module_qualified_after(cleaned, next_m.end())
+                            else "bare_path"
+                        )
+                        targets.append((target, line_no, ref_kind))
                 i = next_m.end() if next_m is not None else pos
                 pending_inline_mod = False
                 continue
             if (
                 known_modules
                 and ident in known_modules
-                and cleaned[j : j + 2] == "::"
+                and _is_module_qualified_after(cleaned, j)
                 and (i == 0 or cleaned[i - 1] != ".")
             ):
                 current_depth = file_depth + sum(1 for x in brace_stack if x)
-                if current_depth == 0:
-                    targets.append((ident, line_no))
+                if current_depth == 0 and ident not in current_shadowed():
+                    targets.append((ident, line_no, "qualified"))
             pending_inline_mod = False
             i = j
             continue
         if ch == "{":
             brace_stack.append(pending_inline_mod)
+            if block_shadows:
+                shadow_stack.append(set(block_shadows.get(i, ())))
             pending_inline_mod = False
             i += 1
             continue
         if ch == "}":
             if brace_stack:
                 brace_stack.pop()
+            if block_shadows and len(shadow_stack) > 1:
+                shadow_stack.pop()
             pending_inline_mod = False
             i += 1
             continue
@@ -2860,11 +3164,7 @@ def check_rust_module_cycles(src_tauri: Path = SRC_TAURI) -> Findings:
             _blank_rust_comments_and_strings(read_text(lib_path))
         )
         cleaned_cache[lib_path] = lib_cleaned
-        lib_root_items = (
-            _extract_rust_root_items(lib_cleaned)
-            - known_modules
-            - RUST_UPPER_MODULES
-        )
+        lib_root_items = _extract_rust_root_items(lib_cleaned) - {"lib", "main"}
 
     adj: dict[str, set[str]] = {}
     reported_reverse: set[tuple[str, str]] = set()
@@ -2879,46 +3179,55 @@ def check_rust_module_cycles(src_tauri: Path = SRC_TAURI) -> Findings:
                 _blank_rust_comments_and_strings(raw)
             )
         root_known = known_modules if top_mod == "lib" else None
-        for dst, line_no in _extract_rust_crate_targets(
+        for raw_dst, line_no, ref_kind in _extract_rust_crate_targets(
             cleaned, file_depth, known_modules=root_known
         ):
-            if (
-                top_mod != "main"
-                and dst not in known_modules
-                and dst not in RUST_UPPER_MODULES
-                and dst in lib_root_items
-            ):
-                dst = "lib"
-            if dst == top_mod:
-                continue
-            if top_mod in RUST_UPPER_MODULES:
-                if dst in all_top_mods:
-                    adj.setdefault(top_mod, set()).add(dst)
-                continue
-            if dst in RUST_UPPER_MODULES:
-                pair = (top_mod, dst)
-                if pair not in reported_reverse:
-                    reported_reverse.add(pair)
-                    src_layer = (
-                        "下位共有層" if top_mod in RUST_SHARED_MODULES else "ドメイン層"
-                    )
-                    f.error(
-                        f"{src_layer} `{top_mod}` が上位層 `{dst}` を"
-                        f"逆参照（{rel.as_posix()}:{line_no}）"
-                    )
-                continue
-            if dst not in known_modules:
-                continue
-            if top_mod in RUST_SHARED_MODULES and dst not in RUST_SHARED_MODULES:
-                pair = (top_mod, dst)
-                if pair not in reported_reverse:
-                    reported_reverse.add(pair)
-                    f.error(
-                        f"下位共有層 `{top_mod}` がドメイン層 `{dst}` を"
-                        f"逆参照（{rel.as_posix()}:{line_no}）"
-                    )
-                continue
-            adj.setdefault(top_mod, set()).add(dst)
+            is_known_mod = raw_dst in known_modules or raw_dst in RUST_UPPER_MODULES
+            is_root_item = top_mod != "main" and raw_dst in lib_root_items
+            if is_root_item and not is_known_mod:
+                resolved_dsts = ["lib"]
+            elif is_root_item and is_known_mod:
+                if ref_kind == "bare_path":
+                    resolved_dsts = ["lib"]
+                elif ref_kind == "bare_use":
+                    # `use crate::feed;` は値名前空間（lib 直下項目）と型名前空間（feed モジュール）の双方を取り込むため安全側で両方検査
+                    resolved_dsts = ["lib", raw_dst]
+                else:
+                    resolved_dsts = [raw_dst]
+            else:
+                resolved_dsts = [raw_dst]
+
+            for dst in resolved_dsts:
+                if dst == top_mod:
+                    continue
+                if top_mod in RUST_UPPER_MODULES:
+                    if dst in all_top_mods:
+                        adj.setdefault(top_mod, set()).add(dst)
+                    continue
+                if dst in RUST_UPPER_MODULES:
+                    pair = (top_mod, dst)
+                    if pair not in reported_reverse:
+                        reported_reverse.add(pair)
+                        src_layer = (
+                            "下位共有層" if top_mod in RUST_SHARED_MODULES else "ドメイン層"
+                        )
+                        f.error(
+                            f"{src_layer} `{top_mod}` が上位層 `{dst}` を"
+                            f"逆参照（{rel.as_posix()}:{line_no}）"
+                        )
+                    continue
+                if dst not in known_modules:
+                    continue
+                if top_mod in RUST_SHARED_MODULES and dst not in RUST_SHARED_MODULES:
+                    pair = (top_mod, dst)
+                    if pair not in reported_reverse:
+                        reported_reverse.add(pair)
+                        f.error(
+                            f"下位共有層 `{top_mod}` がドメイン層 `{dst}` を"
+                            f"逆参照（{rel.as_posix()}:{line_no}）"
+                        )
+                    continue
+                adj.setdefault(top_mod, set()).add(dst)
 
     for cycle in _find_rust_cycles(adj):
         f.error(f"Rust モジュール循環依存: {' -> '.join([*cycle, cycle[0]])}")
