@@ -18,12 +18,31 @@ impl Db {
     /// 明示的な再生開始なので、手動削除による保存抑止をここで解除する。
     /// 抑止の解除と挿入は conn ロック内で行い、`history_remove` や
     /// `history_update_progress` と同じ排他区間に載せて交錯を防ぐ。
+    /// チャンネル情報は既存行の非空値を保持しつつ、`videos` → `live_waits` →
+    /// `queue_items`（`channel_title` のみ）の順で補完する（仕様決定 DY）。
     pub fn history_upsert(&self, video_id: &str) -> Result<(), DbError> {
         let conn = self.lock()?;
         crate::util::lock(&self.history_suppressed).remove(video_id);
         conn.execute(
-            "INSERT INTO watch_history (video_id, title) VALUES (?1, '')
-             ON CONFLICT (video_id) DO NOTHING",
+            "INSERT INTO watch_history (video_id, title, channel_id, channel_title)
+             VALUES (
+               ?1,
+               '',
+               COALESCE(
+                 (SELECT NULLIF(channel_id, '') FROM videos WHERE video_id = ?1),
+                 (SELECT NULLIF(channel_id, '') FROM live_waits WHERE video_id = ?1)
+               ),
+               COALESCE(
+                 (SELECT NULLIF(channel_title, '') FROM videos WHERE video_id = ?1),
+                 (SELECT NULLIF(channel_title, '') FROM live_waits WHERE video_id = ?1),
+                 (SELECT NULLIF(channel_title, '') FROM queue_items
+                  WHERE video_id = ?1 AND channel_title IS NOT NULL AND channel_title <> ''
+                  ORDER BY position LIMIT 1)
+               )
+             )
+             ON CONFLICT (video_id) DO UPDATE SET
+               channel_id = COALESCE(NULLIF(watch_history.channel_id, ''), excluded.channel_id),
+               channel_title = COALESCE(NULLIF(watch_history.channel_title, ''), excluded.channel_title)",
             [video_id],
         )?;
         Ok(())
@@ -32,6 +51,8 @@ impl Db {
     /// 再生中・終了時の進捗保存。タイトルは空文字なら既存値を維持する
     /// （media-title 未確定の早い保存で取れたタイトルを消さないため）。
     /// `completed` が true のときは位置を 0 に戻す（次回は先頭から再生）。
+    /// チャンネル情報は既存行の非空値を保持しつつ、`videos` → `live_waits` →
+    /// `queue_items`（`channel_title` のみ）の順で補完する（仕様決定 DY）。
     pub fn history_update_progress(
         &self,
         video_id: &str,
@@ -54,11 +75,32 @@ impl Db {
         }
         conn.execute(
             "INSERT INTO watch_history
-               (video_id, title, position_sec, duration_sec, last_watched_at, completed)
-             VALUES (?1, ?2, ?3, ?4, datetime('now'), ?5)
+               (video_id, title, channel_id, channel_title,
+                position_sec, duration_sec, last_watched_at, completed)
+             VALUES (
+               ?1,
+               ?2,
+               COALESCE(
+                 (SELECT NULLIF(channel_id, '') FROM videos WHERE video_id = ?1),
+                 (SELECT NULLIF(channel_id, '') FROM live_waits WHERE video_id = ?1)
+               ),
+               COALESCE(
+                 (SELECT NULLIF(channel_title, '') FROM videos WHERE video_id = ?1),
+                 (SELECT NULLIF(channel_title, '') FROM live_waits WHERE video_id = ?1),
+                 (SELECT NULLIF(channel_title, '') FROM queue_items
+                  WHERE video_id = ?1 AND channel_title IS NOT NULL AND channel_title <> ''
+                  ORDER BY position LIMIT 1)
+               ),
+               ?3,
+               ?4,
+               datetime('now'),
+               ?5
+             )
              ON CONFLICT (video_id) DO UPDATE SET
                title = CASE WHEN excluded.title <> '' THEN excluded.title
                             ELSE watch_history.title END,
+               channel_id = COALESCE(NULLIF(watch_history.channel_id, ''), excluded.channel_id),
+               channel_title = COALESCE(NULLIF(watch_history.channel_title, ''), excluded.channel_title),
                position_sec = excluded.position_sec,
                duration_sec = COALESCE(excluded.duration_sec, watch_history.duration_sec),
                last_watched_at = excluded.last_watched_at,
@@ -66,6 +108,46 @@ impl Db {
             rusqlite::params![video_id, title, position, duration_sec, completed as i64,],
         )?;
         Ok(())
+    }
+
+    /// 外部メタ（InnerTube / yt-dlp）で解決したチャンネル情報を視聴履歴へ書き戻す
+    /// 順序非依存 UPSERT（仕様決定 DY）。
+    /// `history_upsert` / `history_update_progress` より先に到達しても後に到達しても、
+    /// 既存の非空 `title` / `channel_id` / `channel_title` や進捗・完了状態は壊さず、
+    /// 欠損列だけを埋める。手動削除による保存抑止中の動画は復活させない。
+    pub fn history_set_channel(
+        &self,
+        video_id: &str,
+        channel_id: Option<&str>,
+        channel_title: Option<&str>,
+        fallback_title: Option<&str>,
+    ) -> Result<(), DbError> {
+        let channel_id = channel_id.map(str::trim).filter(|s| !s.is_empty());
+        let channel_title = channel_title.map(str::trim).filter(|s| !s.is_empty());
+        let fallback_title = fallback_title.map(str::trim).filter(|s| !s.is_empty());
+        if channel_id.is_none() && channel_title.is_none() {
+            return Ok(());
+        }
+        let conn = self.lock()?;
+        if crate::util::lock(&self.history_suppressed).contains(video_id) {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO watch_history (video_id, title, channel_id, channel_title)
+             VALUES (?1, COALESCE(?4, ''), ?2, ?3)
+             ON CONFLICT (video_id) DO UPDATE SET
+               title = CASE WHEN watch_history.title <> '' THEN watch_history.title
+                            ELSE COALESCE(NULLIF(excluded.title, ''), watch_history.title) END,
+               channel_id = COALESCE(NULLIF(watch_history.channel_id, ''), excluded.channel_id),
+               channel_title = COALESCE(NULLIF(watch_history.channel_title, ''), excluded.channel_title)",
+            rusqlite::params![video_id, channel_id, channel_title, fallback_title],
+        )?;
+        Ok(())
+    }
+
+    /// 指定動画が手動削除による履歴保存抑止中か返す。
+    pub fn is_history_suppressed(&self, video_id: &str) -> bool {
+        crate::util::lock(&self.history_suppressed).contains(video_id)
     }
 
     /// 動画 1 件分の履歴。レジューム可否の判定に使う。
@@ -195,10 +277,13 @@ impl Db {
         let mut by_channel = Vec::new();
         {
             let mut stmt = conn.prepare(&format!(
-                "SELECT channel_id, MAX(channel_title), SUM({SEC_EXPR}), COUNT(*)
+                "SELECT NULLIF(channel_id, '') AS cid,
+                        CASE WHEN NULLIF(channel_id, '') IS NULL THEN NULL
+                             ELSE MAX(NULLIF(channel_title, '')) END,
+                        SUM({SEC_EXPR}), COUNT(*)
                  FROM watch_history
-                 GROUP BY channel_id
-                 ORDER BY SUM({SEC_EXPR}) DESC, channel_id
+                 GROUP BY cid
+                 ORDER BY SUM({SEC_EXPR}) DESC, cid
                  LIMIT ?1"
             ))?;
             let mut rows = stmt.query([HISTORY_STATS_MAX_CHANNELS])?;

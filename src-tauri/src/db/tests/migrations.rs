@@ -464,11 +464,11 @@ fn migrate_v21_extends_filters_kind_check() {
 }
 
 /// v23 マイグレーション: meta_resolve_targets 向け部分インデックス
-/// `idx_videos_meta_resolve` が作成され、最新バージョンが 23 になる。
+/// `idx_videos_meta_resolve` が作成される。
 #[test]
 fn migrate_v23_creates_meta_resolve_index() {
     let db = Db::connect_in_memory().unwrap();
-    assert_eq!(db.schema_version().unwrap(), 23);
+    assert!(db.schema_version().unwrap() >= 23);
     let conn = db.lock().unwrap();
     let count: i64 = conn
         .query_row(
@@ -479,4 +479,118 @@ fn migrate_v23_creates_meta_resolve_index() {
         )
         .unwrap();
     assert_eq!(count, 1);
+}
+
+/// DB-LD-35: v23 からの v24 マイグレーションによる `watch_history` チャンネル
+/// バックフィルと、フィード最適化索引（`idx_videos_unread`・`idx_videos_feed_pub`・
+/// `idx_videos_channel_pub`）の作成、および最新スキーマ版 24 を検証する
+/// （仕様決定 DY、F-08）。設計書 §8 DDL との完全一致は `ddl_matches_design_section8`
+/// が併せて検証する。
+#[test]
+fn migrate_v24_backfills_watch_history_and_updates_feed_indexes() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 23) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+
+    // v23 時点の videos とチャンネル欠損 watch_history を仕込む
+    conn.execute(
+        "INSERT INTO videos (video_id, channel_id, channel_title, title, kind, ingested)
+         VALUES ('backfill001', 'UCbackfill00000000000001', '補完CH-1', '動画1', 'video', 1),
+                ('keepexist01', 'UCbackfill00000000000002', '補完CH-2', '動画2', 'video', 1),
+                ('emptych0001', '', NULL, '空CH動画', 'video', 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO watch_history (video_id, title, channel_id, channel_title)
+         VALUES ('backfill001', '動画1', NULL, NULL),
+                ('keepexist01', '動画2', 'UCexisting00000000000001', ''),
+                ('emptych0001', '空CH動画', NULL, NULL),
+                ('unmatched01', '未一致動画', NULL, NULL)",
+        [],
+    )
+    .unwrap();
+
+    // v24 を単一トランザクションで適用する
+    let v24 = migrations::MIGRATIONS
+        .iter()
+        .find(|m| m.version == 24)
+        .expect("v24 マイグレーションが存在すること");
+    {
+        let tx = conn.transaction().unwrap();
+        tx.execute_batch(v24.sql).unwrap();
+        tx.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [v24.version],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    let get_ch = |id: &str| -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT channel_id, channel_title FROM watch_history WHERE video_id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    // NULL 行は videos から補完される
+    assert_eq!(
+        get_ch("backfill001"),
+        (
+            Some("UCbackfill00000000000001".to_string()),
+            Some("補完CH-1".to_string())
+        )
+    );
+    // 既存の非空 channel_id は保持し、空の channel_title のみ videos から補完する
+    assert_eq!(
+        get_ch("keepexist01"),
+        (
+            Some("UCexisting00000000000001".to_string()),
+            Some("補完CH-2".to_string())
+        )
+    );
+    // videos.channel_id が空の行や videos に無い行は NULL のまま（空文字へ汚さない）
+    assert_eq!(get_ch("emptych0001"), (None, None));
+    assert_eq!(get_ch("unmatched01"), (None, None));
+
+    // v24 の 3 索引が期待通りの定義で作成されている
+    for (idx_name, expected_fragment) in [
+        ("idx_videos_unread", "WHERE is_read = 0"),
+        ("idx_videos_feed_pub", "WHERE ingested = 1"),
+        (
+            "idx_videos_channel_pub",
+            "(channel_id, published_at DESC, video_id)",
+        ),
+    ] {
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [idx_name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains(expected_fragment),
+            "索引 {idx_name} に `{expected_fragment}` が無い: {sql}"
+        );
+    }
+
+    // 新規接続時の最新スキーマバージョンが 24 になる
+    let fresh = Db::connect_in_memory().unwrap();
+    assert_eq!(fresh.schema_version().unwrap(), 24);
 }

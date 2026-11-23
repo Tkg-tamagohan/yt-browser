@@ -72,6 +72,137 @@ pub struct SubscribeArgs<'a> {
     pub last_modified: Option<&'a str>,
 }
 
+/// `feed_list_filtered` の `(unread_only, has_channel_id)` 4 分岐 SQL を返す（F-08）。
+/// 全 4 分岐で `ORDER BY v.published_at DESC, v.video_id` を維持しつつ、
+/// v24 索引（`idx_videos_feed_pub` / `idx_videos_unread` / `idx_videos_channel_pub`）を
+/// 直接走査させて `SCAN v` 素走査と `USE TEMP B-TREE` を排除する。
+///
+/// バインド順:
+/// - `?1`: `category_id`
+/// - `?2`: `days`
+/// - `?3`: `kind`
+/// - `?4`: `show_shorts` (`0` / `1`)
+/// - `?5`: `cursor.published_at`
+/// - `?6`: `cursor.video_id`
+/// - `?7`: `channel_id`（`has_channel_id == true` のときのみ）
+pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) -> &'static str {
+    match (unread_only, has_channel_id) {
+        (false, false) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.ingested = 1
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR v.kind = ?3
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
+               AND (?4 = 1 OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (true, false) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.ingested = 1
+               AND v.is_read = 0
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR v.kind = ?3
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
+               AND (?4 = 1 OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (false, true) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.channel_id = ?7
+               AND c.channel_id = ?7
+               AND v.ingested = 1
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR v.kind = ?3
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
+               AND (?4 = 1 OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (true, true) => {
+            // `+v.is_read = 0` の単項 `+` で部分索引 `idx_videos_unread` より
+            // `idx_videos_channel_pub (channel_id=?)` を確定選択させ、
+            // 他チャンネルの未読全件走査と `ANALYZE` 後の `SCAN c` 起因ソートを同時に防ぐ。
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.channel_id = ?7
+               AND c.channel_id = ?7
+               AND v.ingested = 1
+               AND +v.is_read = 0
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR v.kind = ?3
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
+               AND (?4 = 1 OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+    }
+}
+
 impl Db {
     /// フィード取得結果の投入。チャンネルの存在確認〜エントリ挿入〜取得メタ更新を
     /// 一トランザクションで行い、ポーリング中の購読解除（`channel_delete`）との競合を防ぐ。
@@ -153,45 +284,28 @@ impl Db {
         keep: impl Fn(&FeedItem) -> bool,
     ) -> Result<Vec<FeedItem>, DbError> {
         let conn = self.lock()?;
-        let mut stmt = conn.prepare(
-            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
-                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
-                    v.description
-             FROM videos v
-             JOIN channels c ON c.channel_id = v.channel_id
-             WHERE v.ingested = 1
-               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
-               AND (?1 = 0 OR v.is_read = 0)
-               AND (?2 IS NULL
-                    OR (?2 = 0 AND c.category_id IS NULL)
-                    OR c.category_id = ?2)
-               AND (?3 IS NULL
-                    OR datetime(v.published_at) >= datetime('now', '-' || ?3 || ' days'))
-               AND (?4 IS NULL
-                    OR v.kind = ?4
-                    OR (?4 = 'live' AND v.kind IN ('live','upcoming','premiere')))
-               AND (?5 = 1 OR v.kind <> 'short')
-               AND (?8 IS NULL OR v.channel_id = ?8)
-               AND (
-                    ?7 IS NULL
-                    OR (?6 IS NULL AND v.published_at IS NULL AND v.video_id > ?7)
-                    OR (?6 IS NOT NULL AND (
-                         v.published_at IS NULL
-                         OR v.published_at < ?6
-                         OR (v.published_at = ?6 AND v.video_id > ?7))))
-             ORDER BY v.published_at DESC, v.video_id",
-        )?;
+        let sql = feed_list_filtered_sql(filter.unread_only, filter.channel_id.is_some());
+        let mut stmt = conn.prepare(sql)?;
         let cursor = filter.cursor.as_ref();
-        let mut rows = stmt.query(rusqlite::params![
-            filter.unread_only as i64,
-            filter.category_id,
-            filter.days.map(|d| d as i64),
-            filter.kind,
-            show_shorts as i64,
-            cursor.and_then(|c| c.published_at.as_deref()),
-            cursor.map(|c| c.video_id.as_str()),
-            filter.channel_id,
-        ])?;
+        let mut rows = match filter.channel_id.as_deref() {
+            Some(channel_id) => stmt.query(rusqlite::params![
+                filter.category_id,
+                filter.days.map(|d| d as i64),
+                filter.kind,
+                show_shorts as i64,
+                cursor.and_then(|c| c.published_at.as_deref()),
+                cursor.map(|c| c.video_id.as_str()),
+                channel_id,
+            ])?,
+            None => stmt.query(rusqlite::params![
+                filter.category_id,
+                filter.days.map(|d| d as i64),
+                filter.kind,
+                show_shorts as i64,
+                cursor.and_then(|c| c.published_at.as_deref()),
+                cursor.map(|c| c.video_id.as_str()),
+            ])?,
+        };
         let mut out = Vec::new();
         while out.len() < limit {
             let Some(row) = rows.next()? else { break };

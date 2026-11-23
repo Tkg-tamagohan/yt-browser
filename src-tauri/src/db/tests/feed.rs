@@ -788,3 +788,234 @@ fn feed_auto_read_marks_aged_items() {
     // 経過した項目を含む残りがあっても、同じ日数では新たに既読にならない
     assert_eq!(db.feed_auto_read(false, 30).unwrap(), 0);
 }
+
+/// DB-LD-36: `feed_list_filtered` の全 4 分岐 `(unread_only, channel_id.is_some())`
+/// について `EXPLAIN QUERY PLAN` を検査し、`SCAN v` 素走査および
+/// `USE TEMP B-TREE` が 0 件であること、かつ全分岐で期待どおりの降順結果を返すことを
+/// 検証する（F-08）。
+#[test]
+fn feed_list_filtered_query_plans_avoid_table_scan_and_temp_btree() {
+    let db = Db::connect_in_memory().unwrap();
+    let cat = db.category_create("技術").unwrap();
+    let ch1 = "UCplan000000000000000001";
+    let ch2 = "UCplan000000000000000002";
+    let mk = |id: &'static str, ch: &'static str, pub_at: &'static str| NewVideo {
+        video_id: id,
+        channel_id: ch,
+        channel_title: "CH",
+        title: id,
+        thumbnail_url: None,
+        published_at: Some(pub_at),
+        kind: "video",
+    };
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch1,
+        title: "CH1",
+        thumbnail_url: None,
+        category_id: Some(cat.id),
+        entries: &[
+            mk("planvid0001", ch1, "2026-11-20T10:00:00+00:00"),
+            mk("planvid0002", ch1, "2026-11-19T10:00:00+00:00"),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch2,
+        title: "CH2",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[mk("planvid0003", ch2, "2026-11-21T10:00:00+00:00")],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    db.videos_mark_read(&["planvid0002".to_string()]).unwrap();
+
+    // 4 分岐すべての EXPLAIN QUERY PLAN を検査（カテゴリ・カーソル・期間・種別・shorts 除外の有無を含む）
+    let cases = [
+        (false, None, "idx_videos_feed_pub"),
+        (true, None, "idx_videos_unread"),
+        (false, Some(ch1), "idx_videos_channel_pub"),
+        (true, Some(ch1), "idx_videos_channel_pub"),
+    ];
+    let filter_variants = [
+        (None, None, None, 1i64, None, None),
+        (
+            Some(cat.id),
+            Some(30i64),
+            Some("video"),
+            0i64,
+            Some("2026-11-20T10:00:00+00:00"),
+            Some("planvid0001"),
+        ),
+    ];
+    let assert_plans = |conn: &Connection, stage: &str| {
+        for (unread_only, ch, expected_index) in cases {
+            for (category_id, days, kind, show_shorts, cur_pub, cur_vid) in filter_variants {
+                let sql = format!(
+                    "EXPLAIN QUERY PLAN {}",
+                    crate::db::feed::feed_list_filtered_sql(unread_only, ch.is_some())
+                );
+                let mut stmt = conn.prepare(&sql).unwrap();
+                let details: Vec<String> = match ch {
+                    Some(cid) => stmt
+                        .query_map(
+                            rusqlite::params![
+                                category_id,
+                                days,
+                                kind,
+                                show_shorts,
+                                cur_pub,
+                                cur_vid,
+                                cid,
+                            ],
+                            |r| r.get::<_, String>(3),
+                        )
+                        .unwrap()
+                        .collect::<Result<_, _>>()
+                        .unwrap(),
+                    None => stmt
+                        .query_map(
+                            rusqlite::params![
+                                category_id,
+                                days,
+                                kind,
+                                show_shorts,
+                                cur_pub,
+                                cur_vid,
+                            ],
+                            |r| r.get::<_, String>(3),
+                        )
+                        .unwrap()
+                        .collect::<Result<_, _>>()
+                        .unwrap(),
+                };
+                let joined = details.join(" | ");
+                assert!(
+                    !details.iter().any(|d| d.contains("USE TEMP B-TREE")),
+                    "[{stage}] unread_only={unread_only}, ch={ch:?}, cat={category_id:?} で USE TEMP B-TREE が発生: {joined}"
+                );
+                assert!(
+                    !details.iter().any(|d| {
+                        d == "SCAN v" || (d.starts_with("SCAN v ") && !d.contains("USING "))
+                    }),
+                    "[{stage}] unread_only={unread_only}, ch={ch:?}, cat={category_id:?} で素の SCAN v が発生: {joined}"
+                );
+                assert!(
+                    details.iter().any(|d| d.contains(expected_index)),
+                    "[{stage}] unread_only={unread_only}, ch={ch:?}, cat={category_id:?} で期待索引 {expected_index} が未使用: {joined}"
+                );
+            }
+        }
+    };
+    {
+        let conn = db.lock().unwrap();
+        // ANALYZE 前（通常運用時・3 行の小規模データでも索引走査が選ばれる）
+        assert_plans(&conn, "before_analyze");
+    }
+
+    // 実クエリ結果の整合確認（全 4 分岐＋published_at NULL 混在カーソルページング）
+    let ids = |unread_only: bool, channel_id: Option<&str>| -> Vec<String> {
+        let f = FeedFilter {
+            unread_only,
+            channel_id: channel_id.map(str::to_string),
+            ..FeedFilter::default()
+        };
+        db.feed_list_filtered(&f, true, FEED_LIST_LIMIT, |_| true)
+            .unwrap()
+            .into_iter()
+            .map(|it| it.video_id)
+            .collect()
+    };
+    assert_eq!(
+        ids(false, None),
+        ["planvid0003", "planvid0001", "planvid0002"]
+    );
+    assert_eq!(ids(true, None), ["planvid0003", "planvid0001"]);
+    assert_eq!(ids(false, Some(ch1)), ["planvid0001", "planvid0002"]);
+    assert_eq!(ids(true, Some(ch1)), ["planvid0001"]);
+
+    // published_at NULL 混在時のカーソル終端確認（ch1 に NULL 行を 2 件追加）
+    db.feed_ingest(
+        ch1,
+        &[
+            NewVideo {
+                video_id: "plannull002",
+                channel_id: ch1,
+                channel_title: "CH1",
+                title: "NULL-2",
+                thumbnail_url: None,
+                published_at: None,
+                kind: "video",
+            },
+            NewVideo {
+                video_id: "plannull001",
+                channel_id: ch1,
+                channel_title: "CH1",
+                title: "NULL-1",
+                thumbnail_url: None,
+                published_at: None,
+                kind: "video",
+            },
+        ],
+        None,
+        None,
+    )
+    .unwrap();
+    let mut cursor = None;
+    let mut paged = Vec::new();
+    loop {
+        let page = db
+            .feed_list_filtered(
+                &FeedFilter {
+                    unread_only: true,
+                    channel_id: Some(ch1.to_string()),
+                    cursor: cursor.clone(),
+                    ..FeedFilter::default()
+                },
+                true,
+                1,
+                |_| true,
+            )
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        let last = page.last().unwrap();
+        paged.push(last.video_id.clone());
+        cursor = Some(crate::model::FeedCursor {
+            published_at: last.published_at.clone(),
+            video_id: last.video_id.clone(),
+        });
+    }
+    assert_eq!(paged, ["planvid0001", "plannull001", "plannull002"]);
+
+    // 少数チャンネル（2 チャンネル）＋数百件の videos がある状態で ANALYZE を実行しても、
+    // `FROM channels c CROSS JOIN videos v` 型の `SCAN c` 起因 TEMP B-TREE が発生しないことを検証する
+    {
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        for i in 0..300 {
+            let cid = if i < 250 { ch1 } else { ch2 };
+            let vid = format!("bulkvid{i:04}");
+            let pub_at = format!(
+                "2026-{:02}-{:02}T{:02}:00:00+00:00",
+                (i % 12) + 1,
+                (i % 28) + 1,
+                i % 24
+            );
+            tx.execute(
+                "INSERT INTO videos
+                   (video_id, channel_id, channel_title, title, published_at, kind, is_read, ingested)
+                 VALUES (?1, ?2, 'CH', ?1, ?3, 'video', ?4, 1)",
+                rusqlite::params![vid, cid, pub_at, i % 2],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        conn.execute_batch("ANALYZE;").unwrap();
+        assert_plans(&conn, "after_analyze");
+    }
+}

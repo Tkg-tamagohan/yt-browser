@@ -144,6 +144,10 @@ pub fn run() {
                 }
             };
 
+            // InnerTube クライアント（設計書 §6.1）。関連動画・チャット・履歴チャンネル補完が共用する。
+            let innertube = std::sync::Arc::new(innertube::InnerTube::new());
+            app.manage(innertube.clone());
+
             let ytdlp_resolver = yt::YtDlpResolver::new(app.path().resource_dir().ok());
             app.manage(ytdlp_resolver.clone());
             // mpv から chat への直接依存を避けるため、動画離脱時のポップアップ自動クローズは
@@ -164,6 +168,59 @@ pub fn run() {
                     },
                 )
             };
+            // mpv から innertube 等への直接依存を避けるため、未解決動画の履歴チャンネル補完は
+            // コールバックフックとして PlayerManager へ注入する（仕様決定 DY）。
+            // 同一 video_id の並列重複リクエストを InFlightSet で抑止し、
+            // DB の watch_history.channel_id が空のときだけ外部解決する。
+            let video_start_hook: mpv::VideoStartHook = {
+                let hook_db = db.clone();
+                let hook_innertube = innertube.clone();
+                let hook_resolver = ytdlp_resolver.clone();
+                let in_flight = InFlightSet::new();
+                std::sync::Arc::new(move |video_id| {
+                    let Some(guard) = in_flight.try_acquire(video_id) else {
+                        return;
+                    };
+                    let vid = video_id.to_string();
+                    let db = hook_db.clone();
+                    let innertube = std::sync::Arc::clone(&hook_innertube);
+                    let resolver = hook_resolver.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _guard = guard;
+                        if db.is_history_suppressed(&vid) {
+                            return;
+                        }
+                        let has_channel = match db.history_get(&vid) {
+                            Ok(Some(h)) => h
+                                .channel_id
+                                .as_deref()
+                                .map(str::trim)
+                                .is_some_and(|s| !s.is_empty()),
+                            Ok(None) => false,
+                            Err(e) => {
+                                tracing::warn!(video_id = %vid, error = %e, "履歴チャンネル確認に失敗");
+                                return;
+                            }
+                        };
+                        if has_channel {
+                            return;
+                        }
+                        let resolved =
+                            commands::feed::resolve_video_channel(&vid, &db, &innertube, &resolver)
+                                .await;
+                        if resolved.channel_id.is_some() || resolved.channel_title.is_some() {
+                            if let Err(e) = db.history_set_channel(
+                                &vid,
+                                resolved.channel_id.as_deref(),
+                                resolved.channel_title.as_deref(),
+                                resolved.title.as_deref(),
+                            ) {
+                                tracing::warn!(video_id = %vid, error = %e, "履歴チャンネルの書き戻しに失敗");
+                            }
+                        }
+                    });
+                })
+            };
             app.manage(mpv::PlayerManager::new(
                 app.handle().clone(),
                 db.clone(),
@@ -172,11 +229,8 @@ pub fn run() {
                 wheel_script,
                 log_dir,
                 popup_close_hook,
+                video_start_hook,
             ));
-
-            // InnerTube クライアント（設計書 §6.1）。関連動画とチャットが共用する。
-            let innertube = std::sync::Arc::new(innertube::InnerTube::new());
-            app.manage(innertube.clone());
 
             // NG 評価器の共有所有（chat 表示だけでなくフィード・検索・
             // 関連動画の動画系 NG 判定も通るため chat ではなく filter 配下に置く）。
@@ -340,4 +394,58 @@ pub fn run() {
             }
         }
     });
+}
+
+/// 同一 `video_id` の並列重複解決を抑止する RAII ガード付き集合（仕様決定 DY）。
+#[derive(Clone)]
+struct InFlightSet {
+    inner: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+struct InFlightGuard {
+    inner: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    video_id: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        util::lock(&self.inner).remove(&self.video_id);
+    }
+}
+
+impl InFlightSet {
+    fn new() -> Self {
+        Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+        }
+    }
+
+    fn try_acquire(&self, video_id: &str) -> Option<InFlightGuard> {
+        let vid = video_id.to_string();
+        if !util::lock(&self.inner).insert(vid.clone()) {
+            return None;
+        }
+        Some(InFlightGuard {
+            inner: std::sync::Arc::clone(&self.inner),
+            video_id: vid,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_flight_set_deduplicates_and_releases_on_drop() {
+        let set = InFlightSet::new();
+        let g1 = set.try_acquire("vid00000001");
+        assert!(g1.is_some());
+        assert!(set.try_acquire("vid00000001").is_none());
+        let g2 = set.try_acquire("vid00000002");
+        assert!(g2.is_some());
+        drop(g1);
+        assert!(set.try_acquire("vid00000001").is_some());
+        drop(g2);
+    }
 }

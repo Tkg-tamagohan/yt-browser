@@ -645,6 +645,8 @@ export const en = {
     "This will overwrite current subscriptions, categories, settings, and playlists. This cannot be undone.",
   "settings.ops.imported": "Imported: {path}",
   "settings.ops.importFailed": "Import failed: {message}",
+  "settings.ops.protectedNote":
+    "Local protected settings (ytdlp.po_token, ytdlp.path, mpv.extra_args, setup.deps_shown) are excluded from export and preserved on import.",
   "settings.ops.dbSize": "Database size",
   "settings.ops.dbSize.desc": "Total of DB and WAL files",
   "settings.ops.dbSize.failed": "Failed to get size: {message}",

@@ -363,6 +363,24 @@ impl FeedPoller {
         self.wake.notify_one();
     }
 
+    /// データインポート後のランタイム同期（FR-94、仕様決定 DX）。
+    /// DB 上の現 `channels` に存在しなくなったスケジュール項目を除去し、
+    /// 新しい自動既読設定で `apply_auto_read()` を実行した上で巡回を起こす。
+    pub fn sync_after_import(&self) {
+        match self.db.channel_poll_targets() {
+            Ok(targets) => {
+                let live: std::collections::HashSet<String> =
+                    targets.into_iter().map(|t| t.channel_id).collect();
+                lock(&self.sched).retain(|id, _| live.contains(id));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "インポート後の購読一覧取得に失敗");
+            }
+        }
+        self.apply_auto_read();
+        self.wake_now();
+    }
+
     /// 手動更新: 対象（全チャンネルまたは指定 1 件）の次回予定を現在に戻し巡回を起こす。
     /// 失敗カウンタは保持する（手動更新でも連続失敗として数える）。
     pub fn force_refresh(&self, channel_id: Option<&str>) {

@@ -8,9 +8,31 @@
 
 use super::*;
 use crate::model::{
-    Category, ExportChannel, ExportDump, ExportPlaylist, ExportPlaylistItem, ExportSetting,
-    EXPORT_FORMAT_VERSION,
+    is_channel_id, is_video_id, Category, ExportChannel, ExportDump, ExportPlaylist,
+    ExportPlaylistItem, ExportSetting, EXPORT_FORMAT_VERSION, MAX_PLAYLIST_NAME_LEN,
+    MAX_SETTING_KEY_LEN, MAX_SETTING_VALUE_LEN,
 };
+use std::collections::{BTreeMap, BTreeSet};
+
+/// ローカル環境依存または秘密情報を含むため、ダンプ出力から除外し
+/// インポート時もローカル既存値を保持する設定キー（FR-94、仕様決定 DX）。
+pub(crate) const LOCAL_PROTECTED_SETTINGS: &[&str] = &[
+    "ytdlp.po_token",
+    "ytdlp.path",
+    "mpv.extra_args",
+    "setup.deps_shown",
+];
+
+/// 指定キーがローカル保護対象の設定か判定する（FR-94、仕様決定 DX）。
+pub(crate) fn is_local_protected_setting(key: &str) -> bool {
+    LOCAL_PROTECTED_SETTINGS.contains(&key)
+}
+
+/// プレイリスト項目の `channel_id` を正規化する（FR-94、仕様決定 DX）。
+/// 正規 UC 形式（`is_channel_id`）のみ通し、非 UC 値は `None` に倒す。
+fn normalize_playlist_item_channel_id(channel_id: Option<&str>) -> Option<String> {
+    channel_id.filter(|s| is_channel_id(s)).map(str::to_string)
+}
 
 /// インポート検証エラー。形式版の不一致や参照先の欠落など、
 /// ダンプが受理できない内容のとき `DbError::Import` として返す。
@@ -68,8 +90,12 @@ impl Db {
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
             while let Some(row) = rows.next()? {
+                let key: String = row.get(0)?;
+                if is_local_protected_setting(&key) {
+                    continue;
+                }
                 out.push(ExportSetting {
-                    key: row.get(0)?,
+                    key,
                     value: row.get(1)?,
                 });
             }
@@ -127,23 +153,44 @@ impl Db {
         })
     }
 
-    /// `ExportDump` の内容で対象テーブルを置き換える（FR-62）。
-    /// 先に内容の検証（形式版・ID 集合・外部キー参照）を行い、受理できた
-    /// ダンプだけを 1 トランザクションで書き込む。
+    /// `ExportDump` の内容で対象テーブルを置き換え、変化した非保護設定キーの
+    /// `(key, インポート後の Option<String>)` 一覧を返す（FR-62・FR-94、仕様決定 CM・DX）。
+    /// 先に内容の検証（形式版・ID 形式・長さ上限・ID 集合・外部キー参照）を行い、
+    /// 受理できたダンプだけを 1 トランザクションで書き込む。
     ///
-    /// 置き換えの暫定解釈:
+    /// 置き換えの規則:
     /// - `channels`/`categories`/`settings`/`playlists`/`playlist_items` は
     ///   ダンプの内容に一致する状態へ戻す（ダンプに無い行は消える）。
+    /// - `LOCAL_PROTECTED_SETTINGS` の 4 キーは削除前にローカル既存値を退避し、
+    ///   ダンプ側の同 4 キーを読み飛ばした上で退避値を復元する（FR-94、仕様決定 DX）。
     /// - `videos` 台帳は触らず、プレイリスト項目の表示メタだけ
     ///   `video_upsert` と同じ規則で補完する（既存メタは壊さない）。
+    ///   `ExportPlaylistItem.channel_id` の非 UC 値は `None` へ正規化する。
     /// - `watch_history` など対象外のデータは保持する。
+    /// - `DELETE FROM playlists` に伴い `queue_state` のプレイリストキュー行は
+    ///   外部キー `ON DELETE CASCADE` で削除される。
     /// - ダンプ内で `categories.id` / `playlists.id` はエクスポート時の値を
     ///   そのまま使う（別環境で ID が衝突しても参照だけ合えばよい。
     ///   AUTOINCREMENT 採番は最大 ID 以降へ進む）。
-    pub fn import_dump(&self, dump: &ExportDump) -> Result<(), DbError> {
+    pub fn import_dump(&self, dump: &ExportDump) -> Result<Vec<(String, Option<String>)>, DbError> {
         validate_dump(dump)?;
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
+        // `DELETE FROM settings` の直前に既存設定を全件読み取り、
+        // (1) 保護 4 キーの退避・復元 と (2) 非保護キーの前後差分算出 に使う。
+        let before_settings: BTreeMap<String, String> = {
+            let mut stmt = tx.prepare("SELECT key, value FROM settings ORDER BY key")?;
+            let mut rows = stmt.query([])?;
+            let mut map = BTreeMap::new();
+            while let Some(row) = rows.next()? {
+                map.insert(row.get::<_, String>(0)?, row.get::<_, String>(1)?);
+            }
+            map
+        };
+        let preserved_protected: Vec<(&String, &String)> = before_settings
+            .iter()
+            .filter(|(k, _)| is_local_protected_setting(k))
+            .collect();
         // 参照順の都合で項目→本体の順に消し、本体→項目の順に戻す。
         // channels.category_id は ON DELETE SET NULL のため、先に
         // channels を消してから categories を消すと NULL 化 UPDATE が
@@ -182,25 +229,37 @@ impl Db {
                 ],
             )?;
         }
+        let mut after_settings: BTreeMap<String, String> = BTreeMap::new();
         for s in &dump.settings {
+            if is_local_protected_setting(&s.key) {
+                continue;
+            }
             tx.execute(
                 "INSERT INTO settings (key, value) VALUES (?1, ?2)",
                 rusqlite::params![s.key, s.value],
+            )?;
+            after_settings.insert(s.key.clone(), s.value.clone());
+        }
+        for (k, v) in preserved_protected {
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![k, v],
             )?;
         }
         for p in &dump.playlists {
             tx.execute(
                 "INSERT INTO playlists (id, name, sort_order) VALUES (?1, ?2, ?3)",
-                rusqlite::params![p.id, p.name, p.sort_order],
+                rusqlite::params![p.id, p.name.trim(), p.sort_order],
             )?;
             for it in &p.items {
-                // 表示メタの補完登録（台帳の既存メタは非空の値だけで補強する）
+                // 表示メタの補完登録（台帳の既存メタは非空の値だけで補強する）。
+                // channel_id の非 UC 値のみ None へ正規化する（FR-94、仕様決定 DX）。
                 Self::video_upsert(
                     &tx,
                     &crate::model::VideoRef {
                         video_id: it.video_id.clone(),
                         title: it.title.clone().unwrap_or_default(),
-                        channel_id: it.channel_id.clone(),
+                        channel_id: normalize_playlist_item_channel_id(it.channel_id.as_deref()),
                         channel_title: it.channel_title.clone(),
                         thumbnail_url: it.thumbnail_url.clone(),
                     },
@@ -213,12 +272,31 @@ impl Db {
             }
         }
         tx.commit()?;
-        Ok(())
+        let mut all_keys = BTreeSet::new();
+        for k in before_settings.keys() {
+            if !is_local_protected_setting(k) {
+                all_keys.insert(k.as_str());
+            }
+        }
+        for k in after_settings.keys() {
+            if !is_local_protected_setting(k) {
+                all_keys.insert(k.as_str());
+            }
+        }
+        let mut changed = Vec::new();
+        for k in all_keys {
+            let before = before_settings.get(k);
+            let after = after_settings.get(k);
+            if before != after {
+                changed.push((k.to_string(), after.cloned()));
+            }
+        }
+        Ok(changed)
     }
 }
 
-/// ダンプの受理可否を検証する（書き込み前の全文検査）。
-/// 形式版の一致に加えて、ID の一意性と外部キー参照の有効性を確認する。
+/// ダンプの受理可否を検証する（書き込み前の全文検査、FR-62・FR-94）。
+/// 形式版の一致に加えて、ID 形式・長さ上限・ID の一意性と外部キー参照の有効性を確認する。
 fn validate_dump(dump: &ExportDump) -> Result<(), DbError> {
     if dump.version != EXPORT_FORMAT_VERSION {
         return Err(import_error(format!(
@@ -245,6 +323,12 @@ fn validate_dump(dump: &ExportDump) -> Result<(), DbError> {
                 "チャンネル ID またはタイトルが空の行があります",
             ));
         }
+        if !is_channel_id(&ch.channel_id) {
+            return Err(import_error(format!(
+                "チャンネル ID {} の形式が不正です",
+                ch.channel_id
+            )));
+        }
         if !channel_ids.insert(ch.channel_id.as_str()) {
             return Err(import_error(format!(
                 "チャンネル {} が重複しています",
@@ -262,8 +346,22 @@ fn validate_dump(dump: &ExportDump) -> Result<(), DbError> {
     }
     let mut setting_keys = std::collections::HashSet::new();
     for s in &dump.settings {
+        if is_local_protected_setting(&s.key) {
+            continue;
+        }
         if s.key.is_empty() {
             return Err(import_error("設定キーが空の行があります"));
+        }
+        if s.key.len() > MAX_SETTING_KEY_LEN {
+            return Err(import_error(format!(
+                "設定キーが長すぎます（{MAX_SETTING_KEY_LEN} バイト上限）"
+            )));
+        }
+        if s.value.len() > MAX_SETTING_VALUE_LEN {
+            return Err(import_error(format!(
+                "設定キー {} の値が長すぎます（{MAX_SETTING_VALUE_LEN} バイト上限）",
+                s.key
+            )));
         }
         if !setting_keys.insert(s.key.as_str()) {
             return Err(import_error(format!("設定キー {} が重複しています", s.key)));
@@ -271,8 +369,14 @@ fn validate_dump(dump: &ExportDump) -> Result<(), DbError> {
     }
     let mut playlist_ids = std::collections::HashSet::new();
     for p in &dump.playlists {
-        if p.name.trim().is_empty() {
+        let trimmed_name = p.name.trim();
+        if trimmed_name.is_empty() {
             return Err(import_error("プレイリスト名が空の行があります"));
+        }
+        if trimmed_name.chars().count() > MAX_PLAYLIST_NAME_LEN {
+            return Err(import_error(format!(
+                "プレイリスト名が長すぎます（{MAX_PLAYLIST_NAME_LEN} 文字上限）"
+            )));
         }
         if !playlist_ids.insert(p.id) {
             return Err(import_error(format!(
@@ -284,6 +388,12 @@ fn validate_dump(dump: &ExportDump) -> Result<(), DbError> {
         for it in &p.items {
             if it.video_id.trim().is_empty() {
                 return Err(import_error("動画 ID が空のプレイリスト項目があります"));
+            }
+            if !is_video_id(&it.video_id) {
+                return Err(import_error(format!(
+                    "プレイリスト {} の動画 ID {} の形式が不正です",
+                    p.id, it.video_id
+                )));
             }
             if it.position < 0 {
                 return Err(import_error("position が負のプレイリスト項目があります"));

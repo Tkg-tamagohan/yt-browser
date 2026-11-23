@@ -6,11 +6,10 @@ use crate::db::Db;
 use crate::error::UiError;
 use crate::model::{
     DbSize, DbStatus, DepStatus, ExportDump, MonitorInfo, SettingChanged, YtDlpStatus,
+    MAX_SETTING_KEY_LEN, MAX_SETTING_VALUE_LEN,
 };
 use crate::yt::{self, YtDlpResolver};
-
-const MAX_SETTING_KEY_LEN: usize = 128;
-const MAX_SETTING_VALUE_LEN: usize = 16 * 1024;
+use std::sync::Arc;
 
 /// `ui.shortcuts`（FR-79、仕様決定 DD）。アプリ側キーボード
 /// ショートカットの有効化。on 系のみ有効で、未設定・その他の値は
@@ -176,26 +175,66 @@ pub async fn data_export(path: String, db: State<'_, Db>) -> Result<(), UiError>
     .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
-/// `data_import`（FR-62、仕様決定 CM）。`data_export` が書き出した JSON を
-/// 読み込み、対象テーブルをダンプ内容で置き換える。
+/// `data_import`（FR-62・FR-94、仕様決定 CM・DX）。`data_export` が書き出した JSON を
+/// 読み込み、対象テーブルをダンプ内容で置き換える（ローカル保護 4 キーは保持）。
 /// ファイルの読み取り・形式検証に失敗した場合は DB を変更しない。
+/// インポート成功後は、稼働中プレイヤーの `pip.fit_aspect` 同期、変化した非保護設定の
+/// `settings://changed` 差分送出、`FeedPoller::sync_after_import()`、
+/// `MetaResolver::wake_now()` を実行する。
 #[tauri::command]
-pub async fn data_import(path: String, db: State<'_, Db>) -> Result<(), UiError> {
+pub async fn data_import(
+    path: String,
+    app: AppHandle,
+    db: State<'_, Db>,
+    players: State<'_, crate::mpv::PlayerManager>,
+    feed_poller: State<'_, Arc<crate::feed::FeedPoller>>,
+    meta_resolver: State<'_, Arc<crate::metaresolve::MetaResolver>>,
+) -> Result<(), UiError> {
     let path = path.trim().to_string();
     if path.is_empty() {
         return Err(UiError::invalid_input("読み込み元パスが空です"));
     }
-    let db = db.inner().clone();
-    tokio::task::spawn_blocking(move || -> Result<(), UiError> {
+    struct ImportOutcome {
+        changed: Vec<(String, Option<String>)>,
+        pip_fit_raw: Option<String>,
+    }
+    let db_owned = db.inner().clone();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<ImportOutcome, UiError> {
         let text = std::fs::read_to_string(&path)
             .map_err(|e| UiError::invalid_input(format!("インポートファイルを読めません: {e}")))?;
         let dump: ExportDump = serde_json::from_str(&text)
             .map_err(|e| UiError::invalid_input(format!("インポート形式が不正です: {e}")))?;
-        db.import_dump(&dump)?;
-        Ok(())
+        let changed = db_owned.import_dump(&dump)?;
+        let pip_fit_raw = db_owned.setting_get(crate::mpv::SETTING_PIP_FIT_ASPECT)?;
+        Ok(ImportOutcome {
+            changed,
+            pip_fit_raw,
+        })
     })
     .await
-    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??;
+
+    // 稼働中プレイヤーの PiP アスペクト比追従を最新設定（未設定時は既定 true）へ同期する。
+    // settings://changed 送出前に配って画面表示と窓の実態を揃える（settings_set と同順）。
+    players
+        .set_pip_fit_all(crate::mpv::pip_fit_aspect_enabled(outcome.pip_fit_raw))
+        .await;
+    for (key, after) in outcome.changed {
+        let _ = app.emit(
+            "settings://changed",
+            SettingChanged {
+                key,
+                value: after.unwrap_or_default(),
+            },
+        );
+    }
+    let poller = Arc::clone(feed_poller.inner());
+    let _ = tokio::task::spawn_blocking(move || {
+        poller.sync_after_import();
+    })
+    .await;
+    meta_resolver.wake_now();
+    Ok(())
 }
 
 /// `db_size`（FR-66、仕様決定 CQ）。DB 本体と WAL/SHM サイドファイルの
@@ -224,4 +263,18 @@ pub async fn db_cleanup_orphans(db: State<'_, Db>) -> Result<u64, UiError> {
     Ok(tokio::task::spawn_blocking(move || db.db_cleanup_orphans())
         .await
         .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn local_protected_settings_matches_domain_constants() {
+        let expected = [
+            crate::yt::SETTING_PO_TOKEN,
+            crate::yt::SETTING_YTDLP_PATH,
+            crate::mpv::SETTING_MPV_EXTRA_ARGS,
+            crate::deps::SETTING_SETUP_DEPS_SHOWN,
+        ];
+        assert_eq!(crate::db::export::LOCAL_PROTECTED_SETTINGS, expected);
+    }
 }

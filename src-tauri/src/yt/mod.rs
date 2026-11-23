@@ -215,16 +215,26 @@ pub async fn channel_id(path: &str, url: &str, po_token: Option<&str>) -> Result
         .ok_or(YtError::NoChannelId)
 }
 
-/// 再生中動画のチャンネル参照候補をメタから取る（FR-12、仕様決定 U）。
-/// `channel_id` → `uploader_id` → `channel_url` の順に非空の値を
-/// `subscribe_channel` が受理できる形に正規化して返す。
+/// `video_channel_ref` が単一 yt-dlp JSON 応答から同時抽出するメタ情報（仕様決定 U・DY）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoChannelInfo {
+    pub candidates: Vec<String>,
+    pub channel_title: Option<String>,
+    pub title: Option<String>,
+}
+
+/// 再生中動画のチャンネル参照候補と表示用メタを単一 yt-dlp 呼び出しから取る
+/// （FR-12、仕様決定 U・DY）。
+/// `channel_id` → `uploader_id` → `channel_url` の順に `subscribe_channel` が
+/// 受理できる参照候補を抽出し、あわせて `channel` → `uploader` からチャンネル名、
+/// `title` から動画題名を同時抽出する。
 /// 動画視聴ページは単一項目のプレイリストとして `--flat-playlist` で軽く取る。
 /// `po_token` は設定 `ytdlp.po_token` の値（FR-86、仕様決定 DK）。
 pub async fn video_channel_ref(
     path: &str,
     video_id: &str,
     po_token: Option<&str>,
-) -> Result<Vec<String>, YtError> {
+) -> Result<VideoChannelInfo, YtError> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let out = run_checked(
         Command::new(path)
@@ -235,19 +245,45 @@ pub async fn video_channel_ref(
     )
     .await?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    // 単一動画ではトップレベルにメタが来る。プレイリスト形で返る場合は
-    // entries[0] を同じ優先順で見る
-    let cands = channel_ref_candidates(&v);
-    if !cands.is_empty() {
-        return Ok(cands);
-    }
-    if let Some(first) = v.get("entries").and_then(|e| e.get(0)) {
-        let cands = channel_ref_candidates(first);
-        if !cands.is_empty() {
-            return Ok(cands);
+    select_video_channel_info(&v)
+}
+
+/// yt-dlp の `--dump-single-json` 応答から `VideoChannelInfo` を選択する（仕様決定 U・DY）。
+/// `entries` 配列を含むプレイリスト形式応答ではトップレベルのプレイリスト所有者情報を
+/// 動画へ誤帰属させないよう `entries[0]` のみを判定し、単一動画 JSON ではトップレベルを判定する。
+/// 参照候補が無い場合でも、対象動画に `channel_title` が取れていれば履歴検索用メタとして返す。
+fn select_video_channel_info(v: &serde_json::Value) -> Result<VideoChannelInfo, YtError> {
+    if let Some(entries) = v.get("entries").and_then(|e| e.as_array()) {
+        if let Some(first) = entries.first() {
+            let info = extract_video_channel_info(first);
+            if !info.candidates.is_empty() || info.channel_title.is_some() {
+                return Ok(info);
+            }
         }
+        return Err(YtError::NoChannelId);
+    }
+    let top = extract_video_channel_info(v);
+    if !top.candidates.is_empty() || top.channel_title.is_some() {
+        return Ok(top);
     }
     Err(YtError::NoChannelId)
+}
+
+fn non_empty_yt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "None")
+        .map(str::to_string)
+}
+
+/// yt-dlp のメタ JSON から参照候補・チャンネル名（`channel` → `uploader`）・題名を抽出する。
+fn extract_video_channel_info(v: &serde_json::Value) -> VideoChannelInfo {
+    VideoChannelInfo {
+        candidates: channel_ref_candidates(v),
+        channel_title: non_empty_yt_str(v, "channel").or_else(|| non_empty_yt_str(v, "uploader")),
+        title: non_empty_yt_str(v, "title"),
+    }
 }
 
 /// メタ JSON から `channel_id` → `uploader_id` → `channel_url` の順に
@@ -255,18 +291,11 @@ pub async fn video_channel_ref(
 /// `@` を補う（暫定: ハンドルとみなす）。yt-dlp が文字列 "None" を
 /// 出力することがあるため空扱いする（実測確認済み、ytsearch と同じ罠）。
 fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
-    let get = |key: &str| -> Option<String> {
-        v.get(key)
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != "None")
-            .map(str::to_string)
-    };
     let mut out = Vec::new();
-    if let Some(cid) = get("channel_id") {
+    if let Some(cid) = non_empty_yt_str(v, "channel_id") {
         out.push(cid);
     }
-    if let Some(up) = get("uploader_id") {
+    if let Some(up) = non_empty_yt_str(v, "uploader_id") {
         // UC 形の uploader_id はチャンネル ID として扱う（yt-dlp が
         // uploader_id に UC ID を出すことがある。`@UC...` と解釈すると
         // 存在しないハンドルへ解決してしまう）
@@ -276,7 +305,7 @@ fn channel_ref_candidates(v: &serde_json::Value) -> Vec<String> {
             format!("@{up}")
         });
     }
-    if let Some(url) = get("channel_url") {
+    if let Some(url) = non_empty_yt_str(v, "channel_url") {
         out.push(url);
     }
     out
@@ -658,6 +687,99 @@ mod tests {
         );
 
         assert!(channel_ref_candidates(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn extract_video_channel_info_extracts_title_and_prefers_channel_over_uploader() {
+        let v = serde_json::json!({
+            "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+            "channel": "  山歩き  ",
+            "uploader": "FallbackUploader",
+            "title": "  山頂レポート  ",
+        });
+        let info = extract_video_channel_info(&v);
+        assert_eq!(
+            info.candidates,
+            vec!["UCuAXFkgsw1L7xaCfnd5JJOw".to_string()]
+        );
+        assert_eq!(info.channel_title.as_deref(), Some("山歩き"));
+        assert_eq!(info.title.as_deref(), Some("山頂レポート"));
+
+        // channel が "None" / 空なら uploader へフォールバックし、両方 "None" なら None
+        let v2 = serde_json::json!({
+            "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+            "channel": "None",
+            "uploader": "UploaderCH",
+            "title": "None",
+        });
+        let info2 = extract_video_channel_info(&v2);
+        assert_eq!(info2.channel_title.as_deref(), Some("UploaderCH"));
+        assert_eq!(info2.title, None);
+
+        // 参照候補が無くチャンネル名のみ存在する応答でも情報を捨てずに返す
+        let name_only = serde_json::json!({
+            "channel": "NameOnlyCH",
+            "title": "NameOnlyTitle",
+        });
+        let selected = select_video_channel_info(&name_only).unwrap();
+        assert!(selected.candidates.is_empty());
+        assert_eq!(selected.channel_title.as_deref(), Some("NameOnlyCH"));
+        assert_eq!(selected.title.as_deref(), Some("NameOnlyTitle"));
+
+        // entries[0] に参照候補がある場合はトップレベルの名前のみより優先する
+        let entries_with_cand = serde_json::json!({
+            "channel": "PlaylistOwner",
+            "entries": [{
+                "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+                "channel": "VideoCH",
+                "title": "VideoTitle"
+            }]
+        });
+        let selected2 = select_video_channel_info(&entries_with_cand).unwrap();
+        assert_eq!(
+            selected2.candidates,
+            vec!["UCuAXFkgsw1L7xaCfnd5JJOw".to_string()]
+        );
+        assert_eq!(selected2.channel_title.as_deref(), Some("VideoCH"));
+
+        // entries あり＋参照候補なしのときも、entries[0] の動画チャンネル名を返し
+        // トップレベルの PlaylistOwner（channel / channel_id / uploader_id）は採用しない
+        let entries_name_only = serde_json::json!({
+            "channel": "PlaylistOwner",
+            "channel_id": "UCowner00000000000000001",
+            "uploader_id": "@playlist_owner",
+            "title": "PlaylistTitle",
+            "entries": [{
+                "channel": "VideoCH",
+                "title": "VideoTitle"
+            }]
+        });
+        let selected3 = select_video_channel_info(&entries_name_only).unwrap();
+        assert!(selected3.candidates.is_empty());
+        assert_eq!(selected3.channel_title.as_deref(), Some("VideoCH"));
+        assert_eq!(selected3.title.as_deref(), Some("VideoTitle"));
+
+        // entries あり＋entries[0] にチャンネル情報が無いときはトップレベルの
+        // PlaylistOwner（channel / channel_id / uploader_id）を動画へ誤帰属させず NoChannelId とする
+        let entries_owner_only = serde_json::json!({
+            "channel": "PlaylistOwner",
+            "channel_id": "UCowner00000000000000001",
+            "uploader_id": "@playlist_owner",
+            "title": "PlaylistTitle",
+            "entries": [{
+                "title": "VideoWithoutChannel"
+            }]
+        });
+        assert!(matches!(
+            select_video_channel_info(&entries_owner_only),
+            Err(YtError::NoChannelId)
+        ));
+
+        // 参照候補もチャンネル名も無い空応答は NoChannelId
+        assert!(matches!(
+            select_video_channel_info(&serde_json::json!({"title": "OnlyTitle"})),
+            Err(YtError::NoChannelId)
+        ));
     }
 
     /// 起動時画質の解決順（実装レベル細目「PiP 画質の解決順」）。

@@ -342,3 +342,179 @@ fn history_list_search_filters() {
     assert!(p2.next_cursor.is_none());
     assert_ne!(p1.items[0].video_id, p2.items[0].video_id);
 }
+
+/// DB-LD-34: `history_upsert` / `history_update_progress` / `history_set_channel`
+/// による視聴履歴のチャンネル補完（`videos` → `live_waits` → `queue_items` の
+/// 優先順、既存非空値の保持、逆順到達時の順序非依存性、手動削除抑止の尊重）と、
+/// 下流の `history_stats`・`history_list` チャンネル名検索・`video_meta_lookup` の
+/// 連動動作を検証する（仕様決定 DY）。
+#[test]
+fn history_channel_fill_and_downstream_queries() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch_a = "UCchanA00000000000000001";
+    let ch_b = "UCchanB00000000000000002";
+    let ch_c = "UCchanC00000000000000003";
+
+    // 1) videos 台帳にある動画: history_upsert / history_update_progress が自動補完
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch_a,
+        title: "チャンネルAlpha",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[NewVideo {
+            video_id: "vid_from_v1",
+            channel_id: ch_a,
+            channel_title: "チャンネルAlpha",
+            title: "購読動画1",
+            thumbnail_url: None,
+            published_at: Some("2026-11-20T00:00:00+00:00"),
+            kind: "video",
+        }],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    db.history_upsert("vid_from_v1").unwrap();
+    db.history_update_progress("vid_from_v1", "購読動画1", 120.0, Some(600), false)
+        .unwrap();
+    let h1 = db.history_get("vid_from_v1").unwrap().unwrap();
+    assert_eq!(h1.channel_id.as_deref(), Some(ch_a));
+    assert_eq!(h1.channel_title.as_deref(), Some("チャンネルAlpha"));
+
+    // 2) videos になく live_waits にある動画: live_waits から補完
+    db.live_wait_insert(&crate::model::LiveWait {
+        video_id: "vid_from_lw".to_string(),
+        title: "待機配信".to_string(),
+        channel_id: Some(ch_b.to_string()),
+        channel_title: Some("チャンネルBeta".to_string()),
+        thumbnail_url: None,
+        scheduled_start_ms: None,
+        registered_ms: 1_700_000_000_000,
+    })
+    .unwrap();
+    db.history_upsert("vid_from_lw").unwrap();
+    db.history_update_progress("vid_from_lw", "待機配信", 0.0, Some(300), true)
+        .unwrap();
+    let h2 = db.history_get("vid_from_lw").unwrap().unwrap();
+    assert_eq!(h2.channel_id.as_deref(), Some(ch_b));
+    assert_eq!(h2.channel_title.as_deref(), Some("チャンネルBeta"));
+
+    // 3) queue_items のみにある動画: channel_title だけ補完（channel_id は None）
+    db.queue_save(
+        &[crate::model::QueueItem {
+            uid: 1,
+            video_id: "vid_from_q1".to_string(),
+            title: "キュー動画".to_string(),
+            channel_title: Some("キューCH".to_string()),
+            thumbnail_url: None,
+        }],
+        0,
+    )
+    .unwrap();
+    db.history_update_progress("vid_from_q1", "キュー動画", 45.0, Some(100), false)
+        .unwrap();
+    let h3 = db.history_get("vid_from_q1").unwrap().unwrap();
+    assert_eq!(h3.channel_id, None);
+    assert_eq!(h3.channel_title.as_deref(), Some("キューCH"));
+
+    // 4) 逆順テスト: history_set_channel が history_upsert / history_update_progress より
+    // 先に到着しても、後続で非空 channel_id / channel_title が保持され、進捗と実タイトルが反映される
+    db.history_set_channel(
+        "vid_unsub01",
+        Some(ch_c),
+        Some("未購読Gamma"),
+        Some("フォールバック題名"),
+    )
+    .unwrap();
+    db.history_upsert("vid_unsub01").unwrap();
+    let before_prog = db.history_get("vid_unsub01").unwrap().unwrap();
+    assert_eq!(before_prog.title, "フォールバック題名");
+    assert_eq!(before_prog.channel_id.as_deref(), Some(ch_c));
+    assert_eq!(before_prog.channel_title.as_deref(), Some("未購読Gamma"));
+    // 空タイトルの進捗保存ではフォールバック題名を維持し、非空タイトルで上書きする
+    db.history_update_progress("vid_unsub01", "", 60.0, Some(240), false)
+        .unwrap();
+    assert_eq!(
+        db.history_get("vid_unsub01").unwrap().unwrap().title,
+        "フォールバック題名"
+    );
+    db.history_update_progress("vid_unsub01", "未購読動画の実題名", 90.0, Some(240), false)
+        .unwrap();
+    let h4 = db.history_get("vid_unsub01").unwrap().unwrap();
+    assert_eq!(h4.title, "未購読動画の実題名");
+    assert_eq!(h4.channel_id.as_deref(), Some(ch_c));
+    assert_eq!(h4.channel_title.as_deref(), Some("未購読Gamma"));
+    assert_eq!(h4.position_sec, 90);
+
+    // 5) 手動削除後の history_set_channel は抑止されて履歴を復活させない
+    db.history_remove("vid_from_q1").unwrap();
+    db.history_set_channel("vid_from_q1", Some(ch_c), Some("復活NG"), Some("NG"))
+        .unwrap();
+    assert!(db.history_get("vid_from_q1").unwrap().is_none());
+
+    // 5b) channel_id=NULL かつ channel_title のみの行と完全不明行が混在する場合:
+    // history_stats は channel_id=None 1 グループへ合算し channel_title は None にする
+    // （他動画の視聴時間が特定チャンネル名へ誤帰属するのを防ぐ）一方、
+    // history_list のチャンネル名検索では名前を保持してヒットする
+    db.queue_save(
+        &[crate::model::QueueItem {
+            uid: 2,
+            video_id: "vid_from_q2".to_string(),
+            title: "キュー動画2".to_string(),
+            channel_title: Some("キューCH".to_string()),
+            thumbnail_url: None,
+        }],
+        0,
+    )
+    .unwrap();
+    db.history_update_progress("vid_from_q2", "キュー動画2", 25.0, Some(100), false)
+        .unwrap();
+    db.history_update_progress("vid_no_info", "完全不明動画", 40.0, Some(100), false)
+        .unwrap();
+
+    // 5c) live_waits 行が自動再生前に削除された後でも、LiveWait 由来のヒントを
+    // history_upsert → history_set_channel の順で引き継げばチャンネル情報が保存される
+    db.history_upsert("vid_from_lw_hint").unwrap();
+    db.history_set_channel(
+        "vid_from_lw_hint",
+        Some(ch_b),
+        Some("チャンネルBeta"),
+        Some("自動再生タイトル"),
+    )
+    .unwrap();
+    let h_hint = db.history_get("vid_from_lw_hint").unwrap().unwrap();
+    assert_eq!(h_hint.channel_id.as_deref(), Some(ch_b));
+    assert_eq!(h_hint.channel_title.as_deref(), Some("チャンネルBeta"));
+    assert_eq!(h_hint.title, "自動再生タイトル");
+
+    // 6) 下流連携: history_stats（チャンネル別集計が UC ID ごと＋不明 1 グループに分かれる）
+    let stats = db.history_stats().unwrap();
+    assert_eq!(stats.entry_count, 6);
+    assert_eq!(stats.total_sec, 300 + 120 + 90 + 25 + 40);
+    assert_eq!(stats.by_channel.len(), 4);
+    assert_eq!(stats.by_channel[0].channel_id.as_deref(), Some(ch_b));
+    assert_eq!(stats.by_channel[0].total_sec, 300);
+    assert_eq!(stats.by_channel[0].entry_count, 2);
+    assert_eq!(stats.by_channel[1].channel_id.as_deref(), Some(ch_a));
+    assert_eq!(stats.by_channel[1].total_sec, 120);
+    assert_eq!(stats.by_channel[2].channel_id.as_deref(), Some(ch_c));
+    assert_eq!(stats.by_channel[2].total_sec, 90);
+    assert_eq!(stats.by_channel[3].channel_id, None);
+    assert_eq!(stats.by_channel[3].channel_title, None);
+    assert_eq!(stats.by_channel[3].total_sec, 65);
+    assert_eq!(stats.by_channel[3].entry_count, 2);
+
+    // 7) 下流連携: history_list のチャンネル名検索で未購読動画および名前のみ行がヒットする
+    let found = db.history_list(None, Some("未購読Gamma"), 10).unwrap();
+    assert_eq!(found.items.len(), 1);
+    assert_eq!(found.items[0].video_id, "vid_unsub01");
+    let found_q = db.history_list(None, Some("キューCH"), 10).unwrap();
+    assert_eq!(found_q.items.len(), 1);
+    assert_eq!(found_q.items[0].video_id, "vid_from_q2");
+
+    // 8) 下流連携: videos に無い未購読動画でも video_meta_lookup が履歴からチャンネルを返す
+    let meta = db.video_meta_lookup("vid_unsub01").unwrap().unwrap();
+    assert_eq!(meta.title, "未購読動画の実題名");
+    assert_eq!(meta.channel_id.as_deref(), Some(ch_c));
+    assert_eq!(meta.channel_title.as_deref(), Some("未購読Gamma"));
+}

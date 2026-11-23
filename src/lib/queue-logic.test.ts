@@ -11,9 +11,11 @@
 // QE-02: 現在位置より後の項目のシャッフル（FR-46、仕様決定 BW）
 // QS-01: 「プレイリストとして保存」の項目列変換（FR-47、仕様決定 BX）
 // QS-02: プレイリストキュー復元の保存位置（FR-48、仕様決定 BY）
+// QS-03: データインポート時のプレイリストキュー永続化ガード（FR-94、仕様決定 DX）
 import { describe, expect, test } from "vitest";
 import {
   armPlanFor,
+  flushDeferredPlaylistPersists,
   headPlayingAfterRemove,
   indexAfterMove,
   indexAfterRemove,
@@ -22,11 +24,14 @@ import {
   persistItemsOf,
   queueEndOutcome,
   reconcileIndex,
+  recordDeferredPlaylistPersist,
   resolveAddTarget,
   restoredIndex,
   restoredPlaylistIndex,
   saveItemsOf,
+  shouldPersistPlaylistQueue,
   shuffleTail,
+  type PlaylistPersistOp,
   type QueueEntry,
 } from "./queue-logic";
 
@@ -403,5 +408,37 @@ describe("QS-02 restoredPlaylistIndex（FR-48、仕様決定 BY）", () => {
   test("対象プレイリストが空（0 件）なら null（復元しない）", () => {
     expect(restoredPlaylistIndex(0, 0)).toBeNull();
     expect(restoredPlaylistIndex(3, 0)).toBeNull();
+  });
+});
+
+describe("QS-03 shouldPersistPlaylistQueue（FR-94、仕様決定 DX）", () => {
+  test("世代一致かつ非抑止中のみ永続化を許可し、抑止中または世代ずれの遅延書き込みを拒否する", () => {
+    expect(shouldPersistPlaylistQueue(3, 3, false)).toBe(true);
+    expect(shouldPersistPlaylistQueue(3, 3, true)).toBe(false);
+    expect(shouldPersistPlaylistQueue(2, 3, false)).toBe(false);
+    expect(shouldPersistPlaylistQueue(2, 3, true)).toBe(false);
+  });
+
+  test("ガード中の変更はプレイリスト ID ごとに最後の操作を保留し、失敗時はリプレイ・成功時は破棄する", () => {
+    // 失敗時（committed=false）: 同一プレイリストへの連続更新は最後の操作だけ残り、リプレイ対象として返る
+    const pendingFailed = new Map<number, PlaylistPersistOp>();
+    recordDeferredPlaylistPersist(pendingFailed, 10, { kind: "save", currentIndex: 1 });
+    recordDeferredPlaylistPersist(pendingFailed, 10, { kind: "save", currentIndex: 2 });
+    recordDeferredPlaylistPersist(pendingFailed, 20, { kind: "save", currentIndex: 0 });
+    recordDeferredPlaylistPersist(pendingFailed, 20, { kind: "clear" });
+
+    expect(flushDeferredPlaylistPersists(pendingFailed, false)).toEqual([
+      [10, { kind: "save", currentIndex: 2 }],
+      [20, { kind: "clear" }],
+    ]);
+    expect(pendingFailed.size).toBe(0);
+
+    // 成功時（committed=true）: 旧プレイリスト向けの保留操作はすべて破棄される
+    const pendingCommitted = new Map<number, PlaylistPersistOp>();
+    recordDeferredPlaylistPersist(pendingCommitted, 10, { kind: "save", currentIndex: 2 });
+    recordDeferredPlaylistPersist(pendingCommitted, 20, { kind: "clear" });
+
+    expect(flushDeferredPlaylistPersists(pendingCommitted, true)).toEqual([]);
+    expect(pendingCommitted.size).toBe(0);
   });
 });

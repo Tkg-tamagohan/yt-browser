@@ -255,3 +255,39 @@ export function restoredPlaylistIndex(
   if (itemCount === 0) return null;
   return restoredIndex(itemCount, savedIndex);
 }
+
+/// データインポート中に進行中／後続のプレイリストキュー永続化を抑止する判定（FR-94、仕様決定 DX）。
+/// インポート中（`suspended`）または世代が進んだ古い非同期チェーンからの書き込みを拒否する。
+export function shouldPersistPlaylistQueue(
+  capturedGen: number,
+  currentGen: number,
+  suspended: boolean,
+): boolean {
+  return !suspended && capturedGen === currentGen;
+}
+
+/// インポート中に保留するプレイリストキュー永続化操作（FR-94、仕様決定 DX）。
+export type PlaylistPersistOp =
+  | { kind: "save"; currentIndex: number }
+  | { kind: "clear" };
+
+/// ガード中に発生したプレイリスト ID ごとの最後の永続化／削除操作を保留する。
+export function recordDeferredPlaylistPersist(
+  pending: Map<number, PlaylistPersistOp>,
+  playlistId: number,
+  op: PlaylistPersistOp,
+): void {
+  pending.set(playlistId, op);
+}
+
+/// ガード終了時に保留操作を取り出し、内部マップを空にする。
+/// DB 置換がコミットされた場合（`committed === true`）は旧プレイリスト向け保留分を破棄して空配列を返し、
+/// 失敗や未コミット時（`committed === false`）は最後の操作一覧を返して再送出させる。
+export function flushDeferredPlaylistPersists(
+  pending: Map<number, PlaylistPersistOp>,
+  committed: boolean,
+): Array<[number, PlaylistPersistOp]> {
+  const entries = committed ? [] : [...pending.entries()];
+  pending.clear();
+  return entries;
+}

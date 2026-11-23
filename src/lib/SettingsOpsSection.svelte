@@ -12,6 +12,10 @@
   import { t } from "$lib/i18n";
   import { diagFileName } from "$lib/diag-logic";
   import { asErrorMessage, type DbSize } from "$lib/players.svelte";
+  import {
+    beginImportQueueGuard,
+    endImportQueueGuard,
+  } from "$lib/queue.svelte";
 
   let {
     notify,
@@ -90,13 +94,17 @@
     });
     if (!yes) return;
     busy = true;
+    let imported = false;
     try {
+      await beginImportQueueGuard();
       await invoke("data_import", { path });
+      imported = true;
       notify(t("settings.ops.imported", { path }));
-      await onImported?.();
+      await Promise.all([loadSize(), Promise.resolve(onImported?.())]);
     } catch (e) {
       notify(t("settings.ops.importFailed", { message: asErrorMessage(e) }));
     } finally {
+      endImportQueueGuard(imported);
       busy = false;
     }
   }
@@ -165,6 +173,9 @@
       <div class="ops-text">
         <div id="ops-import-label">{t("settings.ops.import.label")}</div>
         <div class="subtle">{t("settings.ops.import.desc")}</div>
+        <div class="subtle ops-protected-note">
+          {t("settings.ops.protectedNote")}
+        </div>
       </div>
       <button
         id="ops-import-btn"
@@ -253,6 +264,10 @@
 
   .ops-text .subtle {
     font-size: 0.8rem;
+  }
+
+  .ops-protected-note {
+    margin-top: 4px;
   }
 
   .size {
