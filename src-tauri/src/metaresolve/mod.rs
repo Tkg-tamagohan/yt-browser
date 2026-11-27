@@ -229,6 +229,7 @@ impl ResolverCore {
         if self.is_rate_limited_at(now_instant) {
             return 0;
         }
+        let cycle_started = Instant::now();
         let mut changed = 0usize;
         let mut rate_limited = false;
 
@@ -255,7 +256,7 @@ impl ResolverCore {
                                 ResolveError::Tube(te) if te.is_rate_limited()
                             );
                             if is_429 {
-                                self.record_rate_limit_at(now_instant);
+                                self.record_rate_limit_at(now_instant + cycle_started.elapsed());
                                 rate_limited = true;
                                 break;
                             }
@@ -279,7 +280,9 @@ impl ResolverCore {
         }
 
         if !rate_limited {
-            changed += self.refresh_broadcasts_once(now_instant, now_ms).await;
+            changed += self
+                .refresh_broadcasts_once(now_instant, cycle_started, now_ms)
+                .await;
         }
         changed
     }
@@ -295,7 +298,11 @@ impl ResolverCore {
             return Err(ResolveError::TransientBlocked);
         }
 
-        let resolved_kind = if t.needs_kind { classify_kind(&s) } else { None };
+        let resolved_kind = if t.needs_kind {
+            classify_kind(&s)
+        } else {
+            None
+        };
         let (b_state, b_start) = classify_broadcast_meta(&s);
         let mut changed = 0usize;
 
@@ -331,7 +338,12 @@ impl ResolverCore {
     }
 
     /// アクティブな放送行（`live` / `upcoming`）の 7 日超過打ち切りと定期再確認（FR-96、仕様決定 EB）。
-    async fn refresh_broadcasts_once(&self, now_instant: Instant, now_ms: i64) -> usize {
+    async fn refresh_broadcasts_once(
+        &self,
+        now_instant: Instant,
+        cycle_started: Instant,
+        now_ms: i64,
+    ) -> usize {
         let mut changed = match self.db.videos_expire_stale_upcoming(now_ms) {
             Ok(n) => n,
             Err(e) => {
@@ -361,7 +373,7 @@ impl ResolverCore {
                 Err(e) => {
                     let _ = self.db.videos_touch_broadcast_checked(&t.video_id, now_ms);
                     if e.is_rate_limited() {
-                        self.record_rate_limit_at(now_instant);
+                        self.record_rate_limit_at(now_instant + cycle_started.elapsed());
                         break;
                     }
                     consecutive_fails += 1;

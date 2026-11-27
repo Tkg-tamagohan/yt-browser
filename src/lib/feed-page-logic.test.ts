@@ -256,10 +256,11 @@ describe("FP-06: mergeFeedReload と mergeFeedLoadMore", () => {
       pageSize: 2,
     });
     expect(merged.items.map((i) => i.videoId)).toEqual([
-      "v_live_was",
       "v_newer",
       "v_old",
+      "v_live_was",
     ]);
+    expect(merged.items[2].broadcastState).toBe("ended");
     expect(merged.feedHasMore).toBe(true);
   });
 

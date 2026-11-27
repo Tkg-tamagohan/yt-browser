@@ -1249,10 +1249,10 @@ fn apply_broadcast_columns_tx(
     }
 
     let norm_start = broadcast_start_ms.filter(|&m| m > 0);
-    let next_start = if broadcast_state.is_none() {
-        None
-    } else {
-        norm_start.or(cur_start.filter(|&m| m > 0))
+    let next_start = match broadcast_state {
+        None => None,
+        Some(st) if cur_state.as_deref() == Some(st) => norm_start.or(cur_start.filter(|&m| m > 0)),
+        _ => norm_start,
     };
 
     let mut changed = cur_state.as_deref() != broadcast_state || cur_start != next_start;

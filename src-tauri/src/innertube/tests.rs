@@ -572,13 +572,22 @@ fn classify_broadcast_meta_matrix() {
             None,
             Some(1_700_000_000_000),
             false,
-            Some(false), // 公開中プレミアも "live" 扱い
+            Some(false), // 公開中プレミアも "live" 扱い・実開始時刻欠落時は予定時刻を流用しない
             Some("OK")
         )),
-        (Some("live"), Some(1_700_000_000_000))
+        (Some("live"), None)
     );
     assert_eq!(
-        classify_broadcast_meta(&mk(Some(true), true, Some(-1), None, Some(0), false, None, None)),
+        classify_broadcast_meta(&mk(
+            Some(true),
+            true,
+            Some(-1),
+            None,
+            Some(0),
+            false,
+            None,
+            None
+        )),
         (Some("live"), None)
     );
 
@@ -610,7 +619,16 @@ fn classify_broadcast_meta_matrix() {
         (Some("ended"), Some(1_000))
     );
     assert_eq!(
-        classify_broadcast_meta(&mk(None, false, None, None, None, false, Some(true), Some("OK"))),
+        classify_broadcast_meta(&mk(
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+            Some(true),
+            Some("OK")
+        )),
         (Some("ended"), None)
     );
 
@@ -629,13 +647,31 @@ fn classify_broadcast_meta_matrix() {
         (Some("upcoming"), Some(2_000))
     );
     assert_eq!(
-        classify_broadcast_meta(&mk(None, false, None, None, None, false, None, Some("LIVE_STREAM_OFFLINE"))),
+        classify_broadcast_meta(&mk(
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some("LIVE_STREAM_OFFLINE")
+        )),
         (Some("upcoming"), None)
     );
 
     // 通常動画
     assert_eq!(
-        classify_broadcast_meta(&mk(None, false, None, None, None, false, Some(false), Some("OK"))),
+        classify_broadcast_meta(&mk(
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+            Some(false),
+            Some("OK")
+        )),
         (None, None)
     );
 }

@@ -195,10 +195,10 @@ export function mergeFeedLoadMore<T extends FeedSortKey>(params: {
   deepHasMore: boolean;
 } {
   const pageSize = params.pageSize ?? 500;
-  const seen = new Set(params.prevItems.map((i) => i.videoId));
+  const incomingIds = new Set(params.res.map((i) => i.videoId));
   const items = [
-    ...params.prevItems,
-    ...params.res.filter((i) => !seen.has(i.videoId)),
+    ...params.prevItems.filter((i) => !incomingIds.has(i.videoId)),
+    ...params.res,
   ].sort(feedItemCompare);
   const last = params.res[params.res.length - 1];
   const lastCursor: FeedCursorKey | null = last

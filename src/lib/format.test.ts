@@ -27,6 +27,9 @@ describe("FMT-01: fmtBroadcastDateTime", () => {
       expect(sameStr).toContain("19:05");
       expect(sameStr).not.toContain("2026");
 
+      const midnight = new Date(2026, 10, 27, 0, 5).getTime();
+      expect(fmtBroadcastDateTime(midnight, now)).toContain("00:05");
+
       const diffStr = fmtBroadcastDateTime(diffYear, now);
       expect(diffStr).toContain("2027");
       expect(diffStr).toContain("1/2");
@@ -36,7 +39,7 @@ describe("FMT-01: fmtBroadcastDateTime", () => {
     }
   });
 
-  test("en ロケールでも当年は年なし、異年は年付きで整形する", () => {
+  test("en ロケールでも当年は年なし、異年は年付きで 24 時間表記整形する", () => {
     try {
       setLocale("en");
       const now = new Date(2026, 10, 27, 12, 0);
@@ -45,10 +48,16 @@ describe("FMT-01: fmtBroadcastDateTime", () => {
 
       const sameStr = fmtBroadcastDateTime(sameYear, now);
       expect(sameStr).toContain("11/27");
+      expect(sameStr).toContain("19:05");
+      expect(sameStr).not.toMatch(/\b(AM|PM)\b/i);
       expect(sameStr).not.toContain("2026");
+
+      const midnight = new Date(2026, 10, 27, 0, 5).getTime();
+      expect(fmtBroadcastDateTime(midnight, now)).toContain("00:05");
 
       const diffStr = fmtBroadcastDateTime(diffYear, now);
       expect(diffStr).toContain("2027");
+      expect(diffStr).toContain("09:30");
     } finally {
       setLocale("ja");
     }

@@ -273,10 +273,7 @@ impl InnerTube {
 pub fn is_transient_or_blocked_playability(s: &MetaSnapshot) -> bool {
     !s.broadcast.has_details
         && !s.broadcast.is_upcoming
-        && matches!(
-            s.playability.as_deref(),
-            Some("LOGIN_REQUIRED" | "ERROR")
-        )
+        && matches!(s.playability.as_deref(), Some("LOGIN_REQUIRED" | "ERROR"))
 }
 
 /// InnerTube メタ応答から放送系 kind を分類する（FR-56、仕様決定 CG）。
@@ -321,7 +318,7 @@ pub fn classify_broadcast_meta(s: &MetaSnapshot) -> (Option<&'static str>, Optio
     let start = b.start_ms.filter(|&ms| ms > 0);
     let sched = b.scheduled_start_ms.filter(|&ms| ms > 0);
     if b.is_live_now == Some(true) {
-        return (Some("live"), start.or(sched));
+        return (Some("live"), start);
     }
     if b.has_details || b.is_upcoming {
         if b.end_ms.is_some() {

@@ -1061,8 +1061,15 @@ fn feed_list_broadcast_query_plans_avoid_table_scan_and_temp_btree() {
         last_modified: None,
     })
     .unwrap();
-    db.videos_apply_broadcast_refresh("blive000001", Some("live"), Some("live"), Some(1_000), 100, false)
-        .unwrap();
+    db.videos_apply_broadcast_refresh(
+        "blive000001",
+        Some("live"),
+        Some("live"),
+        Some(1_000),
+        100,
+        false,
+    )
+    .unwrap();
     db.videos_apply_broadcast_refresh(
         "bup00000001",
         Some("upcoming"),
@@ -1225,8 +1232,15 @@ fn feed_list_filtered_live_priority_cursor_and_12_matrix() {
         last_modified: None,
     })
     .unwrap();
-    db.videos_apply_broadcast_refresh("live_older_", Some("live"), Some("live"), Some(1_000), 100, false)
-        .unwrap();
+    db.videos_apply_broadcast_refresh(
+        "live_older_",
+        Some("live"),
+        Some("live"),
+        Some(1_000),
+        100,
+        false,
+    )
+    .unwrap();
     db.videos_apply_broadcast_refresh(
         "live_null__",
         Some("premiere"),
@@ -1327,16 +1341,16 @@ fn feed_list_filtered_live_priority_cursor_and_12_matrix() {
 
     assert_eq!(
         ids(None, false),
-        ["live_older_", "live_null__", "vod_newest_", "up_next____", "arch_live__"]
+        [
+            "live_older_",
+            "live_null__",
+            "vod_newest_",
+            "up_next____",
+            "arch_live__"
+        ]
     );
-    assert_eq!(
-        ids(Some("video"), true),
-        ["vod_newest_"]
-    );
-    assert_eq!(
-        ids(Some("video"), false),
-        ["vod_newest_"]
-    );
+    assert_eq!(ids(Some("video"), true), ["vod_newest_"]);
+    assert_eq!(ids(Some("video"), false), ["vod_newest_"]);
     // Shorts 明示は show_shorts=false でも表示し、short_live_ を先頭に置く
     assert_eq!(
         ids(Some("short"), false),
@@ -1360,19 +1374,10 @@ fn feed_list_filtered_live_priority_cursor_and_12_matrix() {
         ids(Some("live_now"), true),
         ["live_older_", "short_live_", "live_null__"]
     );
-    assert_eq!(
-        ids(Some("live_now"), false),
-        ["live_older_", "live_null__"]
-    );
+    assert_eq!(ids(Some("live_now"), false), ["live_older_", "live_null__"]);
     // 「配信予定」
-    assert_eq!(
-        ids(Some("upcoming"), true),
-        ["up_next____", "short_up___"]
-    );
-    assert_eq!(
-        ids(Some("upcoming"), false),
-        ["up_next____"]
-    );
+    assert_eq!(ids(Some("upcoming"), true), ["up_next____", "short_up___"]);
+    assert_eq!(ids(Some("upcoming"), false), ["up_next____"]);
 }
 
 /// DB-LD-41: FR-96/EB — 7 日超過打ち切り、緊急度 8:2 選出・間隔別フィルタ・手動強制、
@@ -1497,16 +1502,31 @@ fn broadcast_refresh_targets_expiry_and_monotonic_guard() {
     assert_eq!(db.videos_expire_stale_upcoming(now).unwrap(), 1);
     // ingested_only=true は ingested=0 行を更新しない
     assert!(!db
-        .videos_apply_broadcast_refresh("un_exp_0001", Some("live"), Some("live"), Some(now), now, true)
+        .videos_apply_broadcast_refresh(
+            "un_exp_0001",
+            Some("live"),
+            Some("live"),
+            Some(now),
+            now,
+            true
+        )
         .unwrap());
 
     // 単調時刻ガード：古い now_ms では更新されず false
     assert!(!db
-        .videos_apply_broadcast_refresh(&ids_owned[0], Some("live"), Some("ended"), Some(now), now - 20 * min, false)
+        .videos_apply_broadcast_refresh(
+            &ids_owned[0],
+            Some("live"),
+            Some("ended"),
+            Some(now),
+            now - 20 * min,
+            false
+        )
         .unwrap());
 
     // touch_broadcast_checked は状態を維持して時刻だけ進める
-    db.videos_touch_broadcast_checked(&ids_owned[0], now).unwrap();
+    db.videos_touch_broadcast_checked(&ids_owned[0], now)
+        .unwrap();
     let item0 = db
         .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
         .unwrap()
@@ -1526,7 +1546,14 @@ fn broadcast_refresh_targets_expiry_and_monotonic_guard() {
         .unwrap();
     }
     assert!(db
-        .videos_apply_broadcast_refresh("shortprot01", Some("live"), Some("live"), Some(now), now, false)
+        .videos_apply_broadcast_refresh(
+            "shortprot01",
+            Some("live"),
+            Some("live"),
+            Some(now),
+            now,
+            false
+        )
         .unwrap());
     let conn = db.lock().unwrap();
     let (k, bs): (String, Option<String>) = conn
@@ -1537,4 +1564,37 @@ fn broadcast_refresh_targets_expiry_and_monotonic_guard() {
         )
         .unwrap();
     assert_eq!((k.as_str(), bs.as_deref()), ("short", Some("live")));
+    drop(conn);
+
+    // upcoming -> live 遷移時に実開始時刻が無ければ旧予定時刻を引き継がず None にクリアする
+    assert!(db
+        .videos_apply_broadcast_refresh(
+            "shortprot01",
+            Some("upcoming"),
+            Some("upcoming"),
+            Some(now + 60 * min),
+            now + 1000,
+            false
+        )
+        .unwrap());
+    assert!(db
+        .videos_apply_broadcast_refresh(
+            "shortprot01",
+            Some("live"),
+            Some("live"),
+            None,
+            now + 2000,
+            false
+        )
+        .unwrap());
+    let cleared_start: Option<i64> = db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT broadcast_start_ms FROM videos WHERE video_id = 'shortprot01'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cleared_start, None);
 }

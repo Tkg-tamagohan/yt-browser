@@ -268,7 +268,9 @@ impl LiveWaitPoller {
             Ok(snap) => {
                 self.after_success(wait);
                 if sync_feed_from_snapshot(&self.db, &wait.video_id, &snap, now_ms) {
-                    let _ = self.app.emit("feed://kind_updated", FeedNewItems { count: 1 });
+                    let _ = self
+                        .app
+                        .emit("feed://kind_updated", FeedNewItems { count: 1 });
                 }
                 match classify_broadcast(&snap.broadcast) {
                     WaitBroadcast::Live => self.on_live(wait).await,
@@ -652,8 +654,18 @@ mod tests {
         assert_eq!(item.broadcast_start_ms, Some(1_795_767_000_000));
 
         // ingested=0 や未登録動画は false（通知不要）
-        assert!(!sync_feed_from_snapshot(&db, "lw_placehld", &live_snap, 100));
-        assert!(!sync_feed_from_snapshot(&db, "lw_unknown_", &live_snap, 100));
+        assert!(!sync_feed_from_snapshot(
+            &db,
+            "lw_placehld",
+            &live_snap,
+            100
+        ));
+        assert!(!sync_feed_from_snapshot(
+            &db,
+            "lw_unknown_",
+            &live_snap,
+            100
+        ));
 
         // ボット判定応答（LOGIN_REQUIRED かつ詳細なし）は状態を消さず false
         let bot_snap = MetaSnapshot {

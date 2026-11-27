@@ -47,6 +47,7 @@ export function fmtBroadcastDateTime(
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    hourCycle: "h23",
   };
   if (d.getFullYear() !== now.getFullYear()) {
     opts.year = "numeric";
