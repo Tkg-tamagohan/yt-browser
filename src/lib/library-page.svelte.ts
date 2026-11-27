@@ -1101,6 +1101,8 @@ export function createLibraryPageState(opts: Options) {
           void (async () => {
             const listsBefore = listsReq;
             const hadActiveSync = syncingId === playlistId;
+            const initialReload = hadActiveSync ? syncReloadPromise : null;
+            let awaitedSyncReload = initialReload !== null;
             restoringIds.set(
               playlistId,
               (restoringIds.get(playlistId) ?? 0) + 1,
@@ -1114,9 +1116,19 @@ export function createLibraryPageState(opts: Options) {
                 { playlistId, entry: removed },
               );
               // syncPlaylist の再取得が進行中なら、完了後に UI を反映して
-              // ++itemsReq による再取得破棄を防ぐ
-              if (syncingId === playlistId && syncReloadPromise !== null) {
-                await syncReloadPromise;
+              // ++itemsReq による再取得破棄を防ぐ。
+              // 再取得の失敗は syncPlaylist 側が通知するためここでは握りつぶす
+              const reloadToAwait =
+                syncingId === playlistId && syncReloadPromise !== null
+                  ? syncReloadPromise
+                  : initialReload;
+              if (reloadToAwait !== null) {
+                awaitedSyncReload = true;
+                try {
+                  await reloadToAwait;
+                } catch {
+                  // syncPlaylist already notifies on playlist_items reload failure
+                }
               }
               const syncUpdatedDuringRestore =
                 hadActiveSync && listsReq !== listsBefore;
@@ -1132,7 +1144,7 @@ export function createLibraryPageState(opts: Options) {
                 );
                 if (
                   !alreadyPresent &&
-                  (!syncUpdatedDuringRestore ||
+                  (!(syncUpdatedDuringRestore || awaitedSyncReload) ||
                     !plHasMore ||
                     plTailPos === null ||
                     restored.position <= plTailPos)

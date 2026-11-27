@@ -661,5 +661,164 @@ describe("library-page playlist sync", () => {
     expect(undoFirstLib.va.playlists[0].itemCount).toBe(3);
     expect(undoFirstLib.va.playlists[0].syncedAt).toBe(midPlAfterSync.syncedAt);
     undoFirstLib.dispose();
+
+    // 大量同期（addedCount=150 で plHasMore===true 維持）の再取得中に Undo しても
+    // plTailPos を未読末尾の先（249）へ進めないため、loadMoreItems() が 199..248 を飛ばさないこと
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const bigInitial = Array.from({ length: 100 }, (_, i) =>
+      makeEntry(i, i === 99 ? "bigOrig99" : `bigR${String(i).padStart(7, "0")}`),
+    );
+    const bigOrig99 = bigInitial[99];
+    const bigSyncedItems = Array.from({ length: 150 }, (_, i) =>
+      makeEntry(99 + i, `bigS${String(i).padStart(7, "0")}`),
+    );
+    const bigRestoredOrig99 = makeEntry(249, "bigOrig99");
+    const bigReloadPage = [...bigInitial.slice(0, 99), ...bigSyncedItems.slice(0, 100)];
+    const bigTailPage = [...bigSyncedItems.slice(100), bigRestoredOrig99];
+    const bigPlBefore = makePlaylist({ id: 43, itemCount: 100 });
+    const bigPlAfterSync = makePlaylist({
+      id: 43,
+      itemCount: 249,
+      syncedAt: "2026-11-27T18:20:00+00:00",
+    });
+    const bigReloadDef = deferred<PlaylistEntry[]>();
+    const bigRestoreDef = deferred<PlaylistEntry>();
+    let bigSynced = false;
+    let bigRestoreCalls = 0;
+
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          if (args?.afterPosition === null && !bigSynced) {
+            return Promise.resolve(bigInitial);
+          }
+          if (args?.afterPosition === null && bigSynced) {
+            return bigReloadDef.promise;
+          }
+          if (args?.afterPosition === 198) {
+            return Promise.resolve(bigTailPage);
+          }
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_remove") {
+          return Promise.resolve(bigOrig99);
+        }
+        if (cmd === "playlist_sync") {
+          bigSynced = true;
+          return Promise.resolve({ playlist: bigPlAfterSync, addedCount: 150 });
+        }
+        if (cmd === "playlist_item_restore") {
+          bigRestoreCalls += 1;
+          return bigRestoreDef.promise;
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const bigLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    bigLib.va.playlists = [bigPlBefore];
+    await bigLib.selectPlaylist(bigPlBefore);
+    await bigLib.removeItem(bigOrig99);
+    const bigUndo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+
+    const bigSyncTask = bigLib.syncPlaylist();
+    await vi.waitFor(() => expect(bigSynced).toBe(true));
+
+    bigUndo!.run!();
+    await vi.waitFor(() => expect(bigRestoreCalls).toBe(1));
+    bigRestoreDef.resolve(bigRestoredOrig99);
+    await Promise.resolve();
+
+    bigReloadDef.resolve(bigReloadPage);
+    await bigSyncTask;
+    await vi.waitFor(() => expect(bigLib.restoring).toBe(false));
+
+    expect(bigLib.playlistItems).toHaveLength(199);
+    expect(bigLib.playlistItems[198].position).toBe(198);
+    expect(bigLib.plHasMore).toBe(true);
+    expect(bigLib.va.playlists[0].itemCount).toBe(250);
+
+    await bigLib.loadMoreItems();
+    expect(bigLib.playlistItems).toHaveLength(250);
+    expect(bigLib.playlistItems[199].position).toBe(199);
+    expect(bigLib.playlistItems[249]).toEqual(bigRestoredOrig99);
+    expect(bigLib.plHasMore).toBe(false);
+    bigLib.dispose();
+
+    // syncReloadPromise が失敗しても、playlist_item_restore 成功分のローカル一覧反映と件数更新は維持され、
+    // restoreFailed トーストを出さないこと
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const failPlBefore = makePlaylist({ id: 44, itemCount: 3 });
+    const failPlAfterSync = makePlaylist({
+      id: 44,
+      itemCount: 3,
+      syncedAt: "2026-11-27T18:30:00+00:00",
+    });
+    const failReloadDef = deferred<PlaylistEntry[]>();
+    const failRestoreDef = deferred<PlaylistEntry>();
+    let failSynced = false;
+    let failRestoreCalls = 0;
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") {
+        return failSynced
+          ? failReloadDef.promise
+          : Promise.resolve([midA, midB, midC]);
+      }
+      if (cmd === "playlist_remove") {
+        return Promise.resolve(midC);
+      }
+      if (cmd === "playlist_sync") {
+        failSynced = true;
+        return Promise.resolve({ playlist: failPlAfterSync, addedCount: 1 });
+      }
+      if (cmd === "playlist_item_restore") {
+        failRestoreCalls += 1;
+        return failRestoreDef.promise;
+      }
+      return Promise.resolve(null);
+    });
+
+    const failLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    failLib.va.playlists = [failPlBefore];
+    await failLib.selectPlaylist(failPlBefore);
+    await failLib.removeItem(midC);
+    const failUndo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+
+    notifyMock.mockClear();
+    const failSyncTask = failLib.syncPlaylist();
+    await vi.waitFor(() => expect(failSynced).toBe(true));
+
+    failUndo!.run!();
+    await vi.waitFor(() => expect(failRestoreCalls).toBe(1));
+    const failRestoredC = makeEntry(3, "midC0000003");
+    failRestoreDef.resolve(failRestoredC);
+    await Promise.resolve();
+
+    failReloadDef.reject(new Error("reload failed"));
+    await failSyncTask;
+    await vi.waitFor(() => expect(failLib.restoring).toBe(false));
+
+    expect(failLib.playlistItems.map((i) => i.videoId)).toEqual([
+      "midA0000001",
+      "midB0000002",
+      "midC0000003",
+    ]);
+    expect(failLib.va.playlists[0].itemCount).toBe(4);
+    expect(failLib.syncingId).toBeNull();
+    expect(notifyMock).toHaveBeenCalledWith(t("library.restored"));
+    expect(notifyMock).toHaveBeenCalledWith(
+      t("library.playlist.syncFailed", { message: "reload failed" }),
+    );
+    expect(notifyMock).not.toHaveBeenCalledWith(
+      t("library.restoreFailed", { message: "reload failed" }),
+    );
+    failLib.dispose();
   });
 });
