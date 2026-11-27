@@ -560,7 +560,7 @@ export function createLibraryPageState(opts: Options) {
           while (listReorderRun) await listReorderRun;
           const req = ++listsReq;
           const list = await invoke<Playlist[]>("playlist_list");
-          if (req === listsReq) {
+          if (req === listsReq && Array.isArray(list)) {
             ++listsSnapshotSeq;
             va.playlists = list;
           }
@@ -682,21 +682,14 @@ export function createLibraryPageState(opts: Options) {
         (playlistMutSeq.get(plId) ?? 0) !== plMutBefore ||
         listsSnapshotSeq !== snapshotBefore
       ) {
-        const refreshReq = ++listsReq;
-        let refreshed = false;
+        const beforeSnap = listsSnapshotSeq;
         try {
-          const fresh = await invoke<Playlist[]>("playlist_list");
-          if (Array.isArray(fresh)) {
-            if (refreshReq === listsReq) {
-              ++listsSnapshotSeq;
-              va.playlists = fresh;
-            }
-            refreshed = true;
-          }
+          await refreshPlaylists();
         } catch {
           // 取り直し失敗時は同期日時のみ反映し、競合中の件数は保持する
         }
-        if (!refreshed && refreshReq === listsReq) {
+        if (listsSnapshotSeq === beforeSnap) {
+          ++listsReq;
           va.playlists = va.playlists.map((p) =>
             p.id === res.playlist.id
               ? { ...p, syncedAt: res.playlist.syncedAt }
@@ -1191,7 +1184,7 @@ export function createLibraryPageState(opts: Options) {
               const refreshedDuringRestore =
                 listsSnapshotSeq !== snapshotBefore;
               // 件数が変わるので飛行中の一覧応答は無効化する
-              const listReqAfterRestore = ++listsReq;
+              ++listsReq;
               bumpPlaylistMut(playlistId);
               let alreadyPresent = false;
               // 表示中のプレイリストが変わっていなければ項目一覧へ
@@ -1227,14 +1220,7 @@ export function createLibraryPageState(opts: Options) {
                 }
               }
               if (refreshedDuringRestore) {
-                const fresh = await invoke<Playlist[]>("playlist_list");
-                if (
-                  Array.isArray(fresh) &&
-                  listReqAfterRestore === listsReq
-                ) {
-                  ++listsSnapshotSeq;
-                  va.playlists = fresh;
-                }
+                await refreshPlaylists();
               } else {
                 va.playlists = va.playlists.map((p) =>
                   p.id === playlistId

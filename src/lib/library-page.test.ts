@@ -1359,5 +1359,63 @@ describe("library-page playlist sync", () => {
     expect(cLib.playlistItems).toEqual([]);
     expect(cLib.plHasMore).toBe(false);
     cLib.dispose();
+
+    // 6. 同期中の名前変更 + 一覧並べ替え保存中に syncPlaylist が再取得する際、
+    // refreshPlaylists 経由で playlist_reorder_lists 完了を待ってから playlist_list を呼ぶ
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const ordPl1 = makePlaylist({ id: 55, name: "First", sortOrder: 0 });
+    const ordPl2 = makePlaylist({ id: 56, name: "Second", sortOrder: 1 });
+    const ordRenamed1 = makePlaylist({
+      id: 55,
+      name: "Renamed",
+      sortOrder: 1,
+      syncedAt: "2026-11-27T19:30:00+00:00",
+    });
+    const reorderListsDef = deferred<void>();
+    const ordSyncDef = deferred<PlaylistSyncOutcome>();
+    let ordListCalls = 0;
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") return Promise.resolve([]);
+      if (cmd === "playlist_reorder_lists") return reorderListsDef.promise;
+      if (cmd === "playlist_rename") return Promise.resolve(null);
+      if (cmd === "playlist_sync") return ordSyncDef.promise;
+      if (cmd === "playlist_list") {
+        ordListCalls += 1;
+        return Promise.resolve([ordPl2, ordRenamed1]);
+      }
+      return Promise.resolve(null);
+    });
+
+    const ordLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    ordLib.va.playlists = [ordPl1, ordPl2];
+    await ordLib.selectPlaylist(ordPl1);
+
+    ordLib.moveList(0, 1);
+    const ordSyncTask = ordLib.syncPlaylist();
+    ordLib.beginRename(ordPl1);
+    ordLib.renameText = "Renamed";
+    await ordLib.commitRename(ordPl1);
+
+    ordSyncDef.resolve({
+      playlist: makePlaylist({
+        id: 55,
+        name: "First",
+        sortOrder: 0,
+        syncedAt: "2026-11-27T19:30:00+00:00",
+      }),
+      addedCount: 0,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ordListCalls).toBe(0);
+
+    reorderListsDef.resolve();
+    await ordSyncTask;
+    expect(ordListCalls).toBe(1);
+    expect(ordLib.va.playlists.map((p) => p.id)).toEqual([56, 55]);
+    expect(ordLib.va.playlists[1].name).toBe("Renamed");
+    ordLib.dispose();
   });
 });
