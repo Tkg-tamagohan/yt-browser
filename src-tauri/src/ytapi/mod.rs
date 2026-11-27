@@ -5,6 +5,7 @@
 //! 独立 2 系統（共通枠 / `search.list` 枠）サーキットブレーカー、`key_invalid` ラッチ、
 //! 指数バックオフ型クールダウン、および接続テストを提供する。
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,11 +16,17 @@ use serde_json::Value;
 use thiserror::Error;
 use tracing::warn;
 
-use crate::model::{YtApiAvailability, YtApiStatus, YtApiTestOutcome};
-use crate::util::lock;
+use crate::model::{
+    classify_kind, BroadcastStatus, MetaSnapshot, VideoRef, YtApiAvailability, YtApiStatus,
+    YtApiTestOutcome,
+};
+use crate::util::{iso8601_ms, iso_utc, lock, parse_iso8601_duration};
 
 /// YouTube Data API v3 キーの設定キー名（38 個目の設定キー、FR-97）。
 pub const SETTING_YOUTUBE_API_KEY: &str = "youtube.api_key";
+
+/// `videos.list` 1 リクエストあたりの最大 ID 件数（FR-98、仕様決定 ED）。
+pub const VIDEOS_BATCH_MAX: usize = 50;
 
 /// 本番 API のベース URL。ダンプインポート経由のキー流出を防ぐため定数固定とし、
 /// 設定キーや環境変数での上書きは行わない（`#[cfg(test)]` のみモック注入可）。
@@ -60,6 +67,54 @@ pub enum YtApiError {
     Http(reqwest::Error),
     #[error("YouTube Data API の JSON 応答の解析に失敗しました: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+impl YtApiError {
+    /// ハイブリッド原則により、公式 API の未設定・無効キー・クォータ上限・
+    /// 一時クールダウン・404・通信失敗はいずれも既存経路へのフォールバック対象とする。
+    pub fn should_fallback(&self) -> bool {
+        true
+    }
+}
+
+/// `videos.list` 1 件分の統合パース結果（FR-98、仕様決定 ED）。
+#[derive(Debug, Clone)]
+pub struct YtVideoItem {
+    pub video_id: String,
+    pub video_ref: VideoRef,
+    pub meta: MetaSnapshot,
+    #[allow(dead_code)] // テストおよび後続フェーズの尺参照用
+    pub duration_sec: Option<i64>,
+}
+
+impl YtVideoItem {
+    /// 初回解決向けの `kind` 判定（ガード 4）。
+    /// 終了後（`actualEndTime` あり かつ 非配信中）の項目は `is_live_content = None` となり、
+    /// 既に `current_kind == "premiere"` なら上書きせず `None`、新規解決時は `Some("live")` を返す。
+    pub fn classify_kind_for_initial(&self, current_kind: &str) -> Option<&'static str> {
+        let b = &self.meta.broadcast;
+        if b.end_ms.is_some() && b.is_live_now != Some(true) && self.meta.is_live_content.is_none()
+        {
+            return if current_kind == "premiere" {
+                None
+            } else {
+                Some("live")
+            };
+        }
+        classify_kind(&self.meta)
+    }
+
+    /// 定期再確認・ライブ待機相乗り向けの `kind` 判定（ガード 4）。
+    /// 終了後（`actualEndTime` あり かつ 非配信中）で `is_live_content = None` のときは
+    /// `None` を返し、DB 側の既存 `kind`（特に `premiere`）を保持させる。
+    pub fn classify_kind_for_refresh(&self) -> Option<&'static str> {
+        let b = &self.meta.broadcast;
+        if b.end_ms.is_some() && b.is_live_now != Some(true) && self.meta.is_live_content.is_none()
+        {
+            return None;
+        }
+        classify_kind(&self.meta)
+    }
 }
 
 struct YtApiState {
@@ -219,7 +274,6 @@ impl YtApi {
     }
 
     /// 指定バケットが現在利用可能か判定する（期限切れ遮断器は遅延クリアする）。
-    #[allow(dead_code)] // Phase 93〜95 の各ドメイン経路から参照する
     pub fn can_use(&self, bucket: QuotaBucket) -> bool {
         self.can_use_at(bucket, now_utc_sec())
     }
@@ -286,8 +340,52 @@ impl YtApi {
         }
     }
 
+    /// `videos.list` で最大 50 件チャンクごとに動画メタ・尺・放送状態を一括取得する（1 unit / 回）。
+    /// 空白と重複 ID は除去し、空入力時は通信せず空マップを返す。
+    pub async fn videos_list<S: AsRef<str>>(
+        &self,
+        video_ids: &[S],
+    ) -> Result<HashMap<String, YtVideoItem>, YtApiError> {
+        let mut unique: Vec<&str> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for id in video_ids {
+            let s = id.as_ref().trim();
+            if !s.is_empty() && seen.insert(s) {
+                unique.push(s);
+            }
+        }
+        if unique.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut out = HashMap::with_capacity(unique.len());
+        for chunk in unique.chunks(VIDEOS_BATCH_MAX) {
+            let joined = chunk.join(",");
+            let val = self
+                .get_json(
+                    QuotaBucket::Shared,
+                    "/videos",
+                    &[
+                        (
+                            "part",
+                            "snippet,contentDetails,liveStreamingDetails,statistics",
+                        ),
+                        ("id", &joined),
+                    ],
+                )
+                .await?;
+            if let Some(items) = val.get("items").and_then(|v| v.as_array()) {
+                for item in items {
+                    if let Some(parsed) = parse_video_item(item) {
+                        out.insert(parsed.video_id.clone(), parsed);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// 保存済みキーと指定バケットを使って GET リクエストを送る（遮断器チェック込み）。
-    #[allow(dead_code)] // Phase 93〜95 の API 経路から使用し、Phase 92 ではテストでも検証する
     pub(crate) async fn get_json(
         &self,
         bucket: QuotaBucket,
@@ -494,6 +592,128 @@ impl YtApi {
 
         YtApiError::Status(status.as_u16())
     }
+}
+
+fn parse_video_item(item: &Value) -> Option<YtVideoItem> {
+    let video_id = item
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+
+    let snippet = item.get("snippet");
+    let title = snippet
+        .and_then(|s| s.get("title"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    let channel_id = snippet
+        .and_then(|s| s.get("channelId"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let channel_title = snippet
+        .and_then(|s| s.get("channelTitle"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let description = snippet
+        .and_then(|s| s.get("description"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let published_at = snippet
+        .and_then(|s| s.get("publishedAt"))
+        .and_then(|v| v.as_str())
+        .and_then(iso8601_ms)
+        .map(iso_utc);
+    let thumbnails = snippet.and_then(|s| s.get("thumbnails"));
+    let thumbnail_url = ["maxres", "standard", "high", "medium", "default"]
+        .into_iter()
+        .find_map(|key| {
+            thumbnails
+                .and_then(|t| t.get(key))
+                .and_then(|entry| entry.get("url"))
+                .and_then(|u| u.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| Some(format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")));
+
+    let duration_sec = item
+        .get("contentDetails")
+        .and_then(|c| c.get("duration"))
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso8601_duration);
+
+    let live_broadcast_content = snippet
+        .and_then(|s| s.get("liveBroadcastContent"))
+        .and_then(|v| v.as_str())
+        .map(str::trim);
+    let details = item.get("liveStreamingDetails").filter(|v| v.is_object());
+    let has_details = details.is_some();
+    let detail_ms = |key: &str| {
+        details
+            .and_then(|d| d.get(key))
+            .and_then(|v| v.as_str())
+            .and_then(iso8601_ms)
+    };
+    let start_ms = detail_ms("actualStartTime");
+    let end_ms = detail_ms("actualEndTime");
+    let scheduled_start_ms = detail_ms("scheduledStartTime");
+    let is_upcoming = live_broadcast_content == Some("upcoming");
+    let is_live_now = if live_broadcast_content == Some("live") {
+        Some(true)
+    } else if has_details || is_upcoming {
+        Some(false)
+    } else {
+        None
+    };
+
+    let broadcast = BroadcastStatus {
+        is_live_now,
+        start_ms,
+        end_ms,
+        scheduled_start_ms,
+        has_details,
+        is_upcoming,
+    };
+
+    let is_broadcast = is_live_now == Some(true) || has_details || is_upcoming;
+    let is_live_content = if !is_broadcast {
+        Some(false)
+    } else if end_ms.is_some() && is_live_now != Some(true) {
+        // ガード 4: 終了後はライブアーカイブと公開済みプレミアの判別情報が公式 API に無い。
+        None
+    } else {
+        // 配信前・配信中は尺 0 秒（P0D / PT0S）がライブ、>0 秒がプレミア。
+        // 尺が欠落したライブ中応答は None とし、classify_kind 側で live と扱う。
+        duration_sec.map(|d| d == 0)
+    };
+
+    Some(YtVideoItem {
+        video_id: video_id.clone(),
+        video_ref: VideoRef {
+            video_id,
+            title,
+            channel_id,
+            channel_title,
+            thumbnail_url,
+        },
+        meta: MetaSnapshot {
+            published_at,
+            broadcast,
+            is_live_content,
+            playability: Some("OK".to_string()),
+            description,
+        },
+        duration_sec,
+    })
 }
 
 fn clear_expired_breakers(st: &mut YtApiState, now_sec: i64) {
@@ -1260,5 +1480,324 @@ mod tests {
             assert!(st.transient_streak >= 1);
             assert!(st.transient_cooldown_until_sec.is_some());
         }
+    }
+
+    /// DB-YA-09: `videos_list` が空入力を無通信で処理し、重複除去と 50 件チャンク分割を行って全件を返すことを検証する。
+    #[tokio::test]
+    async fn videos_list_dedup_and_50_item_chunking() {
+        let key = "AIzaSyVIDEOS_BATCH_09";
+        let make_item = |id: &str| {
+            format!(
+                r#"{{"id":"{id}","snippet":{{"title":"Title {id}","channelId":"UC000000000000000000001","channelTitle":"CH","publishedAt":"2026-11-27T10:00:00Z","description":"desc {id}","liveBroadcastContent":"none"}},"contentDetails":{{"duration":"PT3M20S"}}}}"#
+            )
+        };
+        let chunk1: Vec<String> = (0..50).map(|i| make_item(&format!("vid_{i:03}"))).collect();
+        let chunk2: Vec<String> = (50..55)
+            .map(|i| make_item(&format!("vid_{i:03}")))
+            .collect();
+        let (base, recorded) = spawn_mock_server(vec![
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, chunk1.join(",")),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, chunk2.join(",")),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some(key.to_string()), base);
+
+        // 空配列・空白のみは通信 0 回
+        let empty = api.videos_list(&["", "   "]).await.unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(recorded.lock().unwrap().len(), 0);
+
+        // 重複・空白混在の 55 件を 50 + 5 の 2 回で取得
+        let mut ids: Vec<String> = (0..55).map(|i| format!("vid_{i:03}")).collect();
+        ids.push("vid_000".to_string());
+        ids.push(" vid_054 ".to_string());
+        ids.push("   ".to_string());
+
+        let map = api.videos_list(&ids).await.unwrap();
+        assert_eq!(map.len(), 55);
+        assert_eq!(map["vid_000"].video_ref.title, "Title vid_000");
+        assert_eq!(map["vid_054"].duration_sec, Some(200));
+
+        let reqs = recorded.lock().unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert!(reqs[0]
+            .request_line
+            .contains("part=snippet%2CcontentDetails%2CliveStreamingDetails%2Cstatistics"));
+        assert!(reqs[0]
+            .headers_lower
+            .contains(&format!("x-goog-api-key: {key}").to_ascii_lowercase()));
+        assert!(!reqs[0].request_line.contains("key="));
+        // 1 回目に 50 ID、2 回目に 5 ID（カンマ %2C が 49 個と 4 個）
+        let id_part_0 = reqs[0]
+            .request_line
+            .split("id=")
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap();
+        let id_part_1 = reqs[1]
+            .request_line
+            .split("id=")
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap();
+        assert_eq!(id_part_0.matches("%2C").count(), 49);
+        assert_eq!(id_part_1.matches("%2C").count(), 4);
+    }
+
+    /// DB-YA-10: `videos_list` が `publishedAt` を `+00:00` へ正規化し、`duration_sec`・サムネイル優先順・説明文を正しく変換することを検証する。
+    #[tokio::test]
+    async fn videos_list_normalizes_timestamps_duration_and_thumbnails() {
+        let body = r#"{
+            "items": [
+                {
+                    "id": "norm_vid_01",
+                    "snippet": {
+                        "title": "  Normal Video  ",
+                        "channelId": "UCnorm00000000000000001",
+                        "channelTitle": "Norm CH",
+                        "publishedAt": "2026-11-27T21:05:09.123+09:00",
+                        "description": "hello world",
+                        "liveBroadcastContent": "none",
+                        "thumbnails": {
+                            "default": {"url": "https://i.ytimg.com/vi/norm_vid_01/default.jpg"},
+                            "high": {"url": "https://i.ytimg.com/vi/norm_vid_01/hqdefault.jpg"},
+                            "maxres": {"url": "https://i.ytimg.com/vi/norm_vid_01/maxresdefault.jpg"}
+                        }
+                    },
+                    "contentDetails": {"duration": "PT1H2M3S"}
+                },
+                {
+                    "id": "norm_vid_02",
+                    "snippet": {
+                        "title": "Fallback Thumb",
+                        "publishedAt": "2026-11-27T12:00:00Z",
+                        "liveBroadcastContent": "none"
+                    },
+                    "contentDetails": {"duration": "P1DT0S"}
+                }
+            ]
+        }"#;
+        let (base, _) = spawn_mock_server(vec![MockReply {
+            status: 200,
+            body: body.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyNORM_10".to_string()), base);
+        let map = api
+            .videos_list(&["norm_vid_01", "norm_vid_02"])
+            .await
+            .unwrap();
+
+        let v1 = &map["norm_vid_01"];
+        assert_eq!(v1.video_ref.title, "Normal Video");
+        assert_eq!(
+            v1.video_ref.channel_id.as_deref(),
+            Some("UCnorm00000000000000001")
+        );
+        assert_eq!(v1.video_ref.channel_title.as_deref(), Some("Norm CH"));
+        assert_eq!(
+            v1.video_ref.thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/norm_vid_01/maxresdefault.jpg")
+        );
+        assert_eq!(
+            v1.meta.published_at.as_deref(),
+            Some("2026-11-27T12:05:09+00:00")
+        );
+        assert_eq!(v1.meta.description, "hello world");
+        assert_eq!(v1.duration_sec, Some(3723));
+        assert_eq!(v1.meta.is_live_content, Some(false));
+        assert_eq!(v1.classify_kind_for_initial("video"), None);
+
+        let v2 = &map["norm_vid_02"];
+        assert_eq!(
+            v2.video_ref.thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/norm_vid_02/hqdefault.jpg")
+        );
+        assert_eq!(
+            v2.meta.published_at.as_deref(),
+            Some("2026-11-27T12:00:00+00:00")
+        );
+        assert_eq!(v2.duration_sec, Some(86_400));
+    }
+
+    /// DB-YA-11: ガード 4（`P0D`/`PT0S` は `live`、尺 > 0 は `premiere`、尺欠落ライブ中は `live`、`actualEndTime` 時は `is_live_content = None` と `premiere` 保護）を検証する。
+    #[tokio::test]
+    async fn videos_list_guard4_live_premiere_and_ended_preservation() {
+        let body = r#"{
+            "items": [
+                {
+                    "id": "live_p0d",
+                    "snippet": {"title": "Live P0D", "liveBroadcastContent": "live"},
+                    "contentDetails": {"duration": "P0D"},
+                    "liveStreamingDetails": {"actualStartTime": "2026-11-27T10:00:00Z"}
+                },
+                {
+                    "id": "live_nodur",
+                    "snippet": {"title": "Live NoDur", "liveBroadcastContent": "live"},
+                    "liveStreamingDetails": {"actualStartTime": "2026-11-27T10:00:00Z"}
+                },
+                {
+                    "id": "prem_live",
+                    "snippet": {"title": "Premiere Live", "liveBroadcastContent": "live"},
+                    "contentDetails": {"duration": "PT5M30S"},
+                    "liveStreamingDetails": {"actualStartTime": "2026-11-27T10:00:00Z"}
+                },
+                {
+                    "id": "prem_up",
+                    "snippet": {"title": "Premiere Upcoming", "liveBroadcastContent": "upcoming"},
+                    "contentDetails": {"duration": "PT5M30S"},
+                    "liveStreamingDetails": {"scheduledStartTime": "2026-11-27T11:00:00Z"}
+                },
+                {
+                    "id": "ended_arc",
+                    "snippet": {"title": "Ended Stream", "liveBroadcastContent": "none"},
+                    "contentDetails": {"duration": "PT1H10M"},
+                    "liveStreamingDetails": {
+                        "actualStartTime": "2026-11-27T08:00:00Z",
+                        "actualEndTime": "2026-11-27T09:10:00Z"
+                    }
+                }
+            ]
+        }"#;
+        let (base, _) = spawn_mock_server(vec![MockReply {
+            status: 200,
+            body: body.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyGUARD4_11".to_string()), base);
+        let map = api
+            .videos_list(&[
+                "live_p0d",
+                "live_nodur",
+                "prem_live",
+                "prem_up",
+                "ended_arc",
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(map["live_p0d"].meta.is_live_content, Some(true));
+        assert_eq!(
+            map["live_p0d"].classify_kind_for_initial("video"),
+            Some("live")
+        );
+        assert_eq!(map["live_p0d"].classify_kind_for_refresh(), Some("live"));
+
+        // 尺が欠落した配信中ライブも premiere に誤分類されず live になる
+        assert_eq!(map["live_nodur"].meta.is_live_content, None);
+        assert_eq!(
+            map["live_nodur"].classify_kind_for_initial("video"),
+            Some("live")
+        );
+        assert_eq!(map["live_nodur"].classify_kind_for_refresh(), Some("live"));
+
+        assert_eq!(map["prem_live"].meta.is_live_content, Some(false));
+        assert_eq!(
+            map["prem_live"].classify_kind_for_initial("video"),
+            Some("premiere")
+        );
+        assert_eq!(
+            map["prem_live"].classify_kind_for_refresh(),
+            Some("premiere")
+        );
+
+        assert_eq!(map["prem_up"].meta.is_live_content, Some(false));
+        assert_eq!(
+            map["prem_up"].classify_kind_for_initial("video"),
+            Some("upcoming")
+        );
+        assert_eq!(map["prem_up"].classify_kind_for_refresh(), Some("upcoming"));
+
+        // 終了後（actualEndTime あり）は is_live_content = None で、
+        // refresh は None（既存保持）、initial は未確定なら live / 既存 premiere は None
+        let ended = &map["ended_arc"];
+        assert_eq!(ended.meta.is_live_content, None);
+        assert_eq!(ended.classify_kind_for_refresh(), None);
+        assert_eq!(ended.classify_kind_for_initial("video"), Some("live"));
+        assert_eq!(ended.classify_kind_for_initial("premiere"), None);
+    }
+
+    /// DB-YA-12: 未設定・`keyInvalid`・日次クォータ超過・一時エラー（429）・HTTP 404 における `should_fallback()` と `can_use(Shared)` 遷移を検証する。
+    #[tokio::test]
+    async fn videos_list_error_and_fallback_signalling() {
+        // 未設定
+        let unset = YtApi::new(None);
+        assert!(!unset.can_use(QuotaBucket::Shared));
+        let err_unset = unset.videos_list(&["dQw4w9WgXcQ"]).await.unwrap_err();
+        assert!(matches!(err_unset, YtApiError::Unset));
+        assert!(err_unset.should_fallback());
+
+        // 404 は遮断器を開かず個別フォールバックのみ通知
+        let (base_404, _) = spawn_mock_server(vec![MockReply {
+            status: 404,
+            body: r#"{"error":{"code":404}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_404 = YtApi::with_test_base_url(Some("AIzaSyERR_404".to_string()), base_404);
+        assert!(api_404.can_use(QuotaBucket::Shared));
+        let err_404 = api_404.videos_list(&["dQw4w9WgXcQ"]).await.unwrap_err();
+        assert!(matches!(err_404, YtApiError::NotFound));
+        assert!(err_404.should_fallback());
+        assert!(api_404.can_use(QuotaBucket::Shared));
+
+        // 429 でクールダウンに入り can_use(Shared) == false
+        let (base_429, _) = spawn_mock_server(vec![MockReply {
+            status: 429,
+            body: r#"{"error":{"code":429}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_429 = YtApi::with_test_base_url(Some("AIzaSyERR_429".to_string()), base_429);
+        let err_429 = api_429.videos_list(&["dQw4w9WgXcQ"]).await.unwrap_err();
+        assert!(matches!(err_429, YtApiError::Status(429)));
+        assert!(err_429.should_fallback());
+        assert!(!api_429.can_use(QuotaBucket::Shared));
+
+        // 403 quotaExceeded で Shared クォータ遮断に入り can_use(Shared) == false
+        let (base_q, _) = spawn_mock_server(vec![MockReply {
+            status: 403,
+            body: r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_q = YtApi::with_test_base_url(Some("AIzaSyERR_Q".to_string()), base_q);
+        let err_q = api_q.videos_list(&["dQw4w9WgXcQ"]).await.unwrap_err();
+        assert!(matches!(
+            err_q,
+            YtApiError::QuotaExhausted(QuotaBucket::Shared)
+        ));
+        assert!(err_q.should_fallback());
+        assert!(!api_q.can_use(QuotaBucket::Shared));
+
+        // 400 keyInvalid でラッチに入り can_use(Shared) == false
+        let (base_k, _) = spawn_mock_server(vec![MockReply {
+            status: 400,
+            body: r#"{"error":{"errors":[{"reason":"keyInvalid"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_k = YtApi::with_test_base_url(Some("AIzaSyERR_K".to_string()), base_k);
+        let err_k = api_k.videos_list(&["dQw4w9WgXcQ"]).await.unwrap_err();
+        assert!(matches!(err_k, YtApiError::KeyInvalid));
+        assert!(err_k.should_fallback());
+        assert!(!api_k.can_use(QuotaBucket::Shared));
     }
 }

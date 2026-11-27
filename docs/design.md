@@ -49,9 +49,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
-| `ytapi` | YouTube Data API v3 クライアント、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、§4.24） |
-| `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§4.16） |
-| `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時・説明文と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57・FR-85、§4.18） |
+| `ytapi` | YouTube Data API v3 クライアント（`videos.list` 一括取得を含む）、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、FR-98、§4.24、§4.25） |
+| `livewait` | ライブ配信待機のポーラー。待機リストの巡回（`ytapi` 優先と `InnerTube` フォールバック）、開始と終了と自動解除の検出、および `live_wait.action` に応じた動作（FR-44、FR-98、§4.16） |
+| `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時、説明文、未確定や失敗の kind を `ytapi` `videos.list` 優先（フォールバック時は InnerTube `player`）で後から埋める（FR-53、FR-56、FR-57、FR-85、FR-96、FR-98、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
 | `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
@@ -64,7 +64,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 モジュール間の依存方向は「上位層（`lib`・`main`・`commands`・`error`）→ ドメイン層（`mpv`・`yt`・`feed`・`innertube`・`ytapi`・`livewait`・`metaresolve`・`chat`・`filter`・`sponsor`・`ui`・`deep_link`・`deps`・`diag`・`native_host`）→ 下位共有層（`db`・`model`・`util`）」の 3 層一方向に揃える。
 このうち `ytapi` は `model` と `util` のみに依存する純粋リーフモジュールとし、他のドメインモジュールおよび上位層（`lib`、`commands`、`error`）への依存を持たない。
 ドメイン層および下位共有層から上位層への逆参照、下位共有層からドメイン層への逆参照、ならびに 2 ノード以上の循環依存を禁止する。
-ドメイン層間の非循環な一方向参照は許容し、連携で循環が生じる場合はフックやコールバックを定義して上位層（`lib` / `commands`）から注入する。
+ドメイン層間の非循環な一方向参照（`metaresolve` と `livewait` から `ytapi` および `innertube` への参照を含む）は許容し、連携で循環が生じる場合はフックやコールバックを定義して上位層（`lib` / `commands`）から注入する。
 これら 3 層の逆参照禁止と循環禁止は `scripts/check_docs_consistency.py`（check 19）で機械検証する。
 
 ## 3. IPC 設計（Tauri コマンドとイベント）
@@ -116,7 +116,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `deps_status` | なし | `Result<Vec<DepStatus>>`（mpv・yt-dlp・deno の検出状況・バージョン・解決パス。FR-74、仕様決定 CY、§5） |
 | `setup_deps_pending` | なし | `Result<bool>`（初回起動の依存検出画面が未表示か。FR-75、仕様決定 CZ、§5） |
 | `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
-| `playing_channel` | `video_id` | `Result<PlayingChannel>`（FR-12、仕様決定 U・DY。videos → watch_history → 外部メタ（InnerTube `video_meta` を優先し、失敗時は 15 秒タイムアウト付き yt-dlp `video_channel_ref`）の順に `subscribe_channel` へ渡せる入力と表示名を解決し、UC 確定時は購読済みかも返す） |
+| `playing_channel` | `video_id` | `Result<PlayingChannel>`（FR-12、FR-98、仕様決定 U、DY、ED。videos → watch_history → 外部メタ（`ytapi` `videos.list` を優先し、失敗時や UC ID 未取得時は InnerTube `video_meta` → 15 秒タイムアウト付き yt-dlp `video_channel_ref`）の順に `subscribe_channel` へ渡せる入力と表示名を解決し、UC 確定時は購読済みかも返す） |
 | `unsubscribe_channel` | `channel_id` | `Result<()>` |
 | `list_channels` | なし | `Result<Vec<Channel>>` |
 | `set_channel_category` | `channel_id`, `category_id?` | `Result<()>` |
@@ -129,7 +129,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams`・`/shorts` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN。`/shorts` は FR-55・仕様決定 CF） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置（`videos_pos`・`streams_pos`・`shorts_pos`）、`errors`） |
 | `search` | `query`, `count?`（返す表示件数の上限。省略時 20・上限 500。ytsearch に継続が無いため、「さらに読み込む」は count を増やした再取得＋画面側の差分追記とする（仕様決定 AR）） | `Result<Vec<SearchResult>>` |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
-| `get_description` | `video_id` | `Result<String>`（InnerTube `player` の `videoDetails.shortDescription`。空・未設定は空文字列。FR-33、仕様決定 BB） |
+| `get_description` | `video_id` | `Result<String>`（`ytapi` `videos.list` の `snippet.description` を優先し、未設定や失敗や欠落時は InnerTube `player` の `videoDetails.shortDescription` へフォールバック。空や未設定は空文字列。FR-33、FR-98、仕様決定 BB、ED） |
 | `block_channel` | `channel_id`, `title` | `Result<()>` |
 | `unblock_channel` | `channel_id` | `Result<()>` |
 | `blocked_channels` | なし | `Result<Vec<BlockedChannel>>` |
@@ -148,8 +148,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `queue_playlist_clear` | `playlist_id` | `Result<()>`（FR-48。保存済みプレイリストキュー行の消去） |
 | `queue_playlist_load` | なし | `Result<Vec<PlaylistQueueState>>`（FR-48。`playlist_id`・`playlist_name`・`current_index` の列） |
 | `video_meta_lookup` | `video_id` | `Result<Option<VideoRef>>`（台帳・履歴のどちらにも無ければ None） |
-| `video_meta_resolve` | `video_id` | `Result<Option<VideoRef>>`（InnerTube `player` の `videoDetails` から表示メタ。タイトルが取れなければ None。FR-29、仕様決定 BD） |
-| `live_wait_add` | `video`（`VideoRef`） | `Result<LiveWaitAddOutcome>`（`result` は `added` / `duplicate` / `live` / `ended` / `notBroadcast`。登録前に InnerTube `player` の放送状態を確認し、開始前のみ `added` で登録する。FR-44、仕様決定 BT） |
+| `video_meta_resolve` | `video_id` | `Result<Option<VideoRef>>`（`ytapi` `videos.list` で非空タイトルが取れれば優先返却し、未設定や失敗や欠落時は InnerTube `player` の `videoDetails` へフォールバック。タイトルが取れなければ None。FR-29、FR-98、仕様決定 BD、ED） |
+| `live_wait_add` | `video`（`VideoRef`） | `Result<LiveWaitAddOutcome>`（`result` は `added` / `duplicate` / `live` / `ended` / `notBroadcast`。登録前に `ytapi` `videos.list`（1 回で放送状態と補完メタを同時取得）を優先して放送状態を確認し、未設定や失敗や欠落時は InnerTube `player` へフォールバックして開始前のみ `added` で登録する。FR-44、FR-98、仕様決定 BT、ED） |
 | `live_wait_remove` | `video_id` | `Result<()>`（未登録でも正常終了） |
 | `live_wait_list` | なし | `Result<Vec<LiveWait>>`（予定時刻の昇順・未定は末尾） |
 | `bookmark_add` | `video_id`, `position_sec`（再生位置の秒。小数以下は切り捨てて整数秒で保存） | `Result<Option<VideoBookmark>>`（登録した行。同動画の同位置は None で重複抑止。FR-49、仕様決定 BZ、§4.17） |
@@ -200,8 +200,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `take_open_urls` は deep link の保留分を取り出す初期ドレイン用で、呼び出し後は `app://open_url` イベント経路のみで届く。戻り値とイベントは `{seq, url}` で、seq は重複除去用の配送識別子（§3.4）。
 `queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタと `uid`（項目のユニーク ID、BG-10、仕様決定 BK）付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
 `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
-`video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
-`videos` 台帳の投稿日時・kind・説明文・動的放送状態を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56・FR-85・FR-96、仕様決定 CD・CG・DJ・EB、§4.18）。
+`video_meta_resolve` は補完が外れた項目を `ytapi` `videos.list` 優先（未設定や失敗や欠落時は InnerTube `player` 応答の `videoDetails` へフォールバック）から遅延解決する（FR-29、FR-98、仕様決定 BD、ED）。
+タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
+`videos` テーブルの投稿日時や kind や説明文、動的放送状態を後から埋めるメタの遅延解決基盤も同じ `ytapi` 優先と InnerTube `player` フォールバック経路を共用する（FR-53、FR-56、FR-85、FR-96、FR-98、仕様決定 CD、CG、DJ、EB、ED、§4.18）。
 `list_feed` はライブ中（`broadcast_state='live'`）走査と非ライブ走査の 2 段階クエリでライブ中項目を先頭配置し、種別フィルタ `live_now`・`upcoming` に対応する（仕様決定 EB）。
 `history_list` のカーソルは末尾行の `(last_watched_at, rowid)` の対で、一覧の全順序（`last_watched_at` 降順、同時刻は rowid 降順）と同じ基準で「その行の次（より古い側）から」を取る（FR-52、仕様決定 CC。`history_prune` の保持対象とも同じ順序）。`next_cursor` の有無は `limit`+1 件の取得で確定し、末尾ちょうどのページでも空の次ページを要求しない。`query` はタイトルと `channel_title` への `%...%` 部分一致 LIKE で、`%`・`_`・`\` を退避して利用者入力のワイルドカードを無力化する（FR-61、仕様決定 CL。空・空白のみは絞り込みなし）。一覧取得のページングであり、保持上限 10000 件の剪定運用（仕様決定 AV）とは別物。
 `watch_later_add` は `favorite_add` と同じく `video_upsert` で `videos` 台帳へ登録してから `watch_later` へ挿入し、`watch_later_list` は台帳との JOIN で表示メタを取る（FR-59、仕様決定 CJ）。
@@ -515,7 +516,7 @@ IPC 接続確立と `observe_property` 登録の直後（最初の `loadfile` �
 
 視聴履歴のチャンネル情報補完（仕様決定 DY、回帰テスト DB-LD-34）は、`history_upsert` と `history_update_progress` で既存非空値を保持しつつ `videos` → `live_waits` → `queue_items`（`channel_title` のみ）の順で SQL 補完を行う。
 ライブ待機からの自動再生は仕様決定 BT(3) に従い再生開始前に `live_waits` 行を削除するため、`livewait::auto_play` が削除前に保持していた `LiveWait` の `channel_id`・`channel_title`・`title` を `HistoryChannelHint` として `PlayerManager::play_with_channel_hint` へ渡し、`history_upsert` 直後かつ `VideoStartHook` 発火前に `history_set_channel` で同期書き戻しする（既知 `channel_id` がある場合に不要な外部解決が走らない順序を保証する）。
-DB にチャンネル情報が無い未購読動画向けには、`PlayerManager` に `VideoStartHook` を設けて `play`、`switch`、連続再生 `continued: true` の 3 契機で `players` ロック解放後に発火し、`lib.rs` から同一 `video_id` の in-flight 重複抑止（RAII `Drop` 解放の `InFlightSet`）付きバックグラウンド処理で `watch_history.channel_id` が空かつ削除抑止中でない場合に限り `InnerTube::video_meta` → 失敗または UC ID 欠落時は 15 秒タイムアウト付き `yt::video_channel_ref`（単一 JSON 応答から参照候補・`channel_title`・`title` を同時抽出し、参照候補が無く `channel_title` のみ取れた場合も保持）を呼んで `Db` ロック内で `history_suppressed` を再確認する順序非依存 UPSERT の `history_set_channel` で書き戻す（`mpv` から `innertube` への直接依存を持たず、`playing_channel` 第 3 段も同じヘルパを共用し、購読用 `input` と検証済み正規 UC `channel_id` を型分離する）。
+DB にチャンネル情報が無い未購読動画向けには、`PlayerManager` に `VideoStartHook` を設けて `play`、`switch`、連続再生 `continued: true` の 3 契機で `players` ロック解放後に発火し、`lib.rs` から同一 `video_id` の in-flight 重複抑止（RAII `Drop` 解放の `InFlightSet`）付きバックグラウンド処理で `watch_history.channel_id` が空かつ削除抑止中でない場合に限り `YtApi::videos_list` → 失敗または UC ID 欠落時は `InnerTube::video_meta` → 失敗または UC ID 欠落時は 15 秒タイムアウト付き `yt::video_channel_ref`（単一 JSON 応答から参照候補・`channel_title`・`title` を同時抽出し、参照候補が無く `channel_title` のみ取れた場合も保持）を呼んで `Db` ロック内で `history_suppressed` を再確認する順序非依存 UPSERT の `history_set_channel` で書き戻す（`mpv` から `innertube` への直接依存を持たず、`playing_channel` 第 3 段も同じヘルパ `resolve_video_channel` を共用し、`ytapi` で得たタイトル類を後段フォールバックへ引き継ぎつつ購読用 `input` と検証済み正規 UC `channel_id` を型分離する）。
 
 ### 4.2 コマ送り
 
@@ -972,35 +973,26 @@ eof 以外の終端（`error`・`stop`・`process_exit` 等）は設定に関わ
 eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定を維持し、
 次ファイルの `file-loaded` またはプロセス再起動で解除する。
 
-### 4.16 ライブ待機ポーラー（FR-44、仕様決定 BT）
+### 4.16 ライブ待機ポーラー（FR-44、FR-98、仕様決定 BT、ED）
 
-`live_waits` に登録された放送予定のライブ・プレミア公開予定を、バックエンドの
-ポーラーが InnerTube `player` 応答で巡回する。待機リストは DB へ保存するため
-再起動でそのまま復元され、ポーリングも再開される（仕様決定 BT(5)）。
+`live_waits` に登録された放送予定のライブやプレミア公開予定を、バックエンドのポーラーが巡回する。
+共通クォータ枠が利用可能なときは `ytapi::videos_list` で最大 50 件チャンクごとに一括巡回し、未設定時、上限到達時、エラー時はチャンク単位で InnerTube `player` 応答へ透過フォールバックする。
+待機リストは DB へ保存するため再起動でそのまま復元され、ポーリングも再開される（仕様決定 BT(5)）。
 
-- 登録: `live_wait_add` が行アクション「配信を待機」から呼ばれ、先に InnerTube で
-  放送状態を確認する。`isLiveNow` 真は放送中として登録せず `live` を返し
-  （通常再生を案内）、`endTimestamp` ありは `ended`、`liveBroadcastDetails` も
-  `isUpcoming` も無い通常動画は `notBroadcast` を返す。開始前のみ `added` で
-  `live_waits` へ登録し、同一動画は `duplicate` で抑止する（仕様決定 BT(1)(6)）
-- 状態分類: 優先順位は「放送中（`isLiveNow` 真）> 終了済み（`endTimestamp` あり）>
-  開始前（`liveBroadcastDetails` または `videoDetails.isUpcoming` あり）> 非放送」。
-  予定時刻は `scheduledStartTimestamp` を優先し、無ければ `startTimestamp` を使う
-  （暫定解釈: 要件が名指しする `scheduledStartTimestamp` は 2026-11 時点の実応答では
-  未確認で、予約配信のロビーでは `startTimestamp` に予定開始が入ることを確認した）
-- ポーリング間隔: 予定時刻が「開始 2 分前〜予定 30 分超過」の直前窓内は 15 秒、
-  それ以外（予定無しを含む）は 60 秒（暫定値。仕様決定 BT は「直前から短間隔、
-  無ければ 60 秒程度」のみ指定）。予定超過後も一定時間は短間隔で遅延開始を追う
-- 遷移: 放送中の検出で待機を解除し、`live_wait.action` が `play` なら新規
-  インスタンスで自動再生（`play_video` と同じ pip・画質の解決順、レジュームは使わない）、
-  `notify` なら `livewait://status` のトースト通知のみ。`endTimestamp` の検出は
-  通知して解除する。開始予定から 24 時間を超えて未開始の項目は自動解除する
-  （予定の無い項目は登録時刻を起点とする暫定解釈）。ポーリングで InnerTube 側の
-  予定変更を検知したら保存値を追随更新する
-- `liveBroadcastDetails` をポーリング中に失った項目（中止・非公開化など）は
-  異常系として定間隔で追い続け、自動解除期限の掃除に委ねる（暫定解釈）
-- 状態確認の連続失敗は 2 回で `livewait://status` の warn 通知を出し、復帰時に
-  info 通知する（フィードポーラーと同じ方針）
+- 登録: `live_wait_add` が行アクション「配信を待機」から呼ばれ、先に `resolve_live_wait_candidate`（`ytapi` `videos.list` 優先、1 回の応答で放送状態と補完メタを同時取得し、失敗や未設定時は InnerTube へフォールバック）で放送状態を確認する。
+  `isLiveNow` 真は放送中として登録せず `live` を返し（通常再生を案内）、`endTimestamp` ありは `ended`、`liveBroadcastDetails` も `isUpcoming` も無い通常動画は `notBroadcast` を返す。
+  開始前のみ `added` で `live_waits` へ登録し、同一動画は `duplicate` で抑止する（仕様決定 BT(1)(6)）
+- 状態分類: 優先順位は「放送中（`isLiveNow` 真）> 終了済み（`endTimestamp` あり）> 開始前（`liveBroadcastDetails` または `videoDetails.isUpcoming` あり）> 非放送」。
+  予定時刻は `scheduledStartTimestamp` を優先し、無ければ `startTimestamp` を使う（暫定解釈: 要件が名指しする `scheduledStartTimestamp` は 2026-11 時点の実応答では未確認で、予約配信のロビーでは `startTimestamp` に予定開始が入ることを確認した）
+- ポーリング間隔: 予定時刻が「開始 2 分前〜予定 30 分超過」の直前窓内は 15 秒、それ以外（予定無しを含む）は 60 秒とする（暫定値であり、仕様決定 BT は「直前から短間隔、無ければ 60 秒程度」のみ指定）。
+  予定超過後も一定時間は短間隔で遅延開始を追う
+- 一括巡回と相乗り同期: `poll_due` は存在確認と 24 時間超過解除を行った後に `active_due` を `VIDEOS_BATCH_MAX`（50 件）チャンクへ分割し、`ytapi.can_use(QuotaBucket::Shared)` が真のチャンクは `videos.list`（1 unit）で一括取得し、取得結果は `sync_feed_with_kind`（`classify_kind_for_refresh` 経由、既存の `premiere` を保持）で `ingested = 1` のフィード行へ相乗り反映してから遷移判定を行う
+- 遷移: 放送中の検出で待機を解除し、`live_wait.action` が `play` なら新規インスタンスで自動再生（`play_video` と同じ pip や画質の解決順、レジュームは使わない）、`notify` なら `livewait://status` のトースト通知のみ。
+  `endTimestamp` の検出は通知して解除する。
+  開始予定から 24 時間を超えて始まらない項目は自動解除する（予定の無い項目は登録時刻を起点とする暫定解釈）。
+  ポーリングで予定変更を検知したら保存値を追随更新する
+- `liveBroadcastDetails` をポーリング中に失った項目（中止や非公開化など）、および `ytapi` `videos.list` `HTTP 200` 応答から単発で欠落した項目は `live_wait` 行も `videos.broadcast_state` もクリアせず、基本間隔（`POLL_BASE_MS`）で再スケジュールして自動解除期限の掃除に委ねる（仕様決定 ED）
+- 状態確認の連続失敗は 2 回で `livewait://status` の warn 通知を出し、復帰時に info 通知する（フィードポーラーと同じ方針）
 
 ### 4.17 動画内ブックマーク（FR-49、仕様決定 BZ）
 
@@ -1026,77 +1018,40 @@ eof 到達済みの事実は `kept_eof` へ移して履歴の `completed` 判定
   限られるため、呼び出し側が成功後に `bookmark_list` で取り直す
   （暫定解釈。`livewait://changed` のようなバックエンド発の変更経路が無い）
 
-### 4.18 メタの遅延解決基盤（FR-53・FR-56・FR-57・FR-85、仕様決定 CD・CG・CH・DJ）
+### 4.18 メタの遅延解決基盤（FR-53、FR-56、FR-57、FR-85、FR-96、FR-98、仕様決定 CD、CG、CH、DJ、EB、ED）
 
-`videos` 行のうち RSS・ローカル記録に欠けた投稿日時（`published_at`）と、
-RSS・バックフィルの推定に留まる種別（`kind`）、説明文（`description`）を、
-常駐ワーカー（`metaresolve` モジュール、設計書 §2）が InnerTube `player`
-応答で後から埋める。`player` の 1 応答から投稿日時・放送状態
-（`liveBroadcastDetails`・`videoDetails.isUpcoming`）・再生状態
-（`playabilityStatus`）・`isLiveContent`・説明文
-（`videoDetails.shortDescription`）をまとめて取り、手動解決の
-`video_meta_resolve` と同じ経路を共用する（仕様決定 CD・CG。
-説明文の遅延保存は FR-85・仕様決定 DJ で追加）。
+`videos` 行のうち RSS やローカル記録に欠けた投稿日時（`published_at`）、RSS やバックフィルの推定に留まる種別（`kind`）、説明文（`description`）、およびアクティブな動的放送状態を、常駐ワーカー（`metaresolve` モジュール、設計書 §2）が巡回して埋める。
+共通クォータ枠が利用可能なときは `ytapi::videos_list`（§4.25）を優先し、未設定時、上限到達時、エラー時は InnerTube `player` 経路へ透過フォールバックする（手動解決の `video_meta_resolve` も同じ取得優先順を取る）。
 
-- 対象選出: `kind_state` が 0（未確定）または 2（直近の試行が失敗）の行、
-  `published_at` が NULL で `meta_checked=0`（InnerTube メタ応答を未試行）
-  の行、`description` が NULL の行を `first_seen_at` 降順で選ぶ。
-  1 サイクルは最大 20 件、巡回間隔は 60 秒として処理量を上限化する
-  （仕様決定 CD）。フィードの新規投入時には `spawn_kind_detection` から
-  `wake` で即時起こされる。説明文の選出は NULL 判定だけで試行済み印を
-  持たない（暫定解釈: 応答が説明文を持たないときは空文字を書き込み、
-  NULL でなくなることで解決済みを表す）
-- 投稿日時: `playerMicroformatRenderer.publishDate`（無ければ `uploadDate`）を
-  UTC の ISO 表記へ正規化し、NULL の行だけに書き込む（FR-53、仕様決定 CD）。
-  応答を得た時点で `meta_checked=1` を立て、publishDate を持たない応答への
-  繰り返し問い合わせは抑止する（kind の再試行とは独立した記録）
-- 説明文: `videoDetails.shortDescription` を `description` が NULL の行
-  だけに書き込む（FR-85、仕様決定 DJ）。応答が説明文を持たない
-  （パース結果が空文字）場合も空文字を書き、説明なしを確定させて
-  「もう一度問う」対象から外す。既存値は上書きしない暫定解釈
-  （投稿後に説明文が編集されても追従しない）
-- kind 分類: `isLiveNow` 真は `live`（`isLiveContent` 偽は `premiere`）、
-  放送詳細あり・終了時刻なしまたは `isUpcoming` 真は `upcoming`、
-  終了時刻ありは `isLiveContent` 真なら `live`（ライブのアーカイブ）、
-  それ以外は `premiere` と分類する（FR-56、仕様決定 CG）。放送詳細を持たない
-  応答でも `isLiveContent` 真は `live`、`playabilityStatus` が
-  `LIVE_STREAM_OFFLINE` は `upcoming` と見なす暫定解釈を取る。
-  いずれにも当てはまらない応答は「放送系でない」と見なし、`kind='video'`
-  の行だけ従来の shorts 判定（`youtube.com/shorts/<id>` へのリダイレクト
-  非追跡 HEAD、仕様決定 V）を試して `short` または `video` に確定する
-- `kind='short'` の行は遅延解決側でも確定済み（`kind_state=1`）として扱い、
-  InnerTube の結果で kind を上書きしない（仕様決定 CG の既存経路の保持）
-- 試行失敗は `kind_state=2` として残し、未確定・失敗の行だけを定期再試行
-  する（FR-57、仕様決定 CH）。同一行の連続失敗が 1 起動内で 5 回を超えたら
-  その起動中は対象から外し、次回起動で再び対象に戻す（恒久に失敗する行が
-  選出順を占有しないための暫定解釈）
-- `kind` の値が変わった、または `published_at`・`description`・動的放送状態を
-  更新した件数の合計が 1 件以上で `feed://kind_updated` を出し、一覧の再読込を
-  促す（説明文の解決は `video_desc` フィルタの評価結果を変え得るため）
-- バックフィルのタブ由来など `video` 以外の推定 kind が付いた行へ
-  「放送系でない」応答が返ったときは、由来の kind を残したまま確定する
-  （放送予定が応答へ載る前の誤確定を避ける暫定解釈）
-- ライブラリ由来のプレースホルダ行（`ingested=0`）を RSS・バックフィル投入で
-  本文へ昇格するとき、`kind_state=1` の行は既に確定した kind を優先し、
-  投入側の暫定値では上書きしない（解決済みの判定を守る暫定解釈）
-- フィードの種別フィルタ `live` は放送系の傘として `live`・`upcoming`・
-  `premiere` をまとめて拾う（暫定解釈）。加えて種別フィルタ `live_now`
-  （`broadcast_state='live'`）と `upcoming`（`broadcast_state='upcoming'`）を提供する（FR-96、仕様決定 EB）
-- 動的放送状態と開始時刻の追跡（FR-96、仕様決定 EB）:
-  `MetaResolver` は初回解決時に `videos_resolve_meta_tx` で `broadcast_state`
-  （`'live' | 'upcoming' | 'ended' | NULL`）・`broadcast_start_ms`・
-  `broadcast_checked_at_ms` を単一トランザクションで保存し、続けて毎 60 秒の
-  巡回後半で `ingested=1` のアクティブ行（`'live' | 'upcoming'`）を 1 サイクル最大 10 件
-  （緊急度階層 8:2 配分）で定期再確認する。再確認間隔はライブ中 3 分（開始 12 時間超は
-  10 分）、直前予定（15 分前〜2 時間後）2 分、遠い予定 15 分、基準時刻から 24 時間超の
-  未開始枠は 6 時間とし、最低 1 回確認済みかつ基準時刻から 7 日超過の `upcoming` 行は
-  一括解除する。HTTP 200 の `LOGIN_REQUIRED`/`ERROR` かつ詳細なしのボット判定応答は
-  直前状態を保護し、`live` 行で連続 6 回継続時のみ個別解除する。HTTP 429 検知時は
-  5→10→15 分の指数バックオフ、連続 3 回通信失敗時はサイクル中断を発動する。手動
-  `feed_refresh` では 60 秒クールダウン内で間隔ガードをバイパスして即時再確認し、
-  `LiveWaitPoller` も `meta_snapshot` 取得結果を `ingested=1` 行へ単調時刻ガード付きで
-  相乗り反映する（状態分類とボット応答保護の純粋関数は `innertube` 層へ集約し、3 層
-  一方向依存を維持する）
+- 対象選出と統合バッチ: `kind_state` が 0（未確定）または 2（直近の試行が失敗）の行、`published_at` が NULL で `meta_checked=0` の行、`description` が NULL の行を `first_seen_at` 降順で選ぶ（巡回間隔は 60 秒）。
+  `ytapi.can_use(QuotaBucket::Shared)` が真のときは期限切れ配信予定の解除後、`FR-96` の再確認対象（最大 10 件）と未解決対象（`fails < 5`、重複除去）を合計最大 50 件（`VIDEOS_BATCH_MAX`）の 1 バッチへ統合して `videos.list`（1 unit）で取得し、非放送の `video` 候補に対する `HEAD /shorts/{id}` 判定は `tokio::task::JoinSet` で並列実行する。
+  InnerTube フォールバック時は未解決を 1 サイクル最大 20 件に上限化し、`is_rate_limited_at` を尊重しつつ再確認後半（最大 10 件）を実行する（仕様決定 CD、EB、ED）。
+  フィードの新規投入時には `spawn_kind_detection` から `wake` で即時起こされる。
+  説明文の選出は NULL 判定だけで試行済み印を持たない（暫定解釈: 応答が説明文を持たないときは空文字を書き込み、NULL でなくなることで解決済みを表す）
+- 投稿日時: `ytapi` の `publishedAt`（`iso8601_ms` と `iso_utc` で `+00:00` 形式へ正規化）または InnerTube の `playerMicroformatRenderer.publishDate`（無ければ `uploadDate`）を UTC の ISO 表記へ正規化し、NULL の行だけに書き込む（FR-53、仕様決定 CD、ED）。
+  応答を得た時点で `meta_checked=1` を立て、publishDate を持たない応答への繰り返し問い合わせは抑止する（kind の再試行とは独立した記録）。
+  ただし `ytapi` `videos.list` の `HTTP 200` 応答から対象 ID が欠落した場合は非公開や削除などの欠落として扱い、`meta_checked=1` や空文字説明文の確定書き込みも毎 tick の InnerTube フォールバックも行わず、インメモリ `fails` 加算と `KIND_FAILED`（`2`）の記録に留める（仕様決定 ED、ガード 2）
+- 説明文: `ytapi` の `snippet.description` または InnerTube の `videoDetails.shortDescription` を `description` が NULL の行だけに書き込む（FR-85、仕様決定 DJ、ED）。
+  応答が説明文を持たない（パース結果が空文字）場合も空文字を書き、説明なしを確定させて再対象から外す。
+  既存値は上書きしない暫定解釈（投稿後に説明文が編集されても追従しない）
+- kind 分類: `isLiveNow` 真は `live`（`isLiveContent` 偽は `premiere`）、放送詳細ありかつ終了時刻なしまたは `isUpcoming` 真は `upcoming`、終了時刻ありは `isLiveContent` 真なら `live`（ライブのアーカイブ）、`isLiveContent` が偽または `None` の既存 `premiere` は `premiere` を維持して新規解決時のみ `live` へ倒す（FR-56、FR-98、仕様決定 CG、ED、ガード 4）。
+  放送詳細を持たない応答でも `isLiveContent` 真は `live`、`playabilityStatus` が `LIVE_STREAM_OFFLINE` は `upcoming` と見なす暫定解釈を取る。
+  いずれにも当てはまらない応答は「放送系でない」と見なし、`kind='video'` の行だけ従来の shorts 判定（`youtube.com/shorts/<id>` へのリダイレクト非追跡 HEAD、仕様決定 V）を試して `short` または `video` に確定する
+- `kind='short'` の行は遅延解決側でも確定済み（`kind_state=1`）として扱い、取得結果で kind を上書きしない（仕様決定 CG の既存経路の保持）
+- 試行失敗は `kind_state=2` として残し、未確定や失敗の行だけを定期再試行する（FR-57、仕様決定 CH）。
+  同一行の連続失敗が 1 起動内で 5 回を超えたらその起動中は対象から外し、次回起動で再び対象に戻す（恒久に失敗する行が選出順を占有しないための暫定解釈）
+- `kind` の値が変わった、または `published_at`、説明文、動的放送状態を更新した件数の合計が 1 件以上で `feed://kind_updated` を出し、一覧の再読込を促す（説明文の解決は `video_desc` フィルタの評価結果を変え得るため）
+- バックフィルのタブ由来など `video` 以外の推定 kind が付いた行へ「放送系でない」応答が返ったときは、由来の kind を残したまま確定する（放送予定が応答へ載る前の誤確定を避ける暫定解釈）
+- ライブラリ由来のプレースホルダ行（`ingested=0`）を RSS やバックフィル投入で本文へ昇格するとき、`kind_state=1` の行は既に確定した kind を優先し、投入側の暫定値では上書きしない（解決済みの判定を守る暫定解釈）
+- フィードの種別フィルタ `live` は放送系の傘として `live`、`upcoming`、`premiere` をまとめて拾う（暫定解釈）。
+  加えて種別フィルタ `live_now`（`broadcast_state='live'`）と `upcoming`（`broadcast_state='upcoming'`）を提供する（FR-96、仕様決定 EB）
+- 動的放送状態と開始時刻の追跡（FR-96、FR-98、仕様決定 EB、ED）。
+  `MetaResolver` は初回解決時に `videos_resolve_meta_tx` で `broadcast_state`（`'live'` / `'upcoming'` / `'ended'` / `NULL`）、`broadcast_start_ms`、`broadcast_checked_at_ms` を単一トランザクションで保存する。
+  `ingested=1` のアクティブ行（`'live'` / `'upcoming'`）は 1 サイクル最大 10 件（緊急度階層 8:2 配分）で定期再確認し、再確認間隔はライブ中 3 分（開始 12 時間超は 10 分）、直前予定（15 分前〜2 時間後）2 分、遠い予定 15 分、基準時刻から 24 時間超の未開始枠は 6 時間とし、最低 1 回確認済みかつ基準時刻から 7 日超過の `upcoming` 行は一括解除する。
+  `ytapi` `videos.list` の `HTTP 200` 応答から再確認対象 ID が欠落した場合は `live` と `upcoming` の双方を `blocked_live_streaks` で数え、連続 3 回欠落時（`YTAPI_MISSING_BROADCAST_THRESHOLD = 3`）に `broadcast_state = None` へ解除する（ガード 3）。
+  InnerTube フォールバック経路では `HTTP 200` の `LOGIN_REQUIRED` や `ERROR` かつ詳細なしのボット判定応答で直前状態を保護し、`live` 行で連続 6 回継続時のみ個別解除する。
+  HTTP 429 検知時は 5→10→15 分の指数バックオフ、連続 3 回通信失敗時はサイクル中断を発動する。
+  手動 `feed_refresh` では 60 秒クールダウン内で間隔ガードをバイパスして即時再確認し、`LiveWaitPoller` も `meta_snapshot` 取得結果を `ingested=1` 行へ単調時刻ガード（および `premiere` 保護）付きで相乗り反映する（状態分類とボット応答保護の純粋関数は `model` 層および `innertube` 層へ配置し、3 層一方向依存を維持する）。
 
 ### 4.19 新着のデスクトップ通知と自動既読（FR-58・FR-64、仕様決定 CI・CO）
 
@@ -1315,6 +1270,23 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 
 回帰テストは `DB-YA-01` 〜 `DB-YA-08`（キー変更リセットと同一キー維持、共通と検索の独立クォータ遮断と太平洋時間リセット、キー無効ラッチ、段階クールダウン、`HTTP 404` 非遮断、接続テストの保存済み遮断器非破壊、`X-Goog-Api-Key` ヘッダ送出と `?key=` 非使用、ISO 8601 継続時間パース）、`DB-LD-42`（保護 5 キー一致）、`DB-DG-10` と `DB-DG-11`（診断マスク）、`SD-06`、`SF-03`、`SV-05`、`LN-04`（差分マスク、設定検索、保存確定スナップショット更新、翻訳プレースホルダ整合）。
 
+### 4.25 YouTube Data API v3 によるメタ解決とライブ待機および単発照会（FR-98、仕様決定 ED）
+
+`YtApi::videos_list` は入力動画 ID 列を重複除去し、`VIDEOS_BATCH_MAX`（50 件）チャンクごとに `GET {api_base}/videos?part=snippet,contentDetails,liveStreamingDetails,statistics&id=...`（1 チャンク 1 unit）を呼び出す。
+応答の各要素 `YtVideoItem` は `publishedAt` を `iso8601_ms` と `iso_utc` で `+00:00` UTC 形式へ正規化し、サムネイルは `maxres`、`standard`、`high`、`medium`、`default`、無ければ `hqdefault.jpg` の順に選び、`duration` を `parse_iso8601_duration` で秒数へ変換する。
+`YtApiError::should_fallback` が示すとおり、未設定、キー無効、タイムアウト、クォータ超過、通信エラー時は例外をUI へ露出させず呼び出し元で既存経路へフォールバックする。
+
+- ガード 1（UTC 正規化）：公式 API が返す末尾 `Z` 等の時刻文字列は `iso8601_ms` と `iso_utc` により `+00:00` 形式へ正規化してから DB へ保存し、`db/feed.rs` の文字列順ソートとキーセットカーソルとの整合を保つ。
+- ガード 2（`MetaResolver` 未解決欠落の保護）：`videos.list` `HTTP 200` 応答から欠落した未解決 ID に対して `meta_checked=1` や空文字説明文の確定書込も毎 tick の InnerTube フォールバックも行わず、インメモリ `fails` 加算と `KIND_FAILED`（`2`）の記録に留める。
+  非放送の `video` 候補に対する `HEAD /shorts/{id}` 判定は `tokio::task::JoinSet` により並列実行する（§4.18）。
+- ガード 3（`FR-96` 欠落追跡と `LiveWaitPoller` 単発欠落保護）：`MetaResolver` の再確認対象では `live` と `upcoming` の双方を `blocked_live_streaks` で追跡し、3 回連続欠落（`YTAPI_MISSING_BROADCAST_THRESHOLD = 3`）で `broadcast_state = None` へ解除する。
+  `LiveWaitPoller` では `HTTP 200` 応答からの単発欠落で `live_wait` 行も `videos.broadcast_state` も削除せず次回へ繰り越す（§4.16）。
+- ガード 4（`premiere` 保護）：`classify_kind_for_initial` と `classify_kind_for_refresh` は配信前および配信中の `is_live_content` を `duration_sec.map(|d| d == 0)`（`P0D` や `PT0S` は `live`、正の尺は `premiere`、尺欠落の配信中は `live`）とし、終了後（`actualEndTime` ありかつ非放送中）は `is_live_content = None` とする。
+  `db/feed.rs` の `videos_resolve_meta_tx` と `apply_broadcast_columns_tx` は SQL と分岐の双方で既存の `cur_kind == "premiere"` を `None` や `"live"` で上書きしないよう保護する。
+- 単発 4 経路の優先配線：`get_description`（§3.1）、`resolve_video_channel`（`playing_channel` と `lib.rs` の `VideoStartHook` が共用、§4.1）、`video_meta_resolve`（§3.1）、`live_wait_add`（§4.16）はいずれも `ytapi.can_use(QuotaBucket::Shared)` が真のとき `videos_list` を優先し、失敗時や欠落時は従来の `InnerTube`（および 15 秒タイムアウト付き `yt::video_channel_ref`）へフォールバックする。
+
+回帰テストは `DB-YA-09` 〜 `DB-YA-12`（重複除去と 50 件チャンク分割、`+00:00` 正規化とサムネイル優先順、ガード 4、フォールバック遷移）、`DB-MR-13` 〜 `DB-MR-16`（50 件統合バッチと `JoinSet` 並列 Shorts 判定、ガード 2、ガード 3、ガード 4 と InnerTube フォールバック）、`DB-LW-08` 〜 `DB-LW-10`（50 件チャンク巡回と `premiere` 保持、単発欠落非削除、クォータ上限時 InnerTube フォールバック）。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1364,6 +1336,7 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 各フィールドの対応は、`contentId` → 動画 ID、`metadata.lockupMetadataViewModel.title.content` → タイトル、`metadataRows[0]` → チャンネル名、`metadataRows[1]` 先頭 → 短縮表記の再生数、アバター内 `browseEndpoint.browseId` → UC チャンネル ID、サムネイルオーバーレイの `thumbnailBadgeViewModel.text` → 動画長、とする。
 
 `player` エンドポイントは再生中動画の概要欄パネル（FR-33、仕様決定 BB）が使い、`videoDetails.shortDescription` をそのまま返す。
+なお、`youtube.api_key` が設定されている場合は `get_description` が `ytapi` `videos.list` を優先し、未設定時、失敗時、欠落時のみ本経路へフォールバックする（FR-98、仕様決定 ED）。
 `playabilityStatus` が UNPLAYABLE の応答でも `videoDetails` は返るため、再生可否とは独立に概要欄を取得できる（2026-10 の実応答で確認）。
 パネルは開くたびと再生中動画の切替（連続再生・ループ遷移）で取り直し、結果はキャッシュも DB 保存もしない。
 表示側は改行を保持するプレーンテキストで、本文中の `http(s)` URL は `tauri-plugin-opener` の `openUrl` で既定ブラウザへ開き、`mm:ss` / `h:mm:ss` の時刻表記は `player_control` の `seek` でそのインスタンスへシークする。
@@ -1733,7 +1706,7 @@ yt-browser/
       mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）・再生開始失敗診断（error_diag.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
-      ytapi/          # YouTube Data API v3 クライアントおよび 2 系統サーキットブレーカー（§4.24）
+      ytapi/          # YouTube Data API v3 クライアント・2 系統サーキットブレーカー・videos.list 一括照会（§4.24、§4.25）
       chat/           # get_live_chat ポーラー・正規化・ポップアップ窓の位置保存と表示設定の解釈（popup.rs）
       feed/           # RSS ポーラー
       livewait/       # ライブ配信待機のポーラー（§4.16）

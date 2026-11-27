@@ -97,14 +97,120 @@ pub async fn get_related(
     Ok(results)
 }
 
-/// `get_description`（設計書 §3.1、FR-33、仕様決定 BB）。InnerTube `player` の
-/// `videoDetails.shortDescription` をそのまま返す（空・未設定は空文字列）。
+/// `get_description`（設計書 §3.1、FR-33・FR-98、仕様決定 BB・ED）。
+/// YouTube Data API v3 の利用が可能なら `videos.list` を優先し、未設定・障害時は
+/// InnerTube `player` の `videoDetails.shortDescription` へ透過フォールバックする。
 /// 概要欄パネルが開くたびと再生中動画の切替で呼ばれ、結果はキャッシュしない。
 #[tauri::command]
 pub async fn get_description(
     video_id: String,
+    ytapi: State<'_, Arc<crate::ytapi::YtApi>>,
     innertube: State<'_, Arc<crate::innertube::InnerTube>>,
 ) -> Result<String, UiError> {
     let video_id = parse_video_id(&video_id)?;
-    Ok(innertube.description(&video_id).await?)
+    fetch_description(&video_id, &ytapi, &innertube).await
+}
+
+async fn fetch_description(
+    video_id: &str,
+    ytapi: &crate::ytapi::YtApi,
+    innertube: &crate::innertube::InnerTube,
+) -> Result<String, UiError> {
+    if ytapi.can_use(crate::ytapi::QuotaBucket::Shared) {
+        match ytapi.videos_list(&[video_id]).await {
+            Ok(mut map) => {
+                if let Some(item) = map.remove(video_id) {
+                    return Ok(item.meta.description);
+                }
+            }
+            Err(e) => {
+                let _ = e.should_fallback();
+            }
+        }
+    }
+    Ok(innertube.description(video_id).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fetch_description;
+    use crate::innertube::InnerTube;
+    use crate::ytapi::YtApi;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn fetch_description_prefers_ytapi_and_falls_back_to_innertube() {
+        let yt_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let yt_addr = yt_listener.local_addr().unwrap();
+        let yt_srv = tokio::spawn(async move {
+            let mut count = 0usize;
+            while let Ok((mut stream, _)) = yt_listener.accept().await {
+                count += 1;
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let resp = if count == 1 {
+                    let body = r#"{"items":[{"id":"dQw4w9WgXcQ","snippet":{"title":"T","description":"From YtApi"}}]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+                };
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let tube_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tube_addr = tube_listener.local_addr().unwrap();
+        let tube_srv = tokio::spawn(async move {
+            let html = r#"<script>ytcfg.set({"INNERTUBE_API_KEY":"k","INNERTUBE_CONTEXT_CLIENT_VERSION":"v","VISITOR_DATA":"d"});</script>"#;
+            while let Ok((mut stream, _)) = tube_listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let resp = if req.starts_with("GET ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+                        html.len()
+                    )
+                } else {
+                    let body = r#"{"videoDetails":{"videoId":"dQw4w9WgXcQ","shortDescription":"From InnerTube"}}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let ytapi = YtApi::with_test_base_url(
+            Some("AIzaSyDESC_KEY".to_string()),
+            format!("http://{yt_addr}"),
+        );
+        let tube = InnerTube::with_test_urls(
+            format!("http://{tube_addr}/watch"),
+            format!("http://{tube_addr}/api"),
+            Duration::from_secs(5),
+        );
+
+        assert_eq!(
+            fetch_description("dQw4w9WgXcQ", &ytapi, &tube)
+                .await
+                .unwrap(),
+            "From YtApi"
+        );
+        assert_eq!(
+            fetch_description("dQw4w9WgXcQ", &ytapi, &tube)
+                .await
+                .unwrap(),
+            "From InnerTube"
+        );
+
+        yt_srv.abort();
+        tube_srv.abort();
+    }
 }

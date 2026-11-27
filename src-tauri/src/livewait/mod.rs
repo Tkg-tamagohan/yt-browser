@@ -21,6 +21,7 @@ use crate::model::{
     LiveWaitChanged, LiveWaitStatus, MetaSnapshot,
 };
 use crate::util::lock;
+use crate::ytapi::{QuotaBucket, YtApi, VIDEOS_BATCH_MAX};
 
 /// 巡回ティック。直前窓の短間隔（15 秒）を粒度内に収めるため 10 秒とする。
 const TICK: Duration = Duration::from_secs(10);
@@ -106,6 +107,26 @@ pub fn wait_action_of(value: Option<String>) -> WaitAction {
     }
 }
 
+fn sync_feed_with_kind(
+    db: &Db,
+    video_id: &str,
+    snap: &MetaSnapshot,
+    kind_opt: Option<&'static str>,
+    now_ms: i64,
+) -> bool {
+    if is_transient_or_blocked_playability(snap) {
+        return false;
+    }
+    let (b_state, b_start) = classify_broadcast_meta(snap);
+    match db.videos_apply_broadcast_refresh(video_id, kind_opt, b_state, b_start, now_ms, true) {
+        Ok(changed) => changed,
+        Err(e) => {
+            tracing::warn!(error = %e, "ライブ待機からの放送状態相乗り更新に失敗");
+            false
+        }
+    }
+}
+
 /// ライブ待機ポーラーが取得した `MetaSnapshot` を、フィード台帳（`ingested = 1` の行のみ）へ
 /// 単調時刻ガード付きで相乗り反映する（FR-96、仕様決定 EB）。
 /// ボット判定・一時制限応答（`LOGIN_REQUIRED` / `ERROR`）時は直前状態を保護し、変更があれば `true` を返す。
@@ -115,18 +136,8 @@ pub(crate) fn sync_feed_from_snapshot(
     snap: &MetaSnapshot,
     now_ms: i64,
 ) -> bool {
-    if is_transient_or_blocked_playability(snap) {
-        return false;
-    }
-    let (b_state, b_start) = classify_broadcast_meta(snap);
     let kind_opt = classify_kind(snap);
-    match db.videos_apply_broadcast_refresh(video_id, kind_opt, b_state, b_start, now_ms, true) {
-        Ok(changed) => changed,
-        Err(e) => {
-            tracing::warn!(error = %e, "ライブ待機からの放送状態相乗り更新に失敗");
-            false
-        }
-    }
+    sync_feed_with_kind(db, video_id, snap, kind_opt, now_ms)
 }
 
 /// 現在の epoch ミリ秒。登録時刻と期限判定に使う。
@@ -170,11 +181,12 @@ struct WaitSchedule {
     degraded: bool,
 }
 
-/// ライブ待機のポーラー（仕様決定 BT(4)(5)）。`run` を起動時に spawn する。
+/// ライブ待機のポーラー（仕様決定 BT(4)(5)・ED）。`run` を起動時に spawn する。
 /// 待機リストは DB へ write-through するため再起動でそのまま復元される。
 pub struct LiveWaitPoller {
     db: Db,
-    app: AppHandle,
+    app: Option<AppHandle>,
+    ytapi: Arc<YtApi>,
     innertube: Arc<InnerTube>,
     /// video_id → 次回ポーリング予定と失敗回数。
     sched: Mutex<HashMap<String, WaitSchedule>>,
@@ -183,14 +195,45 @@ pub struct LiveWaitPoller {
 }
 
 impl LiveWaitPoller {
-    pub fn new(db: Db, app: AppHandle, innertube: Arc<InnerTube>) -> Arc<Self> {
+    pub fn new(db: Db, app: AppHandle, ytapi: Arc<YtApi>, innertube: Arc<InnerTube>) -> Arc<Self> {
         Arc::new(Self {
             db,
-            app,
+            app: Some(app),
+            ytapi,
             innertube,
             sched: Mutex::new(HashMap::new()),
             wake: Notify::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test(db: Db, ytapi: Arc<YtApi>, innertube: Arc<InnerTube>) -> Arc<Self> {
+        Arc::new(Self {
+            db,
+            app: None,
+            ytapi,
+            innertube,
+            sched: Mutex::new(HashMap::new()),
+            wake: Notify::new(),
+        })
+    }
+
+    fn emit_changed_opt(&self, video_id: Option<&str>) {
+        if let Some(app) = &self.app {
+            emit_changed(app, video_id);
+        }
+    }
+
+    fn emit_status_opt(&self, video_id: Option<&str>, level: &str, message: String) {
+        if let Some(app) = &self.app {
+            emit_status(app, video_id, level, message);
+        }
+    }
+
+    fn emit_kind_updated_opt(&self, count: usize) {
+        if let Some(app) = &self.app {
+            let _ = app.emit("feed://kind_updated", FeedNewItems { count });
+        }
     }
 
     /// 新規登録などでスケジュールを即時回したいときに呼ぶ。
@@ -233,8 +276,10 @@ impl LiveWaitPoller {
                 })
                 .collect()
         };
+        let mut active_due: Vec<LiveWait> = Vec::with_capacity(due.len());
+        let now_ms = epoch_ms();
         for wait in due {
-            // ポーリング中に解除される場合に備えて、処理直前に存在を確認する
+            // ポーリング中に解除される場合に備えて、処理直前に存在と期限を確認する
             if self
                 .db
                 .live_wait_get(&wait.video_id)
@@ -245,12 +290,88 @@ impl LiveWaitPoller {
                 lock(&self.sched).remove(&wait.video_id);
                 continue;
             }
-            self.poll_one(&wait).await;
+            if is_expired(now_ms, wait.scheduled_start_ms, wait.registered_ms) {
+                self.remove_wait(
+                    &wait,
+                    "info",
+                    format!(
+                        "開始予定を 24 時間超えても開始されなかったため待機を解除しました: {}",
+                        wait.title
+                    ),
+                );
+                continue;
+            }
+            active_due.push(wait);
+        }
+
+        for chunk in active_due.chunks(VIDEOS_BATCH_MAX) {
+            if self.ytapi.can_use(QuotaBucket::Shared) {
+                let ids: Vec<&str> = chunk.iter().map(|w| w.video_id.as_str()).collect();
+                match self.ytapi.videos_list(&ids).await {
+                    Ok(map) => {
+                        for wait in chunk {
+                            if self
+                                .db
+                                .live_wait_get(&wait.video_id)
+                                .ok()
+                                .flatten()
+                                .is_none()
+                            {
+                                lock(&self.sched).remove(&wait.video_id);
+                                continue;
+                            }
+                            let item_now_ms = epoch_ms();
+                            match map.get(&wait.video_id) {
+                                Some(item) => {
+                                    self.after_success(wait);
+                                    if sync_feed_with_kind(
+                                        &self.db,
+                                        &wait.video_id,
+                                        &item.meta,
+                                        item.classify_kind_for_refresh(),
+                                        item_now_ms,
+                                    ) {
+                                        self.emit_kind_updated_opt(1);
+                                    }
+                                    self.handle_broadcast_outcome(wait, &item.meta, item_now_ms)
+                                        .await;
+                                }
+                                None => {
+                                    // HTTP 200 応答からの単発欠落では live_wait 削除も
+                                    // videos.broadcast_state クリアも行わず次回へ回す（ガード 3）。
+                                    self.reschedule(&wait.video_id, POLL_BASE_MS);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = e.should_fallback();
+                    }
+                }
+            }
+            self.poll_chunk_innertube(chunk).await;
         }
     }
 
-    /// 1 項目のポーリング。自動解除 → 放送状態の分類 → 遷移処理の順。
-    async fn poll_one(&self, wait: &LiveWait) {
+    async fn poll_chunk_innertube(&self, chunk: &[LiveWait]) {
+        for wait in chunk {
+            if self
+                .db
+                .live_wait_get(&wait.video_id)
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                lock(&self.sched).remove(&wait.video_id);
+                continue;
+            }
+            self.poll_one_innertube(wait).await;
+        }
+    }
+
+    /// 1 項目の InnerTube ポーリング。自動解除 → 放送状態の分類 → 遷移処理の順。
+    async fn poll_one_innertube(&self, wait: &LiveWait) {
         let now_ms = epoch_ms();
         if is_expired(now_ms, wait.scheduled_start_ms, wait.registered_ms) {
             self.remove_wait(
@@ -268,38 +389,39 @@ impl LiveWaitPoller {
             Ok(snap) => {
                 self.after_success(wait);
                 if sync_feed_from_snapshot(&self.db, &wait.video_id, &snap, now_ms) {
-                    let _ = self
-                        .app
-                        .emit("feed://kind_updated", FeedNewItems { count: 1 });
+                    self.emit_kind_updated_opt(1);
                 }
-                match classify_broadcast(&snap.broadcast) {
-                    WaitBroadcast::Live => self.on_live(wait).await,
-                    WaitBroadcast::Ended => self.remove_wait(
-                        wait,
-                        "info",
-                        format!("配信は終了しています（待機を解除しました）: {}", wait.title),
-                    ),
-                    WaitBroadcast::Upcoming { scheduled_ms } => {
-                        // InnerTube 側の予定変更へ追随する（表示の予定時刻と
-                        // 直前窓の判定がずれないよう保存値を更新）
-                        if scheduled_ms != wait.scheduled_start_ms {
-                            if let Err(e) = self
-                                .db
-                                .live_wait_set_scheduled(&wait.video_id, scheduled_ms)
-                            {
-                                tracing::warn!(error = %e, "待機の予定時刻更新に失敗");
-                            } else {
-                                emit_changed(&self.app, Some(&wait.video_id));
-                            }
-                        }
-                        self.reschedule(&wait.video_id, next_poll_ms(now_ms, scheduled_ms));
-                    }
-                    WaitBroadcast::NotBroadcast => {
-                        // 放送詳細を失った異常系（中止・非公開化などの可能性）。
-                        // 項目は残して定間隔で追い、自動解除期限の掃除に委ねる
-                        self.reschedule(&wait.video_id, POLL_BASE_MS);
+                self.handle_broadcast_outcome(wait, &snap, now_ms).await;
+            }
+        }
+    }
+
+    async fn handle_broadcast_outcome(&self, wait: &LiveWait, snap: &MetaSnapshot, now_ms: i64) {
+        match classify_broadcast(&snap.broadcast) {
+            WaitBroadcast::Live => self.on_live(wait).await,
+            WaitBroadcast::Ended => self.remove_wait(
+                wait,
+                "info",
+                format!("配信は終了しています（待機を解除しました）: {}", wait.title),
+            ),
+            WaitBroadcast::Upcoming { scheduled_ms } => {
+                // 予定変更へ追随する（表示の予定時刻と直前窓の判定がずれないよう保存値を更新）
+                if scheduled_ms != wait.scheduled_start_ms {
+                    if let Err(e) = self
+                        .db
+                        .live_wait_set_scheduled(&wait.video_id, scheduled_ms)
+                    {
+                        tracing::warn!(error = %e, "待機の予定時刻更新に失敗");
+                    } else {
+                        self.emit_changed_opt(Some(&wait.video_id));
                     }
                 }
+                self.reschedule(&wait.video_id, next_poll_ms(now_ms, scheduled_ms));
+            }
+            WaitBroadcast::NotBroadcast => {
+                // 放送詳細を失った異常系（中止・非公開化などの可能性）。
+                // 項目は残して定間隔で追い、自動解除期限の掃除に委ねる
+                self.reschedule(&wait.video_id, POLL_BASE_MS);
             }
         }
     }
@@ -311,14 +433,12 @@ impl LiveWaitPoller {
         let action = wait_action_of(self.db.setting_get(SETTING_LIVE_WAIT_ACTION).ok().flatten());
         match action {
             WaitAction::Play => match self.auto_play(wait).await {
-                Ok(()) => emit_status(
-                    &self.app,
+                Ok(()) => self.emit_status_opt(
                     Some(&wait.video_id),
                     "info",
                     format!("配信開始を検出し、自動再生を開始しました: {}", wait.title),
                 ),
-                Err(e) => emit_status(
-                    &self.app,
+                Err(e) => self.emit_status_opt(
                     Some(&wait.video_id),
                     "warn",
                     format!(
@@ -327,8 +447,7 @@ impl LiveWaitPoller {
                     ),
                 ),
             },
-            WaitAction::Notify => emit_status(
-                &self.app,
+            WaitAction::Notify => self.emit_status_opt(
                 Some(&wait.video_id),
                 "info",
                 format!("配信が始まりました: {}", wait.title),
@@ -360,8 +479,10 @@ impl LiveWaitPoller {
             None
         };
         let ytdl_format = crate::yt::resolve_launch_format(None, pip, pip_format, global);
-        let players = self
-            .app
+        let Some(app) = &self.app else {
+            return Ok(());
+        };
+        let players = app
             .try_state::<crate::mpv::PlayerManager>()
             .ok_or(crate::mpv::MpvError::NoSuchInstance(0))?;
         players
@@ -390,14 +511,14 @@ impl LiveWaitPoller {
             }
         };
         lock(&self.sched).remove(video_id);
-        emit_changed(&self.app, Some(video_id));
+        self.emit_changed_opt(Some(video_id));
         removed
     }
 
     /// 解除＋一覧変更通知＋状態通知のまとめ（終了・自動解除の出口）。
     fn remove_wait(&self, wait: &LiveWait, level: &str, message: String) {
         self.remove_entry(&wait.video_id);
-        emit_status(&self.app, Some(&wait.video_id), level, message);
+        self.emit_status_opt(Some(&wait.video_id), level, message);
     }
 
     /// 次回予定の設定。
@@ -418,8 +539,7 @@ impl LiveWaitPoller {
             was
         };
         if was_degraded {
-            emit_status(
-                &self.app,
+            self.emit_status_opt(
                 Some(&wait.video_id),
                 "info",
                 format!("配信待機の状態確認が復帰しました: {}", wait.title),
@@ -448,8 +568,7 @@ impl LiveWaitPoller {
             }
         };
         if emit {
-            emit_status(
-                &self.app,
+            self.emit_status_opt(
                 Some(&wait.video_id),
                 "warn",
                 format!(
@@ -680,5 +799,340 @@ mod tests {
             .find(|i| i.video_id == "lw_ingested")
             .unwrap();
         assert_eq!(kept.broadcast_state.as_deref(), Some("live"));
+    }
+
+    async fn spawn_lw_ytapi_mock(
+        handler: impl Fn(&str, usize) -> (u16, String) + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let reqs = Arc::new(Mutex::new(Vec::new()));
+        let reqs_srv = Arc::clone(&reqs);
+        let handler = Arc::new(handler);
+        let srv = tokio::spawn(async move {
+            let mut idx = 0usize;
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let cur_idx = idx;
+                idx += 1;
+                let reqs_c = Arc::clone(&reqs_srv);
+                let handler_c = Arc::clone(&handler);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let mut raw = Vec::new();
+                    loop {
+                        let Ok(n) = stream.read(&mut buf).await else {
+                            return;
+                        };
+                        if n == 0 {
+                            break;
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&raw);
+                    let line = text.lines().next().unwrap_or_default().to_string();
+                    lock(&reqs_c).push(line.clone());
+                    let (status, body) = handler_c(&line, cur_idx);
+                    let reason = match status {
+                        200 => "OK",
+                        403 => "Forbidden",
+                        500 => "Internal Server Error",
+                        _ => "Error",
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{addr}"), reqs, srv)
+    }
+
+    /// DB-LW-08: `LiveWaitPoller::poll_due` が 50 件超の待機項目を 50 件チャンクで一括巡回し、`ingested = 1` のフィード同期および終了済みプレミアの `premiere` 保持を行うことを検証する。
+    #[tokio::test]
+    async fn poll_due_batches_50_chunks_and_syncs_ingested_feed() {
+        let db = Db::connect_in_memory().unwrap();
+        let ch = "UClw0800000000000000001";
+        let now_ms = epoch_ms();
+        db.setting_set(SETTING_LIVE_WAIT_ACTION, "notify").unwrap();
+
+        // 55 件登録: lw_000 (ingested live), lw_001 (ingested ended premiere), lw_002..054 (upcoming)
+        db.feed_subscribe(&crate::db::SubscribeArgs {
+            channel_id: ch,
+            title: "CH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &[
+                crate::db::NewVideo {
+                    video_id: "lw_batch000",
+                    channel_id: ch,
+                    channel_title: "CH",
+                    title: "Go Live",
+                    thumbnail_url: None,
+                    published_at: Some("2026-11-27T08:00:00+00:00"),
+                    kind: "upcoming",
+                },
+                crate::db::NewVideo {
+                    video_id: "lw_batch001",
+                    channel_id: ch,
+                    channel_title: "CH",
+                    title: "Ended Premiere",
+                    thumbnail_url: None,
+                    published_at: Some("2026-11-27T08:00:00+00:00"),
+                    kind: "premiere",
+                },
+            ],
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+
+        for i in 0..55 {
+            let vid = format!("lw_batch{i:03}");
+            db.live_wait_insert(&LiveWait {
+                video_id: vid.clone(),
+                title: vid,
+                channel_id: Some(ch.to_string()),
+                channel_title: Some("CH".to_string()),
+                thumbnail_url: None,
+                scheduled_start_ms: Some(now_ms + 3_600_000),
+                registered_ms: now_ms,
+            })
+            .unwrap();
+        }
+
+        let (yt_base, reqs, srv) = spawn_lw_ytapi_mock(|line, _| {
+            let id_q = line.split("id=").nth(1).unwrap().split(' ').next().unwrap();
+            let ids: Vec<String> = id_q.split("%2C").map(|s| s.to_string()).collect();
+            let items: Vec<String> = ids
+                .iter()
+                .map(|id| {
+                    if id == "lw_batch000" {
+                        r#"{"id":"lw_batch000","snippet":{"title":"Go Live","liveBroadcastContent":"live"},"contentDetails":{"duration":"P0D"},"liveStreamingDetails":{"actualStartTime":"2026-11-27T10:00:00Z"}}"#.to_string()
+                    } else if id == "lw_batch001" {
+                        r#"{"id":"lw_batch001","snippet":{"title":"Ended Premiere","liveBroadcastContent":"none"},"contentDetails":{"duration":"PT5M"},"liveStreamingDetails":{"actualStartTime":"2026-11-27T08:00:00Z","actualEndTime":"2026-11-27T08:05:00Z"}}"#.to_string()
+                    } else {
+                        format!(
+                            r#"{{"id":"{id}","snippet":{{"title":"{id}","liveBroadcastContent":"upcoming"}},"contentDetails":{{"duration":"P0D"}},"liveStreamingDetails":{{"scheduledStartTime":"2026-11-27T12:00:00Z"}}}}"#
+                        )
+                    }
+                })
+                .collect();
+            (200, format!(r#"{{"items":[{}]}}"#, items.join(",")))
+        })
+        .await;
+
+        let ytapi = Arc::new(YtApi::with_test_base_url(
+            Some("AIzaSyLW08_KEY".to_string()),
+            yt_base,
+        ));
+        let tube = Arc::new(InnerTube::with_test_urls(
+            "http://127.0.0.1:9/watch".to_string(),
+            "http://127.0.0.1:9/api".to_string(),
+            Duration::from_millis(100),
+        ));
+        let poller = LiveWaitPoller::new_test(db.clone(), ytapi, tube);
+        poller.poll_due().await;
+
+        // 55 件 -> 50 件 + 5 件の 2 チャンク
+        {
+            let recorded = lock(&reqs);
+            assert_eq!(recorded.len(), 2);
+            let c0 = recorded[0]
+                .split("id=")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+                .matches("%2C")
+                .count();
+            let c1 = recorded[1]
+                .split("id=")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+                .matches("%2C")
+                .count();
+            let mut counts = vec![c0 + 1, c1 + 1];
+            counts.sort();
+            assert_eq!(counts, vec![5, 50]);
+        }
+
+        // lw_batch000 (Live) と lw_batch001 (Ended) は待機解除され、残余 53 件が残る
+        let remaining = db.live_wait_list().unwrap();
+        assert_eq!(remaining.len(), 53);
+        assert!(db.live_wait_get("lw_batch000").unwrap().is_none());
+        assert!(db.live_wait_get("lw_batch001").unwrap().is_none());
+
+        // ingested フィード同期と premiere 保持を検証
+        let feed = db
+            .feed_list_filtered(&crate::model::FeedFilter::default(), true, 10, |_| true)
+            .unwrap();
+        let f0 = feed.iter().find(|r| r.video_id == "lw_batch000").unwrap();
+        let f1 = feed.iter().find(|r| r.video_id == "lw_batch001").unwrap();
+        assert_eq!(f0.broadcast_state.as_deref(), Some("live"));
+        assert_eq!(f0.kind, "live");
+        assert_eq!(f1.broadcast_state.as_deref(), Some("ended"));
+        assert_eq!(f1.kind, "premiere");
+
+        srv.abort();
+    }
+
+    /// DB-LW-09: `videos.list` HTTP 200 応答からの単発欠落で `live_wait` 行も `videos.broadcast_state` も削除せず次回へ繰り越すことを検証する。
+    #[tokio::test]
+    async fn poll_due_preserves_live_wait_and_broadcast_state_on_single_omission() {
+        let db = Db::connect_in_memory().unwrap();
+        let ch = "UClw0900000000000000001";
+        let now_ms = epoch_ms();
+        db.feed_subscribe(&crate::db::SubscribeArgs {
+            channel_id: ch,
+            title: "CH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &[crate::db::NewVideo {
+                video_id: "lw_omit_001",
+                channel_id: ch,
+                channel_title: "CH",
+                title: "Omitted Wait",
+                thumbnail_url: None,
+                published_at: Some("2026-11-27T08:00:00+00:00"),
+                kind: "upcoming",
+            }],
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+        db.videos_apply_broadcast_refresh(
+            "lw_omit_001",
+            Some("upcoming"),
+            Some("upcoming"),
+            Some(now_ms + 3_600_000),
+            now_ms,
+            false,
+        )
+        .unwrap();
+        db.live_wait_insert(&LiveWait {
+            video_id: "lw_omit_001".to_string(),
+            title: "Omitted Wait".to_string(),
+            channel_id: Some(ch.to_string()),
+            channel_title: Some("CH".to_string()),
+            thumbnail_url: None,
+            scheduled_start_ms: Some(now_ms + 3_600_000),
+            registered_ms: now_ms,
+        })
+        .unwrap();
+
+        let (yt_base, _, srv) =
+            spawn_lw_ytapi_mock(|_, _| (200, r#"{"items":[]}"#.to_string())).await;
+        let ytapi = Arc::new(YtApi::with_test_base_url(
+            Some("AIzaSyLW09_KEY".to_string()),
+            yt_base,
+        ));
+        let tube = Arc::new(InnerTube::with_test_urls(
+            "http://127.0.0.1:9/watch".to_string(),
+            "http://127.0.0.1:9/api".to_string(),
+            Duration::from_millis(100),
+        ));
+        let poller = LiveWaitPoller::new_test(db.clone(), ytapi, tube);
+        poller.poll_due().await;
+
+        assert!(db.live_wait_get("lw_omit_001").unwrap().is_some());
+        let item = db
+            .feed_list_filtered(&crate::model::FeedFilter::default(), true, 10, |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.video_id == "lw_omit_001")
+            .unwrap();
+        assert_eq!(item.broadcast_state.as_deref(), Some("upcoming"));
+        assert!(lock(&poller.sched)
+            .get("lw_omit_001")
+            .and_then(|s| s.next_at)
+            .is_some());
+
+        srv.abort();
+    }
+
+    /// DB-LW-10: `ytapi` のクォータ上限・エラー時に `InnerTube` 個別巡回へ透過フォールバックすることを検証する。
+    #[tokio::test]
+    async fn poll_due_falls_back_to_innertube_on_ytapi_quota_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let db = Db::connect_in_memory().unwrap();
+        let now_ms = epoch_ms();
+        db.setting_set(SETTING_LIVE_WAIT_ACTION, "notify").unwrap();
+        db.live_wait_insert(&LiveWait {
+            video_id: "lw_fb_00001".to_string(),
+            title: "Fallback Wait".to_string(),
+            channel_id: None,
+            channel_title: None,
+            thumbnail_url: None,
+            scheduled_start_ms: Some(now_ms + 3_600_000),
+            registered_ms: now_ms,
+        })
+        .unwrap();
+
+        let (yt_base, _, yt_srv) = spawn_lw_ytapi_mock(|_, _| {
+            (
+                403,
+                r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+            )
+        })
+        .await;
+
+        let tube_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tube_addr = tube_listener.local_addr().unwrap();
+        let tube_srv = tokio::spawn(async move {
+            let html = r#"<script>ytcfg.set({"INNERTUBE_API_KEY":"k","INNERTUBE_CONTEXT_CLIENT_VERSION":"v","VISITOR_DATA":"d"});</script>"#;
+            while let Ok((mut stream, _)) = tube_listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let resp = if req.starts_with("GET ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    )
+                } else {
+                    let body = r#"{"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"lw_fb_00001","isLiveContent":true},"microformat":{"playerMicroformatRenderer":{"liveBroadcastDetails":{"isLiveNow":true,"startTimestamp":"2026-11-27T10:00:00+00:00"}}}}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                };
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let ytapi = Arc::new(YtApi::with_test_base_url(
+            Some("AIzaSyLW10_KEY".to_string()),
+            yt_base,
+        ));
+        let tube = Arc::new(InnerTube::with_test_urls(
+            format!("http://{tube_addr}/watch"),
+            format!("http://{tube_addr}/api"),
+            Duration::from_secs(5),
+        ));
+        let poller = LiveWaitPoller::new_test(db.clone(), ytapi.clone(), tube);
+        poller.poll_due().await;
+
+        assert!(!ytapi.can_use(QuotaBucket::Shared));
+        assert!(db.live_wait_get("lw_fb_00001").unwrap().is_none());
+
+        yt_srv.abort();
+        tube_srv.abort();
     }
 }

@@ -1030,19 +1030,36 @@ impl Db {
         if p.needs_kind {
             if let Some(kind) = p.resolved_kind {
                 debug_assert!(kind != "video");
-                if tx.execute(
-                    "UPDATE videos SET kind = ?2, kind_state = 1
-                       WHERE video_id = ?1 AND kind <> 'short' AND kind <> ?2",
-                    rusqlite::params![p.video_id, kind],
-                )? > 0
-                {
-                    changed = true;
+                // ガード 4: 既存の premiere は終了後や別経路の live 判定で上書きしない
+                if kind == "live" {
+                    if tx.execute(
+                        "UPDATE videos SET kind = ?2, kind_state = 1
+                           WHERE video_id = ?1 AND kind NOT IN ('short', 'premiere') AND kind <> ?2",
+                        rusqlite::params![p.video_id, kind],
+                    )? > 0
+                    {
+                        changed = true;
+                    }
+                    tx.execute(
+                        "UPDATE videos SET kind_state = 1
+                           WHERE video_id = ?1 AND (kind IN ('short', 'premiere') OR kind = ?2)",
+                        rusqlite::params![p.video_id, kind],
+                    )?;
+                } else {
+                    if tx.execute(
+                        "UPDATE videos SET kind = ?2, kind_state = 1
+                           WHERE video_id = ?1 AND kind <> 'short' AND kind <> ?2",
+                        rusqlite::params![p.video_id, kind],
+                    )? > 0
+                    {
+                        changed = true;
+                    }
+                    tx.execute(
+                        "UPDATE videos SET kind_state = 1
+                           WHERE video_id = ?1 AND (kind = 'short' OR kind = ?2)",
+                        rusqlite::params![p.video_id, kind],
+                    )?;
                 }
-                tx.execute(
-                    "UPDATE videos SET kind_state = 1
-                       WHERE video_id = ?1 AND (kind = 'short' OR kind = ?2)",
-                    rusqlite::params![p.video_id, kind],
-                )?;
             } else {
                 // 通常動画候補（kind='video'）はトランザクション外の shorts_probe で確定するため、
                 // それ以外の由来 kind だけをここで確定印にする。
@@ -1212,6 +1229,19 @@ impl Db {
         )?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub fn videos_test_meta_state(
+        &self,
+        video_id: &str,
+    ) -> Result<(i64, Option<String>, i64), DbError> {
+        let conn = self.lock()?;
+        Ok(conn.query_row(
+            "SELECT meta_checked, description, kind_state FROM videos WHERE video_id = ?1",
+            [video_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?)
+    }
 }
 
 /// トランザクション内で `broadcast_state` / `broadcast_start_ms` / `broadcast_checked_at_ms`
@@ -1267,9 +1297,11 @@ fn apply_broadcast_columns_tx(
     )?;
 
     if let Some(k) = new_kind {
-        if cur_kind != "short" && cur_kind != k {
+        // ガード 4: 既存の premiere は終了後の live 判定で上書きしない
+        if cur_kind != "short" && !(cur_kind == "premiere" && k == "live") && cur_kind != k {
             tx.execute(
-                "UPDATE videos SET kind = ?2, kind_state = 1 WHERE video_id = ?1 AND kind <> 'short'",
+                "UPDATE videos SET kind = ?2, kind_state = 1
+                   WHERE video_id = ?1 AND kind <> 'short' AND NOT (kind = 'premiere' AND ?2 = 'live')",
                 rusqlite::params![video_id, k],
             )?;
             changed = true;

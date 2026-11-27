@@ -751,6 +751,18 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
 - ローカル保護設定キーを 5 キー（FR-94 の 4 キーに `youtube.api_key` を追加）へ拡張してデータエクスポート除外およびインポート時ローカル保持の対象とし、`settings://changed` 送出時の値伏せ字化、診断 zip の伏せ字対象拡張（`api_key`、`apikey`、`x-goog-api-key`、`x-api-key`）、HTTP ヘッダ `X-Goog-Api-Key` の機微指定と URL クエリ禁止により API キーの流出を防ぐ
 - 公式 API 接続基盤（`ytapi`）は本番ベース URL をコード内定数に固定し、接続 5 秒および全体 8 秒のタイムアウト、共通枠（日次 10,000 units）と検索枠（日次 100 回）の独立した 2 系統サーキットブレーカー（米国夏時間を考慮した次回 `00:00 America/Los_Angeles` プラス 60 秒までの遮断）、`HTTP 400`（`keyInvalid`）と `HTTP 401` と `HTTP 403`（`keyExpired`、`accessNotConfigured`、`ipRefererBlocked`）によるキー無効ラッチ、`HTTP 429` と `5xx` と通信失敗の段階クールダウン（30 秒、60 秒、300 秒）、`HTTP 404` の非遮断扱いを備え、ISO 8601 継続時間および RFC 3339 時刻の正規化基盤と 3 層一方向依存を保つ
 
+### FR-98 YouTube Data API v3 によるメタ遅延解決とライブ待機および単発メタ取得の優先経路
+
+- 任意設定 `youtube.api_key` が有効な場合に、`ytapi::videos_list`（`GET /videos?part=snippet,contentDetails,liveStreamingDetails,statistics&id=...`、重複除去後の最大 50 件を 1 チャンク 1 unit で一括照会）を用いてメタ遅延解決、ライブ待機巡回、単発メタ取得を高速化し、未設定、無効キー、タイムアウト、クォータ上限、通信失敗時には既存の `InnerTube` と `yt-dlp` へ透過的にフォールバックする（仕様決定 ED）
+- `MetaResolver` は共通枠が利用可能なとき、期限切れ配信予定の解除後に `FR-96` の放送状態再確認対象（最大 10 件）と未解決対象（連続失敗回数上限 5 未満、重複除去）を合計最大 50 件の 1 バッチへ統合して `ytapi::videos_list` を呼び出し、非放送の `video` 候補に対する `HEAD /shorts/{id}` 判定は `tokio::task::JoinSet` で並列実行する
+- データの整合性を保つため、4 点の保護を組み込む
+  1. 公式 API の `publishedAt`（末尾 `Z` 等）は `iso8601_ms` と `iso_utc` により `+00:00` 形式の UTC 文字列へ正規化してから DB へ保存する
+  2. `MetaResolver` の未解決対象が `HTTP 200` の `videos.list` 応答から欠落した場合、DB へ `meta_checked=1` や空文字説明文を確定書き込みせず、毎 tick の `InnerTube` フォールバックも行わず、インメモリ失敗回数加算と未確定状態 `KIND_FAILED (2)` の記録に留める
+  3. `FR-96` の放送状態再確認で `HTTP 200` の `videos.list` 応答から欠落した `live` と `upcoming` の双方を `blocked_live_streaks` で追跡し、3 回連続欠落で `broadcast_state = None` へ解除する（`InnerTube` フォールバック時の連続 6 回解除閾値は維持し、`LiveWaitPoller` は単発欠落で `live_wait` 行も `videos.broadcast_state` も消さず次回巡回へ繰り越す）
+  4. `classify_kind` は配信前および配信中を `duration_sec == Some(0)`（`P0D` や `PT0S` は `live`、正の尺は `premiere`、尺欠落の配信中は `live`）で判別し、終了後（`actualEndTime` ありかつ非放送中）は `is_live_content = None` として `db/feed.rs` のトランザクションで既存の `cur_kind == "premiere"` を上書きから保護する
+- `LiveWaitPoller` の `poll_due` は存在確認と 24 時間超過解除を行ったうえで `active_due` を 50 件チャンクへ分割し、共通枠利用可能時は `ytapi::videos_list` で一括巡回して `ingested = 1` のフィード行も `premiere` 保護付きで相乗り反映し、失敗や利用不可時はチャンク単位で `InnerTube` へフォールバックする
+- 単発 4 経路（概要欄 `get_description`、動画チャンネル解決 `resolve_video_channel`（`playing_channel` と `VideoStartHook` が共用）、動画メタ解決 `video_meta_resolve`、待機登録時確認 `live_wait_add`）はいずれも `ytapi::videos_list` を優先し、待機登録では 1 回の応答から放送状態と補完メタを同時に取得したうえで、欠落やエラーやクォータ上限時に従来経路へフォールバックする
+
 ## 5. 非機能要件
 
 - メモリ目安：アイドル 300MB 未満、再生中 600MB 未満とする（仕様決定 I）

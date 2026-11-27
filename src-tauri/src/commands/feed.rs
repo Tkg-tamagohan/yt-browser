@@ -14,6 +14,7 @@ use crate::model::{
     FeedItem, FeedNewItems, PlayingChannel,
 };
 use crate::yt::{self, YtDlpResolver};
+use crate::ytapi::{QuotaBucket, YtApi};
 
 use super::parse_video_id;
 
@@ -30,18 +31,21 @@ pub(crate) struct ResolvedVideoChannel {
     pub(crate) title: Option<String>,
 }
 
-/// 動画のチャンネル情報を `InnerTube::video_meta` → 失敗時 15 秒タイムアウト付き
-/// `yt::video_channel_ref` の順で解決する共通ヘルパ（仕様決定 DY・U）。
+/// 動画のチャンネル情報を `YtApi::videos_list` → `InnerTube::video_meta` →
+/// 失敗時 15 秒タイムアウト付き `yt::video_channel_ref` の順で解決する共通ヘルパ
+/// （仕様決定 DY・U・ED）。
 /// 再生開始時のバックグラウンド履歴補完フックと `playing_channel` 第 3 段の双方が共用する。
 pub(crate) async fn resolve_video_channel(
     video_id: &str,
     db: &Db,
+    ytapi: &YtApi,
     innertube: &InnerTube,
     resolver: &YtDlpResolver,
 ) -> ResolvedVideoChannel {
     resolve_video_channel_with_timeout(
         video_id,
         db,
+        ytapi,
         innertube,
         resolver,
         VIDEO_CHANNEL_FALLBACK_TIMEOUT,
@@ -52,23 +56,66 @@ pub(crate) async fn resolve_video_channel(
 async fn resolve_video_channel_with_timeout(
     video_id: &str,
     db: &Db,
+    ytapi: &YtApi,
     innertube: &InnerTube,
     resolver: &YtDlpResolver,
     fallback_timeout: Duration,
 ) -> ResolvedVideoChannel {
     let mut channel_title: Option<String> = None;
     let mut title: Option<String> = None;
+    if ytapi.can_use(QuotaBucket::Shared) {
+        match ytapi.videos_list(&[video_id]).await {
+            Ok(mut map) => {
+                if let Some(item) = map.remove(video_id) {
+                    channel_title = item
+                        .video_ref
+                        .channel_title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    let t = item.video_ref.title.trim();
+                    if !t.is_empty() {
+                        title = Some(t.to_string());
+                    }
+                    if let Some(cid) = item
+                        .video_ref
+                        .channel_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| is_channel_id(s))
+                        .map(str::to_string)
+                    {
+                        return ResolvedVideoChannel {
+                            input: Some(cid.clone()),
+                            channel_id: Some(cid),
+                            channel_title,
+                            title,
+                        };
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = e.should_fallback();
+                tracing::debug!(video_id, error = %e, "YtApi videos.list によるチャンネル解決に失敗");
+            }
+        }
+    }
     match innertube.video_meta(video_id).await {
         Ok(Some(v)) => {
-            channel_title = v
-                .channel_title
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            let t = v.title.trim();
-            if !t.is_empty() {
-                title = Some(t.to_string());
+            if channel_title.is_none() {
+                channel_title = v
+                    .channel_title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+            }
+            if title.is_none() {
+                let t = v.title.trim();
+                if !t.is_empty() {
+                    title = Some(t.to_string());
+                }
             }
             if let Some(cid) = v
                 .channel_id
@@ -239,6 +286,7 @@ pub async fn subscribe_channel(
 pub async fn playing_channel(
     video_id: String,
     db: State<'_, Db>,
+    ytapi: State<'_, Arc<YtApi>>,
     innertube: State<'_, Arc<InnerTube>>,
     resolver: State<'_, YtDlpResolver>,
 ) -> Result<PlayingChannel, UiError> {
@@ -265,9 +313,9 @@ pub async fn playing_channel(
             }
         }
     }
-    // 3) 外部メタ（InnerTube → yt-dlp、DB に知識が無いときだけ。失敗は解決不能扱い）
+    // 3) 外部メタ（YtApi → InnerTube → yt-dlp、DB に知識が無いときだけ。失敗は解決不能扱い）
     if input.is_none() {
-        let resolved = resolve_video_channel(&id, &db, &innertube, &resolver).await;
+        let resolved = resolve_video_channel(&id, &db, &ytapi, &innertube, &resolver).await;
         input = resolved.input;
         if title.is_none() {
             title = resolved.channel_title.clone();
@@ -517,6 +565,7 @@ mod tests {
     use crate::db::Db;
     use crate::innertube::InnerTube;
     use crate::yt::{YtDlpResolver, SETTING_YTDLP_PATH};
+    use crate::ytapi::YtApi;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -623,9 +672,11 @@ mod tests {
         )
         .await;
         let resolver = YtDlpResolver::new(None);
+        let ytapi = YtApi::new(None);
         let res = resolve_video_channel_with_timeout(
             "vid00000001",
             &db,
+            &ytapi,
             &tube,
             &resolver,
             Duration::from_secs(5),
@@ -651,9 +702,11 @@ mod tests {
             .unwrap();
         let (tube, srv) = spawn_mock_innertube("500 Internal Server Error", "{}").await;
         let resolver = YtDlpResolver::new(None);
+        let ytapi = YtApi::new(None);
         let res = resolve_video_channel_with_timeout(
             "vid00000002",
             &db,
+            &ytapi,
             &tube,
             &resolver,
             Duration::from_secs(5),
@@ -683,6 +736,7 @@ mod tests {
         let res2 = resolve_video_channel_with_timeout(
             "vid00000003",
             &db,
+            &ytapi,
             &tube2,
             &resolver,
             Duration::from_secs(5),
@@ -707,6 +761,7 @@ mod tests {
         let res3 = resolve_video_channel_with_timeout(
             "vid00000005",
             &db,
+            &ytapi,
             &tube3,
             &resolver,
             Duration::from_secs(5),
@@ -731,10 +786,12 @@ mod tests {
             .unwrap();
         let (tube, srv) = spawn_mock_innertube("500 Internal Server Error", "{}").await;
         let resolver = YtDlpResolver::new(None);
+        let ytapi = YtApi::new(None);
         let started = Instant::now();
         let res = resolve_video_channel_with_timeout(
             "vid00000004",
             &db,
+            &ytapi,
             &tube,
             &resolver,
             Duration::from_millis(200),
@@ -748,5 +805,74 @@ mod tests {
             "フォールバックタイムアウトが効いていない: {elapsed:?}"
         );
         srv.abort();
+    }
+
+    #[tokio::test]
+    async fn resolve_video_channel_prefers_ytapi_and_falls_back_to_innertube() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let db = Db::connect_in_memory().unwrap();
+        let yt_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let yt_addr = yt_listener.local_addr().unwrap();
+        let yt_srv = tokio::spawn(async move {
+            let mut count = 0usize;
+            while let Ok((mut stream, _)) = yt_listener.accept().await {
+                count += 1;
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let resp = if count == 1 {
+                    let body = r#"{"items":[{"id":"vidyt000001","snippet":{"title":"YtApi Video","channelId":"UCytapi00000000000000001","channelTitle":"YtApi CH"}}]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+                };
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let (tube, tube_srv) = spawn_mock_innertube(
+            "200 OK",
+            r#"{"videoDetails":{"videoId":"vidyt000002","title":"Tube Video","channelId":"UCtube000000000000000002","author":"Tube CH"}}"#,
+        )
+        .await;
+
+        let ytapi = YtApi::with_test_base_url(
+            Some("AIzaSyCH_KEY".to_string()),
+            format!("http://{yt_addr}"),
+        );
+        let resolver = YtDlpResolver::new(None);
+
+        let r1 = resolve_video_channel_with_timeout(
+            "vidyt000001",
+            &db,
+            &ytapi,
+            &tube,
+            &resolver,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r1.channel_id.as_deref(), Some("UCytapi00000000000000001"));
+        assert_eq!(r1.channel_title.as_deref(), Some("YtApi CH"));
+        assert_eq!(r1.title.as_deref(), Some("YtApi Video"));
+
+        let r2 = resolve_video_channel_with_timeout(
+            "vidyt000002",
+            &db,
+            &ytapi,
+            &tube,
+            &resolver,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r2.channel_id.as_deref(), Some("UCtube000000000000000002"));
+        assert_eq!(r2.channel_title.as_deref(), Some("Tube CH"));
+        assert_eq!(r2.title.as_deref(), Some("Tube Video"));
+
+        yt_srv.abort();
+        tube_srv.abort();
     }
 }
