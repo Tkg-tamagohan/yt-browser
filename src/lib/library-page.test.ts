@@ -958,5 +958,129 @@ describe("library-page playlist sync", () => {
     expect(postSyncLib.playlistItems[249]).toEqual(bigRestoredOrig99);
     expect(postSyncLib.plHasMore).toBe(false);
     postSyncLib.dispose();
+
+    // 199 件（0..198）を全件表示中に 2 ページ目の position 150 を削除し、
+    // その後 1 ページ目（0..99, plHasMore=true, plTailPos=99）へ再取得された状態で
+    // 残存トーストの Undo（position 150）を実行しても 99 の後ろへ差し込まず、
+    // loadMoreItems() が 100..149 を飛ばさずに 100..198 を読み込むこと
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const twoPageAll = Array.from({ length: 199 }, (_, i) =>
+      makeEntry(i, `twoP${String(i).padStart(7, "0")}`),
+    );
+    const twoPageFirst = twoPageAll.slice(0, 100);
+    const twoPageSecond = twoPageAll.slice(100);
+    const twoPageItem150 = twoPageAll[150];
+    const twoPageAfterPositions: Array<number | null | undefined> = [];
+    let twoPageRemoved = false;
+
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          twoPageAfterPositions.push(args?.afterPosition);
+          if (args?.afterPosition === null) {
+            return Promise.resolve(twoPageFirst);
+          }
+          if (args?.afterPosition === 99) {
+            return Promise.resolve(
+              twoPageRemoved
+                ? twoPageSecond.filter((i) => i.position !== 150)
+                : twoPageSecond,
+            );
+          }
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_remove") {
+          twoPageRemoved = true;
+          return Promise.resolve(twoPageItem150);
+        }
+        if (cmd === "playlist_sync") {
+          return Promise.resolve({
+            playlist: makePlaylist({
+              id: 45,
+              itemCount: 198,
+              syncedAt: "2026-11-27T18:40:00+00:00",
+            }),
+            addedCount: 0,
+          });
+        }
+        if (cmd === "playlist_item_restore") {
+          twoPageRemoved = false;
+          return Promise.resolve(twoPageItem150);
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const twoPagePl = makePlaylist({ id: 45, itemCount: 199 });
+    const twoPageLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    twoPageLib.va.playlists = [twoPagePl];
+    await twoPageLib.selectPlaylist(twoPagePl);
+    await twoPageLib.loadMoreItems();
+    expect(twoPageLib.playlistItems).toHaveLength(199);
+    expect(twoPageLib.plHasMore).toBe(false);
+
+    await twoPageLib.removeItem(twoPageItem150);
+    const twoPageUndo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+
+    await twoPageLib.selectPlaylist(twoPagePl);
+    await twoPageLib.syncPlaylist();
+    expect(twoPageLib.playlistItems).toHaveLength(100);
+    expect(twoPageLib.plHasMore).toBe(true);
+
+    twoPageUndo!.run!();
+    await vi.waitFor(() => expect(twoPageLib.restoring).toBe(false));
+
+    expect(twoPageLib.playlistItems).toHaveLength(100);
+    expect(twoPageLib.playlistItems[99].position).toBe(99);
+    expect(twoPageLib.plHasMore).toBe(true);
+    expect(twoPageLib.va.playlists[0].itemCount).toBe(199);
+
+    await twoPageLib.loadMoreItems();
+    expect(twoPageAfterPositions.at(-1)).toBe(99);
+    expect(twoPageLib.playlistItems).toHaveLength(199);
+    expect(twoPageLib.playlistItems[100].position).toBe(100);
+    expect(twoPageLib.playlistItems[150]).toEqual(twoPageItem150);
+    expect(twoPageLib.plHasMore).toBe(false);
+    twoPageLib.dispose();
+
+    // 非同期の通常末尾削除（plHasMore=true で pos=99 削除→plTailPos=98）直後に Undo したら
+    // loweredTailOnRemove && plTailDirty により元位置 99 が既読ページへ戻り、
+    // loadMoreItems() が afterPosition=99 で 100..198 を重複なく読み込むこと
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const directUndoAfterPositions: Array<number | null | undefined> = [];
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          directUndoAfterPositions.push(args?.afterPosition);
+          if (args?.afterPosition === null) return Promise.resolve(twoPageFirst);
+          if (args?.afterPosition === 99) return Promise.resolve(twoPageSecond);
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_remove") return Promise.resolve(twoPageFirst[99]);
+        if (cmd === "playlist_item_restore") return Promise.resolve(twoPageFirst[99]);
+        return Promise.resolve(null);
+      },
+    );
+    const directUndoPl = makePlaylist({ id: 46, itemCount: 199 });
+    const directUndoLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    directUndoLib.va.playlists = [directUndoPl];
+    await directUndoLib.selectPlaylist(directUndoPl);
+    await directUndoLib.removeItem(twoPageFirst[99]);
+    const directUndoAction = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+    directUndoAction!.run!();
+    await vi.waitFor(() => expect(directUndoLib.restoring).toBe(false));
+    expect(directUndoLib.playlistItems).toHaveLength(100);
+    expect(directUndoLib.playlistItems[99]).toEqual(twoPageFirst[99]);
+    await directUndoLib.loadMoreItems();
+    expect(directUndoAfterPositions.at(-1)).toBe(99);
+    expect(directUndoLib.playlistItems).toHaveLength(199);
+    expect(directUndoLib.plHasMore).toBe(false);
+    directUndoLib.dispose();
   });
 });

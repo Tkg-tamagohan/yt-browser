@@ -1067,6 +1067,7 @@ export function createLibraryPageState(opts: Options) {
       });
       // 件数が変わるので飛行中の一覧・項目応答は無効化する
       ++listsReq;
+      let loweredTailOnRemove = false;
       if (selectedId === playlistId) {
         ++itemsReq;
         playlistItems = playlistItems.filter(
@@ -1074,7 +1075,10 @@ export function createLibraryPageState(opts: Options) {
         );
         const removedPos = removed?.position ?? entry.position;
         if (plTailPos !== null && removedPos >= plTailPos) {
-          if (plHasMore) plTailDirty = true;
+          if (plHasMore) {
+            plTailDirty = true;
+            loweredTailOnRemove = true;
+          }
           plTailPos =
             playlistItems.length === 0
               ? null
@@ -1138,14 +1142,16 @@ export function createLibraryPageState(opts: Options) {
                 alreadyPresent = playlistItems.some(
                   (i) => i.videoId === restored.videoId,
                 );
-                // ページング中に同期後・同期中の末尾再配置（MAX+1）を既読末尾へ
-                // 差し込むと plTailPos が未読項目を飛び越えるため、元の位置以下に
-                // 戻った場合のみ既読ページへ反映する
+                // ページング中に plTailPos より大きい位置へ戻った項目を既読末尾へ
+                // 差し込むと未読項目を飛び越えるため、この削除で plTailPos を下げて
+                // 再取得が起きていない直後の復元だけを元の位置以下に限定して反映する
                 if (
                   !alreadyPresent &&
                   (!plHasMore ||
                     (plTailPos !== null && restored.position <= plTailPos) ||
-                    restored.position <= removed.position)
+                    (loweredTailOnRemove &&
+                      plTailDirty &&
+                      restored.position <= removed.position))
                 ) {
                   ++itemsReq;
                   const rest = playlistItems;
