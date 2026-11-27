@@ -1,5 +1,6 @@
 // データインポート中のプレイリストキュー永続化ガードと IPC 連携テスト（FR-94、仕様決定 DX）。
 // QS-04: ガード中の連続再生遷移がインポート失敗時に IPC へリプレイされ、成功時は破棄される
+// QS-05: 単独ループの全体 → 1 項目切替で同一動画に同一 uid を維持し、解除で破棄する（FR-95）
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
@@ -17,11 +18,14 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import {
   beginImportQueueGuard,
+  clearLoop,
+  cycleLoop,
   endImportQueueGuard,
   initQueue,
   queues,
   refreshQueues,
 } from "./queue.svelte";
+import { playerStates } from "./players.svelte";
 
 async function flushMicrotasks(turns = 8): Promise<void> {
   for (let i = 0; i < turns; i++) {
@@ -179,5 +183,67 @@ describe("QS-04 プレイリストキュー永続化ガードの IPC 連携（FR
       ],
     ]);
     expect(queues.list.has(7)).toBe(false);
+  });
+});
+
+describe("QS-05 単独ループのモード切替で同一動画の uid を維持する（FR-95、仕様決定 EA）", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "player_set_queue") return Promise.resolve(true);
+      return Promise.resolve(undefined);
+    });
+    clearLoop(202);
+    const next = new Map(playerStates.list);
+    next.set(202, {
+      instanceId: 202,
+      videoId: "vidSolo0001",
+      pause: false,
+      position: 0,
+      duration: 60,
+      fps: 30,
+      state: "playing",
+      volume: 100,
+      speed: 1,
+      mediaTitle: "Solo",
+      pip: false,
+      format: "best",
+      audioDevice: "auto",
+      subTracks: [],
+      sid: "auto",
+    });
+    playerStates.list = next;
+  });
+
+  test("none → all → one の切替で同じ uid を引き継ぎ、none 解除後は新しい uid を払い出す", async () => {
+    // none → all
+    await cycleLoop(202);
+    // all → one
+    await cycleLoop(202);
+    // one → none
+    await cycleLoop(202);
+    // none → all（再有効化）
+    await cycleLoop(202);
+
+    const setCalls = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "player_set_queue")
+      .map(([, args]) => args as { items: Array<{ uid: number; videoId: string }>; loopAll: boolean });
+
+    expect(setCalls).toHaveLength(4);
+    expect(setCalls[0].loopAll).toBe(true);
+    expect(setCalls[1].loopAll).toBe(true);
+    expect(setCalls[0].items[0].videoId).toBe("vidSolo0001");
+    expect(setCalls[1].items[0].videoId).toBe("vidSolo0001");
+    // all → one で同じ uid を維持する
+    expect(setCalls[1].items[0].uid).toBe(setCalls[0].items[0].uid);
+    // none で武装解除
+    expect(setCalls[2]).toMatchObject({ items: [], loopAll: false });
+    // 再有効化では新しい uid が払い出される
+    expect(setCalls[3].items[0].uid).not.toBe(setCalls[0].items[0].uid);
+
+    clearLoop(202);
+    const clean = new Map(playerStates.list);
+    clean.delete(202);
+    playerStates.list = clean;
   });
 });

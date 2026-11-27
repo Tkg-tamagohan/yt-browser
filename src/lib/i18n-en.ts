@@ -703,4 +703,25 @@ export const en = {
   "settings.notices.action": "Action: {label}",
   "settings.notices.clear": "Clear history",
 
+  // Phase 90: 再生開始失敗の原因別エラー表示と通知閉じるボタン（FR-95、仕様決定 EA）
+  "player.failed.videoUnavailable": "This video cannot be played ({reason})",
+  "player.failed.reason.private": "private",
+  "player.failed.reason.unavailable": "unavailable",
+  "player.failed.reason.membersOnly": "members-only",
+  "player.failed.reason.upcoming": "not started yet",
+  "player.failed.reason.other": "restricted",
+  "player.failed.cookieFailed":
+    "yt-dlp may have failed to read browser cookies. Restart the browser or check your yt-dlp config",
+  "player.failed.blocked":
+    "YouTube may have blocked playback. Check your PO Token or cookie settings",
+  "player.failed.jsChallenge":
+    "YouTube's playback check may have failed. Make sure deno is installed and yt-dlp is up to date",
+  "player.failed.noFormat":
+    "No playable format may have been available. Update yt-dlp or check the quality setting",
+  "player.failed.network":
+    "The network may be unreachable or not responding",
+  "player.failed.detailLine": "{base}\nDetail: {detail}",
+  "player.failed.action.openDeps": "Open dependency settings",
+  "player.failed.action.openLogs": "Open log folder",
+  "notice.close": "Dismiss notification",
 } satisfies Record<MessageKey, string>;

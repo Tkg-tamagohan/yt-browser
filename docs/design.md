@@ -45,7 +45,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | モジュール | 責務 |
 |---|---|
 | `commands` | Tauri の invoke ハンドラ。入力検証と UI 向けの直列化に徹する |
-| `mpv` | プロセス起動、ソケット管理、JSON IPC クライアント、プロパティ監視 |
+| `mpv` | プロセス起動、ソケット管理、JSON IPC クライアント、プロパティ監視、再生開始失敗の診断（`error_diag.rs`） |
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
@@ -161,6 +161,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_vacuum` | なし | `Result<()>`（FR-66、仕様決定 CQ） |
 | `db_cleanup_orphans` | なし | `Result<u64>`（削除した行数。FR-66、仕様決定 CQ） |
 | `diag_export` | `path`（保存先ファイルパス。保存ダイアログで選択） | `Result<()>`（FR-82、仕様決定 DG、§4.21） |
+| `diag_open_log_dir` | なし | `Result<()>`（FR-95、仕様決定 EA、§4.23。アプリログディレクトリを未作成なら作成して OS のファイルマネージャで開く） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -244,7 +245,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | イベント | ペイロード | 発火条件 |
 |---|---|---|
 | `player://state` | `{ instanceId, videoId, pause, position, duration, fps, state, volume, speed, mediaTitle, pip, format, audioDevice, subTracks, sid }` | observe_property の変化を間引いて発火[^statesample] |
-| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq, closed }` | 終了またはエラー。`closed` はその終端でインスタンスが畳まれたか（§4.15、FR-43） |
+| `player://ended` | `{ instanceId, videoId, reason, continued, continuedVideoId, continuedUid, armedSeq, closed, errorKind?, errorDetail? }` | 終了またはエラー。`closed` はその終端でインスタンスが畳まれたか（§4.15、FR-43）。`errorKind` / `errorDetail` は `file-loaded` 到達前の `reason="error"` 終端のときのみ付与する（§4.23、FR-95、仕様決定 EA） |
 | `player://closed` | `{ instanceId }` | 手動 `player_close`。emitter が先に止まるため `player://ended` は出ず、別ウィンドウがインスタンス消滅を検知するための専用イベント（FR-27） |
 | `player://restarted` | `{ instanceId, videoId, attempt }` | IPC 無応答ウォッチドッグによる mpv 自動再起動の開始（§4.9、仕様決定 BE）。インスタンスは消滅しないため `player://ended` は出さない |
 | `feed://new_items` | `{ count }` | ポーラーの新着検出、新規購読の初回投入 |
@@ -498,6 +499,8 @@ ytdl_hook 経由のストリーム解決にも PO Token が伝わる。起動引
 監視するプロパティは `time-pos`、`duration`、`pause`、`eof-reached`、`media-title`、`paused-for-cache`、`video-params`（fps 表示用）、`volume`、`speed`、`audio-device`（§4.8）、`track-list`・`sid`（字幕選択、§4.13）。
 
 `--speed` と `--volume` は初期速度・初期音量の設定値（FR-39、仕様決定 BO）をそのまま渡す。起動引数で適用するため変更は次回の再生開始から有効で、稼働中インスタンスへの速度・音量の変更は `player_control` 経由のセッション限りの変更として従来どおり扱う。
+IPC 接続確立と `observe_property` 登録の直後（最初の `loadfile` を送る前、ウォッチドッグ再起動後の再接続も同じ順序）に、`["request_log_messages", "error"]` と `["change-list", "ytdl-raw-options", "append", "verbose="]` を順に送信して応答を受け取る（FR-95、仕様決定 EA、§4.23）。
+どちらかのコマンドが失敗しても警告をアプリログへ書くだけで起動と再生は続行する。
 受信側は 1 ソケットにつき 1 読み取りタスクを持ち、`event` 行を購読者に振り分ける。
 
 視聴履歴のチャンネル情報補完（仕様決定 DY、回帰テスト DB-LD-34）は、`history_upsert` と `history_update_progress` で既存非空値を保持しつつ `videos` → `live_waits` → `queue_items`（`channel_title` のみ）の順で SQL 補完を行う。
@@ -856,6 +859,8 @@ mpv ログにはデマクサが開いた署名入りストリーム URL が記�
 対象は初回再生、画質変更、ウォッチドッグ再起動、連続再生の次項目ロードの全経路で、いずれも `arm_load` で発行パラメータを世代付き記録している。
 再送は約 1.5 秒の遅延後に行い、遅延中にインスタンスが終了したり別のロードへ置き換わった世代は再送しない。
 再送予約の時点で記録済みの終端理由を撤回し、再送後の `end-file` が通常どおり終端判定へ戻るようにする。
+あわせて再生開始失敗の診断バッファ（§4.23）は保持行を残したまま終端印フラグだけをリセットし、初回と再送の両方の出力を合わせて原因分類できるようにする。
+ただし初回失敗が `video_unavailable`（非公開、削除済み、メンバー限定、配信開始前）と確定した場合は再送しても結果が変わらないため自動再送を省略して即座に終端通知へ進む（FR-95、仕様決定 EA）。
 再送も失敗した場合（2 回目の `end-file reason=error` または再送コマンド自体の失敗）は従来の終端・失敗通知経路へ流れる。
 再生中のストリーム断（`file-loaded` 後のエラー）は対象外で、従来どおり即座に終端となる。
 
@@ -1214,6 +1219,45 @@ zip 生成の一通り）と DX-01（既定ファイル名の規則）。
 通らない通知）は履歴の対象外とする（暫定解釈）。
 
 回帰テストは NH-01 〜 NH-03（追加・上限削除・表示順・時刻形式）。
+
+### 4.23 再生開始失敗の原因分類とエラー通知（FR-95、仕様決定 EA）
+
+動画の再生開始前（`file-loaded` 到達前）に `end-file`（`reason: "error"`）で失敗したとき、`ytdl_hook` が出力した診断ログから原因を分類し、利用者が画面上で対処を判断できるようにする。
+再生開始後の切断やデコード失敗、およびウォッチドッグの再起動上限到達による終了は対象外とし、`errorKind` を付けず従来の汎用通知を出す。
+
+mpv との IPC 接続直後（`observe_property` 後、`loadfile` 前、ウォッチドッグ再起動後の再接続も同じ順序）に `["request_log_messages", "error"]` と `["change-list", "ytdl-raw-options", "append", "verbose="]` を順に送信する（`spawn.rs` の `configure_ytdl_logging`）。
+`change-list` は起動引数由来の `ytdl-raw-options`（PO Token の `extractor-args`）を温存したまま `verbose` を追加する。
+いずれのコマンドも失敗時は警告ログだけ書いて続行し、古い mpv でも起動を妨げない。
+
+受信側の `event_pump` は `log-message` イベントを受け取ると、`mpv/error_diag.rs` の `YtdlErrorBuffer` へ渡す。
+保持対象は `prefix == "ytdl_hook"` のうち `^ERROR:`、`^WARNING:`、`^\[debug\] WARNING:`、`^youtube-dl failed`（終端印）で始まる行だけに限り、`Command-line config` などの設定行は受信時点で破棄する。
+保持上限は 1 プレイヤーインスタンスあたり最大 50 行かつ UTF-8 16 KiB とし、超過時は古い行から捨てる。
+新規読み込み（`arm_load`）でバッファを空にし、`load_gen` を進めて旧ロードの待機タスクを無効化する。
+既存の 1 回自動再送（§4.10）では行を保持したまま終端印フラグだけをリセットする。
+
+`file-loaded` 到達前に `end-file`（`reason: "error"`）を受けると、`event_pump` 自体は止めず別タスク（`handle_load_error`）を起動する。
+同タスクは終端印が未到着であれば最大 200 ミリ秒待機し（新規読み込みやポンプ停止による `load_gen` 更新時は打ち切り、IPC 切断時は即時終了）、スナップショットを次の優先順位表（大文字小文字区別なし）で分類する。
+
+1. `video_unavailable`：`Private video`（`private`）、`Video unavailable` または `This video is unavailable`（`unavailable`。一時的なレート制限 `try again later` と地域制限 `available in your country` を含む行は誤断定と再送省略を防ぐため除外）、`members-only`（`members_only`）、`This live event will begin`（`upcoming`）
+2. `cookie_failed`：`could not (?:copy|find) .*cookie` または `failed to decrypt`
+3. `blocked`：`^ERROR:` で始まり、かつ `Sign in to confirm you.re not a bot` または `HTTP Error 403` に一致する行
+4. `js_challenge`：`challenge solving failed` または `signature solving failed`
+5. `no_format`：`Requested format is not available` または `No video formats found`
+6. `network`：`timed out`、`Connection reset`、`Unable to download`
+7. `unknown`：上記のいずれにも一致しない、またはスナップショットが空
+
+アプリログと UI 補助詳細（`errorDetail`）へ渡す文字列は、URL（`http`/`https`/`socks4`/`socks5`/`socks5h`/`ftp`、認証付きプロキシを含む）、引用符内文字列（`"[^"]*"` と `'[^']*'`）、最初のパス表記（`file://`、`[A-Za-z]:[\\/]`、`\\\\`、`~/`、行頭または空白・`=` 直後の `/` から行末まで）、`=` 右辺（`=\S+`）の順に伏せ字処理を施し、先頭 200 文字へ切り詰める。
+`errorDetail` は許可リスト方式で作り、`video_unavailable` は上記の理由列挙値、`unknown` は最初の `ERROR:` 行のサニタイズ済み本体を入れ、他カテゴリには付けない。
+分類のたびにカテゴリとサニタイズ済みスナップショットをアプリログへ記録し、`video_unavailable` または IPC 切断済みのときは自動再送を省略して即座に `EndedSignal` から `player://ended` へ載せる。
+連続再生の次項目へ進む際は `MpvPlayer::continue_video` が `video_switch_op` ロック内で `EndedSignal.kept_open` に基づく `prepare_terminal_for_continue` を呼び、`eof-reached=true`（旧ファイル未アンロード）のときだけ `begin_replace` と終端理由解除を行い、`end-file(eof)`（`--keep-open=no`）や `end-file(error)` では終端理由解除と読み込み開始記録のみ行ってから `arm_load` と `loadfile_replace` を直列実行する。これにより、正常→失敗→正常や連続失敗、および画質変更との並行競合でも次項目の診断とキュー進行が落ちないようにする。
+また動画切替（`switch_video`）や画質変更（`PlayerAction::Quality`）も `video_switch_op` 内で `TerminalTracker::prepare_replace` と `arm_load` を直列化し、`handle_load_error` の 200ms 待機中や自動再送の 1.5 秒待機中のように既に `end-file` でアンロード済みの状態へ割り込んでも不要な `pending_replaces` を積まず旧 `ended_reason` を解除して新動画の失敗・切断を取りこぼさないようにする（自動再送も `video_switch_op` で直列化し、実行可否は `load_gen` 一致・IPC 未切断・`retry_gen` で判定する）。
+あわせて `ArmedQueue::take_next_for_end` で `loop_all` 時の失敗項目 `uid` 集合（`failed_uids`、`file-loaded` 到達と非エラー終端でリセット）を追跡し、初回武装時に現在動画の `uid` を捕捉したうえで現行ループ対象に含まれる項目の失敗のみを数えて全項目が失敗済みになった時点で無限再読み込みを打ち切る（読み込み中に削除された項目の失敗で残存項目を打ち切らず、フロント側の単独ループ切替でも同一動画の間は同じ `uid` を維持する）。
+mpv 自身の `mpv-*.log` は `diag_export` から除外したうえで、Unix 環境では起動前に `0600` 権限で事前作成して他ユーザーからの参照を防ぐ（`prepare_mpv_log_file`）。
+
+フロントエンドの純粋モジュール `src/lib/playback-error-logic.ts` は `errorKind` と `errorDetail` から日英の文言とアクション種別を解決する（`errorKind` 未指定時は従来の汎用文言、未知値は `unknown` へフォールバック）。
+`PlayerCards.svelte` は再生失敗通知を 12 秒表示かつ手動の閉じるボタン（`×`）付きで発行し、`blocked`、`js_challenge`、`no_format` では `/settings?section=deps` へ遷移して `afterNavigate` 経由で節フィルタ解除と依存コマンド節へのスクロール（別画面からの遷移時は `loadSettings` による上位節の展開完了後にスクロール）を行う「依存コマンド設定を開く」ボタンを、`unknown` では専用コマンド `diag_open_log_dir` を呼ぶ「ログフォルダを開く」ボタンを添える。
+
+回帰テストは DB-ED-01 〜 DB-ED-17（選別、優先順位、レート制限と地域制限の除外、署名解決失敗の分類、PO Token 破棄、認証付きプロキシ URL と `=/` パスを含む伏せ字処理、上限破棄、終端印待機と世代打ち切り、再送合算と再送省略、連続失敗と正常→失敗→正常キューの終端受理、ループ再生の無限エラー再読み込み抑止、アンロード済み待機中の動画切替・画質変更での終端保護、mpv ログ `0600` 権限保護、IPC コマンド送出と退避）と PE-01 〜 PE-05（全 7 カテゴリ、理由列挙、後方互換、未知値フォールバック、英語ロケール）、QS-05（単独ループ切替時の `uid` 維持）。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
@@ -1616,7 +1660,7 @@ yt-browser/
       main.rs
       lib.rs          # generate_handler! によるコマンドハンドラ登録の実体
       commands/
-      mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）
+      mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）・再生開始失敗診断（error_diag.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
       chat/           # get_live_chat ポーラー・正規化・ポップアップ窓の位置保存と表示設定の解釈（popup.rs）
@@ -1638,7 +1682,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic・playback-error-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   scripts/            # 開発・CI・リリース補助（docs 整合チェック・変更ファイル判定・バージョン更新・latest.json 生成とリリース成果物検証・単体テスト）と CDP 検証基盤（FR-84。cdp_client/e2e_dev/e2e_smoke と README.md の手順書）
   package.json

@@ -33,3 +33,19 @@ pub async fn diag_export(
     export_bundle(std::path::Path::new(&path), &ctx).await?;
     Ok(())
 }
+
+/// `diag_open_log_dir`（FR-95、仕様決定 EA）。アプリログを置くディレクトリを
+/// 未作成なら作成したうえで OS のファイルマネージャで開く。
+/// フロントエンドへ任意パスのオープン権限を開放しない専用コマンド。
+#[tauri::command]
+pub fn diag_open_log_dir(app: AppHandle) -> Result<(), UiError> {
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| UiError::internal(format!("ログフォルダの取得に失敗しました: {e}")))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| UiError::internal(format!("ログフォルダの作成に失敗しました: {e}")))?;
+    open::that_detached(&dir)
+        .map_err(|e| UiError::internal(format!("ログフォルダを開けませんでした: {e}")))?;
+    Ok(())
+}

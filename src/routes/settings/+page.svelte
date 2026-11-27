@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { beforeNavigate, goto } from "$app/navigation";
+  import {
+    afterNavigate,
+    beforeNavigate,
+    goto,
+    replaceState,
+  } from "$app/navigation";
+  import { page } from "$app/state";
   import { onDestroy, onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t, TONE_MAPPING_MPV } from "$lib/i18n";
@@ -1141,11 +1147,50 @@
     persistedFormat = effectiveQualityFormat(next.selected, next.customFormat);
     pendingApply = null;
     loading = false;
+    if (pendingSectionScroll && !disposed) {
+      const targetId = pendingSectionScroll;
+      pendingSectionScroll = null;
+      await tick();
+      if (!disposed) {
+        document
+          .getElementById(targetId)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
   }
+
+  let pendingSectionScroll: string | null = null;
 
   onMount(async () => {
     await initPlayerEvents();
     await loadSettings();
+  });
+
+  // 再生失敗通知の「依存コマンド設定を開く」等から /settings?section=deps で
+  // 遷移してきたとき、SvelteKit の遷移後スクロールリセット（scrollTo(0, 0)）および
+  // 初回設定ロードによる上位節の展開完了後に節フィルタを解除して依存コマンド節へ
+  // スクロールする（FR-95、仕様決定 EA）。
+  // 既に /settings にいる状態での再押下にも反応できるよう、クエリは即座に消費する
+  afterNavigate(({ to }) => {
+    if (!to || to.url.searchParams.get("section") !== "deps") return;
+    sectionQuery = "";
+    const cleanUrl = new URL(to.url);
+    cleanUrl.searchParams.delete("section");
+    if (loading) {
+      pendingSectionScroll = "settings-section-deps";
+      void tick().then(() => {
+        if (!disposed) replaceState(cleanUrl, page.state);
+      });
+    } else {
+      pendingSectionScroll = null;
+      void tick().then(() => {
+        if (disposed) return;
+        document
+          .getElementById("settings-section-deps")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        replaceState(cleanUrl, page.state);
+      });
+    }
   });
 
   let categoriesSection: SettingsCategoriesSection | undefined;
@@ -1379,7 +1424,7 @@
         <SettingsNoticesSection />
       </div>
 
-      <div class:hidden={!visibleSectionIds.has("deps")}>
+      <div id="settings-section-deps" class:hidden={!visibleSectionIds.has("deps")}>
         <SettingsDepsSection
           {loading}
           bind:ytdlpPath={form.ytdlpPath}

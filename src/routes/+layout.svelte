@@ -2,7 +2,11 @@
   import { page } from "$app/state";
   import "../app.css";
   import { t } from "$lib/i18n";
-  import { appNotices, runNoticeAction } from "$lib/notices.svelte";
+  import {
+    appNotices,
+    dismissNotice,
+    runNoticeAction,
+  } from "$lib/notices.svelte";
   import { initDeepLinks } from "$lib/deeplink.svelte";
   import { preventFileDrop } from "$lib/file-drop-logic";
   import { initBookmarks } from "$lib/bookmark.svelte";
@@ -132,10 +136,22 @@
 <div class="toasts" aria-live="polite">
   {#each appNotices as n (n.id)}
     <div class="notice">
-      {n.msg}
-      {#if n.action}
-        <button class="notice-action" onclick={() => runNoticeAction(n)}>
-          {n.action.label}
+      <div class="notice-body">
+        <span class="notice-msg">{n.msg}</span>
+        {#if n.action}
+          <button class="notice-action" onclick={() => runNoticeAction(n)}>
+            {n.action.label}
+          </button>
+        {/if}
+      </div>
+      {#if n.dismissible}
+        <button
+          class="notice-close"
+          type="button"
+          aria-label={t("notice.close")}
+          onclick={() => dismissNotice(n.id)}
+        >
+          ×
         </button>
       {/if}
     </div>
@@ -204,11 +220,35 @@
   }
   .toasts .notice {
     margin-top: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .toasts .notice-body {
+    flex: 1;
+    min-width: 0;
+  }
+  .toasts .notice-msg {
+    white-space: pre-line;
+    word-break: break-word;
   }
   .toasts .notice-action {
     margin-left: 8px;
     padding: 1px 8px;
     font-size: 0.85rem;
+  }
+  .toasts .notice-close {
+    flex: none;
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: var(--fg-muted);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .toasts .notice-close:hover {
+    color: var(--fg);
   }
   .update-overlay {
     position: fixed;

@@ -1,5 +1,8 @@
 //! mpv プロセス 1 台分の制御。起動・プロパティ監視・再生制御・
 //! SponsorBlock 判定を `MpvPlayer` にまとめる。
+use super::error_diag::{
+    self, PlaybackErrorKind, PlaybackErrorSummary, YtdlErrorBuffer, END_MARKER_WAIT,
+};
 use super::spawn::{ipc_endpoint, launch, loadfile_replace};
 use super::terminal::TerminalTracker;
 use super::{
@@ -15,7 +18,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, watch, RwLock};
 use tokio::task::JoinHandle;
 
 /// quit 送信後、mpv の自発終了を待つ猶予。
@@ -106,6 +109,58 @@ impl LoadRetryState {
     }
 }
 
+/// `ended_tx` で emitter へ伝える終了通知（FR-95、仕様決定 EA）。
+/// `file-loaded` 前の `reason="error"` 失敗時のみ `error_kind` / `error_detail` を付与する。
+/// `kept_open` は `--keep-open=yes` の `eof-reached=true` 経由の EOF 終端（旧ファイルが
+/// 未アンロードで `loadfile replace` 時に `end-file(stop)` が発生する経路）のときのみ `true`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EndedSignal {
+    pub reason: String,
+    pub kept_open: bool,
+    pub error_kind: Option<String>,
+    pub error_detail: Option<String>,
+}
+
+impl EndedSignal {
+    pub(crate) fn plain(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            kept_open: false,
+            error_kind: None,
+            error_detail: None,
+        }
+    }
+
+    fn eof_kept_open() -> Self {
+        Self {
+            reason: "eof".to_string(),
+            kept_open: true,
+            error_kind: None,
+            error_detail: None,
+        }
+    }
+
+    fn with_error(summary: PlaybackErrorSummary) -> Self {
+        Self {
+            reason: "error".to_string(),
+            kept_open: false,
+            error_kind: Some(summary.kind.as_str().to_string()),
+            error_detail: summary.detail,
+        }
+    }
+}
+
+/// ロード失敗の自動再送予約の成否（世代照合を含む）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryAttempt {
+    /// 待機中に新規読み込みやポンプ停止が起き、世代が失効した。
+    Stale,
+    /// 自動再送を 1 回予約した（値は `LoadRetryState` の世代）。
+    Scheduled(u64),
+    /// 既に再送済み、または再送対象が未武装。
+    Exhausted,
+}
+
 /// mpv プロセス 1 台分の制御ハンドル。
 pub(crate) struct MpvPlayer {
     instance_id: u32,
@@ -135,12 +190,19 @@ pub(crate) struct MpvPlayer {
     /// `file-loaded` 前の失敗への自動再送の予約状態
     /// （BG-9・仕様決定 BJ）。発行のたびに世代が進む。
     load_retry: Mutex<LoadRetryState>,
+    /// `ytdl_hook` のエラー・警告・終端印の保持バッファ（FR-95、仕様決定 EA）。
+    ytdl_errors: Mutex<YtdlErrorBuffer>,
+    /// 終端印到着・新規ロード開始・ポンプ停止・切断を待機中タスクへ知らせる通知口。
+    ytdl_signal_tx: watch::Sender<u64>,
+    /// 新規読み込みおよびポンプ停止の世代番号。200ms 終端印待機中や再送待機中に
+    /// 別動画へ切り替わった場合の混線・旧終端送出を防ぐ。
+    load_gen: AtomicU64,
     /// 自動再起動の直列化。
     respawn_op: tokio::sync::Mutex<()>,
     /// reader タスクが更新し、emitter タスクがサンプリングして UI へ流す。
     state: Mutex<PlayerState>,
-    /// 終了通知（end-file / ソケット切断）。payload は mpv の reason 文字列。
-    ended_tx: broadcast::Sender<String>,
+    /// 終了通知（end-file / ソケット切断）。
+    ended_tx: broadcast::Sender<EndedSignal>,
     /// 終端判定と意図的リロードの区別。
     terminal: TerminalTracker,
     /// `sponsor://skipped` の送出に使う（設計書 §3.2）。
@@ -198,19 +260,55 @@ struct ArmedQueue {
     items: VecDeque<QueueArmItem>,
     loop_all: bool,
     seq: u64,
+    /// 直近に `take_next` で取り出して読み込み・再生中の項目の uid。
+    /// 再生中項目がキューから削除された後にエラー終端したとき、残存項目へ誤算入しないために追跡する（FR-95）。
+    current_uid: Option<i64>,
+    /// `loop_all` 時に `file-loaded` を挟まずエラー終端した現行キュー項目の uid 集合。
+    /// 現行 `items` の全項目がこの集合に含まれたら無限ループを止める（FR-95）。
+    failed_uids: HashSet<i64>,
 }
 
 impl ArmedQueue {
     /// 武装の登録（`player_set_queue` 経路の本体）。
     /// `base_seq` 指定時は現在世代と一致するときだけ置き換える。
     /// 世代ずれは置き換えず false を返す。
-    fn set(&mut self, items: Vec<QueueArmItem>, loop_all: bool, base_seq: Option<u64>) -> bool {
+    /// `current_video_id` は初回武装時（`current_uid` 未設定かつ `loop_all`）に
+    /// 末尾の現在項目 `uid` を捕捉し、初回ロード中に重複動画の現在項目が削除されても
+    /// 残存する同一動画の別 `uid` と取り違えないために使う（FR-95）。
+    fn set(
+        &mut self,
+        items: Vec<QueueArmItem>,
+        loop_all: bool,
+        base_seq: Option<u64>,
+        current_video_id: Option<&str>,
+    ) -> bool {
         if base_seq.is_some_and(|s| s != self.seq) {
             return false;
         }
         self.items = items.into();
         self.loop_all = loop_all;
+        if self.items.is_empty() {
+            self.current_uid = None;
+            self.failed_uids.clear();
+        } else {
+            if loop_all && self.current_uid.is_none() {
+                if let Some(vid) = current_video_id {
+                    self.current_uid = self
+                        .items
+                        .back()
+                        .filter(|it| it.video_id == vid)
+                        .map(|it| it.uid);
+                }
+            }
+            let valid: HashSet<i64> = self.items.iter().map(|it| it.uid).collect();
+            self.failed_uids.retain(|uid| valid.contains(uid));
+        }
         true
+    }
+
+    /// `file-loaded` 到達時に連続エラー記録をリセットする。
+    fn reset_error_streak(&mut self) {
+        self.failed_uids.clear();
     }
 
     /// 先頭を取り出す。`loop_all` のとき取り出した項目を末尾へ戻し、
@@ -219,10 +317,47 @@ impl ArmedQueue {
     fn take_next(&mut self) -> Option<QueueArmItem> {
         let next = self.items.pop_front()?;
         self.seq += 1;
+        self.current_uid = Some(next.uid);
         if self.loop_all {
             self.items.push_back(next.clone());
         }
         Some(next)
+    }
+
+    /// 終端理由と終了した動画 ID を考慮して次項目を取り出す（FR-95、仕様決定 EA）。
+    /// `loop_all` 時にエラー終端した項目が現行のループ対象に含まれている場合のみその `uid` を
+    /// 失敗済みとして記録し、現行ループの全項目が失敗済みになった時点で継続を打ち切って `None` を返す。
+    /// 読み込み中に削除された項目の失敗は残存項目に対して数えないため、残り 1 件の未再生項目を
+    /// 巻き添えで打ち切るのを防ぐ。
+    fn take_next_for_end(&mut self, reason: &str, ended_video_id: &str) -> Option<QueueArmItem> {
+        if reason != "error" {
+            self.failed_uids.clear();
+            return self.take_next();
+        }
+        if self.loop_all {
+            if self.items.is_empty() {
+                return None;
+            }
+            let failed_uid = match self.current_uid {
+                Some(uid) => self.items.iter().any(|it| it.uid == uid).then_some(uid),
+                None => self
+                    .items
+                    .back()
+                    .filter(|it| it.video_id == ended_video_id)
+                    .map(|it| it.uid),
+            };
+            if let Some(uid) = failed_uid {
+                self.failed_uids.insert(uid);
+            }
+            if self
+                .items
+                .iter()
+                .all(|it| self.failed_uids.contains(&it.uid))
+            {
+                return None;
+            }
+        }
+        self.take_next()
     }
 }
 
@@ -386,6 +521,55 @@ fn log_file_path(opts: &SpawnOptions, instance_id: u32, generation: u32) -> Opti
     })
 }
 
+/// mpv ログファイルを事前に所有者限定権限（Unix: `0600`）で用意する（FR-95、仕様決定 EA）。
+/// `--verbose` 付きの yt-dlp 出力には認証付きプロキシ URL や PO Token が含まれ得るため、
+/// mpv が既定 umask で他ユーザーから読めるログファイルを作るのを防ぐ。
+/// 失敗時は mpv 自体の起動を止めず警告ログのみ残す。
+fn prepare_mpv_log_file(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                path = %parent.display(),
+                error = %e,
+                "mpv ログディレクトリの作成に失敗"
+            );
+            return;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(file) => {
+                if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "mpv ログファイルの権限設定に失敗"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "mpv ログファイルの事前作成に失敗"
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
 /// アプリ起動時に残しておく mpv ログの世代数（仕様決定 BE）。
 /// 再生・再起動のたびに新ファイルができるため、起動ごとに古い分を掃除して
 /// 無制限の蓄積を防ぐ。稼働中インスタンスのログを誤って消さないよう、
@@ -440,10 +624,15 @@ impl MpvPlayer {
         // 同名ソケットが残っていれば掃除する（前回プロセスの残骸対策）
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        let args = mpv_args(&opts, &socket_path, log_file_path(&opts, instance_id, 1));
+        let log_file = log_file_path(&opts, instance_id, 1);
+        if let Some(ref path) = log_file {
+            prepare_mpv_log_file(path);
+        }
+        let args = mpv_args(&opts, &socket_path, log_file);
         let (child, ipc, ev_rx) = launch(&socket_path, &args, OBSERVED_PROPERTIES).await?;
 
         let (ended_tx, _) = broadcast::channel(8);
+        let (ytdl_signal_tx, _) = watch::channel(0u64);
         let player = Arc::new(Self {
             instance_id,
             ipc: RwLock::new(ipc),
@@ -456,6 +645,9 @@ impl MpvPlayer {
             last_healthy: Mutex::new(None),
             loading_since: Mutex::new(None),
             load_retry: Mutex::new(LoadRetryState::default()),
+            ytdl_errors: Mutex::new(YtdlErrorBuffer::default()),
+            ytdl_signal_tx,
+            load_gen: AtomicU64::new(0),
             respawn_op: tokio::sync::Mutex::new(()),
             state: Mutex::new(PlayerState {
                 instance_id,
@@ -533,7 +725,7 @@ impl MpvPlayer {
     }
 
     /// 終了通知を購読する。
-    pub(crate) fn subscribe_ended(&self) -> broadcast::Receiver<String> {
+    pub(crate) fn subscribe_ended(&self) -> broadcast::Receiver<EndedSignal> {
         self.ended_tx.subscribe()
     }
 
@@ -542,10 +734,37 @@ impl MpvPlayer {
         self.terminal.completed()
     }
 
+    /// 終端理由と終了した動画 ID を考慮して武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
+    /// `loop_all` 時の無限エラー再読み込み抑止および削除済み項目の誤算入防止を含む（FR-95、仕様決定 EA）。
+    pub(crate) fn take_next_for_end(
+        &self,
+        reason: &str,
+        ended_video_id: &str,
+    ) -> Option<QueueArmItem> {
+        lock(&self.armed).take_next_for_end(reason, ended_video_id)
+    }
+
     /// `close_on_eof=off` の eof 終端でインスタンスを残すときに呼ぶ
     /// （FR-43、仕様決定 BS）。終端理由を解除して後続の終端を受理させる。
     pub(crate) fn rearm_after_eof(&self) {
         self.terminal.rearm_after_eof();
+    }
+
+    /// 連続再生の次項目読み込み前に `TerminalTracker` を次ファイル向けに整える用途を
+    /// `video_switch_op` 内で直列化するための準備指定（FR-95）。
+    pub(crate) async fn continue_video(
+        &self,
+        video_id: &str,
+        start_sec: f64,
+        reason: &str,
+        kept_open: bool,
+    ) -> Result<(), MpvError> {
+        self.load_video_inner(
+            video_id,
+            start_sec,
+            LoadTerminalPrep::Continue { reason, kept_open },
+        )
+        .await
     }
 
     /// SponsorBlock 状態・シークの現在世代番号を返す。
@@ -595,30 +814,13 @@ impl MpvPlayer {
         loop_all: bool,
         base_seq: Option<u64>,
     ) -> bool {
-        lock(&self.armed).set(items, loop_all, base_seq)
-    }
-
-    /// 武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
-    /// `loop_all` のとき取り出した項目を末尾へ戻し、キューが枯渇しない。
-    /// 取り出しのたびに世代番号を進める（空なら世代も据え置き）。
-    pub(crate) fn take_next(&self) -> Option<QueueArmItem> {
-        lock(&self.armed).take_next()
+        let cur_vid = self.video_id();
+        lock(&self.armed).set(items, loop_all, base_seq, Some(&cur_vid))
     }
 
     /// 取り出し世代（`player://ended` に載せてフロントの置換基準に使う）。
     pub(crate) fn armed_seq(&self) -> u64 {
         lock(&self.armed).seq
-    }
-
-    /// 意図的な読み替え（`loadfile ... replace`）の予約を張る／取り消す。
-    /// 継続や画質変更以外の読み替え（セッション引き継ぎ）で発生する
-    /// 旧ファイルの end-file を終端扱いしないための公開口
-    pub(crate) fn begin_replace(&self) {
-        self.terminal.begin_replace();
-    }
-
-    pub(crate) fn cancel_replace(&self) {
-        self.terminal.cancel_replace();
     }
 
     /// 生存確認用の軽いコマンド（ウォッチドッグの ping、仕様決定 BE）。
@@ -649,10 +851,19 @@ impl MpvPlayer {
         *lock(&self.loading_since) = Some(Instant::now());
     }
 
+    /// `ytdl_signal_tx` を進めて待機中の分類タスクへ状態変化を知らせる。
+    fn notify_ytdl_signal(&self) {
+        self.ytdl_signal_tx.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
     /// loadfile を発行する直前に呼ぶ。処理中フラグを立て、
     /// `file-loaded` 前の失敗への自動再送（BG-9、仕様決定 BJ）で使う
-    /// パラメータを世代付きで記録する。
+    /// パラメータを世代付きで記録する。あわせて `ytdl_hook` 診断バッファを空にし、
+    /// `load_gen` を進めて旧ロード向けの終端印待機タスクを打ち切る（FR-95、仕様決定 EA）。
     fn arm_load(&self, url: &str, options: serde_json::Value) {
+        self.load_gen.fetch_add(1, Ordering::SeqCst);
+        lock(&self.ytdl_errors).clear();
+        self.notify_ytdl_signal();
         self.begin_loading();
         lock(&self.load_retry).arm(url, options);
     }
@@ -663,30 +874,45 @@ impl MpvPlayer {
 
     /// `file-loaded` 前の読み込み失敗への自動再送を 1 回だけ予約する
     /// （BG-9、仕様決定 BJ）。再送対象のパラメータがあって未再送なら、
-    /// 記録済みの終端理由を撤回して再送の世代を返す（撤回しないと
-    /// 再送後の end-file が受理されない）。
-    fn begin_load_retry(&self) -> Option<u64> {
-        let gen = lock(&self.load_retry).begin_retry()?;
+    /// 記録済みの終端理由を撤回し、初回と再送の診断行を合算できるよう
+    /// 保持行を残したまま終端印フラグだけをリセットする（FR-95、仕様決定 EA）。
+    fn try_begin_load_retry(&self, expected_load_gen: u64) -> RetryAttempt {
+        let mut retry = lock(&self.load_retry);
+        if self.load_gen.load(Ordering::SeqCst) != expected_load_gen {
+            return RetryAttempt::Stale;
+        }
+        let Some(gen) = retry.begin_retry() else {
+            return RetryAttempt::Exhausted;
+        };
+        lock(&self.ytdl_errors).reset_end_marker_for_retry();
         self.terminal.clear_ended_reason();
-        Some(gen)
+        RetryAttempt::Scheduled(gen)
     }
 
-    /// 予約済みの自動再送。遅延の間にインスタンス終了や別のロードへの
-    /// 置き換えが起きた世代は再送しない。再送コマンド自体の失敗は
-    /// 従来の reason=error 終端経路へ流す。
-    async fn retry_failed_load(self: &Arc<Self>, gen: u64) {
+    /// 予約済みの自動再送。遅延の間にインスタンス終了・ポンプ停止・別のロードへの
+    /// 置き換え・IPC 切断が起きた世代は再送しない（表示用 `PlayStatus::Ended` は
+    /// `--keep-open=no` の EOF 後に画質変更した際も残存し得るため使わない）。
+    /// 再送コマンド自体の失敗は従来の reason=error 終端経路へ流す。
+    async fn retry_failed_load(self: &Arc<Self>, retry_gen: u64, expected_load_gen: u64) {
         tokio::time::sleep(LOAD_RETRY_DELAY).await;
-        if lock(&self.state).state == PlayStatus::Ended {
+        let _switch = self.video_switch_op.lock().await;
+        if !can_execute_load_retry(
+            self.load_gen.load(Ordering::SeqCst),
+            expected_load_gen,
+            lock(&self.ytdl_errors).is_disconnected(),
+        ) {
             return;
         }
-        let spec = lock(&self.load_retry).spec_for(gen);
+        let spec = lock(&self.load_retry).spec_for(retry_gen);
         let Some((url, options)) = spec else { return };
         tracing::info!(
             instance_id = self.instance_id(),
             "ロード失敗のため loadfile を再送する"
         );
+        self.terminal.mark_loading_started();
         self.begin_loading();
         if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
+            self.terminal.cancel_prepared_replace(false);
             self.end_loading();
             tracing::warn!(
                 instance_id = self.instance_id(),
@@ -719,7 +945,10 @@ impl MpvPlayer {
 
     /// イベントポンプを止める。再起動・終了のどちらでも旧ポンプを先に
     /// 殺してから後始末を行い、古いイベントを本物の終端にしない。
+    /// 進行中のエラー分類待機・再送タスクも世代更新で即時無効化する。
     pub(crate) async fn abort_pump(&self) {
+        self.load_gen.fetch_add(1, Ordering::SeqCst);
+        self.notify_ytdl_signal();
         if let Some(p) = self.pump.lock().await.take() {
             p.abort();
         }
@@ -737,7 +966,7 @@ impl MpvPlayer {
     /// 打ち切りが、通常の終端処理（履歴保存・ended 送出・掃除）を
     /// 再利用するための口。
     pub(crate) fn end_with(&self, reason: &str) {
-        let _ = self.ended_tx.send(reason.to_string());
+        let _ = self.ended_tx.send(EndedSignal::plain(reason));
     }
 
     /// IPC 無応答 wedge からの同一インスタンス再起動（仕様決定 BE）。
@@ -771,11 +1000,11 @@ impl MpvPlayer {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string())
         });
-        let args = mpv_args(
-            &opts,
-            &self.socket_path,
-            log_file_path(&opts, self.instance_id, generation),
-        );
+        let log_file = log_file_path(&opts, self.instance_id, generation);
+        if let Some(ref path) = log_file {
+            prepare_mpv_log_file(path);
+        }
+        let args = mpv_args(&opts, &self.socket_path, log_file);
 
         let (child, ipc, ev_rx) = launch(&self.socket_path, &args, OBSERVED_PROPERTIES).await?;
         let _switch = self.video_switch_op.lock().await;
@@ -826,11 +1055,26 @@ impl MpvPlayer {
         Ok(())
     }
 
-    /// 連続再生: 同じ mpv プロセスで別動画を再生する。`start_sec` は開始位置
-    /// （秒、0 で先頭）。旧ファイルの end-file は emitter が既に消費済みか
-    /// 呼び出し側が begin_replace で抑止する前提で、ここでは張らない。
-    /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
-    pub(crate) async fn load_video(&self, video_id: &str, start_sec: f64) -> Result<(), MpvError> {
+    /// 既存インスタンスの動画差し替え（`PlayerManager::switch` 経路）。
+    /// `video_switch_op` 内で `TerminalTracker::prepare_replace` と `arm_load` を直列化し、
+    /// `handle_load_error` 待機中や自動再送待機中（旧ファイルは既にアンロード済み）に
+    /// 動画切替しても不要な `pending_replaces` や旧 `ended_reason` で新動画の失敗を
+    /// 飲み込まないようにする（FR-95、仕様決定 EA）。
+    pub(crate) async fn switch_video(
+        &self,
+        video_id: &str,
+        start_sec: f64,
+    ) -> Result<(), MpvError> {
+        self.load_video_inner(video_id, start_sec, LoadTerminalPrep::Replace)
+            .await
+    }
+
+    async fn load_video_inner(
+        &self,
+        video_id: &str,
+        start_sec: f64,
+        prep: LoadTerminalPrep<'_>,
+    ) -> Result<(), MpvError> {
         // 旧動画の SponsorBlock 予約シークが次動画へ誤発火しないよう即座に無効化し、
         // 実行中のスキップシークがあれば完了を待ってから loadfile を発行する。
         self.sponsor_gen.fetch_add(1, Ordering::SeqCst);
@@ -838,8 +1082,15 @@ impl MpvPlayer {
         self.reset_sponsor_state();
         let url = format!("https://www.youtube.com/watch?v={video_id}");
         let options = json!({ "start": format!("{start_sec}") });
+        let armed_replace = match prep {
+            LoadTerminalPrep::Replace => self.terminal.prepare_replace(),
+            LoadTerminalPrep::Continue { reason, kept_open } => {
+                prepare_terminal_for_continue(&self.terminal, reason, kept_open)
+            }
+        };
         self.arm_load(&url, options.clone());
         if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
+            self.terminal.cancel_prepared_replace(armed_replace);
             self.end_loading();
             return Err(MpvError::Ipc(e));
         }
@@ -906,6 +1157,7 @@ impl MpvPlayer {
             }
             PlayerAction::Quality { format } => {
                 // 画質式を差し替え、現在位置を保持してリロードする（設計書 §4.3）
+                let _switch = self.video_switch_op.lock().await;
                 self.ipc
                     .read()
                     .await
@@ -917,17 +1169,25 @@ impl MpvPlayer {
                     .await?;
                 let pos = self.snapshot().position;
                 let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
-                // replace で発生する旧ファイルの end-file は終了とみなさない
-                self.terminal.begin_replace();
+                // 未アンロード時だけ replace 予約を張り、既に end-file(error) 済みの場合は
+                // ended_reason のみ解除して新ロードの失敗が飲み込まれるのを防ぐ（FR-95）
+                let armed_replace = self.terminal.prepare_replace();
                 let options = json!({ "start": format!("{}", pos) });
                 self.arm_load(&url, options.clone());
                 if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
-                    self.terminal.cancel_replace();
+                    self.terminal.cancel_prepared_replace(armed_replace);
                     self.end_loading();
                     return Err(MpvError::Ipc(e));
                 }
-                // 適用済みの画質式を状態へ反映する（カードの画質表示が追従する）
-                lock(&self.state).format = format.clone();
+                // 適用済みの画質式を反映し、EOF 後の Ended 状態から再読み込みする場合のみ Idle へ戻す
+                // （一時停止中の画質変更で Paused が Idle に上書きされて残るのを防ぐ）
+                {
+                    let mut st = lock(&self.state);
+                    st.format = format.clone();
+                    if st.state == PlayStatus::Ended {
+                        st.state = PlayStatus::Idle;
+                    }
+                }
             }
             PlayerAction::FrameStep => {
                 // コマ送りは wheel.lua の無音化ラッパへ委譲する（FR-22、仕様決定 AO）。
@@ -1477,7 +1737,7 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                     && data.as_bool().unwrap_or(false)
                     && player.terminal.on_eof()
                 {
-                    let _ = player.ended_tx.send("eof".to_string());
+                    let _ = player.ended_tx.send(EndedSignal::eof_kept_open());
                 }
                 // PiP のアスペクト追従（FR-19、仕様決定 AL）。
                 // 比率が変わったときだけ窓を再フィットする（同一値の再通知や
@@ -1518,6 +1778,20 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                 }
             }
             IpcEvent::Event { name, data } => match name.as_str() {
+                "log-message" => {
+                    let prefix = data
+                        .get("prefix")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let text = data
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let is_end_marker = lock(&player.ytdl_errors).push_log_message(prefix, text);
+                    if is_end_marker {
+                        player.notify_ytdl_signal();
+                    }
+                }
                 "end-file" => {
                     let reason = data
                         .get("reason")
@@ -1530,45 +1804,174 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                     if !player.terminal.on_end_file(&reason) {
                         continue;
                     }
-                    // file-loaded 前の読み込み失敗は一過性エラーに備えて
-                    // 1 回だけ loadfile を再送する（BG-9、仕様決定 BJ）。
-                    // 再送を予約できたときは終端処理を行わず、処理中フラグも
-                    // 再送まで持続させる（ウォッチドッグ猶予の継続）
+                    // file-loaded 前の読み込み失敗は原因分類と 1 回自動再送（仕様決定 BJ・EA）を
+                    // 別タスクへ逃がし、event_pump 自体は遅れて届く log-message を受け続けられるようにする
                     if reason == "error" && player.loading_age().is_some() {
-                        if let Some(gen) = player.begin_load_retry() {
-                            let p = player.clone();
-                            tokio::spawn(async move { p.retry_failed_load(gen).await });
-                            continue;
-                        }
+                        let expected_gen = player.load_gen.load(Ordering::SeqCst);
+                        let p = player.clone();
+                        tokio::spawn(async move {
+                            handle_load_error(p, expected_gen).await;
+                        });
+                        continue;
                     }
                     player.end_loading();
                     {
                         let mut st = lock(&player.state);
                         st.state = PlayStatus::Ended;
                     }
-                    let _ = player.ended_tx.send(reason);
+                    let _ = player.ended_tx.send(EndedSignal::plain(reason));
                 }
                 "file-loaded" => {
                     // 新ファイルのロード完了。replace 予約の取りこぼしを掃除し、
                     // オープン完了として loadfile 猶予を終わらせる。
-                    // 回復判定の基準時刻もここで更新する（仕様決定 BE）
+                    // 回復判定の基準時刻とループ連続エラー回数もここで更新する（仕様決定 BE・EA）
                     player.terminal.on_file_loaded();
+                    lock(&player.armed).reset_error_streak();
                     player.end_loading();
                     player.mark_healthy();
                 }
                 _ => {}
             },
             IpcEvent::Disconnected => {
+                lock(&player.ytdl_errors).mark_disconnected();
+                player.notify_ytdl_signal();
                 player.end_loading();
                 if !player.terminal.on_disconnect() {
                     continue;
                 }
                 let mut st = lock(&player.state);
                 st.state = PlayStatus::Ended;
-                let _ = player.ended_tx.send("process_exit".to_string());
+                let _ = player.ended_tx.send(EndedSignal::plain("process_exit"));
             }
         }
     }
+}
+
+/// 終端印（`youtube-dl failed`）または IPC 切断を最大 `wait_limit` まで待ち、
+/// 世代一致時のみ保持バッファのスナップショットを返す（FR-95、仕様決定 EA）。
+/// 待機中に `load_gen` が進んだ場合（新規読み込み開始やポンプ停止）は `None` を返す。
+async fn wait_for_load_error_snapshot(
+    ytdl_errors: &Mutex<YtdlErrorBuffer>,
+    ytdl_signal_tx: &watch::Sender<u64>,
+    load_gen: &AtomicU64,
+    expected_gen: u64,
+    wait_limit: Duration,
+) -> Option<Vec<String>> {
+    let mut sig_rx = ytdl_signal_tx.subscribe();
+    let deadline = tokio::time::Instant::now() + wait_limit;
+    loop {
+        if load_gen.load(Ordering::SeqCst) != expected_gen {
+            return None;
+        }
+        if lock(ytdl_errors).is_ready_to_classify() {
+            break;
+        }
+        match tokio::time::timeout_at(deadline, sig_rx.changed()).await {
+            Ok(Ok(())) => continue,
+            _ => break,
+        }
+    }
+    if load_gen.load(Ordering::SeqCst) != expected_gen {
+        return None;
+    }
+    Some(lock(ytdl_errors).snapshot())
+}
+
+/// `load_video_inner` が `video_switch_op` 内で `TerminalTracker` を整える方式。
+enum LoadTerminalPrep<'a> {
+    /// `switch_video`: 未アンロード時のみ replace 予約を張る。
+    Replace,
+    /// `continue_video`: 終端理由と `kept_open` に応じて次項目読み込み向けに整える。
+    Continue { reason: &'a str, kept_open: bool },
+}
+
+/// 予約済み自動再送を実行してよいかの判定（FR-95、仕様決定 BJ・EA）。
+/// 表示用の `PlayStatus::Ended` は `--keep-open=no` の EOF 後に画質変更した際も残存し得るため、
+/// ロード世代の一致と IPC 未切断のみで判定する。
+fn can_execute_load_retry(
+    current_load_gen: u64,
+    expected_load_gen: u64,
+    disconnected: bool,
+) -> bool {
+    current_load_gen == expected_load_gen && !disconnected
+}
+
+/// `video_unavailable` は再送しても結果が変わらないため自動再送を省く（仕様決定 EA）。
+fn should_retry_load_error(kind: PlaybackErrorKind) -> bool {
+    kind != PlaybackErrorKind::VideoUnavailable
+}
+
+/// 連続再生の次項目読み込み前に `TerminalTracker` を整える純粋ヘルパ（FR-95）。
+/// `kept_open` が true（`eof-reached=true` 経由で旧ファイルが未アンロード）のときだけ
+/// `begin_replace()` を張ってから `clear_ended_reason()` し、`end-file(eof)`（`--keep-open=no`）や
+/// `end-file(error)` のように旧ファイルが既にアンロード済みの経路では `clear_ended_reason()` のみ行う。
+fn prepare_terminal_for_continue(
+    terminal: &TerminalTracker,
+    reason: &str,
+    kept_open: bool,
+) -> bool {
+    if kept_open {
+        terminal.begin_replace();
+        terminal.clear_ended_reason();
+        return true;
+    }
+    if matches!(reason, "eof" | "error") {
+        terminal.clear_ended_reason();
+        terminal.mark_loading_started();
+    }
+    false
+}
+
+/// `file-loaded` 到達前の `end-file (reason="error")` を非同期で分類し、
+/// 再送予約または原因付き終端通知を実行する（FR-95、仕様決定 BJ・EA）。
+async fn handle_load_error(player: Arc<MpvPlayer>, expected_gen: u64) {
+    let Some(lines) = wait_for_load_error_snapshot(
+        &player.ytdl_errors,
+        &player.ytdl_signal_tx,
+        &player.load_gen,
+        expected_gen,
+        END_MARKER_WAIT,
+    )
+    .await
+    else {
+        return;
+    };
+
+    let summary = error_diag::classify(&lines);
+    let sanitized = error_diag::sanitize_lines(&lines);
+    tracing::warn!(
+        instance_id = player.instance_id(),
+        video_id = %player.video_id(),
+        error_kind = summary.kind.as_str(),
+        error_detail = summary.detail.as_deref().unwrap_or(""),
+        ytdl_lines = ?sanitized,
+        "再生開始に失敗（ytdl_hook 診断結果）"
+    );
+
+    let disconnected = lock(&player.ytdl_errors).is_disconnected();
+    if !disconnected && should_retry_load_error(summary.kind) {
+        match player.try_begin_load_retry(expected_gen) {
+            RetryAttempt::Stale => return,
+            RetryAttempt::Scheduled(retry_gen) => {
+                let p = player.clone();
+                tokio::spawn(async move { p.retry_failed_load(retry_gen, expected_gen).await });
+                return;
+            }
+            RetryAttempt::Exhausted => {}
+        }
+    } else if player.load_gen.load(Ordering::SeqCst) != expected_gen {
+        return;
+    }
+
+    if player.load_gen.load(Ordering::SeqCst) != expected_gen {
+        return;
+    }
+    player.end_loading();
+    {
+        let mut st = lock(&player.state);
+        st.state = PlayStatus::Ended;
+    }
+    let _ = player.ended_tx.send(EndedSignal::with_error(summary));
 }
 
 /// スキップの seek に失敗した区間を再試行するまでの間隔。

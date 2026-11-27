@@ -1,7 +1,7 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
 use super::player::{
-    prune_mpv_logs, screenshot_file_name, MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS,
-    MPV_LOG_KEEP, RECOVERY_WINDOW,
+    prune_mpv_logs, screenshot_file_name, EndedSignal, MpvPlayer, SpawnOptions, LOADING_GRACE,
+    MAX_RESTARTS, MPV_LOG_KEEP, RECOVERY_WINDOW,
 };
 use super::{
     close_instance_on_end, close_on_eof_enabled, hwdec_mode, initial_speed, initial_volume,
@@ -365,11 +365,7 @@ impl PlayerManager {
         .ok_or(MpvError::NoSuchInstance(instance_id))?;
         let prev_video = player.video_id();
         persist_now(&self.db, &player, player.terminal_completed());
-        player.begin_replace();
-        if let Err(e) = player.load_video(video_id, start_sec).await {
-            player.cancel_replace();
-            return Err(e);
-        }
+        player.switch_video(video_id, start_sec).await?;
         player.set_queue(Vec::new(), false, None);
         // 再生開始時点で履歴行を確保（タイトルは media-title 変化で追従）
         if let Err(e) = self.db.history_upsert(video_id) {
@@ -631,8 +627,12 @@ impl PlayerManager {
                             player.end_with("error");
                         }
                     }
-                    reason = ended_rx.recv() => {
-                        let reason = reason.unwrap_or_else(|_| "unknown".into());
+                    signal = ended_rx.recv() => {
+                        let signal = signal.unwrap_or_else(|_| EndedSignal::plain("unknown"));
+                        let reason = signal.reason;
+                        let kept_open = signal.kept_open;
+                        let error_kind = signal.error_kind;
+                        let error_detail = signal.error_detail;
                         // close_on_eof=off で残されたインスタンスの後続終端
                         // （窓の手動終了等）でも履歴の completed を維持する
                         // （FR-43、仕様決定 BS）
@@ -645,9 +645,9 @@ impl PlayerManager {
                         let mut continued = false;
                         let mut continued_video_id: Option<String> = None;
                         let mut continued_uid: Option<i64> = None;
-                        if let Some(next) = player.take_next() {
+                        if let Some(next) = player.take_next_for_end(&reason, &ended_video) {
                             let next_id = next.video_id.clone();
-                            match player.load_video(&next_id, 0.0).await {
+                            match player.continue_video(&next_id, 0.0, &reason, kept_open).await {
                                 Ok(()) => {
                                     continued = true;
                                     continued_video_id = Some(next_id.clone());
@@ -682,6 +682,8 @@ impl PlayerManager {
                             continued_uid,
                             armed_seq: player.armed_seq(),
                             closed: close_instance,
+                            error_kind,
+                            error_detail,
                         };
                         if let Err(e) = app.emit("player://ended", &payload) {
                             tracing::warn!(error = %e, "player://ended の送出に失敗");

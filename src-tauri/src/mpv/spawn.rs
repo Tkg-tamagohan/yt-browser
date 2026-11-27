@@ -44,7 +44,39 @@ pub(crate) async fn launch(
             return Err(MpvError::Ipc(e));
         }
     }
+    configure_ytdl_logging(&ipc).await;
     Ok((child, ipc, ev_rx))
+}
+
+/// 再生開始失敗の原因診断（FR-95、仕様決定 EA）向けに、mpv の IPC 接続直後・
+/// `loadfile` 前にログ購読と `ytdl-raw-options` への `verbose=` 追記を送る。
+/// 起動引数を変えずに既存の PO Token 伝達経路を維持しつつ、失敗時の警告行とエラー行を
+/// 受け取れるようにする。いずれかのコマンドが失敗しても警告ログのみ記録して続行する
+/// （古い mpv や非対応環境でも起動自体は止めない退避動作）。
+pub(crate) async fn configure_ytdl_logging(ipc: &IpcClient) {
+    if let Err(e) = ipc
+        .command(vec![json!("request_log_messages"), json!("error")])
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            "mpv request_log_messages の設定に失敗（診断ログなしで続行）"
+        );
+    }
+    if let Err(e) = ipc
+        .command(vec![
+            json!("change-list"),
+            json!("ytdl-raw-options"),
+            json!("append"),
+            json!("verbose="),
+        ])
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            "mpv ytdl-raw-options への verbose 追加に失敗（詳細警告なしで続行）"
+        );
+    }
 }
 
 /// mpv プロセスが IPC ソケットを作るまでの待ち時間。
@@ -169,7 +201,7 @@ mod tests {
     /// IPC 疑似サーバが UnixListener 前提のため Unix のみ。
     #[cfg(unix)]
     mod ipc_tests {
-        use crate::mpv::spawn::{ipc_endpoint, loadfile_replace};
+        use crate::mpv::spawn::{configure_ytdl_logging, ipc_endpoint, loadfile_replace};
         use crate::mpv::{IpcClient, IpcEvent};
         use crate::util::lock;
         use serde_json::{json, Value};
@@ -257,6 +289,95 @@ mod tests {
             let retry = received[1].as_array().unwrap();
             assert_eq!(retry.len(), 4);
             assert_eq!(retry[3], json!({"start": "1.5"}));
+        }
+
+        /// DB-ED-09: `configure_ytdl_logging` が `request_log_messages` と
+        /// `change-list ytdl-raw-options append verbose=` を順に送信し、
+        /// 応答エラー時も後続コマンドと起動処理を止めない（仕様決定 EA）。
+        #[tokio::test]
+        async fn configure_ytdl_logging_sends_both_commands_and_tolerates_errors() {
+            let dir = tempfile::tempdir().unwrap();
+            let sock = ipc_endpoint(dir.path(), 1);
+            let (server, received) =
+                spawn_fake_mpv(&sock, &["property unavailable", "invalid parameter"]).await;
+            let (client, _rx) = connect(&sock).await;
+            configure_ytdl_logging(&client).await;
+            server.await.unwrap();
+            let received = lock(&received).clone();
+            assert_eq!(
+                received,
+                vec![
+                    json!(["request_log_messages", "error"]),
+                    json!(["change-list", "ytdl-raw-options", "append", "verbose="]),
+                ]
+            );
+        }
+    }
+
+    /// Windows 向け IPC 疑似サーバ（NamedPipeServer）での診断コマンド送出・退避確認。
+    #[cfg(windows)]
+    mod win_ipc_tests {
+        use crate::mpv::spawn::configure_ytdl_logging;
+        use crate::mpv::IpcClient;
+        use crate::util::lock;
+        use serde_json::{json, Value};
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::windows::named_pipe::ServerOptions;
+        use tokio::sync::mpsc;
+
+        fn test_pipe_path() -> PathBuf {
+            static SEQ: AtomicU32 = AtomicU32::new(0);
+            let n = SEQ.fetch_add(1, Ordering::Relaxed);
+            PathBuf::from(format!(
+                r"\\.\pipe\yt-browser-spawn-test-{}-{n}",
+                std::process::id()
+            ))
+        }
+
+        /// DB-ED-10: Windows 名前付きパイプ上で `configure_ytdl_logging` が 2 コマンドを順に送り、
+        /// 片方または両方がエラー応答でもパニック・中断せず続行する（仕様決定 EA）。
+        #[tokio::test]
+        async fn configure_ytdl_logging_sends_both_commands_and_tolerates_errors() {
+            let pipe = test_pipe_path();
+            let server = ServerOptions::new().create(&pipe).unwrap();
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let received_task = received.clone();
+            let replies = ["property unavailable", "invalid parameter"];
+            let handle = tokio::spawn(async move {
+                server.connect().await.unwrap();
+                let (r, mut w) = tokio::io::split(server);
+                let mut lines = BufReader::new(r).lines();
+                let mut count = 0usize;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let v: Value = serde_json::from_str(&line).unwrap();
+                    let req_id = v["request_id"].as_u64().unwrap();
+                    lock(&received_task).push(v["command"].clone());
+                    let error = replies[count.min(replies.len() - 1)];
+                    count += 1;
+                    let reply = json!({"request_id": req_id, "error": error});
+                    w.write_all((reply.to_string() + "\n").as_bytes())
+                        .await
+                        .unwrap();
+                    if count >= replies.len() {
+                        break;
+                    }
+                }
+            });
+            let (tx, _rx) = mpsc::channel(8);
+            let client = IpcClient::connect(&pipe, tx).await.unwrap();
+            configure_ytdl_logging(&client).await;
+            handle.await.unwrap();
+            let received = lock(&received).clone();
+            assert_eq!(
+                received,
+                vec![
+                    json!(["request_log_messages", "error"]),
+                    json!(["change-list", "ytdl-raw-options", "append", "verbose="]),
+                ]
+            );
         }
     }
 }

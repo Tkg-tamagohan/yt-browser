@@ -106,6 +106,14 @@ pub struct PlayerEnded {
     /// eof 終端では false を送り、mpv 窓とカードを残す。フロントは
     /// true のときだけカード除去とインスタンス紐付けの後始末を行う。
     pub closed: bool,
+    /// 再生開始失敗の原因カテゴリ（FR-95、仕様決定 EA）。
+    /// `file-loaded` 到達前の `reason="error"` 終端のときのみ付与する。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// 許可リストと伏せ字処理を通した補助詳細（最大 200 文字）。
+    /// `video_unavailable` の理由列挙値、または `unknown` のサニタイズ済み先頭エラー行。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_detail: Option<String>,
 }
 
 /// `player_control` の操作指定（設計書 §3.1）。

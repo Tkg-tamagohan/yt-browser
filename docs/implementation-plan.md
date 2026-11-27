@@ -83,6 +83,14 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] プレイリスト名上限 `MAX_PLAYLIST_NAME_LEN` を 150 文字へ引き上げ、`playlist_import` の `name: None` 分岐で前後空白トリム後の 150 文字単純切り詰めを適用する（仕様決定 DZ、単体テスト `DB-LD-37`）
 - [ ] 受け入れ：隔離 dev インスタンス（`YB_DEV_NO_NM=1`、CDP）でダンプ出力と再取込後の保護 4 キー保持とカテゴリ、`sponsor.show_segments`（シークバー区間帯表示）、DB サイズ再同期、および購読動画と未購読動画の再生後の履歴検索とチャンネル別視聴統計を実機 UI で確認する（期待結果：`#ops-import-btn` から有効ダンプを取り込んだ際、画面リロードなしで DB サイズ表示・カテゴリ一覧・プレイリストキュー一覧がダンプ内容へ更新され、ローカル保護 4 キーが維持されること。自動テスト、lint、ビルド、docs 整合チェックに加え、隔離 dev インスタンスでの `scripts/e2e_smoke.py`（9 項目）、`data_export` 除外と `data_import` 保護 4 キー保持、`settings://changed` 差分送出とリロードなしテーマ反映、`play_video` 音量 0 実再生による購読動画および未購読動画の `VideoStartHook` 補完、履歴チャンネル名検索、統計タブのチャンネル別集計表示までは実機確認済み。OS ファイル選択ダイアログを伴う `#ops-import-btn` 押下経由の `handleImported` 連動のみ手動確認が残る）
 
+### Phase 90：再生開始失敗の原因別エラー通知とログ診断
+
+- [x] `src-tauri/src/mpv/error_diag.rs` を新設し、`ytdl_hook` 由来行の選別とリングバッファ保持（1 インスタンスあたり 50 行かつ UTF-8 16 KiB 上限、古い行から破棄）、7 カテゴリの優先順位分類、許可リスト方式の `errorDetail`、および URL、引用符、各種パス、`=` 右辺の伏せ字処理と 200 文字切り詰めを実装する（FR-95、仕様決定 EA、単体テスト `DB-ED-01` 〜 `DB-ED-08`）
+- [x] `mpv/spawn.rs` の `launch` へ `configure_ytdl_logging`（`request_log_messages("error")` と `change-list ytdl-raw-options append verbose=`、失敗時は警告のみで続行）を組み込み、`mpv/player.rs` と `mpv/terminal.rs`、`mpv/manager.rs`、`model/mod.rs` で `event_pump` 非停止の非同期終端印待機（最大 200ms、新規ロードやポンプ停止の世代更新で打ち切り、切断で即時終了）、初回と自動再送の行合算、`video_unavailable` での 1 回再送省略、連続再生次項目への終端理由整備（`kept_open` による `begin_replace` 切替）とアンロード済み待機中の動画切替・画質変更での終端保護（`prepare_replace`）、ループ無限エラー再読み込み抑止、Unix `mpv-*.log` の `0600` 事前作成、および `player://ended` への `errorKind` / `errorDetail` 付与を実装する（単体テスト `DB-ED-09` 〜 `DB-ED-17`）
+- [x] `commands/diag.rs` と `lib.rs` へアプリログディレクトリだけを安全に開く専用コマンド `diag_open_log_dir` を追加する
+- [x] フロントエンドへ `playback-error-logic.ts`（日英 7 カテゴリ文言と後方互換、未知値フォールバック、単体テスト `PE-01` 〜 `PE-05`）、`notices.svelte.ts` と `+layout.svelte` の 12 秒表示オプションおよび手動閉じるボタン（`×`）とタイマー解放、`PlayerCards.svelte` の導線配線、`settings/+page.svelte` の `/settings?section=deps` スクロール遷移とクエリ消費、および日英 i18n キーを実装する
+- [ ] 受け入れ：`--verbose` 有無の URL 解決時間計測（10 回ずつ、中央値差 -3ms を確認済み）、現行 `mpv` での IPC `log-message` 先着と `--verbose` / `--extractor-args` 展開および正常再生時 0 件確認（確認済み）、および隔離 dev インスタンス（`scripts/e2e_dev.py`、CDP）での `scripts/e2e_smoke.py`（9 項目）、実 `play_video`（`00000000000`）による `video_unavailable` 即時通知と `×` ボタン消去、別画面から `/settings?section=deps` 遷移時の `loadSettings` 完了後スクロールと同一画面フィルタ解除後スクロール、通知履歴記録、英語 UI 切替時の通知表示までは確認済み。`deno` 無効化・配信開始前・オフラインの実機再現および OS ファイルマネージャのログフォルダ起動（`diag_open_log_dir`）の目視確認のみ未実施
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

@@ -375,6 +375,7 @@ pub fn run() {
             commands::db_vacuum,
             commands::db_cleanup_orphans,
             commands::diag_export,
+            commands::diag_open_log_dir,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

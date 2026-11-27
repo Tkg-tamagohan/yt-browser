@@ -67,6 +67,11 @@ export type PlayerEnded = {
   /// 継続時は常に false。非継続でも `player.close_on_eof=off` の eof
   /// 終端では false が届き、mpv 窓とカードは残る。後始末は true のときだけ行う
   closed: boolean;
+  /// 再生開始失敗の原因カテゴリ（FR-95、仕様決定 EA）。
+  /// `file-loaded` 到達前の `reason="error"` 終端のときのみ付与する
+  errorKind?: string | null;
+  /// 許可リストと伏せ字処理を通した補助詳細（最大 200 文字）
+  errorDetail?: string | null;
 };
 
 /// `player://restarted` イベント（設計書 §3.2、仕様決定 BE）。
