@@ -131,6 +131,13 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] 設定画面の API キー案内文言（`i18n-ja.ts` と `i18n-en.ts` の `settings.deps.youtubeApiKeyDesc`）から検索順次対応予定の文言を除いてキーワード検索を追加し、7 文書（`requirements-definition.md`・`decision-records.md`・`design.md`・`implementation-plan.md`・`features.md`・`user-guide.md`・`README.md`）を更新する
 - [ ] 受け入れ：有効な API キーを設定した実機環境でキーワード検索（`yt-dlp` 不在環境での検索成功、「さらに読み込む」時の 10 分 TTL セッション再利用、`video_desc` NG フィルタの評価、検索枠と共通枠の独立フォールバック）を実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた GUI 実機確認は未実施）
 
+### Phase 96：取り込み済みプレイリストの差分追記手動同期（v26）
+
+- [x] `db/migrations.rs` へ `v26`（`playlists_sync_meta`、`source_list_id TEXT` と `synced_at TEXT` の追加）を追加し、`model/mod.rs`（`Playlist`、`ExportPlaylist`、`PlaylistSyncOutcome`、`is_playlist_source_id`）、`db/library.rs`（`playlist_list`、`playlist_create`、`playlist_get_with_epoch`、`playlist_set_sync_meta`、`playlist_sync_apply`、共有 `playlist_add_many_tx`、`DbError::StaleSync`）、および `db/export.rs`（`export_dump`、`import_dump`、`validate_dump` の形式検証と `EXPORT_FORMAT_VERSION = 1` 互換維持）を実装する（FR-101、仕様決定 EG、単体テスト `DB-LD-44` 〜 `DB-LD-46`、`DB-LD-38` 更新）
+- [x] `commands/library.rs` へ共通リモート取得ヘルパ `fetch_remote_playlist`、`build_playlist_sync_url`、`import_playlist_with` の `source_list_id` と `+00:00` UTC `synced_at` 保存、および新コマンド `playlist_sync`（`sync_playlist_with`、`fetch_title = false` で `playlists.list` を省き `HTTP 404` 非フォールバック、`HTTP 200` 有効 0 件は非破壊 `added_count = 0`、`library://playlists_changed` 非送出）を実装し、`lib.rs` のコマンド登録と `ytapi/mod.rs` の同期モード検証を追加する（単体テスト `DB-LD-47`、`DB-YA-22`、`DB-YA-23`）
+- [x] フロントエンドの `players.svelte.ts`（`Playlist` 拡張と `PlaylistSyncOutcome`）、`library-page.svelte.ts`（`syncingId`、`syncReloadPromise` と `restoringIds` による同期再取得と削除取り消しの整合、`syncPlaylist` の世代ガードと `!plHasMore || plTailDirty` 時の安全再取得）、`LibraryPlaylists.svelte`（`FR-80` 常時マウントの詳細ヘッダと「同期」ボタンおよび最終同期日時）、日英 i18n（`i18n-ja.ts`、`i18n-en.ts`）、単体テスト（`PS-01` 〜 `PS-05`、`LN-05`）、および 7 文書（`requirements-definition.md`、`decision-records.md`、`design.md`、`implementation-plan.md`、`features.md`、`user-guide.md`、`README.md`）を更新する
+- [ ] 受け入れ：取り込み済みプレイリスト（標準プレイリストおよび `WL` や `RD` 等のフォールバック対象）をライブラリ画面から手動同期し、ローカル順序や手動追加項目および連続再生キュー位置を保ったまま新規動画のみ末尾へ追記されること、ならびに全件削除後の空状態でも同期できることを実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた GUI 実機確認は未実施）
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

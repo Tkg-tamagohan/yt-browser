@@ -8,9 +8,9 @@
 
 use super::*;
 use crate::model::{
-    is_channel_id, is_video_id, Category, ExportChannel, ExportDump, ExportPlaylist,
-    ExportPlaylistItem, ExportSetting, EXPORT_FORMAT_VERSION, MAX_PLAYLIST_NAME_LEN,
-    MAX_SETTING_KEY_LEN, MAX_SETTING_VALUE_LEN,
+    is_channel_id, is_playlist_source_id, is_video_id, Category, ExportChannel, ExportDump,
+    ExportPlaylist, ExportPlaylistItem, ExportSetting, EXPORT_FORMAT_VERSION,
+    MAX_PLAYLIST_NAME_LEN, MAX_SETTING_KEY_LEN, MAX_SETTING_VALUE_LEN,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -103,8 +103,10 @@ impl Db {
             out
         };
         let playlists = {
-            let mut stmt =
-                conn.prepare("SELECT id, name, sort_order FROM playlists ORDER BY sort_order, id")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, name, sort_order, source_list_id, synced_at
+                 FROM playlists ORDER BY sort_order, id",
+            )?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
             while let Some(row) = rows.next()? {
@@ -112,6 +114,8 @@ impl Db {
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ));
             }
             let mut item_stmt = conn.prepare(
@@ -121,7 +125,7 @@ impl Db {
                  WHERE i.playlist_id = ?1 ORDER BY i.position",
             )?;
             let mut playlists = Vec::with_capacity(out.len());
-            for (id, name, sort_order) in out {
+            for (id, name, sort_order, source_list_id, synced_at) in out {
                 let mut items = Vec::new();
                 let mut item_rows = item_stmt.query([id])?;
                 while let Some(row) = item_rows.next()? {
@@ -139,6 +143,8 @@ impl Db {
                     name,
                     sort_order,
                     items,
+                    source_list_id,
+                    synced_at,
                 });
             }
             playlists
@@ -249,8 +255,15 @@ impl Db {
         }
         for p in &dump.playlists {
             tx.execute(
-                "INSERT INTO playlists (id, name, sort_order) VALUES (?1, ?2, ?3)",
-                rusqlite::params![p.id, p.name.trim(), p.sort_order],
+                "INSERT INTO playlists (id, name, sort_order, source_list_id, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    p.id,
+                    p.name.trim(),
+                    p.sort_order,
+                    p.source_list_id,
+                    p.synced_at
+                ],
             )?;
             for it in &p.items {
                 // 表示メタの補完登録（台帳の既存メタは非空の値だけで補強する）。
@@ -273,6 +286,8 @@ impl Db {
             }
         }
         tx.commit()?;
+        // 復元コミットと同じ conn ロック区間内で世代を更新し、進行中の非同期同期を抑止する
+        self.import_epoch.fetch_add(1, Ordering::Release);
         let mut all_keys = BTreeSet::new();
         for k in before_settings.keys() {
             if !is_local_protected_setting(k) {
@@ -384,6 +399,22 @@ fn validate_dump(dump: &ExportDump) -> Result<(), DbError> {
                 "プレイリスト ID {} が重複しています",
                 p.id
             )));
+        }
+        if let Some(ref src_id) = p.source_list_id {
+            if !is_playlist_source_id(src_id) {
+                return Err(import_error(format!(
+                    "プレイリスト {} の source_list_id 形式が不正です",
+                    p.id
+                )));
+            }
+        }
+        if let Some(ref ts) = p.synced_at {
+            if ts.is_empty() || ts.len() > 64 || crate::util::iso8601_ms(ts).is_none() {
+                return Err(import_error(format!(
+                    "プレイリスト {} の synced_at 形式が不正です",
+                    p.id
+                )));
+            }
         }
         let mut item_ids = std::collections::HashSet::new();
         for it in &p.items {

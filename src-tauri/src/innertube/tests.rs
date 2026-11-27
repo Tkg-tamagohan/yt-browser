@@ -243,6 +243,10 @@ fn iso8601_ms_parses_timestamps() {
     assert_eq!(iso8601_ms("2026/05/01"), None);
     assert_eq!(iso8601_ms(""), None);
     assert_eq!(iso8601_ms("not a date"), None);
+    assert_eq!(iso8601_ms("2026-05-01T99:00:00Z"), None);
+    assert_eq!(iso8601_ms("2026-05-01T12:00:00Z_junk"), None);
+    assert_eq!(iso8601_ms("2026-05-01T12:00:00+09:00_junk"), None);
+    assert_eq!(iso8601_ms("2026-05-01T12:00:00+99:00"), None);
 }
 
 /// FR-24/AQ: ytInitialPlayerResponse から放送窓を取る。

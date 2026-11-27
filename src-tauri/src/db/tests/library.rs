@@ -644,4 +644,272 @@ fn playlist_remove_and_restore_snapshot() {
         db.playlist_item_restore(999, &v2, 0),
         Err(DbError::NotFound)
     ));
+
+    // import_dump により復元世代が進んだ後は同一 ID の別リストへ復元させない（StaleSync）
+    let stale_removed = db.playlist_remove(pl.id, "aaaaaaaaaa1").unwrap().unwrap();
+    assert!(stale_removed.import_epoch.is_some());
+    let mut dump = db.export_dump().unwrap();
+    dump.playlists = vec![crate::model::ExportPlaylist {
+        id: pl.id,
+        name: "復元先別リスト".to_string(),
+        sort_order: 0,
+        items: vec![],
+        source_list_id: None,
+        synced_at: None,
+    }];
+    db.import_dump(&dump).unwrap();
+    let v_stale = vref(&stale_removed.video_id, &stale_removed.title);
+    assert!(matches!(
+        db.playlist_item_restore_with_epoch(
+            pl.id,
+            &v_stale,
+            stale_removed.position,
+            stale_removed.import_epoch,
+        ),
+        Err(DbError::StaleSync)
+    ));
+    assert!(db.playlist_items(pl.id).unwrap().is_empty());
+}
+
+/// DB-LD-45: `playlist_sync_apply` の非破壊差分追記同期（FR-101、仕様決定 EG）。
+/// 未登録動画のみ `MAX(position)+1` へ追記して `added_count` を返し、既存の並び（`FR-11` の手動並べ替え・
+/// 削除空き番）と手動追加項目・`queue_state.current_index` を非破壊維持し、`video_upsert_with_published` で
+/// 既存メタと `published_at` を補強・保護すること、`synced_at` 更新、不在 ID で `DbError::NotFound` を検証する。
+#[test]
+fn playlist_sync_apply_appends_non_destructively_and_preserves_order_and_queue() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl = db.playlist_create("同期テスト").unwrap();
+    assert_eq!(pl.source_list_id, None);
+    assert_eq!(pl.synced_at, None);
+
+    let pl = db
+        .playlist_set_sync_meta(pl.id, "PLsync0001", "2026-05-01T00:00:00+00:00")
+        .unwrap();
+    assert_eq!(pl.source_list_id.as_deref(), Some("PLsync0001"));
+    assert_eq!(pl.synced_at.as_deref(), Some("2026-05-01T00:00:00+00:00"));
+
+    // 初期項目: existPub001 (published_at あり), nullPub0002 (title 空・published_at NULL),
+    // removedRem3 (後でリモートから消える動画), manualAdd04 (ローカル手動追加)
+    let mut sparse = vref("nullPub0002", "");
+    sparse.channel_id = None;
+    sparse.channel_title = None;
+    sparse.thumbnail_url = None;
+
+    db.playlist_add_many_with_published(
+        pl.id,
+        &[
+            PlaylistImportItem {
+                video: vref("existPub001", "既存1"),
+                published_at: Some("2024-01-01T00:00:00+00:00".to_string()),
+            },
+            PlaylistImportItem {
+                video: sparse,
+                published_at: None,
+            },
+            PlaylistImportItem {
+                video: vref("removedRem3", "リモート削除済み"),
+                published_at: None,
+            },
+            PlaylistImportItem {
+                video: vref("manualAdd04", "手動追加"),
+                published_at: None,
+            },
+        ],
+    )
+    .unwrap();
+
+    // FR-11 の並べ替え + 削除による空き番（position=1 を削除して 0, 2, 3 にする）
+    db.playlist_reorder(
+        pl.id,
+        &[
+            "manualAdd04".to_string(),
+            "removedRem3".to_string(),
+            "nullPub0002".to_string(),
+            "existPub001".to_string(),
+        ],
+    )
+    .unwrap();
+    let _ = db.playlist_remove(pl.id, "removedRem3").unwrap();
+    db.queue_playlist_save(pl.id, 2).unwrap();
+
+    // 同期適用: existPub001 / nullPub0002 は既存、newItem0005 / newItem0006 が新規
+    // nullPub0002 はメタ・published_at が補完され、existPub001 の既存 published_at は保護される
+    let incoming = vec![
+        PlaylistImportItem {
+            video: vref("existPub001", "新しいタイトルは無視されない"),
+            published_at: Some("2026-06-01T00:00:00+00:00".to_string()),
+        },
+        PlaylistImportItem {
+            video: crate::model::VideoRef {
+                video_id: "nullPub0002".to_string(),
+                title: "補完タイトル2".to_string(),
+                channel_id: Some("UCenriched00000000000001".to_string()),
+                channel_title: Some("補完CH".to_string()),
+                thumbnail_url: Some("https://i.ytimg.com/vi/nullPub0002/hq.jpg".to_string()),
+            },
+            published_at: Some("2026-05-02T00:00:00+00:00".to_string()),
+        },
+        PlaylistImportItem {
+            video: vref("newItem0005", "新規5"),
+            published_at: Some("2026-05-03T00:00:00+00:00".to_string()),
+        },
+        PlaylistImportItem {
+            video: vref("newItem0006", "新規6"),
+            published_at: None,
+        },
+    ];
+
+    let (_, epoch0) = db.playlist_get_with_epoch(pl.id).unwrap().unwrap();
+    let (updated, added) = db
+        .playlist_sync_apply(
+            pl.id,
+            "PLsync0001",
+            epoch0,
+            &incoming,
+            "2026-05-10T12:00:00+00:00",
+        )
+        .unwrap();
+    assert_eq!(added, 2);
+    assert_eq!(updated.item_count, 5);
+    assert_eq!(updated.source_list_id.as_deref(), Some("PLsync0001"));
+    assert_eq!(
+        updated.synced_at.as_deref(),
+        Some("2026-05-10T12:00:00+00:00")
+    );
+
+    let items = db.playlist_items(pl.id).unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|i| (i.video_id.as_str(), i.position))
+            .collect::<Vec<_>>(),
+        [
+            ("manualAdd04", 0),
+            ("nullPub0002", 2),
+            ("existPub001", 3),
+            ("newItem0005", 4),
+            ("newItem0006", 5),
+        ]
+    );
+    assert_eq!(items[1].title, "補完タイトル2");
+    assert_eq!(
+        items[1].channel_id.as_deref(),
+        Some("UCenriched00000000000001")
+    );
+    assert_eq!(
+        items[1].published_at.as_deref(),
+        Some("2026-05-02T00:00:00+00:00")
+    );
+    // 既存の非 NULL published_at は COALESCE で保持される
+    assert_eq!(
+        items[2].published_at.as_deref(),
+        Some("2024-01-01T00:00:00+00:00")
+    );
+    assert_eq!(
+        items[3].published_at.as_deref(),
+        Some("2026-05-03T00:00:00+00:00")
+    );
+
+    // queue_state.current_index が維持されること
+    let q = db.queue_playlist_load().unwrap();
+    assert_eq!(q.len(), 1);
+    assert_eq!(q[0].playlist_id, pl.id);
+    assert_eq!(q[0].current_index, 2);
+
+    // リモート 0 件同期は非破壊で added_count=0、synced_at のみ更新
+    let (updated_empty, added_empty) = db
+        .playlist_sync_apply(
+            pl.id,
+            "PLsync0001",
+            epoch0,
+            &[],
+            "2026-05-11T00:00:00+00:00",
+        )
+        .unwrap();
+    assert_eq!(added_empty, 0);
+    assert_eq!(updated_empty.item_count, 5);
+    assert_eq!(
+        updated_empty.synced_at.as_deref(),
+        Some("2026-05-11T00:00:00+00:00")
+    );
+    assert_eq!(db.playlist_items(pl.id).unwrap().len(), 5);
+
+    // source_list_id 不一致時は StaleSync で拒否し、項目も synced_at も変更しない
+    assert!(matches!(
+        db.playlist_sync_apply(
+            pl.id,
+            "PLother0002",
+            epoch0,
+            &[PlaylistImportItem {
+                video: vref("shouldSkip1", "混入禁止"),
+                published_at: None,
+            }],
+            "2026-05-12T00:00:00+00:00",
+        ),
+        Err(DbError::StaleSync)
+    ));
+    assert_eq!(db.playlist_items(pl.id).unwrap().len(), 5);
+    assert_eq!(
+        db.playlist_get(pl.id)
+            .unwrap()
+            .unwrap()
+            .synced_at
+            .as_deref(),
+        Some("2026-05-11T00:00:00+00:00")
+    );
+
+    // import_dump 実行後は同一 ID・同一 source_list_id の復元先に対しても古い epoch の同期適用を拒否する
+    let mut dump = db.export_dump().unwrap();
+    let imported_pl = dump.playlists[0].clone();
+    dump.playlists = vec![crate::model::ExportPlaylist {
+        id: imported_pl.id,
+        name: "復元先リスト".to_string(),
+        sort_order: 0,
+        items: vec![],
+        source_list_id: Some("PLsync0001".to_string()),
+        synced_at: Some("2026-04-01T00:00:00+00:00".to_string()),
+    }];
+    db.import_dump(&dump).unwrap();
+    assert!(matches!(
+        db.playlist_sync_apply(
+            pl.id,
+            "PLsync0001",
+            epoch0,
+            &[PlaylistImportItem {
+                video: vref("staleLeak01", "復元先への混入"),
+                published_at: None,
+            }],
+            "2026-05-13T00:00:00+00:00",
+        ),
+        Err(DbError::StaleSync)
+    ));
+    assert!(db.playlist_items(pl.id).unwrap().is_empty());
+    assert_eq!(
+        db.playlist_get(pl.id)
+            .unwrap()
+            .unwrap()
+            .synced_at
+            .as_deref(),
+        Some("2026-04-01T00:00:00+00:00")
+    );
+
+    // 新しい epoch では再び同期適用できる
+    let (_, epoch1) = db.playlist_get_with_epoch(pl.id).unwrap().unwrap();
+    assert!(epoch1 > epoch0);
+
+    // playlist_get と不在 ID の DbError::NotFound
+    let fetched = db.playlist_get(pl.id).unwrap().unwrap();
+    assert_eq!(
+        fetched.synced_at.as_deref(),
+        Some("2026-04-01T00:00:00+00:00")
+    );
+    assert!(db.playlist_get(9999).unwrap().is_none());
+    assert!(matches!(
+        db.playlist_set_sync_meta(9999, "PLx", "2026-05-11T00:00:00+00:00"),
+        Err(DbError::NotFound)
+    ));
+    assert!(matches!(
+        db.playlist_sync_apply(9999, "PLx", epoch1, &[], "2026-05-11T00:00:00+00:00"),
+        Err(DbError::NotFound)
+    ));
 }

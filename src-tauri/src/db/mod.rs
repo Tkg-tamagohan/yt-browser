@@ -21,6 +21,7 @@ mod tests;
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::Connection;
@@ -55,6 +56,9 @@ pub enum DbError {
     /// インポートしたダンプの内容が受理できない（FR-62、仕様決定 CM）。
     #[error("インポートデータの検証に失敗: {0}")]
     Import(String),
+    /// インポート復元または同期元変更によりプレイリスト同期を中止した（FR-101）。
+    #[error("同期中にプレイリスト構成が変更または復元されたため同期を中止しました")]
+    StaleSync,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -68,6 +72,10 @@ pub struct Db {
     /// `history_remove` で登録し、明示的な再生開始（`history_upsert`）で解除する。
     /// 再生中プレイヤーの定期・終了保存が削除済み履歴を復活させないためのもの。
     history_suppressed: Arc<Mutex<HashSet<String>>>,
+    /// `import_dump` 完了ごとに加算される復元世代（FR-101）。
+    /// 非同期同期（`playlist_sync`）の通信中に別バックアップへ復元された場合、
+    /// 同一 ID・同一 `source_list_id` であっても古い同期結果を適用しないために照合する。
+    import_epoch: Arc<AtomicU64>,
 }
 
 impl Db {
@@ -77,6 +85,7 @@ impl Db {
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
             history_suppressed: Arc::new(Mutex::new(HashSet::new())),
+            import_epoch: Arc::new(AtomicU64::new(0)),
         };
         db.init_pragmas()?;
         db.migrate()?;
@@ -92,6 +101,7 @@ impl Db {
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
             history_suppressed: Arc::new(Mutex::new(HashSet::new())),
+            import_epoch: Arc::new(AtomicU64::new(0)),
         };
         db.init_pragmas()?;
         db.migrate()?;

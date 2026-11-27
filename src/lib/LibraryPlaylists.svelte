@@ -1,8 +1,9 @@
 <script lang="ts">
-  // プレイリストタブ（FR-7, FR-10, FR-11, FR-25, FR-26, FR-35）。
+  // プレイリストタブ（FR-7, FR-10, FR-11, FR-25, FR-26, FR-35, FR-101）。
   // 状態・取得・編集ロジックはページ側のファクトリ（lib）が持ち、
   // このコンポーネントは表示とイベント配線だけを受け持つ。
   // 参照は props 爆発を避けるため lib.x へ直接アクセスする（D-2 方式）
+  import { fmtDateTime } from "$lib/format";
   import { t } from "$lib/i18n";
   import type { createLibraryPageState } from "$lib/library-page.svelte";
   import QueueButtons from "$lib/QueueButtons.svelte";
@@ -24,6 +25,11 @@
   // hidden 切替で常時評価されるよう {#if} 内の {@const} から script 側へ移した
   const selQueue = $derived(
     lib.selectedId === null ? undefined : queueAt(lib.selectedId),
+  );
+  const selectedPlaylist = $derived(
+    lib.selectedId === null
+      ? null
+      : (lib.va.playlists.find((p) => p.id === lib.selectedId) ?? null),
   );
 </script>
 
@@ -141,6 +147,30 @@
         <p class="subtle" class:hidden={lib.selectedId !== null}>
           {t("library.playlist.selectHint")}
         </p>
+        <div
+          class="pl-detail-header"
+          class:hidden={selectedPlaylist === null ||
+            selectedPlaylist.sourceListId === null}
+        >
+          <button
+            type="button"
+            class="link"
+            disabled={lib.syncingId !== null ||
+              lib.sortBusy ||
+              lib.restoring ||
+              lib.plLoadingMore}
+            onclick={() => void lib.syncPlaylist()}
+          >
+            {lib.syncingId !== null && lib.syncingId === lib.selectedId
+              ? t("library.playlist.syncing")
+              : t("library.playlist.sync")}
+          </button>
+          <span class="subtle" class:hidden={!selectedPlaylist?.syncedAt}>
+            {t("library.playlist.lastSynced", {
+              time: fmtDateTime(selectedPlaylist?.syncedAt),
+            })}
+          </span>
+        </div>
         <p
           class="subtle"
           class:hidden={lib.selectedId === null ||
@@ -184,13 +214,15 @@
             </span>
             <button
               class="link"
-              disabled={lib.sortBusy}
+              disabled={lib.sortBusy ||
+                (lib.syncingId !== null && lib.syncingId === lib.selectedId)}
               onclick={() => void lib.sortByPublished()}
               >{t("library.playlist.sort")}</button
             >
             <button
               class="link"
-              disabled={lib.sortBusy}
+              disabled={lib.sortBusy ||
+                (lib.syncingId !== null && lib.syncingId === lib.selectedId)}
               onclick={() => void lib.reverseItems()}
               >{t("library.playlist.reverse")}</button
             >
@@ -246,6 +278,8 @@
                   >
                   <button
                     class="link danger"
+                    disabled={lib.syncingId !== null &&
+                      lib.syncingId === lib.selectedId}
                     onclick={() => lib.removeItem(it)}
                     >{t("library.remove")}</button
                   >
@@ -258,7 +292,8 @@
             class="link load-more"
             class:hidden={!lib.plHasMore}
             onclick={() => void lib.loadMoreItems()}
-            disabled={lib.plLoadingMore}
+            disabled={lib.plLoadingMore ||
+              (lib.syncingId !== null && lib.syncingId === lib.selectedId)}
           >
             {lib.plLoadingMore
               ? t("related.loading")
@@ -340,6 +375,13 @@
 
   .pl-items {
     min-width: 0;
+  }
+
+  .pl-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
   }
 
   .pl-tools {

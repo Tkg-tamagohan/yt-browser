@@ -578,6 +578,7 @@ fn migrate_v22_adds_description_column() {
     let db = Db {
         conn: Arc::new(Mutex::new(conn)),
         history_suppressed: Arc::new(Mutex::new(HashSet::new())),
+        import_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     let t = db
         .meta_resolve_targets(10)

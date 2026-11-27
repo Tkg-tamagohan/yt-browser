@@ -17,6 +17,7 @@ import {
   type LibrarySearchItem,
   type Playlist,
   type PlaylistEntry,
+  type PlaylistSyncOutcome,
   type WatchHistory,
   type WatchLaterEntry,
 } from "$lib/players.svelte";
@@ -81,14 +82,26 @@ export function createLibraryPageState(opts: Options) {
   // 取得中の応答を無効化しない
   let itemsReq = 0;
   let listsReq = 0;
+  // プレイリスト ID ごとのローカル更新世代（削除・復元・名前変更・削除）。
+  // syncPlaylist がリモート同期中に同一プレイリストへの競合更新を検知する
+  const playlistMutSeq = new Map<number, number>();
+  function bumpPlaylistMut(id: number): void {
+    playlistMutSeq.set(id, (playlistMutSeq.get(id) ?? 0) + 1);
+  }
+  // バックエンドの最新スナップショット（playlist_list / playlist_sync / loadLibrary）で
+  // va.playlists を更新した世代。削除取り消しや同期中の並列更新を判定する
+  let listsSnapshotSeq = 0;
   // 「さらに読み込む」の状態（FR-25、仕様決定 AR）。
   // plTailPos は取得済み末尾の position。ローカル並べ替えで
   // playlistItems の末尾要素が入れ替わってもカーソルは動かないため、
   // 応答の末尾 position だけで別管理する
   const PL_PAGE = 100;
-  let plTailPos = $state(0);
+  let plTailPos = $state<number | null>(null);
   let plHasMore = $state(false);
   let plLoadingMore = $state(false);
+  // plHasMore===true の状態で末尾要素が削除され、syncPlaylist が同じ位置番号を
+  // 再利用し得る状態。次の syncPlaylist 追記時に既読範囲を再取得して解消する
+  let plTailDirty = false;
   let newPlaylistName = $state("");
   let renamingId = $state<number | null>(null);
   let renameText = $state("");
@@ -97,6 +110,13 @@ export function createLibraryPageState(opts: Options) {
   let importUrl = $state("");
   let importName = $state("");
   let importing = $state(false);
+  let syncingId = $state<number | null>(null);
+  let syncReloadPromise: Promise<void> | null = null;
+  // 項目削除の飛行中件数をプレイリスト ID ごとに数え、syncPlaylist との並走を防ぐ
+  const removingIds = new Map<number, number>();
+  // 項目復元の飛行中件数をプレイリスト ID ごとに数え、syncPlaylist との並走を防ぐ
+  const restoringIds = new Map<number, number>();
+  let restoringVersion = $state(0);
 
   // 項目の並べ替え（FR-11、仕様決定 T）。DnD はドラッグ中の行番号と
   // ホバー先の番号を持ち、ドロップ時に一括 reorder として保存する
@@ -223,6 +243,7 @@ export function createLibraryPageState(opts: Options) {
   async function loadFavorites(): Promise<void> {
     const lib = await loadLibrary();
     va.favIds = lib.favIds;
+    ++listsSnapshotSeq;
     va.playlists = lib.playlists;
     va.watchLaterIds = lib.watchLaterIds;
     favorites = await invoke<FavoriteEntry[]>("favorite_list");
@@ -369,10 +390,15 @@ export function createLibraryPageState(opts: Options) {
     try {
       const pl = await invoke<Playlist>("playlist_create", { name });
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       va.playlists = [...va.playlists, pl];
       newPlaylistName = "";
+      ++itemsReq;
       selectedId = pl.id;
       playlistItems = [];
+      plTailPos = null;
+      plHasMore = false;
+      plTailDirty = false;
       notify(t("library.playlist.created", { name: pl.name }));
     } catch (e) {
       notify(t("library.playlist.createFailed", { message: asErrorMessage(e) }));
@@ -393,6 +419,7 @@ export function createLibraryPageState(opts: Options) {
     try {
       await invoke("playlist_rename", { playlistId: pl.id, name });
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       va.playlists = va.playlists.map((p) =>
         p.id === pl.id ? { ...p, name } : p,
       );
@@ -409,10 +436,15 @@ export function createLibraryPageState(opts: Options) {
       // 対象プレイリストのキューは消滅させる（FR-26）
       discardQueue(pl.id);
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       va.playlists = va.playlists.filter((p) => p.id !== pl.id);
       if (selectedId === pl.id) {
+        ++itemsReq;
         selectedId = null;
         playlistItems = [];
+        plTailPos = null;
+        plHasMore = false;
+        plTailDirty = false;
       }
       notify(t("library.playlist.deleted"));
     } catch (e) {
@@ -424,7 +456,9 @@ export function createLibraryPageState(opts: Options) {
     selectedId = pl.id;
     renamingId = null;
     playlistItems = [];
+    plTailPos = null;
     plHasMore = false;
+    plTailDirty = false;
     const req = ++itemsReq;
     try {
       const items = await invoke<PlaylistEntry[]>("playlist_items", {
@@ -436,8 +470,9 @@ export function createLibraryPageState(opts: Options) {
       if (req !== itemsReq || selectedId !== pl.id) return;
       playlistItems = items;
       const last = items[items.length - 1];
-      if (last) plTailPos = last.position;
+      plTailPos = last ? last.position : null;
       plHasMore = items.length >= PL_PAGE;
+      plTailDirty = false;
     } catch (e) {
       if (req === itemsReq) notify(t("library.failed", { message: asErrorMessage(e) }));
     }
@@ -447,7 +482,7 @@ export function createLibraryPageState(opts: Options) {
   /// 取得済み分を置き換えず、応答の末尾 position でカーソルを進める
   async function loadMoreItems(): Promise<void> {
     const plId = selectedId;
-    if (plId === null || plLoadingMore) return;
+    if (plId === null || plLoadingMore || syncingId === plId) return;
     plLoadingMore = true;
     // 世代は進めない。選択の切替や再読み込みが始まれば
     // この追記は自動で失効し、古いプレイリストの続きが
@@ -468,6 +503,7 @@ export function createLibraryPageState(opts: Options) {
       const last = res[res.length - 1];
       if (last) plTailPos = last.position;
       plHasMore = res.length >= PL_PAGE;
+      plTailDirty = false;
     } catch (e) {
       if (req === itemsReq) {
         notify(t("library.failed", { message: asErrorMessage(e) }));
@@ -493,7 +529,10 @@ export function createLibraryPageState(opts: Options) {
       ...playlistItems,
       ...res.filter((i) => !seen.has(i.videoId)),
     ];
+    const last = res[res.length - 1];
+    if (last) plTailPos = last.position;
     plHasMore = false;
+    plTailDirty = false;
     return true;
   }
 
@@ -521,7 +560,10 @@ export function createLibraryPageState(opts: Options) {
           while (listReorderRun) await listReorderRun;
           const req = ++listsReq;
           const list = await invoke<Playlist[]>("playlist_list");
-          if (req === listsReq) va.playlists = list;
+          if (req === listsReq && Array.isArray(list)) {
+            ++listsSnapshotSeq;
+            va.playlists = list;
+          }
           // 最新の応答を反映でき、かつ飛行中に新しい要求も無ければ終了。
           // どちらかが成り立たなければもう一周する
           if (req === listsReq && !listAgain) return;
@@ -565,8 +607,9 @@ export function createLibraryPageState(opts: Options) {
         if (itemReq === itemsReq && selectedId === playlistId) {
           playlistItems = items;
           const last = items[items.length - 1];
-          if (last) plTailPos = last.position;
+          plTailPos = last ? last.position : null;
           plHasMore = false;
+          plTailDirty = false;
         }
       }
     } catch (e) {
@@ -588,6 +631,7 @@ export function createLibraryPageState(opts: Options) {
         name: name === "" ? null : name,
       });
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       // バックエンドの emit が invoke 応答より先に届くと、イベント側の
       // refreshPlaylists が新しいプレイリストを含む一覧で上書き済みになる。
       // その場合に無条件で追加すると同 ID の行が重複するため、未登録の
@@ -607,6 +651,101 @@ export function createLibraryPageState(opts: Options) {
       );
     } finally {
       importing = false;
+    }
+  }
+
+  /// 取り込み済みプレイリストの差分追記手動同期（FR-101、仕様決定 EG）。
+  /// `playlist_sync` は `library://playlists_changed` を送出しないため、
+  /// 応答の `res.playlist` で `va.playlists` を直接更新（同期中に同一プレイリストの
+  /// 変更やスナップショット更新が起きていた場合は `playlist_list` で再取得）し、選択維持中・
+  /// 新規追記あり・末尾まで読み込み済みのときだけ `playlist_items` を再取得する
+  async function syncPlaylist(): Promise<void> {
+    const plId = selectedId;
+    if (
+      plId === null ||
+      syncingId !== null ||
+      sortBusy ||
+      plLoadingMore ||
+      (removingIds.get(plId) ?? 0) > 0 ||
+      (restoringIds.get(plId) ?? 0) > 0
+    ) {
+      return;
+    }
+    syncingId = plId;
+    const plMutBefore = playlistMutSeq.get(plId) ?? 0;
+    const snapshotBefore = listsSnapshotSeq;
+    try {
+      const res = await invoke<PlaylistSyncOutcome>("playlist_sync", {
+        playlistId: plId,
+      });
+      if (
+        (playlistMutSeq.get(plId) ?? 0) !== plMutBefore ||
+        listsSnapshotSeq !== snapshotBefore
+      ) {
+        const beforeSnap = listsSnapshotSeq;
+        try {
+          await refreshPlaylists();
+        } catch {
+          // 取り直し失敗時は同期日時のみ反映し、競合中の件数は保持する
+        }
+        if (listsSnapshotSeq === beforeSnap) {
+          ++listsReq;
+          va.playlists = va.playlists.map((p) =>
+            p.id === res.playlist.id
+              ? { ...p, syncedAt: res.playlist.syncedAt }
+              : p,
+          );
+        }
+      } else {
+        ++listsReq;
+        ++listsSnapshotSeq;
+        va.playlists = va.playlists.map((p) =>
+          p.id === res.playlist.id ? res.playlist : p,
+        );
+      }
+      notify(
+        res.addedCount > 0
+          ? t("library.playlist.synced", {
+              name: res.playlist.name,
+              count: res.addedCount,
+            })
+          : t("library.playlist.syncedNoChanges", {
+              name: res.playlist.name,
+            }),
+      );
+      if (selectedId === plId && res.addedCount > 0 && (!plHasMore || plTailDirty)) {
+        const reload = (async () => {
+          const req = ++itemsReq;
+          const prevLen = playlistItems.length;
+          const pageLimit =
+            !plHasMore && res.addedCount <= PL_PAGE
+              ? null
+              : prevLen === 0
+                ? PL_PAGE
+                : prevLen + PL_PAGE;
+          const items = await invoke<PlaylistEntry[]>("playlist_items", {
+            playlistId: plId,
+            afterPosition: null,
+            limit: pageLimit,
+          });
+          if (req !== itemsReq || selectedId !== plId) return;
+          playlistItems = items;
+          const last = items[items.length - 1];
+          plTailPos = last ? last.position : null;
+          plHasMore = pageLimit !== null && items.length >= pageLimit;
+          plTailDirty = false;
+        })();
+        syncReloadPromise = reload;
+        try {
+          await reload;
+        } finally {
+          if (syncReloadPromise === reload) syncReloadPromise = null;
+        }
+      }
+    } catch (e) {
+      notify(t("library.playlist.syncFailed", { message: asErrorMessage(e) }));
+    } finally {
+      syncingId = null;
     }
   }
 
@@ -669,8 +808,9 @@ export function createLibraryPageState(opts: Options) {
                 if (req === itemsReq && selectedId === plId) {
                   playlistItems = items;
                   const last = items[items.length - 1];
-                  if (last) plTailPos = last.position;
+                  plTailPos = last ? last.position : null;
                   plHasMore = false;
+                  plTailDirty = false;
                 }
               } catch {
                 // 取り直しの失敗は既存表示のまま
@@ -842,12 +982,20 @@ export function createLibraryPageState(opts: Options) {
     op: (plId: number) => Promise<void>,
     doneKey: MessageKey,
   ): Promise<void> {
-    if (selectedId === null || sortBusy) return;
+    if (
+      selectedId === null ||
+      sortBusy ||
+      (syncingId !== null && syncingId === selectedId)
+    ) {
+      return;
+    }
     sortBusy = true;
     const plId = selectedId;
     try {
       await reorderRun;
-      if (selectedId !== plId) return;
+      if (selectedId !== plId || (syncingId !== null && syncingId === plId)) {
+        return;
+      }
       const req = ++itemsReq;
       await op(plId);
       const items = await invoke<PlaylistEntry[]>("playlist_items", {
@@ -856,8 +1004,9 @@ export function createLibraryPageState(opts: Options) {
       if (req !== itemsReq || selectedId !== plId) return;
       playlistItems = items;
       const last = items[items.length - 1];
-      if (last) plTailPos = last.position;
+      plTailPos = last ? last.position : null;
       plHasMore = false;
+      plTailDirty = false;
       notify(t(doneKey));
     } catch (e) {
       notify(
@@ -956,19 +1105,40 @@ export function createLibraryPageState(opts: Options) {
 
   async function removeItem(entry: PlaylistEntry): Promise<void> {
     if (selectedId === null) return;
+    if (syncingId !== null && syncingId === selectedId) return;
     // 取り消し時に表示中プレイリストが変わっていても正しい先へ
     // 復元できるよう、スナップショットは削除時点の playlistId に束縛する
     const playlistId = selectedId;
+    removingIds.set(playlistId, (removingIds.get(playlistId) ?? 0) + 1);
     try {
       const removed = await invoke<PlaylistEntry | null>("playlist_remove", {
         playlistId,
         videoId: entry.videoId,
       });
-      // 件数が変わるので飛行中の一覧応答は無効化する
+      // 件数が変わるので飛行中の一覧・項目応答は無効化する
       ++listsReq;
-      playlistItems = playlistItems.filter(
-        (i) => i.videoId !== entry.videoId,
-      );
+      bumpPlaylistMut(playlistId);
+      let loweredTailOnRemove = false;
+      if (selectedId === playlistId) {
+        ++itemsReq;
+        playlistItems = playlistItems.filter(
+          (i) => i.videoId !== entry.videoId,
+        );
+        const removedPos = removed?.position ?? entry.position;
+        if (plTailPos !== null && removedPos >= plTailPos) {
+          if (plHasMore) {
+            plTailDirty = true;
+            loweredTailOnRemove = true;
+          }
+          plTailPos =
+            playlistItems.length === 0
+              ? null
+              : playlistItems.reduce(
+                  (max, i) => Math.max(max, i.position),
+                  -Infinity,
+                );
+        }
+      }
       va.playlists = va.playlists.map((p) =>
         p.id === playlistId ? { ...p, itemCount: p.itemCount - 1 } : p,
       );
@@ -984,44 +1154,100 @@ export function createLibraryPageState(opts: Options) {
         label: t("library.undo"),
         run: () => {
           void (async () => {
+            const snapshotBefore = listsSnapshotSeq;
+            const hadActiveSync = syncingId === playlistId;
+            const initialReload = hadActiveSync ? syncReloadPromise : null;
+            restoringIds.set(
+              playlistId,
+              (restoringIds.get(playlistId) ?? 0) + 1,
+            );
+            ++restoringVersion;
             try {
+              // DB 復元はリモート同期の完了を待たずに即実行し、
+              // 元の空き位置へ戻せるようにする
               const restored = await invoke<PlaylistEntry>(
                 "playlist_item_restore",
                 { playlistId, entry: removed },
               );
+              // syncPlaylist の再取得が進行中なら、完了後に UI を反映して
+              // ++itemsReq による再取得破棄を防ぐ。
+              // 再取得の失敗は syncPlaylist 側が通知するためここでは握りつぶす
+              const reloadToAwait =
+                syncingId === playlistId && syncReloadPromise !== null
+                  ? syncReloadPromise
+                  : initialReload;
+              if (reloadToAwait !== null) {
+                try {
+                  await reloadToAwait;
+                } catch {}
+              }
+              const refreshedDuringRestore =
+                listsSnapshotSeq !== snapshotBefore;
               // 件数が変わるので飛行中の一覧応答は無効化する
               ++listsReq;
+              bumpPlaylistMut(playlistId);
+              let alreadyPresent = false;
               // 表示中のプレイリストが変わっていなければ項目一覧へ
               // 挿し直す（別プレイリスト表示中なら DB のみ復元済みで
               // 一覧は次回選択時に取り直される）
               if (selectedId === playlistId) {
-                const rest = playlistItems.filter(
-                  (i) => i.videoId !== restored.videoId,
+                alreadyPresent = playlistItems.some(
+                  (i) => i.videoId === restored.videoId,
                 );
-                const at = rest.findIndex(
-                  (i) => i.position > restored.position,
-                );
-                playlistItems =
-                  at < 0
-                    ? [...rest, restored]
-                    : [...rest.slice(0, at), restored, ...rest.slice(at)];
+                // ページング中に plTailPos より大きい位置へ戻った項目を既読末尾へ
+                // 差し込むと未読項目を飛び越えるため、この削除で plTailPos を下げて
+                // 再取得が起きていない直後の復元だけを元の位置以下に限定して反映する
+                if (
+                  !alreadyPresent &&
+                  (!plHasMore ||
+                    (plTailPos !== null && restored.position <= plTailPos) ||
+                    (loweredTailOnRemove &&
+                      plTailDirty &&
+                      restored.position <= removed.position))
+                ) {
+                  ++itemsReq;
+                  const rest = playlistItems;
+                  const at = rest.findIndex(
+                    (i) => i.position > restored.position,
+                  );
+                  playlistItems =
+                    at < 0
+                      ? [...rest, restored]
+                      : [...rest.slice(0, at), restored, ...rest.slice(at)];
+                  if (plTailPos === null || restored.position > plTailPos) {
+                    plTailPos = restored.position;
+                  }
+                }
               }
-              va.playlists = va.playlists.map((p) =>
-                p.id === playlistId
-                  ? { ...p, itemCount: p.itemCount + 1 }
-                  : p,
-              );
+              if (refreshedDuringRestore) {
+                await refreshPlaylists();
+              } else {
+                va.playlists = va.playlists.map((p) =>
+                  p.id === playlistId
+                    ? { ...p, itemCount: p.itemCount + 1 }
+                    : p,
+                );
+              }
               notify(t("library.restored"));
             } catch (e) {
               notify(
                 t("library.restoreFailed", { message: asErrorMessage(e) }),
               );
+            } finally {
+              const next = (restoringIds.get(playlistId) ?? 1) - 1;
+              if (next <= 0) restoringIds.delete(playlistId);
+              else restoringIds.set(playlistId, next);
+              ++restoringVersion;
             }
           })();
         },
       });
     } catch (e) {
       notify(t("library.removeFailed", { message: asErrorMessage(e) }));
+    } finally {
+      const next = (removingIds.get(playlistId) ?? 1) - 1;
+      if (next <= 0) removingIds.delete(playlistId);
+      else removingIds.set(playlistId, next);
     }
   }
 
@@ -1114,6 +1340,13 @@ export function createLibraryPageState(opts: Options) {
     get importing() {
       return importing;
     },
+    get syncingId() {
+      return syncingId;
+    },
+    get restoring() {
+      void restoringVersion;
+      return selectedId !== null && (restoringIds.get(selectedId) ?? 0) > 0;
+    },
     set importing(v: boolean) {
       importing = v;
     },
@@ -1169,6 +1402,7 @@ export function createLibraryPageState(opts: Options) {
     onPlaylistsChanged,
     onPlaylistAdd,
     importPlaylist,
+    syncPlaylist,
     moveItem,
     itemDragStart,
     itemDragOver,

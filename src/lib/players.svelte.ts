@@ -152,12 +152,20 @@ export type FavoriteEntry = {
   addedAt: string;
 };
 
-/// `playlist_list` の 1 行（FR-7）。
+/// `playlist_list` の 1 行（FR-7・FR-101）。
 export type Playlist = {
   id: number;
   name: string;
   sortOrder: number;
   itemCount: number;
+  sourceListId: string | null;
+  syncedAt: string | null;
+};
+
+/// `playlist_sync` の戻り値（FR-101、仕様決定 EG）。
+export type PlaylistSyncOutcome = {
+  playlist: Playlist;
+  addedCount: number;
 };
 
 /// `playlist_items` の 1 行（FR-7）。
@@ -170,6 +178,8 @@ export type PlaylistEntry = {
   thumbnailUrl: string | null;
   /// 投稿日時（フィード投入済み項目のみ。未取得は null、ソート時は末尾）
   publishedAt: string | null;
+  /// `playlist_remove` が発行した復元世代（`playlist_item_restore` の世代照合用）
+  importEpoch?: number;
 };
 
 /// `watch_later_list` の 1 行（FR-59、仕様決定 CJ）。

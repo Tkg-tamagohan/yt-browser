@@ -83,7 +83,7 @@ pub(crate) fn iso8601_ms(s: &str) -> Option<i64> {
     }
     let (y, mo, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
     let (h, mi, sec) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || mi > 59 || sec > 60 {
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
         return None;
     }
     // days-from-civil（Howard Hinnant の式）で 1970-01-01 からの日数を得る
@@ -110,14 +110,23 @@ pub(crate) fn iso8601_ms(s: &str) -> Option<i64> {
         ms += f * 10i64.pow(3 - digits.min(3) as u32);
     }
     match b.get(i) {
-        None | Some(&b'Z') => {}
+        None => {}
+        Some(&b'Z') => {
+            if i + 1 != b.len() {
+                return None;
+            }
+        }
         Some(sign @ (&b'+' | &b'-')) => {
+            let has_colon = b.get(i + 3) == Some(&b':');
             let oh = num(i + 1, 2)?;
-            let om = if b.get(i + 3) == Some(&b':') {
-                num(i + 4, 2)?
+            let (om, end) = if has_colon {
+                (num(i + 4, 2)?, i + 6)
             } else {
-                num(i + 3, 2)?
+                (num(i + 3, 2)?, i + 5)
             };
+            if end != b.len() || oh > 23 || om > 59 {
+                return None;
+            }
             let off = (oh * 3_600 + om * 60) * 1_000;
             ms += if *sign == b'+' { -off } else { off };
         }

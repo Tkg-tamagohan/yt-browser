@@ -3223,4 +3223,177 @@ mod tests {
         assert_eq!(map["vidVc000006"].view_count, None);
         assert_eq!(map["vidVc000007"].view_count, None);
     }
+
+    /// DB-YA-22: `playlist_items(id, false)` の同期パターン（`/playlists` 非呼出・複数ページ結合・
+    /// `private`/`deleted` 除外・`videoOwnerChannelId` 抽出・`+00:00` 正規化・HTTP 200 空 `items: []` で
+    /// 遮断器を開かず `Ok` を返すこと）を検証する（FR-101、仕様決定 EG）。
+    #[tokio::test]
+    async fn playlist_items_sync_mode_pagination_empty_ok() {
+        let (base, recorded) = spawn_mock_server(vec![
+            // page 1 -> page 2
+            MockReply {
+                status: 200,
+                body: r#"{
+                    "nextPageToken": "p2",
+                    "items": [
+                        {
+                            "snippet": {
+                                "title": "Sync V1",
+                                "channelId": "UCplaylistOwner000000001",
+                                "videoOwnerChannelId": "UCownerSync0000000000001",
+                                "videoOwnerChannelTitle": "Owner 1",
+                                "resourceId": {"videoId": "syncYa00001"}
+                            },
+                            "contentDetails": {
+                                "videoId": "syncYa00001",
+                                "videoPublishedAt": "2026-05-01T15:00:00+09:00"
+                            },
+                            "status": {"privacyStatus": "public"}
+                        },
+                        {
+                            "snippet": {"title": "Private video", "resourceId": {"videoId": "syncPrv0002"}},
+                            "status": {"privacyStatus": "private"}
+                        }
+                    ]
+                }"#
+                .to_string(),
+                delay: Duration::ZERO,
+            },
+            // page 2
+            MockReply {
+                status: 200,
+                body: r#"{
+                    "items": [
+                        {
+                            "snippet": {"title": "Deleted video", "resourceId": {"videoId": "syncDel0003"}},
+                            "status": {"privacyStatus": "privacyStatusUnspecified"}
+                        },
+                        {
+                            "snippet": {
+                                "title": "Sync V2",
+                                "videoOwnerChannelId": "UCownerSync0000000000002",
+                                "resourceId": {"videoId": "syncYa00004"}
+                            },
+                            "contentDetails": {
+                                "videoId": "syncYa00004",
+                                "videoPublishedAt": "2026-05-02T00:00:00Z"
+                            },
+                            "status": {"privacyStatus": "unlisted"}
+                        }
+                    ]
+                }"#
+                .to_string(),
+                delay: Duration::ZERO,
+            },
+            // HTTP 200 empty items: []
+            MockReply {
+                status: 200,
+                body: r#"{"items": []}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyYA_22".to_string()), base);
+
+        let pl = api.playlist_items("PLsyncYa22", false).await.unwrap();
+        assert_eq!(pl.title, None);
+        assert_eq!(pl.items.len(), 2);
+        assert_eq!(pl.items[0].video_ref.video_id, "syncYa00001");
+        assert_eq!(
+            pl.items[0].video_ref.channel_id.as_deref(),
+            Some("UCownerSync0000000000001")
+        );
+        assert_eq!(
+            pl.items[0].published_at.as_deref(),
+            Some("2026-05-01T06:00:00+00:00")
+        );
+        assert_eq!(pl.items[1].video_ref.video_id, "syncYa00004");
+        assert_eq!(
+            pl.items[1].published_at.as_deref(),
+            Some("2026-05-02T00:00:00+00:00")
+        );
+
+        let empty = api.playlist_items("PLemptyYa22", false).await.unwrap();
+        assert_eq!(empty.title, None);
+        assert!(empty.items.is_empty());
+        assert!(api.can_use(QuotaBucket::Shared));
+
+        let reqs = recorded.lock().unwrap();
+        assert_eq!(reqs.len(), 3);
+        for req in reqs.iter() {
+            assert!(req.request_line.contains("/playlistItems?"));
+            assert!(!req.request_line.contains("/playlists?"));
+        }
+        assert!(reqs[1].request_line.contains("pageToken=p2"));
+    }
+
+    /// DB-YA-23: `playlist_items(id, false)` の異常系（HTTP 404 で `NotFound`・非遮断、
+    /// HTTP 403 `playlistItemsNotAccessible` で `Status(403)`・`should_fallback() == true` かつ
+    /// `Shared` 日次クォータ非遮断、複数ページ途中の 429/500 失敗で部分結果を返さずクールダウン遷移）
+    /// を検証する（FR-101、仕様決定 EG）。
+    #[tokio::test]
+    async fn playlist_items_sync_mode_errors_and_partial_page_failure() {
+        // 1) HTTP 404 -> NotFound (no breaker)
+        let (base_404, _) = spawn_mock_server(vec![MockReply {
+            status: 404,
+            body: r#"{"error":{"code":404}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_404 = YtApi::with_test_base_url(Some("AIzaSy404_23".to_string()), base_404);
+        let err_404 = api_404
+            .playlist_items("PLmissing23", false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err_404, YtApiError::NotFound));
+        assert!(api_404.can_use(QuotaBucket::Shared));
+
+        // 2) HTTP 403 playlistItemsNotAccessible -> Status(403), should_fallback, Shared 日次遮断なし
+        let (base_403, _) = spawn_mock_server(vec![MockReply {
+            status: 403,
+            body: r#"{"error":{"errors":[{"reason":"playlistItemsNotAccessible"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_403 = YtApi::with_test_base_url(Some("AIzaSy403_23".to_string()), base_403);
+        let err_403 = api_403
+            .playlist_items("PLinaccess23", false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err_403, YtApiError::Status(403)));
+        assert!(err_403.should_fallback());
+        assert!(api_403.can_use(QuotaBucket::Shared));
+
+        // 3) ページ途中 429 / 500 -> Err（部分結果を返さず）＋クールダウン遷移
+        for (status, body) in [
+            (429, r#"{"error":{"code":429}}"#),
+            (500, r#"{"error":{"code":500}}"#),
+        ] {
+            let (base_mid, _) = spawn_mock_server(vec![
+                MockReply {
+                    status: 200,
+                    body: r#"{"nextPageToken":"tok_mid","items":[{"snippet":{"title":"P1","resourceId":{"videoId":"midVid00001"}},"status":{"privacyStatus":"public"}}]}"#.to_string(),
+                    delay: Duration::ZERO,
+                },
+                MockReply {
+                    status,
+                    body: body.to_string(),
+                    delay: Duration::ZERO,
+                },
+            ])
+            .await;
+            let api_mid = YtApi::with_test_base_url(Some("AIzaSyMid_23".to_string()), base_mid);
+            let err_mid = api_mid
+                .playlist_items("PLmidErr23", false)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err_mid, YtApiError::Status(s) if s == status),
+                "unexpected error: {err_mid:?}"
+            );
+            assert!(err_mid.should_fallback());
+            assert!(!api_mid.can_use(QuotaBucket::Shared));
+        }
+    }
 }

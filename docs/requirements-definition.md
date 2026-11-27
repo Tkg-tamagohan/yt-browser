@@ -790,6 +790,18 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
 - `filter::Matcher` に `has_video_desc_rules`（有効な `literal` または空でない `RegexSet` のみを対象とし、`highlight` と不正正規表現のみの空集合は除外）を設け、`yt::search` フォールバック時も `QuotaBucket::Shared` が利用可能かつ `video_desc` の NG ルール有効時、または `channel_id` や `channel_title` が未解決で対応するブロックや NG ルールが有効な場合は、事前フィルタ通過後の候補を最大 50 件チャンクの `videos.list` で条件付き補強する
   補強はフィルタ通過後生存数が `count` に達した時点で以降のチャンクを打ち切り、補強呼び出しが失敗した場合は無補強のまま続行する
 
+### FR-101 取り込み済みプレイリストの差分追記手動同期
+
+- マイグレーション `v26` で `playlists` テーブルに `source_list_id TEXT`（同期元の YouTube プレイリスト ID）と `synced_at TEXT`（`+00:00` UTC 形式の最終同期日時）を追加し、`playlist_import` 時に `is_playlist_source_id` を満たすリスト ID を持つ取り込みプレイリストへ両列を永続化する（仕様決定 EG）
+  - 手動作成したプレイリスト（`playlist_create` や `queue_save_as_playlist`）および `list` パラメータを欠く URL 由来の取り込みは両列を `NULL` のまま保つ
+- 新規コマンド `playlist_sync(playlist_id)` を設け、取り込み済みプレイリストの `source_list_id` を用いて Phase 94 の取得経路（`ytapi::playlist_items`（`fetch_title = false` で `playlists.list` の 1 unit 消費を省略）を優先し、`WL` や `HL` や `LM` や `LL` で始まる ID や `RD` で始まる ID および API 障害時は `yt::playlist_meta` へフォールバック）でリモート項目を再取得する
+  - 取得した項目のうち、対象プレイリストにまだ登録されていない `video_id` のみを `MAX(position) + 1` から末尾へ `INSERT OR IGNORE` で非破壊追記し、`videos` テーブルの表示メタ（`published_at` を含む）を補強したうえで `synced_at` を更新し、更新後の `Playlist` と追加件数 `addedCount` を返す
+  - ローカルで並び替えた順序（FR-11）、手動で追加した項目、既存行の位置（削除による空き番を含む）、既存の非 NULL `published_at`（`COALESCE` 保護）、および `queue_state.current_index` は同期によって破壊せず維持する（削除履歴テーブルは持たないため、YouTube 側に残っている動画をローカルから削除していた場合は未登録扱いとして末尾へ再追加される）
+  - `playlist_id` 不正または `source_list_id` 未設定の手動作成プレイリストは外部通信や `yt-dlp` 呼び出しを行わず `invalid_input` エラーを返し、不在のプレイリストは `NotFound` エラーを返し、標準リストに対する公式 API の `HTTP 404` は `yt-dlp` へフォールバックせず `invalid_input` エラーを返す
+  - リモート側が `HTTP 200` で有効項目 0 件（空または全件非公開および削除済み）を返した場合はエラーやローカル削除を行わず、`addedCount = 0` と `synced_at` 更新のみの非破壊完了とする
+- エクスポートおよびインポート（`ExportPlaylist`）は既存の `EXPORT_FORMAT_VERSION = 1` を維持したまま任意フィールド `source_list_id` と `synced_at` を引き継ぎ、`validate_dump` で `source_list_id` 形式（空でない 128 バイト以下の ASCII 英数字と `_` と `-`）と `synced_at` 形式（64 バイト以下の有効な ISO 8601 日時）を検証する
+- ライブラリ画面「プレイリスト」タブの詳細ペイン上部に常時マウントのまま表示切替する詳細ヘッダを設け、`sourceListId !== null` の取り込み済みプレイリストが選択されているとき（項目が 0 件へ削除された状態を含む）に「同期」ボタンと「最終同期」日時を表示し、完了時は追加件数に応じたトースト通知（`+N 件` または「最新です」）とページング状態を壊さない一覧反映を行う
+
 ## 5. 非機能要件
 
 - メモリ目安：アイドル 300MB 未満、再生中 600MB 未満とする（仕様決定 I）
