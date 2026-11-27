@@ -18,11 +18,8 @@ use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use crate::db::{Db, DbError, MetaResolveTarget, ResolveMetaParams};
-use crate::innertube::{
-    classify_broadcast_meta, classify_kind, is_transient_or_blocked_playability, InnerTube,
-    InnerTubeError,
-};
-use crate::model::FeedNewItems;
+use crate::innertube::{is_transient_or_blocked_playability, InnerTube, InnerTubeError};
+use crate::model::{classify_broadcast_meta, classify_kind, FeedNewItems};
 use crate::util::lock;
 
 /// 巡回間隔。フィードの新着投入時には `wake_now` で即時起こされる。
@@ -446,7 +443,7 @@ impl ResolverCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::innertube::{BroadcastStatus, MetaSnapshot};
+    use crate::model::{BroadcastStatus, MetaSnapshot};
 
     fn snap(
         is_live_now: Option<bool>,

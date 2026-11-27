@@ -15,12 +15,13 @@ use crate::model::{
 use std::collections::{BTreeMap, BTreeSet};
 
 /// ローカル環境依存または秘密情報を含むため、ダンプ出力から除外し
-/// インポート時もローカル既存値を保持する設定キー（FR-94、仕様決定 DX）。
+/// インポート時もローカル既存値を保持する設定キー（FR-94・FR-97、仕様決定 DX・EC）。
 pub(crate) const LOCAL_PROTECTED_SETTINGS: &[&str] = &[
     "ytdlp.po_token",
     "ytdlp.path",
     "mpv.extra_args",
     "setup.deps_shown",
+    "youtube.api_key",
 ];
 
 /// 指定キーがローカル保護対象の設定か判定する（FR-94、仕様決定 DX）。
@@ -161,8 +162,8 @@ impl Db {
     /// 置き換えの規則:
     /// - `channels`/`categories`/`settings`/`playlists`/`playlist_items` は
     ///   ダンプの内容に一致する状態へ戻す（ダンプに無い行は消える）。
-    /// - `LOCAL_PROTECTED_SETTINGS` の 4 キーは削除前にローカル既存値を退避し、
-    ///   ダンプ側の同 4 キーを読み飛ばした上で退避値を復元する（FR-94、仕様決定 DX）。
+    /// - `LOCAL_PROTECTED_SETTINGS` の 5 キーは削除前にローカル既存値を退避し、
+    ///   ダンプ側の同 5 キーを読み飛ばした上で退避値を復元する（FR-94・FR-97、仕様決定 DX・EC）。
     /// - `videos` 台帳は触らず、プレイリスト項目の表示メタだけ
     ///   `video_upsert` と同じ規則で補完する（既存メタは壊さない）。
     ///   `ExportPlaylistItem.channel_id` の非 UC 値は `None` へ正規化する。
@@ -177,7 +178,7 @@ impl Db {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
         // `DELETE FROM settings` の直前に既存設定を全件読み取り、
-        // (1) 保護 4 キーの退避・復元 と (2) 非保護キーの前後差分算出 に使う。
+        // (1) 保護 5 キーの退避・復元 と (2) 非保護キーの前後差分算出 に使う。
         let before_settings: BTreeMap<String, String> = {
             let mut stmt = tx.prepare("SELECT key, value FROM settings ORDER BY key")?;
             let mut rows = stmt.query([])?;

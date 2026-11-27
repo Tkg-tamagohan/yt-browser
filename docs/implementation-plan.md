@@ -99,6 +99,15 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] フロントエンドへ `fmtBroadcastDateTime`、`feed-page-logic.ts`（ライブ中優先全順序、`broadcastDisplayOf`、`mergeFeedReload` / `mergeFeedLoadMore`）、`routes/feed/+page.svelte`（`live_now` / `upcoming` フィルタ、バッジ・開始時刻描画）、日英 i18n キー 7 件を実装する（単体テスト `FMT-01`、`FP-04` 〜 `FP-06`）
 - [ ] 受け入れ：実際のライブ配信中・配信予定（時刻あり/未定）・終了済みアーカイブ・プレミア公開を含む購読チャンネルで、ライブ中上部表示、バッジ・開始時刻表示、6 種別フィルタ、チャンネル別グループ表示、手動「今すぐ更新」、英語 UI、開始/終了後の自動追従を実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェックは通過済み、実配信を用いた GUI 実機検証は未実施）
 
+### Phase 92：YouTube Data API v3 クライアント基盤と秘匿保護
+
+- [x] `innertube/mod.rs` から `BroadcastStatus`、`MetaSnapshot`、`classify_kind`、`classify_broadcast_meta` を `model/mod.rs` へ、`iso_utc` と `iso8601_ms` を `util.rs` へ移設し、`util.rs` へ ISO 8601 継続時間パーサ `parse_iso8601_duration`（`P0D`、`PT0S`、`P#DT#H#M#S`、オーバーフロー検査付き）と `model/mod.rs` へ UI DTO（`YtApiAvailability`、`YtApiStatus`、`YtApiTestOutcome`）を追加する（FR-97、仕様決定 EC）
+- [x] 純粋リーフモジュール `ytapi/mod.rs`（`crate::model` と `crate::util` のみ参照）を新設し、定数固定の本番 URL、`X-Goog-Api-Key`（`set_sensitive(true)`、URL クエリ禁止）、カスタム `Debug` と `.without_url()`、接続 5 秒および全体 8 秒タイムアウト、2 系統サーキットブレーカー（`shared` 枠 10,000 units と `search` 枠 100 回の独立遮断、米国 DST 考慮の次回 `00:00 America/Los_Angeles` プラス 60 秒解除）、キー無効ラッチ（`HTTP 400` `keyInvalid`、`HTTP 401`、`HTTP 403`）、段階クールダウン（`HTTP 429`、`5xx`、通信失敗）、`HTTP 404` 非遮断、トリム後文字列変化時のみリセットするホットリロード、`videos.list` 1 unit の `test_connection`（候補キー試行時の保存済み遮断器非破壊）を実装する（単体テスト `DB-YA-01` 〜 `DB-YA-08`）
+- [x] 6 箇所の秘匿保護と IPC コマンドを実装する
+  `db/export.rs` の `LOCAL_PROTECTED_SETTINGS` を `youtube.api_key` を加えた 5 キーへ拡張し（`commands/system.rs` 一致テスト `DB-LD-42`、保護動作 `DB-LD-31`、`DB-LD-32`）、`diag.rs` の設定断片（`api_key`、`apikey`）、ヘッダ正規表現（`x-goog-api-key`、`x-api-key`）、JSON 秘匿名（`x-goog-api-key`、`x-api-key`）を更新し（単体テスト `DB-DG-10`、`DB-DG-11`）、`commands/system.rs` と `lib.rs` へ `ytapi_status`、`ytapi_test_connection`、`settings://changed` の秘匿値 `""` マスク、`settings_set` および `data_import` の `on_key_changed` 連動を組み込む
+- [x] フロントエンドへ `SettingsDepsSection.svelte` の API キー入力欄（単一 `<input>` の `type` 切替）、状態バッジ表示、1 unit 接続テストボタン、および `settings-diff-logic.ts`（`***` マスク）、`settings/+page.svelte`（`onCommitted` 内 `savedSnapshot.youtubeApiKey` 更新）、`settings-filter.ts`、日英 i18n キーと各単体テスト（`SD-06`、`SF-03`、`SV-05`、`LN-04`）を実装する
+- [ ] 受け入れ：設定画面「依存コマンド」節で API キーの入力、表示切替、保存差分マスク、状態バッジ表示、1 unit 接続テスト、データエクスポート除外および診断 zip マスクを実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた GUI 実機確認は未実施）
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

@@ -15,11 +15,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 
 use crate::db::Db;
-use crate::innertube::{
-    classify_broadcast_meta, classify_kind, is_transient_or_blocked_playability, BroadcastStatus,
-    InnerTube, MetaSnapshot,
+use crate::innertube::{is_transient_or_blocked_playability, InnerTube};
+use crate::model::{
+    classify_broadcast_meta, classify_kind, BroadcastStatus, FeedNewItems, LiveWait,
+    LiveWaitChanged, LiveWaitStatus, MetaSnapshot,
 };
-use crate::model::{FeedNewItems, LiveWait, LiveWaitChanged, LiveWaitStatus};
 use crate::util::lock;
 
 /// 巡回ティック。直前窓の短間隔（15 秒）を粒度内に収めるため 10 秒とする。

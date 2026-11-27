@@ -641,7 +641,7 @@ export const ja = {
   "settings.ops.imported": "インポートしました: {path}",
   "settings.ops.importFailed": "インポートに失敗: {message}",
   "settings.ops.protectedNote":
-    "ローカル保護設定（ytdlp.po_token / ytdlp.path / mpv.extra_args / setup.deps_shown）はエクスポートから除外され、インポート時も現在の値を保持します。",
+    "ローカル保護設定（youtube.api_key / ytdlp.po_token / ytdlp.path / mpv.extra_args / setup.deps_shown）はエクスポートから除外され、インポート時も現在の値を保持します。",
   "settings.ops.dbSize": "データベースサイズ",
   "settings.ops.dbSize.desc": "DB 本体 + WAL の合計",
   "settings.ops.dbSize.failed": "サイズの取得に失敗: {message}",
@@ -677,6 +677,23 @@ export const ja = {
   "settings.deps.poToken.placeholder": "未設定（空欄）",
   "settings.deps.poToken.desc":
     "形式: mweb.gvs+<token> 等（yt-dlp PO Token Guide 準拠）。保存後の次回呼び出しから反映",
+  // Phase 92: YouTube Data API v3 キー（FR-97、仕様決定 EC）
+  "settings.deps.youtubeApiKey": "YouTube Data API v3 キー",
+  "settings.deps.youtubeApiKeyPlaceholder": "未設定（空欄で従来方式）",
+  "settings.deps.youtubeApiKeyDesc":
+    "任意設定（OAuth 不要・無料枠）。キーをローカルに保存でき、現在は「接続テスト」のみ公式 API へ通信します（検索・メタ解決・再生リスト取込は順次対応予定）",
+  "settings.deps.youtubeApiKeyShow": "表示",
+  "settings.deps.youtubeApiKeyHide": "隠す",
+  "settings.deps.youtubeApiKeyTest": "接続テスト",
+  "settings.deps.youtubeApiKeyTesting": "テスト中…",
+  "settings.deps.youtubeApiKeyTestOk": "接続に成功しました（1 unit 消費）",
+  "settings.deps.youtubeApiKeyTestFailed": "接続に失敗: {reason}",
+  "settings.deps.youtubeApiKeyStatusUnset": "未設定",
+  "settings.deps.youtubeApiKeyStatusActive": "有効",
+  "settings.deps.youtubeApiKeyStatusKeyInvalid": "キー無効",
+  "settings.deps.youtubeApiKeyStatusSharedQuota": "共通クォータ上限",
+  "settings.deps.youtubeApiKeyStatusSearchQuota": "検索クォータ上限",
+  "settings.deps.youtubeApiKeyResetAt": "次回リセット: {time}",
   "settings.deps.unsaved": "保存中に依存コマンドが変更されました（要再保存）",
   "settings.diag.title": "診断",
   "deps.detected": "検出",

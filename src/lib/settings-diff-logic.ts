@@ -12,7 +12,7 @@ import {
   type SponsorCategory,
 } from "$lib/settings-consts";
 
-/// 設定画面で「保存」ボタンの対象になる全 34 設定（35 フィールド）の状態。
+/// 設定画面で「保存」ボタンの対象になる全 35 設定（36 フィールド）の状態。
 export type SettingsFormState = {
   selected: string;
   customFormat: string;
@@ -49,6 +49,7 @@ export type SettingsFormState = {
   mpvHwdec: string;
   ytdlpPath: string;
   poToken: string;
+  youtubeApiKey: string;
 };
 
 export type TranslateFn = (
@@ -111,6 +112,7 @@ export function defaultSettingsFormState(): SettingsFormState {
     mpvHwdec: "auto-safe",
     ytdlpPath: "",
     poToken: "",
+    youtubeApiKey: "",
   };
 }
 
@@ -608,6 +610,24 @@ export function diffSettingsFormState(
       afterText: !currToken
         ? t("settings.value.empty")
         : savedToken
+          ? t("settings.value.maskedChanged")
+          : t("settings.value.masked"),
+    });
+  }
+  // youtube.api_key は秘匿値のため変更前後をマスク表示し、平文を出さない
+  const savedApiKey = saved.youtubeApiKey.trim();
+  const currApiKey = current.youtubeApiKey.trim();
+  if (savedApiKey !== currApiKey) {
+    items.push({
+      id: "youtube.api_key",
+      sectionLabel: t("settings.deps.title"),
+      fieldLabel: t("settings.deps.youtubeApiKey"),
+      beforeText: savedApiKey
+        ? t("settings.value.masked")
+        : t("settings.value.empty"),
+      afterText: !currApiKey
+        ? t("settings.value.empty")
+        : savedApiKey
           ? t("settings.value.maskedChanged")
           : t("settings.value.masked"),
     });

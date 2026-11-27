@@ -1,6 +1,7 @@
 // 設定画面の節フィルタの回帰テスト（FR-73、仕様決定 CX）。
 // SF-01: sectionMatches の一致判定（大小文字無視・空クエリは全一致・ラベル OR）
 // SF-02: filterSectionIds の絞り込み結果と節定義の網羅
+// SF-03: youtube.api_key / api key / YouTube Data API による deps 節の絞り込み
 import { describe, expect, test } from "vitest";
 import {
   filterSectionIds,
@@ -70,5 +71,18 @@ describe("SF-02 filterSectionIds の絞り込み結果", () => {
   test("節定義の id は重複しない", () => {
     const ids = SETTINGS_SECTION_DEFS.map((d) => d.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("SF-03 YouTube Data API キーによる deps 節の絞り込み", () => {
+  const defs = resolveSectionDefs(t);
+
+  test("youtube.api_key・api key・YouTube Data API で deps 節のみ一致する", () => {
+    for (const q of ["youtube.api_key", "api key", "YouTube Data API"]) {
+      const ids = filterSectionIds(q, defs);
+      expect(ids.has("deps"), q).toBe(true);
+      expect(ids.has("ops"), q).toBe(false);
+      expect(ids.has("diag"), q).toBe(false);
+    }
   });
 });

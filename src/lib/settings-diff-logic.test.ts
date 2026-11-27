@@ -4,6 +4,7 @@
 // SD-03: ytdlp.po_token のマスク表示（変更前後の平文非露出）
 // SD-04: pip.geometry 空欄リセット、wheelDelta undefined、カスタム画質空欄の境界条件
 // SD-05: cloneSettingsFormState による独立複製と部分スナップショット更新による差分解消
+// SD-06: youtube.api_key のマスク表示（変更前後の平文非露出・前後空白トリム正規化）
 import { describe, expect, test } from "vitest";
 import { resolveMessage } from "./i18n";
 import type { MonitorInfo } from "./monitors";
@@ -297,5 +298,70 @@ describe("SD-05 複製分離とスナップショット更新", () => {
       monitors: [],
     });
     expect(remaining.map((i) => i.id)).toEqual(["player.initial_volume"]);
+  });
+});
+
+describe("SD-06 秘匿設定（youtube.api_key）のマスク表示", () => {
+  test("設定前後の API キー生文字列を出力に含めず、空白トリムのみの差は無視する", () => {
+    const saved = defaultSettingsFormState();
+    const curr = cloneSettingsFormState(saved);
+    curr.youtubeApiKey = "AIzaSyTEST_KEY_ABC";
+
+    const added = diffSettingsFormState(saved, curr, {
+      t: jaT,
+      monitors: [],
+    });
+    expect(added).toEqual([
+      {
+        id: "youtube.api_key",
+        sectionLabel: "依存コマンド",
+        fieldLabel: "YouTube Data API v3 キー",
+        beforeText: "未設定",
+        afterText: "***",
+      },
+    ]);
+    expect(JSON.stringify(added)).not.toContain("AIzaSyTEST_KEY_ABC");
+
+    const updatedPrev = cloneSettingsFormState(curr);
+    curr.youtubeApiKey = "  AIzaSyTEST_KEY_ABC  ";
+    expect(
+      diffSettingsFormState(updatedPrev, curr, { t: jaT, monitors: [] }),
+    ).toEqual([]);
+
+    curr.youtubeApiKey = "AIzaSyTEST_KEY_XYZ";
+    const modifiedJa = diffSettingsFormState(updatedPrev, curr, {
+      t: jaT,
+      monitors: [],
+    });
+    expect(modifiedJa[0]).toMatchObject({
+      id: "youtube.api_key",
+      beforeText: "***",
+      afterText: "***（変更あり）",
+    });
+    expect(JSON.stringify(modifiedJa)).not.toContain("AIzaSyTEST_KEY_ABC");
+    expect(JSON.stringify(modifiedJa)).not.toContain("AIzaSyTEST_KEY_XYZ");
+
+    const modifiedEn = diffSettingsFormState(updatedPrev, curr, {
+      t: enT,
+      monitors: [],
+    });
+    expect(modifiedEn[0]).toMatchObject({
+      id: "youtube.api_key",
+      sectionLabel: "Dependent commands",
+      fieldLabel: "YouTube Data API v3 key",
+      beforeText: "***",
+      afterText: "*** (modified)",
+    });
+
+    curr.youtubeApiKey = "  ";
+    const cleared = diffSettingsFormState(updatedPrev, curr, {
+      t: jaT,
+      monitors: [],
+    });
+    expect(cleared[0]).toMatchObject({
+      id: "youtube.api_key",
+      beforeText: "***",
+      afterText: "未設定",
+    });
   });
 });

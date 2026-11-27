@@ -10,8 +10,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use thiserror::Error;
 
-use crate::model::{SearchResult, VideoRef};
-use crate::util::lock;
+use crate::model::{BroadcastStatus, MetaSnapshot, SearchResult, VideoRef};
+use crate::util::{iso8601_ms, iso_utc, lock};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -276,65 +276,6 @@ pub fn is_transient_or_blocked_playability(s: &MetaSnapshot) -> bool {
         && matches!(s.playability.as_deref(), Some("LOGIN_REQUIRED" | "ERROR"))
 }
 
-/// InnerTube メタ応答から放送系 kind を分類する（FR-56、仕様決定 CG）。
-/// `liveBroadcastDetails` と `videoDetails` 系の値・再生状態を材料にする。
-/// 戻り値は `kind` の確定値。放送系の手掛かりが無いときは `None`
-/// （呼び出し側は `kind='video'` の行だけ shorts 判定へ回す）。
-pub fn classify_kind(s: &MetaSnapshot) -> Option<&'static str> {
-    let b = &s.broadcast;
-    if b.is_live_now == Some(true) {
-        return Some(if s.is_live_content == Some(false) {
-            "premiere"
-        } else {
-            "live"
-        });
-    }
-    if b.has_details || b.is_upcoming {
-        if b.end_ms.is_some() {
-            return Some(if s.is_live_content == Some(true) {
-                "live"
-            } else {
-                "premiere"
-            });
-        }
-        return Some("upcoming");
-    }
-    if s.is_live_content == Some(true) {
-        return Some("live");
-    }
-    if s.playability.as_deref() == Some("LIVE_STREAM_OFFLINE") {
-        return Some("upcoming");
-    }
-    None
-}
-
-/// InnerTube メタ応答からフィード表示用の動的放送状態と開始時刻（epoch ms）を
-/// 抽出する（FR-96、仕様決定 EB）。
-/// 戻り値は `(broadcast_state, broadcast_start_ms)` で、`<= 0` の不正タイムスタンプは
-/// `None` へ正規化する。プレミア公開も公開中は `"live"`、予定は `"upcoming"`、
-/// 終了後は `"ended"` として統一的に分類する。
-pub fn classify_broadcast_meta(s: &MetaSnapshot) -> (Option<&'static str>, Option<i64>) {
-    let b = &s.broadcast;
-    let start = b.start_ms.filter(|&ms| ms > 0);
-    let sched = b.scheduled_start_ms.filter(|&ms| ms > 0);
-    if b.is_live_now == Some(true) {
-        return (Some("live"), start);
-    }
-    if b.has_details || b.is_upcoming {
-        if b.end_ms.is_some() {
-            return (Some("ended"), start.or(sched));
-        }
-        return (Some("upcoming"), sched.or(start));
-    }
-    if s.is_live_content == Some(true) {
-        return (Some("ended"), start);
-    }
-    if s.playability.as_deref() == Some("LIVE_STREAM_OFFLINE") {
-        return (Some("upcoming"), sched.or(start));
-    }
-    (None, None)
-}
-
 /// 継続トークンの種別（仕様決定 AQ のライブ/リプレイ自動判定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuationKind {
@@ -436,27 +377,6 @@ pub fn extract_broadcast_window(html: &str) -> BroadcastWindow {
     }
 }
 
-/// `player` 応答の放送状態（FR-44、仕様決定 BT）。待機の状態分類は
-/// `livewait` モジュールが行う（ここでは生の値だけを抜き出す）。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BroadcastStatus {
-    /// `liveBroadcastDetails.isLiveNow`。
-    pub is_live_now: Option<bool>,
-    /// `liveBroadcastDetails.startTimestamp`（epoch ms）。
-    /// 予約配信のロビーではここに予定開始が入る（2026-11 実応答で確認）。
-    pub start_ms: Option<i64>,
-    /// `liveBroadcastDetails.endTimestamp`（epoch ms）。
-    pub end_ms: Option<i64>,
-    /// `liveBroadcastDetails.scheduledStartTimestamp`（epoch ms）。
-    /// 要件が名指しするフィールドだが実応答では未確認。
-    /// 返ってくる環境では startTimestamp に優先して予定時刻とする。
-    pub scheduled_start_ms: Option<i64>,
-    /// `liveBroadcastDetails` オブジェクトの有無。
-    pub has_details: bool,
-    /// `videoDetails.isUpcoming`（公開予定のロビー動画か）。
-    pub is_upcoming: bool,
-}
-
 /// `player` 応答 JSON から放送状態を取る。`liveBroadcastDetails` は
 /// `microformat.playerMicroformatRenderer` 配下にあるため、固定パスではなく
 /// キー名で探索する（extract_broadcast_window と同じ方針）。
@@ -482,29 +402,6 @@ fn parse_broadcast_status(v: &Value) -> BroadcastStatus {
             .and_then(|b| b.as_bool())
             .unwrap_or(false),
     }
-}
-
-/// 遅延解決用に `player` 応答 1 件から切り出したメタ一式
-/// （FR-53・FR-56・FR-85、仕様決定 CD・CG・DJ）。kind 判定は `metaresolve`
-/// モジュールが行い、ここでは生の値と正規化済みの投稿日時だけを持つ。
-#[derive(Debug, Clone, Default)]
-pub struct MetaSnapshot {
-    /// 投稿日時（UTC へ正規化した `"YYYY-MM-DDTHH:MM:SS+00:00"`）。
-    /// `playerMicroformatRenderer.publishDate` を優先し、無ければ `uploadDate`。
-    /// 欠落・解釈不能は None（呼び出し側は published_at を維持する）。
-    pub published_at: Option<String>,
-    /// `liveBroadcastDetails` 系の放送状態（parse_broadcast_status と同じ切り出し）。
-    pub broadcast: BroadcastStatus,
-    /// `videoDetails.isLiveContent`。実放送系かどうかの補助材料。
-    /// プレミア公開は通常動画資産の放送形で false が出る（2026-11 実応答で確認）。
-    pub is_live_content: Option<bool>,
-    /// `playabilityStatus.status`（"OK" / "LIVE_STREAM_OFFLINE" / "UNPLAYABLE" 等）。
-    /// 再生状態は kind 判定の補助にだけ使う（単独では判定しない暫定解釈）。
-    pub playability: Option<String>,
-    /// `videoDetails.shortDescription`（FR-85、仕様決定 DJ）。
-    /// `parse_description` と同じく欠落・非文字列は空文字列に潰す
-    /// （呼び出し側は空文字も「解決済み・説明なし」として videos へ書く）。
-    pub description: String,
 }
 
 /// `player` 応答から遅延解決用のメタ一式を取る。
@@ -540,95 +437,6 @@ fn parse_meta_snapshot(v: &Value) -> MetaSnapshot {
             .unwrap_or_default()
             .to_string(),
     }
-}
-
-/// epoch ミリ秒を `"YYYY-MM-DDTHH:MM:SS+00:00"`（UTC の ISO 表記）へ戻す。
-/// `iso8601_ms` の逆変換。civil-from-days（Howard Hinnant）で曜日を
-/// 使わず日付を復元する。
-fn iso_utc(ms: i64) -> String {
-    let days = ms.div_euclid(86_400_000);
-    let rem = ms.rem_euclid(86_400_000);
-    let (h, mi, s) = (rem / 3_600_000, (rem / 60_000) % 60, (rem / 1_000) % 60);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if mo <= 2 { y + 1 } else { y };
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}+00:00")
-}
-
-/// `"YYYY-MM-DDTHH:MM:SS(.sss)?(Z|±HH:MM)"` を epoch ミリ秒へ変換する最小パーサ。
-/// YouTube の liveBroadcastDetails タイムスタンプ形式に限定して扱う。
-fn iso8601_ms(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    let num = |i: usize, n: usize| -> Option<i64> {
-        let slice = b.get(i..i + n)?;
-        if !slice.iter().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-        let mut x = 0i64;
-        for c in slice {
-            x = x * 10 + (c - b'0') as i64;
-        }
-        Some(x)
-    };
-    if b.len() < 19
-        || b[4] != b'-'
-        || b[7] != b'-'
-        || (b[10] != b'T' && b[10] != b' ')
-        || b[13] != b':'
-        || b[16] != b':'
-    {
-        return None;
-    }
-    let (y, mo, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
-    let (h, mi, sec) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || mi > 59 || sec > 60 {
-        return None;
-    }
-    // days-from-civil（Howard Hinnant の式）で 1970-01-01 からの日数を得る
-    let y2 = if mo <= 2 { y - 1 } else { y };
-    let era = y2.div_euclid(400);
-    let yoe = y2 - era * 400;
-    let mp = (mo + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    let mut ms = (days * 86_400 + h * 3_600 + mi * 60 + sec) * 1_000;
-    let mut i = 19;
-    if b.get(i) == Some(&b'.') {
-        i += 1;
-        let start = i;
-        while b.get(i).is_some_and(|c| c.is_ascii_digit()) {
-            i += 1;
-        }
-        let digits = i - start;
-        if digits == 0 {
-            return None;
-        }
-        // 小数秒はミリ秒（3 桁）へ丸める
-        let f = num(start, digits.min(3))?;
-        ms += f * 10i64.pow(3 - digits.min(3) as u32);
-    }
-    match b.get(i) {
-        None | Some(&b'Z') => {}
-        Some(sign @ (&b'+' | &b'-')) => {
-            let oh = num(i + 1, 2)?;
-            let om = if b.get(i + 3) == Some(&b':') {
-                num(i + 4, 2)?
-            } else {
-                num(i + 3, 2)?
-            };
-            let off = (oh * 3_600 + om * 60) * 1_000;
-            ms += if *sign == b'+' { -off } else { off };
-        }
-        _ => return None,
-    }
-    Some(ms)
 }
 
 /// HTML 中の `marker` 代入に続く JSON オブジェクトを取り出す。

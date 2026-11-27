@@ -653,7 +653,7 @@ export const en = {
   "settings.ops.imported": "Imported: {path}",
   "settings.ops.importFailed": "Import failed: {message}",
   "settings.ops.protectedNote":
-    "Local protected settings (ytdlp.po_token, ytdlp.path, mpv.extra_args, setup.deps_shown) are excluded from export and preserved on import.",
+    "Local protected settings (youtube.api_key, ytdlp.po_token, ytdlp.path, mpv.extra_args, setup.deps_shown) are excluded from export and preserved on import.",
   "settings.ops.dbSize": "Database size",
   "settings.ops.dbSize.desc": "Total of DB and WAL files",
   "settings.ops.dbSize.failed": "Failed to get size: {message}",
@@ -690,6 +690,23 @@ export const en = {
   "settings.deps.poToken.placeholder": "Not set (empty)",
   "settings.deps.poToken.desc":
     "Format: e.g. mweb.gvs+<token> (per yt-dlp PO Token Guide). Takes effect on the next call after saving",
+  // Phase 92: YouTube Data API v3 キー（FR-97、仕様決定 EC）
+  "settings.deps.youtubeApiKey": "YouTube Data API v3 key",
+  "settings.deps.youtubeApiKeyPlaceholder": "Not set (empty uses legacy mode)",
+  "settings.deps.youtubeApiKeyDesc":
+    "Optional (no OAuth, free tier). Saves the key locally; currently only Test connection calls the official API (search, metadata, and playlist import will switch in upcoming phases)",
+  "settings.deps.youtubeApiKeyShow": "Show",
+  "settings.deps.youtubeApiKeyHide": "Hide",
+  "settings.deps.youtubeApiKeyTest": "Test connection",
+  "settings.deps.youtubeApiKeyTesting": "Testing…",
+  "settings.deps.youtubeApiKeyTestOk": "Connection succeeded (1 unit used)",
+  "settings.deps.youtubeApiKeyTestFailed": "Connection failed: {reason}",
+  "settings.deps.youtubeApiKeyStatusUnset": "Unset",
+  "settings.deps.youtubeApiKeyStatusActive": "Active",
+  "settings.deps.youtubeApiKeyStatusKeyInvalid": "Invalid key",
+  "settings.deps.youtubeApiKeyStatusSharedQuota": "Shared quota exhausted",
+  "settings.deps.youtubeApiKeyStatusSearchQuota": "Search quota exhausted",
+  "settings.deps.youtubeApiKeyResetAt": "Resets at: {time}",
   "settings.deps.unsaved":
     "Dependent commands changed while saving (save again)",
   "settings.diag.title": "Diagnostics",

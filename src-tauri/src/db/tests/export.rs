@@ -492,3 +492,35 @@ fn validate_dump_enforces_boundaries_and_normalizes_playlist_channel_id() {
         Some("UCvalid00000000000000001")
     );
 }
+
+/// DB-LD-42: `youtube.api_key` が `LOCAL_PROTECTED_SETTINGS` に含まれ、
+/// `export_dump` から除外され、`import_dump` でもローカル既存値が保持され未設定 DB へ
+/// 注入されないことを検証する（FR-97、仕様決定 EC）。
+#[test]
+fn export_and_import_protect_youtube_api_key() {
+    let db = Db::connect_in_memory().unwrap();
+    db.setting_set("youtube.api_key", "AIzaSyLOCAL_KEEP")
+        .unwrap();
+    db.setting_set("ui.theme", "dark").unwrap();
+
+    let dump = db.export_dump().unwrap();
+    let keys: Vec<&str> = dump.settings.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(keys, vec!["ui.theme"]);
+    assert!(!keys.contains(&"youtube.api_key"));
+
+    let mut evil_dump = dump;
+    evil_dump.settings.push(ExportSetting {
+        key: "youtube.api_key".to_string(),
+        value: "AIzaSyEVIL_OVERWRITE".to_string(),
+    });
+    let changed = db.import_dump(&evil_dump).unwrap();
+    assert!(changed.is_empty(), "{changed:?}");
+    assert_eq!(
+        db.setting_get("youtube.api_key").unwrap().as_deref(),
+        Some("AIzaSyLOCAL_KEEP")
+    );
+
+    let clean = Db::connect_in_memory().unwrap();
+    clean.import_dump(&evil_dump).unwrap();
+    assert_eq!(clean.setting_get("youtube.api_key").unwrap(), None);
+}

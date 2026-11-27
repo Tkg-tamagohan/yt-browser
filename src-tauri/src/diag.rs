@@ -146,10 +146,12 @@ const SECRET_NAMES: &[&str] = &[
     "ipbits",
     "cookie",
     "cookies",
+    "x-goog-api-key",
+    "x-api-key",
 ];
 
 /// 設定キー名がこれらの断片を含むとき、その値全体を秘匿として "***" に
-/// 置き換える（値の中身を解析しない。`ytdlp.po_token` など）。
+/// 置き換える（値の中身を解析しない。`ytdlp.po_token` や `youtube.api_key` など）。
 const SECRET_SETTING_FRAGMENTS: &[&str] = &[
     "token",
     "secret",
@@ -157,6 +159,8 @@ const SECRET_SETTING_FRAGMENTS: &[&str] = &[
     "passwd",
     "credential",
     "cookie",
+    "api_key",
+    "apikey",
 ];
 
 /// 秘匿情報のマスク処理。置換規則をコンストラクタで確定し、テキストへ
@@ -226,9 +230,9 @@ impl Masker {
             ))
             .expect("re_json"),
             // `Authorization: Bearer xxx` / `Authorization: Basic xxx`、
-            // `Cookie:` / `Set-Cookie:` ヘッダ値（行末まで）
+            // `Cookie:` / `Set-Cookie:` / `X-Goog-Api-Key:` / `X-Api-Key:` ヘッダ値（行末まで）
             re_header: Regex::new(
-                r"(?im)^(\s*(?:authorization|cookie|set-cookie)\s*[:=]\s*(?:bearer|basic)?\s*)\S[^\r\n]*",
+                r"(?im)^(\s*(?:authorization|cookie|set-cookie|x-goog-api-key|x-api-key)\s*[:=]\s*(?:bearer|basic)?\s*)\S[^\r\n]*",
             )
             .expect("re_header"),
             // Windows ユーザーディレクトリのユーザー名
@@ -680,5 +684,66 @@ mod tests {
             .unwrap();
         let s: serde_json::Value = serde_json::from_str(&settings).unwrap();
         assert_eq!(s["ytdlp.po_token"], "***");
+    }
+
+    /// DB-DG-10: `youtube.api_key`（および `apikey` 断片を含む設定キー）が
+    /// `is_secret_setting` と `settings_json` で `"***"` へマスクされることを検証する（FR-97）。
+    #[test]
+    fn youtube_api_key_setting_is_masked() {
+        assert!(is_secret_setting("youtube.api_key"));
+        assert!(is_secret_setting("custom.apikey"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::connect(&dir.path().join("t.db")).unwrap();
+        db.setting_set("youtube.api_key", "AIzaSyDIAG_SECRET_KEY")
+            .unwrap();
+        db.setting_set("ui.theme", "dark").unwrap();
+
+        let resolver = YtDlpResolver::new(None);
+        let ctx = DiagContext {
+            db: &db,
+            ytdlp: &resolver,
+            log_dir: None,
+            data_dir: None,
+            config_dir: None,
+            home_dir: None,
+            windowing: "other",
+        };
+        let m = Masker::from_context(&ctx);
+        let json = settings_json(&ctx, &m).unwrap();
+        assert!(!json.contains("AIzaSyDIAG_SECRET_KEY"), "{json}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["youtube.api_key"], "***");
+        assert_eq!(v["ui.theme"], "dark");
+    }
+
+    /// DB-DG-11: `X-Goog-Api-Key` / `x-api-key` が HTTP ヘッダ・JSON・クエリ文字列表現の
+    /// いずれでも `Masker::mask` により `"***"` へマスクされることを検証する（FR-97）。
+    #[test]
+    fn mask_api_key_headers_json_and_query() {
+        let m = masker_with(&[]);
+        let raw = concat!(
+            "X-Goog-Api-Key: AIzaSyHEADER_SECRET_1\n",
+            "x-api-key: AIzaSyHEADER_SECRET_2\n",
+            "{\"x-goog-api-key\": \"AIzaSyJSON_SECRET_1\", \"x-api-key\": \"AIzaSyJSON_SECRET_2\"}\n",
+            "GET https://example.test/v?part=id&key=AIzaSyQUERY_SECRET_1&x-goog-api-key=AIzaSyQUERY_SECRET_2\n",
+        );
+        let masked = m.mask(raw);
+        for leaked in [
+            "AIzaSyHEADER_SECRET_1",
+            "AIzaSyHEADER_SECRET_2",
+            "AIzaSyJSON_SECRET_1",
+            "AIzaSyJSON_SECRET_2",
+            "AIzaSyQUERY_SECRET_1",
+            "AIzaSyQUERY_SECRET_2",
+        ] {
+            assert!(!masked.contains(leaked), "leaked {leaked} in:\n{masked}");
+        }
+        assert!(masked.contains("X-Goog-Api-Key: ***"), "{masked}");
+        assert!(masked.contains("x-api-key: ***"), "{masked}");
+        assert!(masked.contains(r#""x-goog-api-key": "***""#), "{masked}");
+        assert!(masked.contains(r#""x-api-key": "***""#), "{masked}");
+        assert!(masked.contains("key=***"), "{masked}");
+        assert!(masked.contains("x-goog-api-key=***"), "{masked}");
     }
 }
