@@ -111,9 +111,12 @@ impl LoadRetryState {
 
 /// `ended_tx` で emitter へ伝える終了通知（FR-95、仕様決定 EA）。
 /// `file-loaded` 前の `reason="error"` 失敗時のみ `error_kind` / `error_detail` を付与する。
+/// `kept_open` は `--keep-open=yes` の `eof-reached=true` 経由の EOF 終端（旧ファイルが
+/// 未アンロードで `loadfile replace` 時に `end-file(stop)` が発生する経路）のときのみ `true`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EndedSignal {
     pub reason: String,
+    pub kept_open: bool,
     pub error_kind: Option<String>,
     pub error_detail: Option<String>,
 }
@@ -122,6 +125,16 @@ impl EndedSignal {
     pub(crate) fn plain(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            kept_open: false,
+            error_kind: None,
+            error_detail: None,
+        }
+    }
+
+    fn eof_kept_open() -> Self {
+        Self {
+            reason: "eof".to_string(),
+            kept_open: true,
             error_kind: None,
             error_detail: None,
         }
@@ -130,6 +143,7 @@ impl EndedSignal {
     fn with_error(summary: PlaybackErrorSummary) -> Self {
         Self {
             reason: "error".to_string(),
+            kept_open: false,
             error_kind: Some(summary.kind.as_str().to_string()),
             error_detail: summary.detail,
         }
@@ -246,9 +260,12 @@ struct ArmedQueue {
     items: VecDeque<QueueArmItem>,
     loop_all: bool,
     seq: u64,
-    /// `loop_all` 時に `file-loaded` を挟まず連続したエラー終端回数。
-    /// キュー長以上に達したら全項目が再生不能とみなして無限ループを止める（FR-95）。
-    consecutive_errors: usize,
+    /// 直近に `take_next` で取り出して読み込み・再生中の項目の uid。
+    /// 再生中項目がキューから削除された後にエラー終端したとき、残存項目へ誤算入しないために追跡する（FR-95）。
+    current_uid: Option<i64>,
+    /// `loop_all` 時に `file-loaded` を挟まずエラー終端した現行キュー項目の uid 集合。
+    /// 現行 `items` の全項目がこの集合に含まれたら無限ループを止める（FR-95）。
+    failed_uids: HashSet<i64>,
 }
 
 impl ArmedQueue {
@@ -261,13 +278,19 @@ impl ArmedQueue {
         }
         self.items = items.into();
         self.loop_all = loop_all;
-        self.consecutive_errors = 0;
+        if self.items.is_empty() {
+            self.current_uid = None;
+            self.failed_uids.clear();
+        } else {
+            let valid: HashSet<i64> = self.items.iter().map(|it| it.uid).collect();
+            self.failed_uids.retain(|uid| valid.contains(uid));
+        }
         true
     }
 
-    /// `file-loaded` 到達時に連続エラー回数をリセットする。
+    /// `file-loaded` 到達時に連続エラー記録をリセットする。
     fn reset_error_streak(&mut self) {
-        self.consecutive_errors = 0;
+        self.failed_uids.clear();
     }
 
     /// 先頭を取り出す。`loop_all` のとき取り出した項目を末尾へ戻し、
@@ -276,27 +299,43 @@ impl ArmedQueue {
     fn take_next(&mut self) -> Option<QueueArmItem> {
         let next = self.items.pop_front()?;
         self.seq += 1;
+        self.current_uid = Some(next.uid);
         if self.loop_all {
             self.items.push_back(next.clone());
         }
         Some(next)
     }
 
-    /// 終端理由を考慮して次項目を取り出す（FR-95、仕様決定 EA）。
-    /// `loop_all` 時に `reason == "error"` がキュー項目数以上連続した場合
-    /// （1 項目ループの初回エラー失敗や全項目失敗ループ）は、際限ない再読み込みと
-    /// 失敗通知の反復を防ぐため継続を打ち切って `None` を返す。
-    fn take_next_for_end(&mut self, reason: &str) -> Option<QueueArmItem> {
+    /// 終端理由と終了した動画 ID を考慮して次項目を取り出す（FR-95、仕様決定 EA）。
+    /// `loop_all` 時にエラー終端した項目が現行のループ対象に含まれている場合のみその `uid` を
+    /// 失敗済みとして記録し、現行ループの全項目が失敗済みになった時点で継続を打ち切って `None` を返す。
+    /// 読み込み中に削除された項目の失敗は残存項目に対して数えないため、残り 1 件の未再生項目を
+    /// 巻き添えで打ち切るのを防ぐ。
+    fn take_next_for_end(&mut self, reason: &str, ended_video_id: &str) -> Option<QueueArmItem> {
         if reason != "error" {
-            self.consecutive_errors = 0;
+            self.failed_uids.clear();
             return self.take_next();
         }
         if self.loop_all {
             if self.items.is_empty() {
                 return None;
             }
-            self.consecutive_errors = self.consecutive_errors.saturating_add(1);
-            if self.consecutive_errors >= self.items.len() {
+            let failed_uid = match self.current_uid {
+                Some(uid) => self.items.iter().any(|it| it.uid == uid).then_some(uid),
+                None => self
+                    .items
+                    .back()
+                    .filter(|it| it.video_id == ended_video_id)
+                    .map(|it| it.uid),
+            };
+            if let Some(uid) = failed_uid {
+                self.failed_uids.insert(uid);
+            }
+            if self
+                .items
+                .iter()
+                .all(|it| self.failed_uids.contains(&it.uid))
+            {
                 return None;
             }
         }
@@ -677,10 +716,14 @@ impl MpvPlayer {
         self.terminal.completed()
     }
 
-    /// 終端理由を考慮して武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
-    /// `loop_all` 時の無限エラー再読み込み抑止を含む（FR-95、仕様決定 EA）。
-    pub(crate) fn take_next_for_end(&self, reason: &str) -> Option<QueueArmItem> {
-        lock(&self.armed).take_next_for_end(reason)
+    /// 終端理由と終了した動画 ID を考慮して武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
+    /// `loop_all` 時の無限エラー再読み込み抑止および削除済み項目の誤算入防止を含む（FR-95、仕様決定 EA）。
+    pub(crate) fn take_next_for_end(
+        &self,
+        reason: &str,
+        ended_video_id: &str,
+    ) -> Option<QueueArmItem> {
+        lock(&self.armed).take_next_for_end(reason, ended_video_id)
     }
 
     /// `close_on_eof=off` の eof 終端でインスタンスを残すときに呼ぶ
@@ -690,25 +733,16 @@ impl MpvPlayer {
     }
 
     /// 連続再生の次項目へ進む直前に `TerminalTracker` を次ファイル向けに整える（FR-95）。
-    /// - `reason == "eof"`：`--keep-open=yes` 下では `loadfile replace` が旧ファイルの
-    ///   `end-file (reason="stop")` を 1 回発火するため、先に `begin_replace()` を張ってから
-    ///   `ended_reason` を解除し、次項目が `file-loaded` 前に失敗しても診断へ届くようにする。
-    ///   戻り値 `true` は `begin_replace()` を張ったことを示す（`load_video` 失敗時に取り消す）。
-    /// - `reason == "error"`：旧ファイルの `end-file` は消費済みでアイドル状態のため、
-    ///   `ended_reason` のみを解除し `false` を返す。
-    pub(crate) fn prepare_continue_after_end(&self, reason: &str) -> bool {
-        match reason {
-            "eof" => {
-                self.terminal.begin_replace();
-                self.terminal.clear_ended_reason();
-                true
-            }
-            "error" => {
-                self.terminal.clear_ended_reason();
-                false
-            }
-            _ => false,
-        }
+    /// - `kept_open == true`（`--keep-open=yes` の `eof-reached=true` 経由）：
+    ///   `loadfile replace` が旧ファイルの `end-file (reason="stop")` を 1 回発火するため、
+    ///   先に `begin_replace()` を張ってから `ended_reason` を解除し、次項目が
+    ///   `file-loaded` 前に失敗しても診断へ届くようにする。戻り値 `true` は `begin_replace()` を
+    ///   張ったことを示す（`load_video` 失敗時に `cancel_replace()` で取り消す）。
+    /// - `kept_open == false` かつ `reason` が `"eof"` または `"error"`（`--keep-open=no` の
+    ///   `end-file(eof)` や読み込み失敗の `end-file(error)`）：旧ファイルの `end-file` は
+    ///   既に消費済みのため `begin_replace()` は張らず `ended_reason` のみを解除して `false` を返す。
+    pub(crate) fn prepare_continue_after_end(&self, reason: &str, kept_open: bool) -> bool {
+        prepare_terminal_for_continue(&self.terminal, reason, kept_open)
     }
 
     /// SponsorBlock 状態・シークの現在世代番号を返す。
@@ -1655,7 +1689,7 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                     && data.as_bool().unwrap_or(false)
                     && player.terminal.on_eof()
                 {
-                    let _ = player.ended_tx.send(EndedSignal::plain("eof"));
+                    let _ = player.ended_tx.send(EndedSignal::eof_kept_open());
                 }
                 // PiP のアスペクト追従（FR-19、仕様決定 AL）。
                 // 比率が変わったときだけ窓を再フィットする（同一値の再通知や
@@ -1798,6 +1832,26 @@ async fn wait_for_load_error_snapshot(
 /// `video_unavailable` は再送しても結果が変わらないため自動再送を省く（仕様決定 EA）。
 fn should_retry_load_error(kind: PlaybackErrorKind) -> bool {
     kind != PlaybackErrorKind::VideoUnavailable
+}
+
+/// 連続再生の次項目読み込み前に `TerminalTracker` を整える純粋ヘルパ（FR-95）。
+/// `kept_open` が true（`eof-reached=true` 経由で旧ファイルが未アンロード）のときだけ
+/// `begin_replace()` を張ってから `clear_ended_reason()` し、`end-file(eof)`（`--keep-open=no`）や
+/// `end-file(error)` のように旧ファイルが既にアンロード済みの経路では `clear_ended_reason()` のみ行う。
+fn prepare_terminal_for_continue(
+    terminal: &TerminalTracker,
+    reason: &str,
+    kept_open: bool,
+) -> bool {
+    if kept_open {
+        terminal.begin_replace();
+        terminal.clear_ended_reason();
+        return true;
+    }
+    if matches!(reason, "eof" | "error") {
+        terminal.clear_ended_reason();
+    }
+    false
 }
 
 /// `file-loaded` 到達前の `end-file (reason="error")` を非同期で分類し、

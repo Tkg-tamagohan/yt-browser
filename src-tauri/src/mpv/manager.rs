@@ -634,6 +634,7 @@ impl PlayerManager {
                     signal = ended_rx.recv() => {
                         let signal = signal.unwrap_or_else(|_| EndedSignal::plain("unknown"));
                         let reason = signal.reason;
+                        let kept_open = signal.kept_open;
                         let error_kind = signal.error_kind;
                         let error_detail = signal.error_detail;
                         // close_on_eof=off で残されたインスタンスの後続終端
@@ -648,9 +649,10 @@ impl PlayerManager {
                         let mut continued = false;
                         let mut continued_video_id: Option<String> = None;
                         let mut continued_uid: Option<i64> = None;
-                        if let Some(next) = player.take_next_for_end(&reason) {
+                        if let Some(next) = player.take_next_for_end(&reason, &ended_video) {
                             let next_id = next.video_id.clone();
-                            let armed_replace = player.prepare_continue_after_end(&reason);
+                            let armed_replace =
+                                player.prepare_continue_after_end(&reason, kept_open);
                             match player.load_video(&next_id, 0.0).await {
                                 Ok(()) => {
                                     continued = true;

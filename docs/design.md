@@ -1249,8 +1249,8 @@ mpv との IPC 接続直後（`observe_property` 後、`loadfile` 前、ウォ�
 アプリログと UI 補助詳細（`errorDetail`）へ渡す文字列は、URL（`http`/`https`/`socks4`/`socks5`/`socks5h`/`ftp`、認証付きプロキシを含む）、引用符内文字列（`"[^"]*"` と `'[^']*'`）、最初のパス表記（`file://`、`[A-Za-z]:[\\/]`、`\\\\`、`~/`、行頭または空白直後の `/` から行末まで）、`=` 右辺（`=\S+`）の順に伏せ字処理を施し、先頭 200 文字へ切り詰める。
 `errorDetail` は許可リスト方式で作り、`video_unavailable` は上記の理由列挙値、`unknown` は最初の `ERROR:` 行のサニタイズ済み本体を入れ、他カテゴリには付けない。
 分類のたびにカテゴリとサニタイズ済みスナップショットをアプリログへ記録し、`video_unavailable` または IPC 切断済みのときは自動再送を省略して即座に `EndedSignal` から `player://ended` へ載せる。
-連続再生の次項目へ進む際は `prepare_continue_after_end` で `eof` 終端なら `begin_replace` と終端理由解除、`error` 終端なら終端理由解除を行い、正常→失敗→正常や連続失敗でも次項目の診断とキュー進行が落ちないようにする。
-あわせて `ArmedQueue::take_next_for_end` で `loop_all` 時の連続エラー回数を追跡し（`file-loaded` 到達と非エラー終端でリセット）、キュー項目数以上連続した場合（1 項目ループの永続失敗や全項目失敗ループ）は無限再読み込みを防ぐため継続を打ち切る。
+連続再生の次項目へ進む際は `EndedSignal.kept_open` に基づく `prepare_continue_after_end` で、`eof-reached=true`（旧ファイル未アンロード）のときだけ `begin_replace` と終端理由解除を行い、`end-file(eof)`（`--keep-open=no`）や `end-file(error)` では終端理由解除のみ行って正常→失敗→正常や連続失敗でも次項目の診断とキュー進行が落ちないようにする。
+あわせて `ArmedQueue::take_next_for_end` で `loop_all` 時の失敗項目 `uid` 集合（`failed_uids`、`file-loaded` 到達と非エラー終端でリセット）を追跡し、現行ループ対象に含まれる項目の失敗のみを数えて全項目が失敗済みになった時点で無限再読み込みを打ち切る（読み込み中に削除された項目の失敗で残存項目を打ち切らない）。
 mpv 自身の `mpv-*.log` は `diag_export` から除外したうえで、Unix 環境では起動前に `0600` 権限で事前作成して他ユーザーからの参照を防ぐ（`prepare_mpv_log_file`）。
 
 フロントエンドの純粋モジュール `src/lib/playback-error-logic.ts` は `errorKind` と `errorDetail` から日英の文言とアクション種別を解決する（`errorKind` 未指定時は従来の汎用文言、未知値は `unknown` へフォールバック）。
