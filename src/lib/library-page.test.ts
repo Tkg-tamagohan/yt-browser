@@ -3,7 +3,7 @@
 // PS-02: syncPlaylist は addedCount===0 で再取得せず最新トーストを出し、plHasMore===true 時は再取得をスキップする
 // PS-03: syncPlaylist は多重実行ガード・選択切替時の上書き防止・エラー時の syncingId 解除・削除および一括操作との競合抑止を行う
 // PS-04: syncPlaylist は大量追加（>100 件）でページングを維持し、空一覧からの同期でも全件または先頭ページを反映する
-// PS-05: 100 件ちょうどのプレイリストで末尾削除後に syncPlaylist した場合も既読範囲を再取得して同期行を表示する
+// PS-05: 100 件ちょうどのプレイリストで末尾削除後に syncPlaylist した場合も既読範囲を再取得して同期行を表示し、再取得中の Undo も syncPromise で直列化される
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { invokeMock, notifyMock, loadLibraryMock } = vi.hoisted(() => ({
@@ -434,5 +434,95 @@ describe("library-page playlist sync", () => {
     expect(lib.playlistItems[99]).toEqual(syncedNew);
     expect(lib.plHasMore).toBe(false);
     lib.dispose();
+
+    // 同期の再取得中に取り消しを実行しても syncPromise 完了まで復元を待機し、
+    // 再取得（syncedPos99）と復元（orig99）の双方が欠落しないこと
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const raceInitial = Array.from({ length: 100 }, (_, i) =>
+      makeEntry(i, i === 99 ? "orig99" : `race${String(i).padStart(7, "0")}`),
+    );
+    const orig99 = raceInitial[99];
+    const syncedPos99 = makeEntry(99, "syncedPos99");
+    const restoredOrig99 = makeEntry(100, "orig99");
+    const raceAfterSync = [...raceInitial.slice(0, 99), syncedPos99];
+    const racePlBefore = makePlaylist({ id: 41, itemCount: 100 });
+    const racePlAfter = makePlaylist({
+      id: 41,
+      itemCount: 100,
+      syncedAt: "2026-11-27T18:00:00+00:00",
+    });
+
+    const reloadDef = deferred<PlaylistEntry[]>();
+    const restoreDef = deferred<PlaylistEntry>();
+    let raceSynced = false;
+    let syncCallCount = 0;
+    let restoreCallCount = 0;
+
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          if (args?.afterPosition === null && !raceSynced) {
+            return Promise.resolve(raceInitial);
+          }
+          if (args?.afterPosition === null && raceSynced) {
+            return reloadDef.promise;
+          }
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_remove") {
+          return Promise.resolve(orig99);
+        }
+        if (cmd === "playlist_sync") {
+          syncCallCount += 1;
+          raceSynced = true;
+          return Promise.resolve({ playlist: racePlAfter, addedCount: 1 });
+        }
+        if (cmd === "playlist_item_restore") {
+          restoreCallCount += 1;
+          return restoreDef.promise;
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const raceLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    raceLib.va.playlists = [racePlBefore];
+    await raceLib.selectPlaylist(racePlBefore);
+    expect(raceLib.playlistItems).toHaveLength(100);
+    expect(raceLib.plHasMore).toBe(true);
+
+    await raceLib.removeItem(orig99);
+    const undoAction = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+    expect(undoAction?.run).toBeTypeOf("function");
+
+    // syncPlaylist が playlist_sync 完了後に playlist_items 再取得を待機している間に Undo を発火する
+    const syncTask = raceLib.syncPlaylist();
+    await vi.waitFor(() => expect(raceSynced).toBe(true));
+
+    undoAction!.run!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(restoreCallCount).toBe(0);
+
+    // syncPlaylist の再取得が完了した後に復元が開始され、復元中の再同期は抑止される
+    reloadDef.resolve(raceAfterSync);
+    await syncTask;
+    await vi.waitFor(() => expect(restoreCallCount).toBe(1));
+    expect(raceLib.playlistItems).toHaveLength(100);
+    expect(raceLib.playlistItems[99]).toEqual(syncedPos99);
+
+    await raceLib.syncPlaylist();
+    expect(syncCallCount).toBe(1);
+
+    restoreDef.resolve(restoredOrig99);
+    await vi.waitFor(() => expect(raceLib.playlistItems).toHaveLength(101));
+    expect(raceLib.playlistItems[99]).toEqual(syncedPos99);
+    expect(raceLib.playlistItems[100]).toEqual(restoredOrig99);
+    expect(raceLib.va.playlists[0].itemCount).toBe(101);
+    expect(raceLib.plHasMore).toBe(false);
+    raceLib.dispose();
   });
 });

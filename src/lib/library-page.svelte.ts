@@ -102,8 +102,11 @@ export function createLibraryPageState(opts: Options) {
   let importName = $state("");
   let importing = $state(false);
   let syncingId = $state<number | null>(null);
+  let syncPromise: Promise<void> | null = null;
   // 項目削除の飛行中件数をプレイリスト ID ごとに数え、syncPlaylist との並走を防ぐ
   const removingIds = new Map<number, number>();
+  // 項目復元の飛行中件数をプレイリスト ID ごとに数え、syncPlaylist との並走を防ぐ
+  const restoringIds = new Map<number, number>();
 
   // 項目の並べ替え（FR-11、仕様決定 T）。DnD はドラッグ中の行番号と
   // ホバー先の番号を持ち、ドロップ時に一括 reorder として保存する
@@ -635,55 +638,61 @@ export function createLibraryPageState(opts: Options) {
       plId === null ||
       syncingId !== null ||
       sortBusy ||
-      (removingIds.get(plId) ?? 0) > 0
+      (removingIds.get(plId) ?? 0) > 0 ||
+      (restoringIds.get(plId) ?? 0) > 0
     ) {
       return;
     }
     syncingId = plId;
-    try {
-      const res = await invoke<PlaylistSyncOutcome>("playlist_sync", {
-        playlistId: plId,
-      });
-      ++listsReq;
-      va.playlists = va.playlists.map((p) =>
-        p.id === res.playlist.id ? res.playlist : p,
-      );
-      notify(
-        res.addedCount > 0
-          ? t("library.playlist.synced", {
-              name: res.playlist.name,
-              count: res.addedCount,
-            })
-          : t("library.playlist.syncedNoChanges", {
-              name: res.playlist.name,
-            }),
-      );
-      if (selectedId === plId && res.addedCount > 0 && (!plHasMore || plTailDirty)) {
-        const req = ++itemsReq;
-        const prevLen = playlistItems.length;
-        const pageLimit =
-          !plHasMore && res.addedCount <= PL_PAGE
-            ? null
-            : prevLen === 0
-              ? PL_PAGE
-              : prevLen + PL_PAGE;
-        const items = await invoke<PlaylistEntry[]>("playlist_items", {
+    const run = (async () => {
+      try {
+        const res = await invoke<PlaylistSyncOutcome>("playlist_sync", {
           playlistId: plId,
-          afterPosition: null,
-          limit: pageLimit,
         });
-        if (req !== itemsReq || selectedId !== plId) return;
-        playlistItems = items;
-        const last = items[items.length - 1];
-        plTailPos = last ? last.position : null;
-        plHasMore = pageLimit !== null && items.length >= pageLimit;
-        plTailDirty = false;
+        ++listsReq;
+        va.playlists = va.playlists.map((p) =>
+          p.id === res.playlist.id ? res.playlist : p,
+        );
+        notify(
+          res.addedCount > 0
+            ? t("library.playlist.synced", {
+                name: res.playlist.name,
+                count: res.addedCount,
+              })
+            : t("library.playlist.syncedNoChanges", {
+                name: res.playlist.name,
+              }),
+        );
+        if (selectedId === plId && res.addedCount > 0 && (!plHasMore || plTailDirty)) {
+          const req = ++itemsReq;
+          const prevLen = playlistItems.length;
+          const pageLimit =
+            !plHasMore && res.addedCount <= PL_PAGE
+              ? null
+              : prevLen === 0
+                ? PL_PAGE
+                : prevLen + PL_PAGE;
+          const items = await invoke<PlaylistEntry[]>("playlist_items", {
+            playlistId: plId,
+            afterPosition: null,
+            limit: pageLimit,
+          });
+          if (req !== itemsReq || selectedId !== plId) return;
+          playlistItems = items;
+          const last = items[items.length - 1];
+          plTailPos = last ? last.position : null;
+          plHasMore = pageLimit !== null && items.length >= pageLimit;
+          plTailDirty = false;
+        }
+      } catch (e) {
+        notify(t("library.playlist.syncFailed", { message: asErrorMessage(e) }));
+      } finally {
+        syncingId = null;
+        syncPromise = null;
       }
-    } catch (e) {
-      notify(t("library.playlist.syncFailed", { message: asErrorMessage(e) }));
-    } finally {
-      syncingId = null;
-    }
+    })();
+    syncPromise = run;
+    await run;
   }
 
   /// 並べ替え保存の直列化。飛行中に次の変更が来たら最新順で追い送りし、
@@ -1086,6 +1095,15 @@ export function createLibraryPageState(opts: Options) {
         label: t("library.undo"),
         run: () => {
           void (async () => {
+            // 同期と取り消し復元が並走すると ++itemsReq で同期の再取得が破棄されるため、
+            // 先行する同期を待ってから復元し、復元中も新しい同期をブロックする
+            if (syncingId === playlistId && syncPromise !== null) {
+              await syncPromise;
+            }
+            restoringIds.set(
+              playlistId,
+              (restoringIds.get(playlistId) ?? 0) + 1,
+            );
             try {
               const restored = await invoke<PlaylistEntry>(
                 "playlist_item_restore",
@@ -1122,6 +1140,10 @@ export function createLibraryPageState(opts: Options) {
               notify(
                 t("library.restoreFailed", { message: asErrorMessage(e) }),
               );
+            } finally {
+              const next = (restoringIds.get(playlistId) ?? 1) - 1;
+              if (next <= 0) restoringIds.delete(playlistId);
+              else restoringIds.set(playlistId, next);
             }
           })();
         },
