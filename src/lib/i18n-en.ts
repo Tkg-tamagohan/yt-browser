@@ -694,7 +694,7 @@ export const en = {
   "settings.deps.youtubeApiKey": "YouTube Data API v3 key",
   "settings.deps.youtubeApiKeyPlaceholder": "Not set (empty uses legacy mode)",
   "settings.deps.youtubeApiKeyDesc":
-    "Optional (no OAuth, free tier). When set, prioritizes the official API for search, metadata, and playlist import, falling back transparently on quota or errors",
+    "Optional (no OAuth, free tier). Currently only key saving and connection testing use the official API (search, metadata, and playlist import will switch in upcoming phases)",
   "settings.deps.youtubeApiKeyShow": "Show",
   "settings.deps.youtubeApiKeyHide": "Hide",
   "settings.deps.youtubeApiKeyTest": "Test connection",

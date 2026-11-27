@@ -211,7 +211,7 @@ pub async fn data_export(path: String, db: State<'_, Db>) -> Result<(), UiError>
 }
 
 /// `data_import`（FR-62・FR-94、仕様決定 CM・DX）。`data_export` が書き出した JSON を
-/// 読み込み、対象テーブルをダンプ内容で置き換える（ローカル保護 4 キーは保持）。
+/// 読み込み、対象テーブルをダンプ内容で置き換える（ローカル保護 5 キーは保持）。
 /// ファイルの読み取り・形式検証に失敗した場合は DB を変更しない。
 /// インポート成功後は、稼働中プレイヤーの `pip.fit_aspect` 同期、変化した非保護設定の
 /// `settings://changed` 差分送出、`FeedPoller::sync_after_import()`、

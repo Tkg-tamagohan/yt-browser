@@ -136,7 +136,16 @@
   let notices = $state<string[]>([]);
   let ytApiStatus = $state<YtApiStatus | null>(null);
   let ytApiTesting = $state(false);
-  let ytApiTestResult = $state<YtApiTestOutcome | null>(null);
+  let ytApiTestState = $state<{
+    testedKey: string;
+    outcome: YtApiTestOutcome;
+  } | null>(null);
+  const ytApiTestResult = $derived(
+    ytApiTestState !== null &&
+      ytApiTestState.testedKey === form.youtubeApiKey.trim()
+      ? ytApiTestState.outcome
+      : null,
+  );
   // DB に最後に書き込んだ画質式（読込時点では読み取った値）。
   // 書込み済みと適用完了を分けて追うため、即時適用の成否とは独立に進める
   let persistedFormat = $state("");
@@ -888,7 +897,7 @@
         ytApiKeySaved = true;
       }
       if (ytApiKeySaved) {
-        ytApiTestResult = null;
+        ytApiTestState = null;
         await refreshYtApiStatus();
       }
 
@@ -1012,18 +1021,25 @@
 
   async function handleTestYtApi(): Promise<void> {
     if (ytApiTesting) return;
+    const testedKey = form.youtubeApiKey.trim();
+    if (!testedKey) {
+      ytApiTestState = null;
+      return;
+    }
     ytApiTesting = true;
     try {
-      const trimmed = form.youtubeApiKey.trim();
       const result = await invoke<YtApiTestOutcome>("ytapi_test_connection", {
-        apiKey: trimmed || null,
+        apiKey: testedKey,
       });
       if (!disposed) {
-        ytApiTestResult = result;
+        ytApiTestState = { testedKey, outcome: result };
       }
     } catch (e) {
       if (!disposed) {
-        ytApiTestResult = { ok: false, reason: asErrorMessage(e) };
+        ytApiTestState = {
+          testedKey,
+          outcome: { ok: false, reason: asErrorMessage(e) },
+        };
       }
     } finally {
       if (!disposed) {
@@ -1270,7 +1286,7 @@
   let categoriesSection: SettingsCategoriesSection | undefined;
 
   async function handleImported(): Promise<void> {
-    ytApiTestResult = null;
+    ytApiTestState = null;
     await Promise.all([
       loadSettings(),
       refreshUiPrefs(),
@@ -1509,6 +1525,9 @@
           {ytApiTesting}
           {ytApiTestResult}
           onTestYtApi={handleTestYtApi}
+          onYoutubeApiKeyInput={() => {
+            ytApiTestState = null;
+          }}
         />
       </div>
 

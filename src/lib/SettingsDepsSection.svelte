@@ -40,6 +40,7 @@
     ytApiTesting,
     ytApiTestResult,
     onTestYtApi,
+    onYoutubeApiKeyInput,
   }: {
     loading: boolean;
     ytdlpPath: string;
@@ -49,6 +50,7 @@
     ytApiTesting: boolean;
     ytApiTestResult: YtApiTestOutcome | null;
     onTestYtApi: () => void | Promise<void>;
+    onYoutubeApiKeyInput?: () => void;
   } = $props();
 
   let showApiKey = $state(false);
@@ -114,6 +116,7 @@
           type={showApiKey ? "text" : "password"}
           class="path-input"
           bind:value={youtubeApiKey}
+          oninput={() => onYoutubeApiKeyInput?.()}
           placeholder={t("settings.deps.youtubeApiKeyPlaceholder")}
           aria-describedby="youtube-api-key-desc"
           autocomplete="off"
@@ -146,7 +149,7 @@
         <button
           type="button"
           class="link"
-          disabled={ytApiTesting}
+          disabled={ytApiTesting || !youtubeApiKey.trim()}
           onclick={() => void onTestYtApi()}
         >
           {ytApiTesting

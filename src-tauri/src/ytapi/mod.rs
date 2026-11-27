@@ -364,18 +364,30 @@ impl YtApi {
         };
 
         let status = resp.status();
+        let bytes = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                let e = e.without_url();
+                if mutate_saved_state {
+                    self.record_transient_failure(api_key, now_utc_sec());
+                }
+                warn!(
+                    error = %e,
+                    status = status.as_u16(),
+                    "YouTube Data API 応答本文の受信に失敗"
+                );
+                return Err(YtApiError::Http(e));
+            }
+        };
         if status.is_success() {
-            let value = resp
-                .json::<Value>()
-                .await
-                .map_err(|e| YtApiError::Http(e.without_url()))?;
+            let value = serde_json::from_slice::<Value>(&bytes)?;
             if mutate_saved_state {
                 self.record_success(api_key, bucket);
             }
             return Ok(value);
         }
 
-        let body = resp.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes);
         let err = self.handle_error_response(
             bucket,
             status,
@@ -423,7 +435,9 @@ impl YtApi {
     ) -> YtApiError {
         let reasons = parse_error_reasons(body);
         let is_key_invalid = (status == StatusCode::BAD_REQUEST
-            && reasons.iter().any(|r| r == "keyInvalid"))
+            && reasons
+                .iter()
+                .any(|r| matches!(r.as_str(), "keyInvalid" | "API_KEY_INVALID")))
             || status == StatusCode::UNAUTHORIZED
             || (status == StatusCode::FORBIDDEN
                 && reasons.iter().any(|r| {
@@ -769,6 +783,10 @@ mod tests {
     async fn key_invalid_latch_and_hot_reload_only_on_trimmed_change() {
         let cases = [
             (400, r#"{"error":{"errors":[{"reason":"keyInvalid"}]}}"#),
+            (
+                400,
+                r#"{"error":{"errors":[{"reason":"badRequest"}],"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID"}]}}"#,
+            ),
             (401, r#"{"error":{"errors":[{"reason":"authError"}]}}"#),
             (403, r#"{"error":{"errors":[{"reason":"keyExpired"}]}}"#),
             (
@@ -1177,5 +1195,42 @@ mod tests {
         let reason = out.reason.unwrap();
         assert!(!reason.contains(key), "{reason}");
         assert!(lock(&api.state).transient_streak >= 1);
+
+        // ヘッダー到着後に本文受信でタイムアウトした場合も、日次クォータ超過に化けず一過性失敗となる
+        for (status_line, expect_status_msg) in [("200 OK", false), ("403 Forbidden", true)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let status_owned = status_line.to_string();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+                    let head = format!(
+                        "HTTP/1.1 {status_owned}\r\nContent-Type: application/json\r\nContent-Length: 32\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.flush().await;
+                    tokio::time::sleep(Duration::from_millis(350)).await;
+                }
+            });
+
+            let body_api =
+                YtApi::with_test_base_url(Some(key.to_string()), format!("http://{addr}"))
+                    .with_test_timeouts(Duration::from_millis(100), Duration::from_millis(100));
+            let body_out = body_api.test_connection(None).await;
+            assert!(
+                !body_out.ok,
+                "{status_line} (expect_status_msg={expect_status_msg})"
+            );
+            assert_eq!(
+                body_api.status().state,
+                YtApiAvailability::Active,
+                "body timeout must not trip quota breaker: {status_line}"
+            );
+            let st = lock(&body_api.state);
+            assert!(st.shared_quota_until_sec.is_none());
+            assert!(st.transient_streak >= 1);
+            assert!(st.transient_cooldown_until_sec.is_some());
+        }
     }
 }
