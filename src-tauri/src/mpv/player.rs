@@ -819,15 +819,9 @@ impl MpvPlayer {
         lock(&self.armed).seq
     }
 
-    /// 意図的な読み替え（`loadfile ... replace`）の予約を張る／取り消す。
-    /// 継続や画質変更以外の読み替え（セッション引き継ぎ）で発生する
-    /// 旧ファイルの end-file を終端扱いしないための公開口
-    pub(crate) fn begin_replace(&self) {
-        self.terminal.begin_replace();
-    }
-
-    pub(crate) fn cancel_replace(&self) {
-        self.terminal.cancel_replace();
+    /// 連続再生の次項目読み込み失敗時に `prepare_continue_after_end` の予約・状態を巻き戻す。
+    pub(crate) fn cancel_prepared_replace(&self, armed_replace: bool) {
+        self.terminal.cancel_prepared_replace(armed_replace);
     }
 
     /// 生存確認用の軽いコマンド（ウォッチドッグの ping、仕様決定 BE）。
@@ -901,6 +895,7 @@ impl MpvPlayer {
     /// 従来の reason=error 終端経路へ流す。
     async fn retry_failed_load(self: &Arc<Self>, retry_gen: u64, expected_load_gen: u64) {
         tokio::time::sleep(LOAD_RETRY_DELAY).await;
+        let _switch = self.video_switch_op.lock().await;
         if self.load_gen.load(Ordering::SeqCst) != expected_load_gen {
             return;
         }
@@ -913,8 +908,10 @@ impl MpvPlayer {
             instance_id = self.instance_id(),
             "ロード失敗のため loadfile を再送する"
         );
+        self.terminal.mark_loading_started();
         self.begin_loading();
         if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
+            self.terminal.cancel_prepared_replace(false);
             self.end_loading();
             tracing::warn!(
                 instance_id = self.instance_id(),
@@ -1059,9 +1056,31 @@ impl MpvPlayer {
 
     /// 連続再生: 同じ mpv プロセスで別動画を再生する。`start_sec` は開始位置
     /// （秒、0 で先頭）。旧ファイルの end-file は emitter が既に消費済みか
-    /// 呼び出し側が begin_replace で抑止する前提で、ここでは張らない。
+    /// 呼び出し側が `prepare_continue_after_end` で整える前提で、ここでは予約を張らない。
     /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
     pub(crate) async fn load_video(&self, video_id: &str, start_sec: f64) -> Result<(), MpvError> {
+        self.load_video_inner(video_id, start_sec, false).await
+    }
+
+    /// 既存インスタンスの動画差し替え（`PlayerManager::switch` 経路）。
+    /// `video_switch_op` 内で `TerminalTracker::prepare_replace` と `arm_load` を直列化し、
+    /// `handle_load_error` 待機中や自動再送待機中（旧ファイルは既にアンロード済み）に
+    /// 動画切替しても不要な `pending_replaces` や旧 `ended_reason` で新動画の失敗を
+    /// 飲み込まないようにする（FR-95、仕様決定 EA）。
+    pub(crate) async fn switch_video(
+        &self,
+        video_id: &str,
+        start_sec: f64,
+    ) -> Result<(), MpvError> {
+        self.load_video_inner(video_id, start_sec, true).await
+    }
+
+    async fn load_video_inner(
+        &self,
+        video_id: &str,
+        start_sec: f64,
+        prepare_replace: bool,
+    ) -> Result<(), MpvError> {
         // 旧動画の SponsorBlock 予約シークが次動画へ誤発火しないよう即座に無効化し、
         // 実行中のスキップシークがあれば完了を待ってから loadfile を発行する。
         self.sponsor_gen.fetch_add(1, Ordering::SeqCst);
@@ -1069,8 +1088,12 @@ impl MpvPlayer {
         self.reset_sponsor_state();
         let url = format!("https://www.youtube.com/watch?v={video_id}");
         let options = json!({ "start": format!("{start_sec}") });
+        let armed_replace = prepare_replace.then(|| self.terminal.prepare_replace());
         self.arm_load(&url, options.clone());
         if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
+            if let Some(armed) = armed_replace {
+                self.terminal.cancel_prepared_replace(armed);
+            }
             self.end_loading();
             return Err(MpvError::Ipc(e));
         }
@@ -1137,6 +1160,7 @@ impl MpvPlayer {
             }
             PlayerAction::Quality { format } => {
                 // 画質式を差し替え、現在位置を保持してリロードする（設計書 §4.3）
+                let _switch = self.video_switch_op.lock().await;
                 self.ipc
                     .read()
                     .await
@@ -1148,12 +1172,13 @@ impl MpvPlayer {
                     .await?;
                 let pos = self.snapshot().position;
                 let url = format!("https://www.youtube.com/watch?v={}", self.video_id());
-                // replace で発生する旧ファイルの end-file は終了とみなさない
-                self.terminal.begin_replace();
+                // 未アンロード時だけ replace 予約を張り、既に end-file(error) 済みの場合は
+                // ended_reason のみ解除して新ロードの失敗が飲み込まれるのを防ぐ（FR-95）
+                let armed_replace = self.terminal.prepare_replace();
                 let options = json!({ "start": format!("{}", pos) });
                 self.arm_load(&url, options.clone());
                 if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
-                    self.terminal.cancel_replace();
+                    self.terminal.cancel_prepared_replace(armed_replace);
                     self.end_loading();
                     return Err(MpvError::Ipc(e));
                 }
@@ -1869,6 +1894,7 @@ fn prepare_terminal_for_continue(
     }
     if matches!(reason, "eof" | "error") {
         terminal.clear_ended_reason();
+        terminal.mark_loading_started();
     }
     false
 }

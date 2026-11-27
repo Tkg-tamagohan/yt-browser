@@ -1,6 +1,6 @@
 //! 終端イベント（end-file / ソケット切断）と意図的リロードの区別を管理する。
 use crate::util::lock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 /// 終端イベント（end-file / ソケット切断）と意図的なリロードの区別を管理する。
@@ -17,6 +17,11 @@ pub(crate) struct TerminalTracker {
     /// インスタンスの後続の終端（mpv 窓の手動終了等）でも維持するための
     /// フラグで、次ファイルのロード完了またはリセットで解除する。
     kept_eof: AtomicU32,
+    /// 直前の実 `end-file` により mpv がファイルをアンロード済みの状態か。
+    /// `handle_load_error` の 200ms 待機中や自動再送の 1.5 秒待機中に `switch` や画質変更で
+    /// `loadfile replace` するとき、不要な `pending_replaces` を積んで次動画の失敗を
+    /// 飲み込むのを防ぐ（FR-95、仕様決定 EA）。
+    unloaded: AtomicBool,
 }
 
 impl TerminalTracker {
@@ -30,25 +35,66 @@ impl TerminalTracker {
         self.pending_replaces.fetch_sub(1, Ordering::SeqCst);
     }
 
+    /// `switch` や画質変更で `loadfile ... replace` を発行する直前に呼ぶ（FR-95）。
+    /// 旧ファイルが未アンロード（再生中・読み込み中・`--keep-open=yes` の EOF 待機中）なら
+    /// `pending_replaces` を +1 しつつ `ended_reason` を解除して `true` を返す。
+    /// 既に `end-file` でアンロード済み（`handle_load_error` の 200ms 待機中や自動再送の
+    /// 1.5 秒待機中を含む）であれば `pending_replaces` は積まず、`ended_reason` のみを
+    /// 解除して `unloaded` を `false` に戻し `false` を返す。
+    pub(crate) fn prepare_replace(&self) -> bool {
+        let mut ended = lock(&self.ended_reason);
+        *ended = None;
+        if self.unloaded.swap(false, Ordering::SeqCst) {
+            false
+        } else {
+            self.pending_replaces.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
+
+    /// `prepare_replace` 後の `loadfile_replace` 自体が失敗したときに状態を巻き戻す。
+    pub(crate) fn cancel_prepared_replace(&self, armed_replace: bool) {
+        let _ended = lock(&self.ended_reason);
+        if armed_replace {
+            self.cancel_replace();
+        } else {
+            self.unloaded.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// アンロード済みの状態から新規 `loadfile` を送る直前に呼ぶ（非 keep-open 継続や自動再送）。
+    pub(crate) fn mark_loading_started(&self) {
+        let _ended = lock(&self.ended_reason);
+        self.unloaded.store(false, Ordering::SeqCst);
+    }
+
     /// 新しいファイルのロード完了。end-file の取りこぼしでカウンタが残った場合の掃除。
     /// mpv は同一ソケット上で旧ファイルの end-file を新ファイルの file-loaded より
     /// 先に送るため、この時点で記録済みの終端理由は必ず旧ファイルのもの。
     /// 連続再生（次項目の loadfile）ではここで ended_reason をリセットしないと
     /// 2 本目以降の終端が受理されずキューが停止する。
     pub(crate) fn on_file_loaded(&self) {
+        let mut ended = lock(&self.ended_reason);
         self.pending_replaces.store(0, Ordering::SeqCst);
         self.kept_eof.store(0, Ordering::SeqCst);
-        *lock(&self.ended_reason) = None;
+        self.unloaded.store(false, Ordering::SeqCst);
+        *ended = None;
     }
 
     /// end-file を終端イベントとして処理するなら true を返し理由を記録する。
     /// replace 由来の end-file は消化して false を返す。二重記録はしない。
     pub(crate) fn on_end_file(&self, reason: &str) -> bool {
+        let mut ended = lock(&self.ended_reason);
         if self.pending_replaces.load(Ordering::SeqCst) > 0 {
             self.pending_replaces.fetch_sub(1, Ordering::SeqCst);
             return false;
         }
-        self.record(reason)
+        if ended.is_some() {
+            return false;
+        }
+        *ended = Some(reason.to_string());
+        self.unloaded.store(true, Ordering::SeqCst);
+        true
     }
 
     /// `eof-reached=true`（keep-open 下で end-file が来ない経路の終端）。
@@ -106,9 +152,11 @@ impl TerminalTracker {
     /// プロセス再起動（仕様決定 BE）で全状態を初期値へ戻す。
     /// 記録済みの終端理由と残りの replace 予約を消す。
     pub(crate) fn reset(&self) {
-        *lock(&self.ended_reason) = None;
+        let mut ended = lock(&self.ended_reason);
+        *ended = None;
         self.pending_replaces.store(0, Ordering::SeqCst);
         self.kept_eof.store(0, Ordering::SeqCst);
+        self.unloaded.store(false, Ordering::SeqCst);
     }
 }
 

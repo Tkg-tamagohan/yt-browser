@@ -165,7 +165,7 @@ pub(crate) fn sanitize_line(line: &str) -> String {
         RE_URL.get_or_init(|| Regex::new(r"(?i)(?:https?|socks[45]h?|ftp)://\S+").unwrap());
     let re_quoted = RE_QUOTED.get_or_init(|| Regex::new(r#""[^"]*"|'[^']*'"#).unwrap());
     let re_path = RE_PATH.get_or_init(|| {
-        Regex::new(r"(?P<ws>^|\s)/.*|(?:file://|[A-Za-z]:[\\/]|\\\\|~/).*").unwrap()
+        Regex::new(r"(?P<ws>^|\s|=)/.*|(?:file://|[A-Za-z]:[\\/]|\\\\|~/).*").unwrap()
     });
     let re_kv = RE_KV.get_or_init(|| Regex::new(r"=\S+").unwrap());
 
@@ -566,6 +566,13 @@ mod tests {
         let s_file = sanitize_line("ERROR: failed file:///home/alice smith/cookies.txt");
         assert!(!s_file.contains("alice smith"), "got: {s_file}");
         assert_eq!(s_file, "ERROR: failed ***");
+
+        // `=` 直後の空白入り Unix パスも末尾まで伏せる
+        let s_eq_unix = sanitize_line("ERROR: bad option --cookies=/home/Alice Smith/cookies.txt");
+        assert!(!s_eq_unix.contains("Alice"), "got: {s_eq_unix}");
+        assert!(!s_eq_unix.contains("Smith"), "got: {s_eq_unix}");
+        assert!(!s_eq_unix.contains("cookies.txt"), "got: {s_eq_unix}");
+        assert_eq!(s_eq_unix, "ERROR: bad option --cookies=***");
 
         // 非パスのスラッシュ（1/3 等）は残る
         let s_ratio = sanitize_line("WARNING: Retrying (1/3) due to error");

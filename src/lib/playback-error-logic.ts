@@ -22,12 +22,12 @@ export type PlaybackErrorPayload = {
   errorDetail?: string | null;
 };
 
-const UNAVAILABLE_REASON_KEYS: Record<string, MessageKey> = {
-  private: "player.failed.reason.private",
-  unavailable: "player.failed.reason.unavailable",
-  members_only: "player.failed.reason.membersOnly",
-  upcoming: "player.failed.reason.upcoming",
-};
+const UNAVAILABLE_REASON_KEYS = new Map<string, MessageKey>([
+  ["private", "player.failed.reason.private"],
+  ["unavailable", "player.failed.reason.unavailable"],
+  ["members_only", "player.failed.reason.membersOnly"],
+  ["upcoming", "player.failed.reason.upcoming"],
+]);
 
 /// `player://ended`（`reason="error"`）からトースト表示用の文言とボタン種別を解決する。
 /// - `errorKind` が未指定または `null` の場合は従来互換の汎用文言（アクションなし）を返す。
@@ -48,7 +48,7 @@ export function resolvePlaybackErrorNotice(
   switch (ev.errorKind) {
     case "video_unavailable": {
       const reasonKey =
-        (ev.errorDetail ? UNAVAILABLE_REASON_KEYS[ev.errorDetail] : undefined) ??
+        (ev.errorDetail ? UNAVAILABLE_REASON_KEYS.get(ev.errorDetail) : undefined) ??
         "player.failed.reason.other";
       return {
         msg: t("player.failed.videoUnavailable", { reason: t(reasonKey) }),

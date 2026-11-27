@@ -94,6 +94,8 @@ describe("resolvePlaybackErrorNotice", () => {
       ["members_only", "再生できない動画です（理由：メンバー限定）"],
       ["upcoming", "再生できない動画です（理由：配信開始前）"],
       ["unexpected_reason", "再生できない動画です（理由：再生制限）"],
+      ["toString", "再生できない動画です（理由：再生制限）"],
+      ["constructor", "再生できない動画です（理由：再生制限）"],
       [null, "再生できない動画です（理由：再生制限）"],
       [undefined, "再生できない動画です（理由：再生制限）"],
     ];

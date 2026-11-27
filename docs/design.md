@@ -1246,17 +1246,18 @@ mpv との IPC 接続直後（`observe_property` 後、`loadfile` 前、ウォ�
 6. `network`：`timed out`、`Connection reset`、`Unable to download`
 7. `unknown`：上記のいずれにも一致しない、またはスナップショットが空
 
-アプリログと UI 補助詳細（`errorDetail`）へ渡す文字列は、URL（`http`/`https`/`socks4`/`socks5`/`socks5h`/`ftp`、認証付きプロキシを含む）、引用符内文字列（`"[^"]*"` と `'[^']*'`）、最初のパス表記（`file://`、`[A-Za-z]:[\\/]`、`\\\\`、`~/`、行頭または空白直後の `/` から行末まで）、`=` 右辺（`=\S+`）の順に伏せ字処理を施し、先頭 200 文字へ切り詰める。
+アプリログと UI 補助詳細（`errorDetail`）へ渡す文字列は、URL（`http`/`https`/`socks4`/`socks5`/`socks5h`/`ftp`、認証付きプロキシを含む）、引用符内文字列（`"[^"]*"` と `'[^']*'`）、最初のパス表記（`file://`、`[A-Za-z]:[\\/]`、`\\\\`、`~/`、行頭または空白・`=` 直後の `/` から行末まで）、`=` 右辺（`=\S+`）の順に伏せ字処理を施し、先頭 200 文字へ切り詰める。
 `errorDetail` は許可リスト方式で作り、`video_unavailable` は上記の理由列挙値、`unknown` は最初の `ERROR:` 行のサニタイズ済み本体を入れ、他カテゴリには付けない。
 分類のたびにカテゴリとサニタイズ済みスナップショットをアプリログへ記録し、`video_unavailable` または IPC 切断済みのときは自動再送を省略して即座に `EndedSignal` から `player://ended` へ載せる。
-連続再生の次項目へ進む際は `EndedSignal.kept_open` に基づく `prepare_continue_after_end` で、`eof-reached=true`（旧ファイル未アンロード）のときだけ `begin_replace` と終端理由解除を行い、`end-file(eof)`（`--keep-open=no`）や `end-file(error)` では終端理由解除のみ行って正常→失敗→正常や連続失敗でも次項目の診断とキュー進行が落ちないようにする。
+連続再生の次項目へ進む際は `EndedSignal.kept_open` に基づく `prepare_continue_after_end` で、`eof-reached=true`（旧ファイル未アンロード）のときだけ `begin_replace` と終端理由解除を行い、`end-file(eof)`（`--keep-open=no`）や `end-file(error)` では終端理由解除と読み込み開始記録のみ行って正常→失敗→正常や連続失敗でも次項目の診断とキュー進行が落ちないようにする。
+また動画切替（`switch_video`）や画質変更（`PlayerAction::Quality`）は `video_switch_op` 内で `TerminalTracker::prepare_replace` と `arm_load` を直列化し、`handle_load_error` の 200ms 待機中や自動再送の 1.5 秒待機中のように既に `end-file` でアンロード済みの状態へ割り込んでも不要な `pending_replaces` を積まず旧 `ended_reason` を解除して新動画の失敗・切断を取りこぼさないようにする（自動再送も `video_switch_op` で直列化する）。
 あわせて `ArmedQueue::take_next_for_end` で `loop_all` 時の失敗項目 `uid` 集合（`failed_uids`、`file-loaded` 到達と非エラー終端でリセット）を追跡し、初回武装時に現在動画の `uid` を捕捉したうえで現行ループ対象に含まれる項目の失敗のみを数えて全項目が失敗済みになった時点で無限再読み込みを打ち切る（読み込み中に削除された項目の失敗で残存項目を打ち切らず、フロント側の単独ループ切替でも同一動画の間は同じ `uid` を維持する）。
 mpv 自身の `mpv-*.log` は `diag_export` から除外したうえで、Unix 環境では起動前に `0600` 権限で事前作成して他ユーザーからの参照を防ぐ（`prepare_mpv_log_file`）。
 
 フロントエンドの純粋モジュール `src/lib/playback-error-logic.ts` は `errorKind` と `errorDetail` から日英の文言とアクション種別を解決する（`errorKind` 未指定時は従来の汎用文言、未知値は `unknown` へフォールバック）。
-`PlayerCards.svelte` は再生失敗通知を 12 秒表示かつ手動の閉じるボタン（`×`）付きで発行し、`blocked`、`js_challenge`、`no_format` では `/settings?section=deps` へ遷移して `afterNavigate` 経由で節フィルタ解除と依存コマンド節へのスクロールを行う「依存コマンド設定を開く」ボタンを、`unknown` では専用コマンド `diag_open_log_dir` を呼ぶ「ログフォルダを開く」ボタンを添える。
+`PlayerCards.svelte` は再生失敗通知を 12 秒表示かつ手動の閉じるボタン（`×`）付きで発行し、`blocked`、`js_challenge`、`no_format` では `/settings?section=deps` へ遷移して `afterNavigate` 経由で節フィルタ解除と依存コマンド節へのスクロール（別画面からの遷移時は `loadSettings` による上位節の展開完了後にスクロール）を行う「依存コマンド設定を開く」ボタンを、`unknown` では専用コマンド `diag_open_log_dir` を呼ぶ「ログフォルダを開く」ボタンを添える。
 
-回帰テストは DB-ED-01 〜 DB-ED-16（選別、優先順位、レート制限と地域制限の除外、署名解決失敗の分類、PO Token 破棄、認証付きプロキシ URL を含む伏せ字処理、上限破棄、終端印待機と世代打ち切り、再送合算と再送省略、連続失敗と正常→失敗→正常キューの終端受理、ループ再生の無限エラー再読み込み抑止、mpv ログ `0600` 権限保護、IPC コマンド送出と退避）と PE-01 〜 PE-05（全 7 カテゴリ、理由列挙、後方互換、未知値フォールバック、英語ロケール）、QS-05（単独ループ切替時の `uid` 維持）。
+回帰テストは DB-ED-01 〜 DB-ED-17（選別、優先順位、レート制限と地域制限の除外、署名解決失敗の分類、PO Token 破棄、認証付きプロキシ URL と `=/` パスを含む伏せ字処理、上限破棄、終端印待機と世代打ち切り、再送合算と再送省略、連続失敗と正常→失敗→正常キューの終端受理、ループ再生の無限エラー再読み込み抑止、アンロード済み待機中の動画切替・画質変更での終端保護、mpv ログ `0600` 権限保護、IPC コマンド送出と退避）と PE-01 〜 PE-05（全 7 カテゴリ、理由列挙、後方互換、未知値フォールバック、英語ロケール）、QS-05（単独ループ切替時の `uid` 維持）。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

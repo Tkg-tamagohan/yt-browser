@@ -769,3 +769,62 @@ fn prepare_mpv_log_file_restricts_permissions() {
         assert_eq!(mode2, 0o600, "既存の mpv ログも 0600 へ引き締めるべき");
     }
 }
+
+/// DB-ED-17: `handle_load_error` の 200ms 待機中や自動再送の 1.5 秒待機中に `switch` や画質変更で
+/// `prepare_replace` が呼ばれても、アンロード済み mpv に対して不要な `pending_replaces` を積まず
+/// 旧 `ended_reason` も解除し、差し替え先の `end-file(error)` / `Disconnected` を飲み込まない（FR-95）。
+#[test]
+fn prepare_replace_handles_unloaded_error_and_retry_windows() {
+    use super::super::terminal::TerminalTracker;
+
+    // 1. handle_load_error の 200ms 待機中（end-file(error) 受理直後・ended_reason=Some("error")）に
+    //    switch / 画質変更が割り込んだ場合
+    let t1 = TerminalTracker::default();
+    assert!(t1.on_end_file("error"));
+    assert!(
+        !t1.prepare_replace(),
+        "既に end-file(error) でアンロード済みのため pending_replaces を積んではいけない"
+    );
+    assert!(
+        t1.on_end_file("error"),
+        "差し替え先動画の読み込み失敗が飲み込まれず受理されるべき"
+    );
+
+    // 2. 自動再送の 1.5 秒待機中（ended_reason は解除済みだが未だ loadfile 再送前）に
+    //    switch / 画質変更が割り込んだ場合
+    let t2 = TerminalTracker::default();
+    assert!(t2.on_end_file("error"));
+    t2.clear_ended_reason();
+    assert!(
+        !t2.prepare_replace(),
+        "再送待機中で旧ファイル未ロードのため pending_replaces を積んではいけない"
+    );
+    assert!(
+        t2.on_disconnect(),
+        "差し替え後の切断イベントも旧 ended_reason に阻まれず受理されるべき"
+    );
+
+    // 3. 自動再送の loadfile を実際に送った後（mark_loading_started）や再生中・keep-open EOF 後は
+    //    従来どおり pending_replaces を 1 積み、旧 end-file(stop) を消化して次失敗を受理する
+    let t3 = TerminalTracker::default();
+    assert!(t3.on_end_file("error"));
+    t3.clear_ended_reason();
+    t3.mark_loading_started();
+    assert!(
+        t3.prepare_replace(),
+        "再送開始後はアクティブ読み込み中のため pending_replaces を積むべき"
+    );
+    assert!(!t3.on_end_file("stop"));
+    assert!(t3.on_end_file("error"));
+
+    // 4. prepare_replace 後に loadfile_replace 自体が失敗したときのロールバック
+    let t4 = TerminalTracker::default();
+    assert!(t4.on_end_file("error"));
+    let armed = t4.prepare_replace();
+    assert!(!armed);
+    t4.cancel_prepared_replace(armed);
+    assert!(
+        !t4.prepare_replace(),
+        "アンロード済み状態へのロールバック後も不要な pending_replaces を積まないべき"
+    );
+}

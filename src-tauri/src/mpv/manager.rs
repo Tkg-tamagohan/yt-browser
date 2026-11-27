@@ -365,11 +365,7 @@ impl PlayerManager {
         .ok_or(MpvError::NoSuchInstance(instance_id))?;
         let prev_video = player.video_id();
         persist_now(&self.db, &player, player.terminal_completed());
-        player.begin_replace();
-        if let Err(e) = player.load_video(video_id, start_sec).await {
-            player.cancel_replace();
-            return Err(e);
-        }
+        player.switch_video(video_id, start_sec).await?;
         player.set_queue(Vec::new(), false, None);
         // 再生開始時点で履歴行を確保（タイトルは media-title 変化で追従）
         if let Err(e) = self.db.history_upsert(video_id) {
@@ -665,9 +661,7 @@ impl PlayerManager {
                                     Self::spawn_sponsor_fetch(&db, &http, player.clone(), next_id);
                                 }
                                 Err(e) => {
-                                    if armed_replace {
-                                        player.cancel_replace();
-                                    }
+                                    player.cancel_prepared_replace(armed_replace);
                                     tracing::warn!(video_id = %next_id, error = %e, "連続再生の次項目ロードに失敗");
                                 }
                             }
