@@ -14,23 +14,30 @@
   } from "$lib/video-actions.svelte";
   import {
     asErrorMessage,
+    type SearchPage,
     type SearchResult,
   } from "$lib/players.svelte";
+  import {
+    applyInitialSearch,
+    applyLoadMoreSearch,
+    consumePendingOnly,
+    emptySearchPagination,
+    nextSearchCount,
+    removeBlockedChannelFromSearch,
+    SEARCH_PAGE,
+    shouldFetchMoreFromBackend,
+  } from "$lib/search-page-logic";
 
   let query = $state("");
-  let results = $state<SearchResult[]>([]);
+  let searchState = $state(emptySearchPagination());
+  let results = $derived(searchState.results);
   let searching = $state(false);
   let searchedOnce = $state(false);
-  // 「さらに読み込む」の状態（FR-25、仕様決定 AR）。
-  // ytsearch に継続が無いため、要求件数を段階的に増やして再取得し、
-  // 既表示と重複しない分だけ追記する
+  // 「さらに読み込む」の状態（FR-25・FR-100、仕様決定 AR・EF）。
+  // 累積 count を段階的に増やして再取得し、1 回の追記件数と最大件数（SEARCH_MAX）を制限しつつ
+  // 余剰候補は pending バッファで次クリックへ繰り越す
   let searchedQuery = $state("");
-  let shownLimit = $state(0);
-  let hasMore = $state(false);
-  const SEARCH_PAGE = 20;
-  // バックエンド search の件数上限（SEARCH_COUNT_MAX）に合わせる。
-  // 超過を要求しても丸められるため、到達時点でボタンを隠す
-  const SEARCH_MAX = 500;
+  let hasMore = $derived(searchState.hasMore);
 
   // お気に入り・プレイリスト行アクション用（FR-7）
   const va = createVideoActionState();
@@ -41,17 +48,15 @@
 
   async function doSearch(): Promise<void> {
     const q = query.trim();
-    if (!q) return;
+    if (!q || searching) return;
     searching = true;
     try {
-      const res = await invoke<SearchResult[]>("search", {
+      const res = await invoke<SearchPage>("search", {
         query: q,
         count: SEARCH_PAGE,
       });
-      results = res;
+      searchState = applyInitialSearch(res);
       searchedQuery = q;
-      shownLimit = SEARCH_PAGE;
-      hasMore = res.length >= SEARCH_PAGE;
       searchedOnce = true;
     } catch (e) {
       notify(t("search.failed", { message: asErrorMessage(e) }));
@@ -60,18 +65,19 @@
   }
 
   async function loadMore(): Promise<void> {
-    if (searching || !searchedQuery) return;
+    if (searching || !searchedQuery || !searchState.hasMore) return;
+    if (!shouldFetchMoreFromBackend(searchState)) {
+      searchState = consumePendingOnly(searchState);
+      return;
+    }
     searching = true;
-    const nextLimit = Math.min(shownLimit + SEARCH_PAGE, SEARCH_MAX);
+    const nextLimit = nextSearchCount(searchState);
     try {
-      const res = await invoke<SearchResult[]>("search", {
+      const res = await invoke<SearchPage>("search", {
         query: searchedQuery,
         count: nextLimit,
       });
-      const seen = new Set(results.map((r) => r.videoId));
-      results = [...results, ...res.filter((r) => !seen.has(r.videoId))];
-      shownLimit = nextLimit;
-      hasMore = res.length >= nextLimit && nextLimit < SEARCH_MAX;
+      searchState = applyLoadMoreSearch(searchState, res, nextLimit);
     } catch (e) {
       notify(t("search.failed", { message: asErrorMessage(e) }));
     }
@@ -107,7 +113,7 @@
         channelId: r.channelId,
         title: r.channelTitle ?? r.channelId,
       });
-      results = results.filter((x) => x.channelId !== r.channelId);
+      searchState = removeBlockedChannelFromSearch(searchState, r.channelId);
       notify(
         t("blocked.added", { title: r.channelTitle ?? r.channelId }),
       );

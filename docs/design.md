@@ -127,7 +127,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>`（`FeedPoller::force_refresh` に加えて `MetaResolver::wake_manual` を呼ぶ、FR-96） |
 | `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams`・`/shorts` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN。`/shorts` は FR-55・仕様決定 CF） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置（`videos_pos`・`streams_pos`・`shorts_pos`）、`errors`） |
-| `search` | `query`, `count?`（返す表示件数の上限で省略時 20、上限 500、累積 `count` を増やした再取得＋画面側の差分追記とし、任意 API キー有効時は `ytapi` `SearchSession` 10 分 TTL を優先、未設定や障害時は `yt::search` と条件付き `videos.list` 補強へフォールバック、FR-25、FR-100、仕様決定 AR、EF、§4.27） | `Result<Vec<SearchResult>>` |
+| `search` | `query`, `count?`（返す表示件数の上限で省略時 20、上限 500、累積 `count` を増やした再取得および画面側の増分上限と未表示バッファ管理とし、任意 API キー有効時は `ytapi` `SearchSession` 10 分 TTL を優先、未設定や障害時は `yt::search` と条件付き `videos.list` 補強へフォールバック、FR-25、FR-100、仕様決定 AR、EF、§4.27） | `Result<SearchPage>`（`items` と継続可否 `hasMore`） |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
 | `get_description` | `video_id` | `Result<String>`（`ytapi` `videos.list` の `snippet.description` を優先し、未設定や失敗や欠落時は InnerTube `player` の `videoDetails.shortDescription` へフォールバック。空や未設定は空文字列。FR-33、FR-98、仕様決定 BB、ED） |
 | `block_channel` | `channel_id`, `title` | `Result<()>` |
@@ -1310,13 +1310,15 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 ### 4.27 YouTube Data API v3 によるキーワード検索と動画説明文フィルタ補完（FR-100、仕様決定 EF）
 
 `ytapi/mod.rs` は純粋リーフモジュール（`crate::model` と `crate::util` のみ参照）のまま、`YtApiState` 内に `SearchSession`（10 分 TTL = `600` 秒、`SEARCH_MAX_PAGES_PER_CALL = 2`、`SEARCH_LIST_PAGE_SIZE = 50`）と `YtApi::search_videos`（決定論的テスト用の `search_videos_at`）を提供する。
-`commands/search.rs`（`search` およびテスト可能な `search_with`）が `ytapi`、`yt`、`filter` を調停し、フロントエンドの累積 `count` プロトコルと `search` コマンドの IPC 署名は変更しない。
+`commands/search.rs`（`search` およびテスト可能な `search_with`）が `ytapi`、`yt`、`filter` を調停し、フロントエンドの累積 `count` プロトコルを維持したまま `search` コマンドは `SearchPage`（`items` と継続可否 `hasMore`）を返す。
+検索画面（`src/routes/search/+page.svelte` と純粋ロジック `src/lib/search-page-logic.ts`）は `hasMore` により 2 ページ上限やフィルタ通過後の短応答でも次ページ残余があれば「さらに読み込む」を維持し、重複排除後の追記は 1 回の増分（20 件）と最大表示上限（500 件）に制限して余剰候補を `pending` バッファへ繰り越す。
 
-- `SearchSession` と `search.list` 併用：`search_videos` は空白トリム後のクエリが一致し、同一 `session_epoch` かつ経過時間 `now_sec - created_at_sec < 600` の `SearchSession` が存在するときキャッシュを再利用し、呼び出し元の `enough(&sess.items)`（フィルタ通過後生存数が `count` 以上）または `sess.exhausted` が真であれば追加通信なしで `sess.items` を返す。
+- `SearchSession` と `search.list` 併用：`search_videos` は空白トリム後のクエリが一致し、同一 `session_epoch` かつ経過時間 `now_sec - created_at_sec < 600` の `SearchSession` が存在するときキャッシュを再利用し、呼び出し元の `enough(&sess.items)`（フィルタ通過後生存数が `count` 以上）または `sess.exhausted` が真であれば追加通信なしで `YtSearchOutcome`（`items` と `!sess.exhausted`）を返す。
   `on_key_changed` ではトリム後のキー文字列が変化したときだけ `search_session = None` として `session_epoch` を進め、`.await` 跨ぎの古いセッション書き戻しを抑止する。
   追加取得時は 1 ページごとに `GET {api_base}/search?part=id&type=video&maxResults=50&q=...`（`QuotaBucket::Search`、次ページがある場合は `pageToken` を付与、廃止済みの `relatedToVideoId` は送信しない）を呼び、重複 `pageToken` は `seen_tokens` で抑止する。
   取得した新規 `video_id` 列は `sess.seen_ids`（`HashSet`）で初回出現順を保ったまま重複排除したうえで `videos_list`（`QuotaBucket::Shared`）へ 1 バッチで渡し、非エスケープ文字列、説明文、`duration_sec`、`statistics.viewCount`、`+00:00` 正規化済み `published_at` を得る。
   1 呼び出しの巡回上限は 2 ページとし、`enough` 到達または終端到達で打ち切る。
+  `commands/search.rs` は `has_buffered_more`（フィルタ後生存数が `count` を超えたか）または `outcome.has_more` が真で `count < 500` のときに `SearchPage.has_more = true` を返し、`yt::search` フォールバック時も生存数到達または取得上限到達かつ `count < 500` のとき `has_more = true` を返す。
 - `view_count` と `channel_id` 検証：`parse_video_item` は `statistics.viewCount`（文字列または非負整数）を `YtVideoItem.view_count` へ解析し、既存メタ補完互換（`DB-YA-10`）を保ちつつ `YtVideoItem::to_search_result()` が `model::is_channel_id`（`UC` 始まり 24 文字）を満たす `channel_id` のみを `SearchResult` へ載せる。
 - 独立サーキットブレーカー：`search_videos` は `/search` 送信前に `Search` と `Shared` 双方の遮断器を確認して片側枯渇時の不要な検索枠消費を防ぎつつ、`/search` のクォータ超過は `search_quota_until` のみを遮断し、`shared_quota_until` には影響させない。
 - `yt::search` フォールバックと条件付き `videos.list` 補強：`ytapi.search_videos` が未設定、キー無効、クォータ超過、クールダウン、タイムアウト、通信エラー等で失敗した場合は `yt::search` へ透過的にフォールバックする。
@@ -1325,7 +1327,7 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
   `has_video_desc_rules` 等は有効な `literal` または空でない `RegexSet` のみを対象とし、`highlight` や不正正規表現のみで空になった集合は除外する。
   補強は通過した生存数が `count` に達した時点で以降のチャンクを打ち切り、補強呼び出し自体が失敗した場合は無補強のまま残りを返して検索失敗にしない。
 
-回帰テストは `DB-YA-17` 〜 `DB-YA-21`（`search.list` パラメータ規約と `videos.list` 併用・`relatedToVideoId` 非送信、ページネーションと 2 ページ上限と `enough` 打ち切りと `HashSet` 重複排除、TTL 境界とクエリ切替と `on_key_changed` 無効化と `session_epoch` 保護、`Search` と `Shared` 独立遮断器、`statistics.viewCount` 境界と `to_search_result` の非 `UC` 除外）。
+回帰テストは `DB-YA-17` 〜 `DB-YA-21`（`search.list` パラメータ規約と `videos.list` 併用・`relatedToVideoId` 非送信、ページネーションと 2 ページ上限と `enough` 打ち切りと `HashSet` 重複排除、TTL 境界とクエリ切替と `on_key_changed` 無効化と `session_epoch` 通信中書き戻し保護、および独立テスト `search_session_inflight_key_change_prevents_stale_cache_writeback`、`Search` と `Shared` 独立遮断器、`statistics.viewCount` 境界と `to_search_result` の非 `UC` 除外）および `SR-01` 〜 `SR-04`（短応答での継続、取得先切替時の増分・上限管理、バッファ消費、ブロック除外）。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
@@ -1767,7 +1769,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic・playback-error-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・search-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic・playback-error-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   scripts/            # 開発・CI・リリース補助（docs 整合チェック・変更ファイル判定・バージョン更新・latest.json 生成とリリース成果物検証・単体テスト）と CDP 検証基盤（FR-84。cdp_client/e2e_dev/e2e_smoke と README.md の手順書）
   package.json

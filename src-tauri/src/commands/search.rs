@@ -9,7 +9,7 @@ use super::parse_video_id;
 use crate::db::Db;
 use crate::error::UiError;
 use crate::filter::{Matcher, NgMatcher};
-use crate::model::{is_channel_id, SearchResult};
+use crate::model::{is_channel_id, SearchPage, SearchResult};
 use crate::yt::{self, YtDlpResolver};
 use crate::ytapi::{QuotaBucket, YtApi, YtVideoItem, SEARCH_MAX_PAGES_PER_CALL, VIDEOS_BATCH_MAX};
 
@@ -19,7 +19,8 @@ use crate::ytapi::{QuotaBucket, YtApi, YtVideoItem, SEARCH_MAX_PAGES_PER_CALL, V
 /// `yt-dlp ytsearch` + 条件付き `videos.list` 補強へ透過フォールバックする。
 /// `count` は返す表示件数の上限（省略時 `SEARCH_LIMIT`）。
 /// 「さらに読み込む」は累積 `count` 増加で呼び出し、キャッシュ済み生存数が満たせば
-/// 追加通信なしで先頭 `[0..count]` を返す（FR-25・FR-100）。
+/// 追加通信なしで先頭 `[0..count]` を返す。2 ページ上限やフィルタで `items.len() < count`
+/// となっても次ページやバッファ残余があれば `has_more: true` を返す（FR-25・FR-100）。
 #[tauri::command]
 pub async fn search(
     query: String,
@@ -28,7 +29,7 @@ pub async fn search(
     ytapi: State<'_, Arc<YtApi>>,
     resolver: State<'_, YtDlpResolver>,
     ng: State<'_, Arc<NgMatcher>>,
-) -> Result<Vec<SearchResult>, UiError> {
+) -> Result<SearchPage, UiError> {
     let matcher = ng.get();
     search_with(&query, count, &db, &ytapi, &resolver, &matcher).await
 }
@@ -40,7 +41,7 @@ pub(crate) async fn search_with(
     ytapi: &YtApi,
     resolver: &YtDlpResolver,
     matcher: &Matcher,
-) -> Result<Vec<SearchResult>, UiError> {
+) -> Result<SearchPage, UiError> {
     let q = query.trim().to_string();
     if q.is_empty() {
         return Err(UiError::invalid_input("検索語が空です"));
@@ -61,16 +62,21 @@ pub(crate) async fn search_with(
         })
         .await
     {
-        Ok(items) => {
+        Ok(outcome) => {
             let mut seen = HashSet::new();
-            let mut results: Vec<SearchResult> = items
+            let mut results: Vec<SearchResult> = outcome
+                .items
                 .into_iter()
                 .filter(|it| is_api_item_allowed(it, &blocked, matcher))
                 .filter(|it| seen.insert(it.video_id.clone()))
                 .map(|it| it.to_search_result())
                 .collect();
+            let has_buffered_more = results.len() > count as usize;
             results.truncate(count as usize);
-            return Ok(results);
+            return Ok(SearchPage {
+                items: results,
+                has_more: (has_buffered_more || outcome.has_more) && count < SEARCH_COUNT_MAX,
+            });
         }
         Err(e) => {
             let _ = e.should_fallback();
@@ -86,7 +92,13 @@ pub(crate) async fn search_with(
         yt::po_token_setting(db).as_deref(),
     )
     .await?;
-    Ok(filter_and_enrich_fallback_results(raw, count as usize, &blocked, matcher, ytapi).await)
+    let raw_len = raw.len();
+    let items =
+        filter_and_enrich_fallback_results(raw, count as usize, &blocked, matcher, ytapi).await;
+    let has_more = (items.len() >= count as usize
+        || raw_len >= (count * SEARCH_FETCH_FACTOR) as usize)
+        && count < SEARCH_COUNT_MAX;
+    Ok(SearchPage { items, has_more })
 }
 
 fn is_api_item_allowed(item: &YtVideoItem, blocked: &HashSet<String>, matcher: &Matcher) -> bool {
@@ -583,10 +595,12 @@ mod tests {
         let ytapi = YtApi::with_test_base_url(Some("AIzaSyCMD_SEARCH".to_string()), base);
         let resolver = YtDlpResolver::new(None);
 
-        // 1) 初回 count=2 -> フィルタ後 2 件で page 2 を呼ばずに完了
-        let res1 = search_with("rust", Some(2), &db, &ytapi, &resolver, &matcher)
+        // 1) 初回 count=2 -> フィルタ後 2 件で page 2 を呼ばずに完了（nextPageToken があるため has_more=true）
+        let page1 = search_with("rust", Some(2), &db, &ytapi, &resolver, &matcher)
             .await
             .unwrap();
+        assert!(page1.has_more);
+        let res1 = page1.items;
         assert_eq!(res1.len(), 2);
         assert_eq!(res1[0].video_id, "vidApi00003");
         assert_eq!(res1[0].view_count, Some(100));
@@ -594,20 +608,113 @@ mod tests {
         assert_eq!(recorded.lock().unwrap().len(), 2);
 
         // 2) 同一クエリ count=1 -> 0 HTTP キャッシュヒット + truncate(1)
-        let res_cached = search_with("rust", Some(1), &db, &ytapi, &resolver, &matcher)
+        let page_cached = search_with("rust", Some(1), &db, &ytapi, &resolver, &matcher)
             .await
             .unwrap();
+        assert!(page_cached.has_more);
+        let res_cached = page_cached.items;
         assert_eq!(res_cached.len(), 1);
         assert_eq!(res_cached[0].video_id, "vidApi00003");
         assert_eq!(recorded.lock().unwrap().len(), 2);
 
-        // 3) 同一クエリ count=3 -> Page 2 を取得し truncate(3)
-        let res_more = search_with("rust", Some(3), &db, &ytapi, &resolver, &matcher)
+        // 3) 同一クエリ count=3 -> Page 2 を取得し truncate(3)（バッファ残余 1 件があるため has_more=true）
+        let page_more = search_with("rust", Some(3), &db, &ytapi, &resolver, &matcher)
             .await
             .unwrap();
+        assert!(page_more.has_more);
+        let res_more = page_more.items;
         assert_eq!(res_more.len(), 3);
         assert_eq!(res_more[2].video_id, "vidApi00005");
         assert_eq!(recorded.lock().unwrap().len(), 4);
+
+        // 4) 同一クエリ count=4 -> バッファ残余を返し終端のため has_more=false
+        let page_end = search_with("rust", Some(4), &db, &ytapi, &resolver, &matcher)
+            .await
+            .unwrap();
+        assert!(!page_end.has_more);
+        assert_eq!(page_end.items.len(), 4);
+        assert_eq!(recorded.lock().unwrap().len(), 4);
+
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn search_with_keeps_has_more_true_when_2_page_cap_returns_fewer_than_count_with_next_token(
+    ) {
+        use super::search_with;
+        use crate::db::Db;
+        use crate::filter::Matcher;
+        use crate::model::Filter;
+        use crate::yt::YtDlpResolver;
+
+        let db = Db::connect_in_memory().unwrap();
+        let matcher = Matcher::rebuild(&[Filter {
+            id: 1,
+            target: "video_desc".to_string(),
+            kind: "literal".to_string(),
+            pattern: "除外".to_string(),
+            enabled: true,
+            created_at: String::new(),
+        }]);
+
+        let (base, recorded, srv) = spawn_search_mock(vec![
+            // Page 1: NG で 1 件落ち、1 件生存、nextPageToken=p2
+            (
+                200,
+                r#"{"nextPageToken":"p2","items":[{"id":{"videoId":"vidShort001"}},{"id":{"videoId":"vidShort002"}}]}"#.to_string(),
+            ),
+            (
+                200,
+                r#"{"items":[
+                    {"id":"vidShort001","snippet":{"title":"Drop 1","channelId":"UCsh00000000000000000001","description":"除外ワード"}},
+                    {"id":"vidShort002","snippet":{"title":"Keep 1","channelId":"UCsh00000000000000000002","description":"正常"}}
+                ]}"#.to_string(),
+            ),
+            // Page 2: 0 件生存、nextPageToken=p3（2 ページ上限でここで打ち切り）
+            (
+                200,
+                r#"{"nextPageToken":"p3","items":[{"id":{"videoId":"vidShort003"}}]}"#.to_string(),
+            ),
+            (
+                200,
+                r#"{"items":[
+                    {"id":"vidShort003","snippet":{"title":"Drop 2","channelId":"UCsh00000000000000000003","description":"除外ワード"}}
+                ]}"#.to_string(),
+            ),
+            // Page 3: 1 件生存、nextPageToken なし（終端）
+            (
+                200,
+                r#"{"items":[{"id":{"videoId":"vidShort004"}}]}"#.to_string(),
+            ),
+            (
+                200,
+                r#"{"items":[
+                    {"id":"vidShort004","snippet":{"title":"Keep 2","channelId":"UCsh00000000000000000004","description":"正常"}}
+                ]}"#.to_string(),
+            ),
+        ])
+        .await;
+
+        let ytapi = YtApi::with_test_base_url(Some("AIzaSySHORT_PAGE".to_string()), base);
+        let resolver = YtDlpResolver::new(None);
+
+        // count=20 に対して 2 ページで 1 件しか残らなくても、nextPageToken=p3 があるため has_more=true
+        let p1 = search_with("short", Some(20), &db, &ytapi, &resolver, &matcher)
+            .await
+            .unwrap();
+        assert_eq!(p1.items.len(), 1);
+        assert_eq!(p1.items[0].video_id, "vidShort002");
+        assert!(p1.has_more);
+        assert_eq!(recorded.lock().unwrap().len(), 4);
+
+        // 追加読み込みで Page 3 を取得し、終端到達で has_more=false
+        let p2 = search_with("short", Some(40), &db, &ytapi, &resolver, &matcher)
+            .await
+            .unwrap();
+        assert_eq!(p2.items.len(), 2);
+        assert_eq!(p2.items[1].video_id, "vidShort004");
+        assert!(!p2.has_more);
+        assert_eq!(recorded.lock().unwrap().len(), 6);
 
         srv.abort();
     }
@@ -685,7 +792,8 @@ mod tests {
         // (a) ルール無し時は Search 403 でフォールバックし、videos.list は 0 回
         let res_no_rules = search_with("q", Some(20), &db, &ytapi, &resolver, &Matcher::empty())
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(res_no_rules.len(), 20);
         assert!(!ytapi.can_use(QuotaBucket::Search));
         assert!(ytapi.can_use(QuotaBucket::Shared));
@@ -702,7 +810,8 @@ mod tests {
         }]);
         let res_desc = search_with("q", Some(20), &db, &ytapi, &resolver, &desc_matcher)
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(res_desc.len(), 20);
         assert!(!res_desc.iter().any(|r| r.video_id == "vidFall0001"));
         assert_eq!(res_desc[0].video_id, "vidFall0000");
@@ -717,7 +826,8 @@ mod tests {
             .unwrap();
         let res_blocked = search_with("q", Some(20), &db, &ytapi, &resolver, &Matcher::empty())
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(res_blocked.len(), 20);
         assert!(!res_blocked.iter().any(|r| r.video_id == "vidFall0000"));
         assert_eq!(res_blocked[0].video_id, "vidFall0001");
@@ -732,7 +842,8 @@ mod tests {
         let res_shared_exhausted =
             search_with("q", Some(20), &db, &ytapi, &resolver, &desc_matcher)
                 .await
-                .unwrap();
+                .unwrap()
+                .items;
         assert_eq!(res_shared_exhausted.len(), 20);
         assert!(!ytapi.can_use(QuotaBucket::Shared));
         assert_eq!(recorded.lock().unwrap().len(), 4);
@@ -740,7 +851,8 @@ mod tests {
         // Shared 既遮断後の再実行は videos.list 通信 0 回
         let res_after_exhaust = search_with("q", Some(20), &db, &ytapi, &resolver, &desc_matcher)
             .await
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(res_after_exhaust.len(), 20);
         assert_eq!(recorded.lock().unwrap().len(), 4);
 

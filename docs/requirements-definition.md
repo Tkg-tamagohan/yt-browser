@@ -782,7 +782,8 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
 
 - 任意設定 `youtube.api_key` が有効な場合に、`YtApi` 内の `SearchSession`（`search.list` と `videos.list` 併用、10 分 TTL）を用いてキーワード検索を優先し、`yt-dlp` 不在環境でも検索が動作するとともに、未設定、無効キー、タイムアウト、クォータ上限、通信失敗時は `yt::search`（`yt-dlp`）へ透過的にフォールバックする（仕様決定 EF、FR-25 と FR-85 を改訂）
 - `SearchSession` はトリム後クエリの一致および 10 分 TTL（600 秒未満）で維持し、`settings_set` と `data_import` による `on_key_changed` ではトリム後のキー文字列が変化したときだけセッションを無効化する
-  累積 `count` 増加による「さらに読み込む」では、キャッシュ済みのフィルタ通過後生存数が `count` を満たすか終端に到達済みであれば追加 API 呼び出しを行わず先頭 `count` 件を返す
+  累積 `count` 増加による「さらに読み込む」では、キャッシュ済みのフィルタ通過後生存数が `count` を満たすか終端に到達済みであれば追加 API 呼び出しを行わず先頭 `count` 件を返し、2 ページ上限やフィルタで `count` 未満しか返せなくても次ページ残余があれば継続可否 `hasMore` を `true` として次ページ取得を継続できる
+  公式 API から `yt::search` フォールバックへ切り替わって重複が部分的になった場合も、画面側の追記は 1 回の増分（20 件）と最大表示上限（500 件）に制限し、余剰候補は未表示バッファから次回の操作で消費する
 - 各ページは `search.list`（`part=id`、`type=video`、`maxResults=50`、`q`、任意 `pageToken`、`QuotaBucket::Search` 日次 100 回枠、廃止済みの `relatedToVideoId` は送信しない）で動画 ID 列を取得し、`videos.list`（`QuotaBucket::Shared` 日次 10,000 units 枠、`part=snippet,contentDetails,liveStreamingDetails,statistics`）を 1 バッチ併用して非エスケープ文字列、説明文、`duration_sec`、`statistics.viewCount`、`+00:00` 正規化済み `published_at`、および正規 `UC` 形式（`is_channel_id`）の `channel_id` を得る
   1 回の呼び出しあたり最大 2 ページまで巡回し、フィルタ通過後生存数が `count` に達した場合またはページ終端に達した場合は早期打ち切りし、重複 `pageToken` はループ抑止する
 - `SearchSession` と `yt::search` の双方で `truncate(count)` より前に `HashSet` により `video_id` を初回出現順維持のまま重複排除し、検索専用枠（`search_quota_until`）と共通枠（`shared_quota_until`）の遮断器は独立させて `/search` のクォータ超過で `shared` 枠の他機能を止めない

@@ -165,6 +165,12 @@ impl YtVideoItem {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct YtSearchOutcome {
+    pub items: Vec<YtVideoItem>,
+    pub has_more: bool,
+}
+
 #[derive(Clone)]
 struct SearchSession {
     query: String,
@@ -564,7 +570,7 @@ impl YtApi {
         query: &str,
         max_pages: usize,
         enough: F,
-    ) -> Result<Vec<YtVideoItem>, YtApiError>
+    ) -> Result<YtSearchOutcome, YtApiError>
     where
         F: Fn(&[YtVideoItem]) -> bool,
     {
@@ -578,13 +584,16 @@ impl YtApi {
         max_pages: usize,
         now_sec: i64,
         enough: F,
-    ) -> Result<Vec<YtVideoItem>, YtApiError>
+    ) -> Result<YtSearchOutcome, YtApiError>
     where
         F: Fn(&[YtVideoItem]) -> bool,
     {
         let q = query.trim();
         if q.is_empty() {
-            return Ok(Vec::new());
+            return Ok(YtSearchOutcome {
+                items: Vec::new(),
+                has_more: false,
+            });
         }
 
         let (start_epoch, has_cached_session, mut sess) = {
@@ -622,7 +631,10 @@ impl YtApi {
         };
 
         if has_cached_session && (enough(&sess.items) || sess.exhausted) {
-            return Ok(sess.items);
+            return Ok(YtSearchOutcome {
+                has_more: !sess.exhausted,
+                items: sess.items,
+            });
         }
 
         let max_results = SEARCH_LIST_PAGE_SIZE.to_string();
@@ -717,7 +729,10 @@ impl YtApi {
             {
                 let mut st = lock(&self.state);
                 if st.session_epoch != start_epoch {
-                    return Ok(sess.items);
+                    return Ok(YtSearchOutcome {
+                        has_more: false,
+                        items: sess.items,
+                    });
                 }
                 st.search_session = Some(sess.clone());
             }
@@ -727,7 +742,10 @@ impl YtApi {
             }
         }
 
-        Ok(sess.items)
+        Ok(YtSearchOutcome {
+            has_more: !sess.exhausted,
+            items: sess.items,
+        })
     }
 
     /// 保存済みキーと指定バケットを使って GET リクエストを送る（遮断器チェック込み）。
@@ -2664,10 +2682,12 @@ mod tests {
         .await;
 
         let api = YtApi::with_test_base_url(Some(key.to_string()), base);
-        let items = api
+        let outcome = api
             .search_videos("rust & tauri", SEARCH_MAX_PAGES_PER_CALL, |v| v.len() >= 20)
             .await
             .unwrap();
+        assert!(!outcome.has_more);
+        let items = outcome.items;
 
         assert_eq!(items.len(), 2);
         // videos.list が逆順で返しても search.list の順位を維持する
@@ -2773,7 +2793,8 @@ mod tests {
             .search_videos_at("test", 2, 1_700_000_000, |v| v.len() >= 2)
             .await
             .unwrap();
-        let ids1: Vec<&str> = first.iter().map(|i| i.video_id.as_str()).collect();
+        assert!(first.has_more);
+        let ids1: Vec<&str> = first.items.iter().map(|i| i.video_id.as_str()).collect();
         assert_eq!(ids1, vec!["vidPage0001", "vidPage0002"]);
         assert_eq!(recorded.lock().unwrap().len(), 2);
 
@@ -2782,15 +2803,17 @@ mod tests {
             .search_videos_at("test", 2, 1_700_000_010, |v| v.len() >= 2)
             .await
             .unwrap();
-        assert_eq!(cached.len(), 2);
+        assert!(cached.has_more);
+        assert_eq!(cached.items.len(), 2);
         assert_eq!(recorded.lock().unwrap().len(), 2);
 
-        // 3) enough=10 を要求しても 1 呼び出し最大 2 ページ（Page 2 + Page 3）で停止
+        // 3) enough=10 を要求しても 1 呼び出し最大 2 ページ（Page 2 + Page 3）で停止し has_more=true を維持
         let expanded = api
             .search_videos_at("test", 2, 1_700_000_020, |v| v.len() >= 10)
             .await
             .unwrap();
-        let ids3: Vec<&str> = expanded.iter().map(|i| i.video_id.as_str()).collect();
+        assert!(expanded.has_more);
+        let ids3: Vec<&str> = expanded.items.iter().map(|i| i.video_id.as_str()).collect();
         assert_eq!(
             ids3,
             vec!["vidPage0001", "vidPage0002", "vidPage0003", "vidPage0004"]
@@ -2882,7 +2905,8 @@ mod tests {
             .search_videos_at("alpha", 5, t0, |v| v.len() >= 10)
             .await
             .unwrap();
-        assert_eq!(r1.len(), 2);
+        assert!(!r1.has_more);
+        assert_eq!(r1.items.len(), 2);
         assert_eq!(recorded.lock().unwrap().len(), 4);
 
         // t0 + 599 は TTL 内かつ exhausted なので 0 HTTP でキャッシュ返却
@@ -2890,7 +2914,8 @@ mod tests {
             .search_videos_at("alpha", 2, t0 + 599, |v| v.len() >= 10)
             .await
             .unwrap();
-        assert_eq!(r_hit.len(), 2);
+        assert!(!r_hit.has_more);
+        assert_eq!(r_hit.items.len(), 2);
         assert_eq!(recorded.lock().unwrap().len(), 4);
 
         // トリム後同一キーではセッション保持
@@ -2899,7 +2924,7 @@ mod tests {
             .search_videos_at("alpha", 2, t0 + 599, |v| v.len() >= 10)
             .await
             .unwrap();
-        assert_eq!(r_same_key.len(), 2);
+        assert_eq!(r_same_key.items.len(), 2);
         assert_eq!(recorded.lock().unwrap().len(), 4);
 
         // t0 + 600 で TTL 失効して再取得
@@ -2907,7 +2932,7 @@ mod tests {
             .search_videos_at("alpha", 2, t0 + 600, |v| !v.is_empty())
             .await
             .unwrap();
-        assert_eq!(r_exp[0].video_id, "vidTtl00003");
+        assert_eq!(r_exp.items[0].video_id, "vidTtl00003");
         assert_eq!(recorded.lock().unwrap().len(), 6);
 
         // 別クエリ "beta" で新規セッション
@@ -2915,7 +2940,7 @@ mod tests {
             .search_videos_at("beta", 2, t0 + 605, |v| !v.is_empty())
             .await
             .unwrap();
-        assert_eq!(r_beta[0].video_id, "vidBeta0001");
+        assert_eq!(r_beta.items[0].video_id, "vidBeta0001");
         assert_eq!(recorded.lock().unwrap().len(), 8);
 
         // キー実変更でセッション破棄
@@ -2924,8 +2949,79 @@ mod tests {
             .search_videos_at("beta", 2, t0 + 606, |v| !v.is_empty())
             .await
             .unwrap();
-        assert_eq!(r_new_key[0].video_id, "vidKeyCh001");
+        assert_eq!(r_new_key.items[0].video_id, "vidKeyCh001");
         assert_eq!(recorded.lock().unwrap().len(), 10);
+    }
+
+    #[tokio::test]
+    async fn search_session_inflight_key_change_prevents_stale_cache_writeback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+
+        let (inflight_entered_tx, inflight_entered_rx) = oneshot::channel::<()>();
+        let (allow_reply_tx, allow_reply_rx) = oneshot::channel::<()>();
+
+        let srv = tokio::spawn(async move {
+            let mut entered_tx = Some(inflight_entered_tx);
+            let mut release_rx = Some(allow_reply_rx);
+            let replies = [
+                r#"{"items":[{"id":{"videoId":"vidOldEpoch"}}]}"#.to_string(),
+                r#"{"items":[{"id":"vidOldEpoch","snippet":{"title":"Old","channelId":"UCepoch00000000000000001"}}]}"#.to_string(),
+                r#"{"items":[{"id":{"videoId":"vidNewEpoch"}}]}"#.to_string(),
+                r#"{"items":[{"id":"vidNewEpoch","snippet":{"title":"New","channelId":"UCepoch00000000000000002"}}]}"#.to_string(),
+            ];
+            for body in replies {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                if let Some(tx) = entered_tx.take() {
+                    let _ = tx.send(());
+                    if let Some(rx) = release_rx.take() {
+                        let _ = rx.await;
+                    }
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let api = Arc::new(YtApi::with_test_base_url(
+            Some("AIzaSyINFLIGHT_OLD".to_string()),
+            base,
+        ));
+        let api_bg = Arc::clone(&api);
+        let t0 = 1_700_000_000;
+        let handle = tokio::spawn(async move {
+            api_bg
+                .search_videos_at("inflight", 2, t0, |v| !v.is_empty())
+                .await
+        });
+
+        // /search 通信中にキーを変更して session_epoch を進める
+        inflight_entered_rx.await.unwrap();
+        api.on_key_changed(Some("AIzaSyINFLIGHT_NEW"));
+        let _ = allow_reply_tx.send(());
+
+        let stale_res = handle.await.unwrap().unwrap();
+        assert_eq!(stale_res.items[0].video_id, "vidOldEpoch");
+
+        // 古い応答はキャッシュへ書き戻されないため、同一クエリ再実行で新キー用の再取得が走る
+        let fresh_res = api
+            .search_videos_at("inflight", 2, t0 + 1, |v| !v.is_empty())
+            .await
+            .unwrap();
+        assert_eq!(fresh_res.items[0].video_id, "vidNewEpoch");
+
+        srv.abort();
     }
 
     /// DB-YA-20: `search_videos` の独立サーキットブレーカー（`/search` 403 で `Search` 枠のみ遮断し
@@ -3088,7 +3184,8 @@ mod tests {
             .search_videos("no_hits", 2, |v| !v.is_empty())
             .await
             .unwrap();
-        assert!(empty.is_empty());
+        assert!(empty.items.is_empty());
+        assert!(!empty.has_more);
         assert_eq!(recorded.lock().unwrap().len(), 1);
 
         let map = api
