@@ -648,15 +648,9 @@ impl PlayerManager {
                         let mut continued = false;
                         let mut continued_video_id: Option<String> = None;
                         let mut continued_uid: Option<i64> = None;
-                        if let Some(next) = player.take_next() {
+                        if let Some(next) = player.take_next_for_end(&reason) {
                             let next_id = next.video_id.clone();
-                            // エラー終端は既に前項目の end-file を消費してアイドル状態なので、
-                            // 次項目も file-loaded 前に失敗した場合に終端と診断が落ちないよう
-                            // ここで終端理由を解除する（keep-open の eof は replace 由来 end-file を
-                            // 伴うため従来どおり file-loaded まで維持する）
-                            if reason == "error" {
-                                player.clear_ended_reason_for_next();
-                            }
+                            let armed_replace = player.prepare_continue_after_end(&reason);
                             match player.load_video(&next_id, 0.0).await {
                                 Ok(()) => {
                                     continued = true;
@@ -669,6 +663,9 @@ impl PlayerManager {
                                     Self::spawn_sponsor_fetch(&db, &http, player.clone(), next_id);
                                 }
                                 Err(e) => {
+                                    if armed_replace {
+                                        player.cancel_replace();
+                                    }
                                     tracing::warn!(video_id = %next_id, error = %e, "連続再生の次項目ロードに失敗");
                                 }
                             }

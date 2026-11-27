@@ -246,6 +246,9 @@ struct ArmedQueue {
     items: VecDeque<QueueArmItem>,
     loop_all: bool,
     seq: u64,
+    /// `loop_all` 時に `file-loaded` を挟まず連続したエラー終端回数。
+    /// キュー長以上に達したら全項目が再生不能とみなして無限ループを止める（FR-95）。
+    consecutive_errors: usize,
 }
 
 impl ArmedQueue {
@@ -258,7 +261,13 @@ impl ArmedQueue {
         }
         self.items = items.into();
         self.loop_all = loop_all;
+        self.consecutive_errors = 0;
         true
+    }
+
+    /// `file-loaded` 到達時に連続エラー回数をリセットする。
+    fn reset_error_streak(&mut self) {
+        self.consecutive_errors = 0;
     }
 
     /// 先頭を取り出す。`loop_all` のとき取り出した項目を末尾へ戻し、
@@ -271,6 +280,27 @@ impl ArmedQueue {
             self.items.push_back(next.clone());
         }
         Some(next)
+    }
+
+    /// 終端理由を考慮して次項目を取り出す（FR-95、仕様決定 EA）。
+    /// `loop_all` 時に `reason == "error"` がキュー項目数以上連続した場合
+    /// （1 項目ループの初回エラー失敗や全項目失敗ループ）は、際限ない再読み込みと
+    /// 失敗通知の反復を防ぐため継続を打ち切って `None` を返す。
+    fn take_next_for_end(&mut self, reason: &str) -> Option<QueueArmItem> {
+        if reason != "error" {
+            self.consecutive_errors = 0;
+            return self.take_next();
+        }
+        if self.loop_all {
+            if self.items.is_empty() {
+                return None;
+            }
+            self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+            if self.consecutive_errors >= self.items.len() {
+                return None;
+            }
+        }
+        self.take_next()
     }
 }
 
@@ -647,17 +677,38 @@ impl MpvPlayer {
         self.terminal.completed()
     }
 
+    /// 終端理由を考慮して武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
+    /// `loop_all` 時の無限エラー再読み込み抑止を含む（FR-95、仕様決定 EA）。
+    pub(crate) fn take_next_for_end(&self, reason: &str) -> Option<QueueArmItem> {
+        lock(&self.armed).take_next_for_end(reason)
+    }
+
     /// `close_on_eof=off` の eof 終端でインスタンスを残すときに呼ぶ
     /// （FR-43、仕様決定 BS）。終端理由を解除して後続の終端を受理させる。
     pub(crate) fn rearm_after_eof(&self) {
         self.terminal.rearm_after_eof();
     }
 
-    /// エラー終端（`end-file` 消費済み）から連続再生の次項目へ進む直前に呼ぶ。
-    /// 前項目の `ended_reason` を解除しておき、次項目も `file-loaded` 前に
-    /// 失敗した場合にその終端が診断とキュー進行へ届くようにする（FR-95）。
-    pub(crate) fn clear_ended_reason_for_next(&self) {
-        self.terminal.clear_ended_reason();
+    /// 連続再生の次項目へ進む直前に `TerminalTracker` を次ファイル向けに整える（FR-95）。
+    /// - `reason == "eof"`：`--keep-open=yes` 下では `loadfile replace` が旧ファイルの
+    ///   `end-file (reason="stop")` を 1 回発火するため、先に `begin_replace()` を張ってから
+    ///   `ended_reason` を解除し、次項目が `file-loaded` 前に失敗しても診断へ届くようにする。
+    ///   戻り値 `true` は `begin_replace()` を張ったことを示す（`load_video` 失敗時に取り消す）。
+    /// - `reason == "error"`：旧ファイルの `end-file` は消費済みでアイドル状態のため、
+    ///   `ended_reason` のみを解除し `false` を返す。
+    pub(crate) fn prepare_continue_after_end(&self, reason: &str) -> bool {
+        match reason {
+            "eof" => {
+                self.terminal.begin_replace();
+                self.terminal.clear_ended_reason();
+                true
+            }
+            "error" => {
+                self.terminal.clear_ended_reason();
+                false
+            }
+            _ => false,
+        }
     }
 
     /// SponsorBlock 状態・シークの現在世代番号を返す。
@@ -708,13 +759,6 @@ impl MpvPlayer {
         base_seq: Option<u64>,
     ) -> bool {
         lock(&self.armed).set(items, loop_all, base_seq)
-    }
-
-    /// 武装キューの先頭を取り出す（emitter の終端分岐で 1 回消費）。
-    /// `loop_all` のとき取り出した項目を末尾へ戻し、キューが枯渇しない。
-    /// 取り出しのたびに世代番号を進める（空なら世代も据え置き）。
-    pub(crate) fn take_next(&self) -> Option<QueueArmItem> {
-        lock(&self.armed).take_next()
     }
 
     /// 取り出し世代（`player://ended` に載せてフロントの置換基準に使う）。
@@ -1698,8 +1742,9 @@ async fn event_pump(player: Arc<MpvPlayer>, mut rx: mpsc::Receiver<IpcEvent>) {
                 "file-loaded" => {
                     // 新ファイルのロード完了。replace 予約の取りこぼしを掃除し、
                     // オープン完了として loadfile 猶予を終わらせる。
-                    // 回復判定の基準時刻もここで更新する（仕様決定 BE）
+                    // 回復判定の基準時刻とループ連続エラー回数もここで更新する（仕様決定 BE・EA）
                     player.terminal.on_file_loaded();
+                    lock(&player.armed).reset_error_streak();
                     player.end_loading();
                     player.mark_healthy();
                 }

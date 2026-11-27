@@ -573,21 +573,83 @@ fn video_unavailable_skips_auto_retry_while_other_kinds_retry() {
     }
 }
 
-/// DB-ED-14: 連続再生キューで読み込み失敗が 2 件続いたとき、1 件目のエラー終端後に
-/// 終端理由を解除しておけば 2 件目の `file-loaded` 前エラーも診断・キュー進行へ届く（FR-95）。
+/// DB-ED-14: 連続再生キューで読み込み失敗が続く経路、および正常終了（keep-open EOF）
+/// 直後に次項目が読み込み失敗しさらに 3 件目の正常動画へ進む経路（正常 → 失敗 → 正常）で、
+/// いずれのエラー終端も診断とキュー進行へ届く（FR-95）。
 #[test]
 fn consecutive_error_queue_items_both_trigger_terminal() {
     use super::super::terminal::TerminalTracker;
 
+    // 1. エラー → エラー（連続失敗）
     let tracker = TerminalTracker::default();
-    // 1 件目が file-loaded 前にエラー終端（例: video_unavailable）
     assert!(tracker.on_end_file("error"));
     assert!(!tracker.completed());
-    // 連続再生で次項目へ進む前に終端理由を解除する（manager.rs の reason == "error" 経路）
     tracker.clear_ended_reason();
-    // 2 件目も file-loaded 前にエラー終端 → 抑止されず受理される
     assert!(tracker.on_end_file("error"));
     assert!(!tracker.completed());
+
+    // 2. 正常（keep-open EOF）→ 再生不能（file-loaded 前にエラー）→ 正常
+    let t2 = TerminalTracker::default();
+    // 1 件目が keep-open 下で EOF 到達
+    assert!(t2.on_eof());
+    assert!(t2.completed());
+    // prepare_continue_after_end("eof"): replace 予約を張ってから終端理由を解除する
+    t2.begin_replace();
+    t2.clear_ended_reason();
+    // 1 件目アンロード時の end-file(stop) は replace 予約で吸収される
+    assert!(!t2.on_end_file("stop"));
+    // 2 件目が file-loaded 前にエラー終端 → 抑止されず受理される
+    assert!(t2.on_end_file("error"));
+    assert!(!t2.completed());
+    // prepare_continue_after_end("error"): 終端理由を解除して 3 件目へ進む
+    t2.clear_ended_reason();
+    // 3 件目が正常にロードされて EOF 到達
+    t2.on_file_loaded();
+    assert!(t2.on_eof());
+    assert!(t2.completed());
+}
+
+/// DB-ED-16: `ArmedQueue::take_next_for_end` が 1 項目ループおよび全項目失敗ループでの
+/// 無限再読み込みと失敗通知の反復を防ぎ、非ループ・部分成功ループでは継続を保つ（FR-95、仕様決定 EA）。
+#[test]
+fn armed_queue_stops_infinite_error_loop_on_loop_all() {
+    // 1. 1 項目ループ（[A], loop_all=true）で A がエラー終端 → 即座に None（追加 loadfile なし）
+    let mut one = ArmedQueue::default();
+    assert!(one.set(vec![arm(1, "vidA")], true, None));
+    assert!(one.take_next_for_end("error").is_none());
+    assert_eq!(one.seq, 0);
+
+    // 2. 2 項目ループ（[B, A], loop_all=true、A 再生中）で全項目が連続失敗 → B だけ試して 2 回目で停止
+    let mut all_bad = ArmedQueue::default();
+    assert!(all_bad.set(vec![arm(2, "vidB"), arm(1, "vidA")], true, None));
+    let first = all_bad
+        .take_next_for_end("error")
+        .expect("1 回目のエラーでは別項目 B へ進むべき");
+    assert_eq!((first.uid, first.video_id.as_str()), (2, "vidB"));
+    assert!(
+        all_bad.take_next_for_end("error").is_none(),
+        "全項目が連続失敗したら無限ループを止めるべき"
+    );
+
+    // 3. 2 項目ループで A 失敗 → B ロード成功（reset_error_streak）→ B 正常終了 → A 失敗 → 再度 B へ進める
+    let mut partial = ArmedQueue::default();
+    assert!(partial.set(vec![arm(2, "vidB"), arm(1, "vidA")], true, None));
+    let b = partial.take_next_for_end("error").unwrap();
+    assert_eq!(b.video_id, "vidB");
+    partial.reset_error_streak();
+    let a = partial.take_next_for_end("eof").unwrap();
+    assert_eq!(a.video_id, "vidA");
+    let b2 = partial
+        .take_next_for_end("error")
+        .expect("直前に正常再生を挟んでいれば再び B へ進めるべき");
+    assert_eq!(b2.video_id, "vidB");
+
+    // 4. 非ループ（loop_all=false）の有限キューは全項目を順に消化して空で終了する
+    let mut finite = ArmedQueue::default();
+    assert!(finite.set(vec![arm(2, "vidB"), arm(3, "vidC")], false, None));
+    assert_eq!(finite.take_next_for_end("error").unwrap().video_id, "vidB");
+    assert_eq!(finite.take_next_for_end("error").unwrap().video_id, "vidC");
+    assert!(finite.take_next_for_end("error").is_none());
 }
 
 /// DB-ED-15: `prepare_mpv_log_file` が親ディレクトリを用意し、Unix 環境では
