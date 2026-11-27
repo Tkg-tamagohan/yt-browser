@@ -763,6 +763,17 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
 - `LiveWaitPoller` の `poll_due` は存在確認と 24 時間超過解除を行ったうえで `active_due` を 50 件チャンクへ分割し、共通枠利用可能時は `ytapi::videos_list` で一括巡回して `ingested = 1` のフィード行も `premiere` 保護付きで相乗り反映し、失敗や利用不可時はチャンク単位で `InnerTube` へフォールバックする
 - 単発 4 経路（概要欄 `get_description`、動画チャンネル解決 `resolve_video_channel`（`playing_channel` と `VideoStartHook` が共用）、動画メタ解決 `video_meta_resolve`、待機登録時確認 `live_wait_add`）はいずれも `ytapi::videos_list` を優先し、待機登録では 1 回の応答から放送状態と補完メタを同時に取得したうえで、欠落やエラーやクォータ上限時に従来経路へフォールバックする
 
+### FR-99 YouTube Data API v3 による @handle チャンネル購読とプレイリスト取り込み
+
+- 任意設定 `youtube.api_key` が有効な場合に、`channels.list`（`part=id`、`forHandle`）による `@handle` チャンネル購読と、`playlists.list` および `playlistItems.list` によるプレイリスト取り込みを優先し、未設定、無効キー、タイムアウト、クォータ上限、通信失敗時は既存の `yt-dlp` 経路へ透過的にフォールバックする（仕様決定 EE）
+- `subscribe_channel` で `@handle` 入力を受けたとき、共通枠が利用可能であれば `ytapi` の `channels.list`（`part=id`、`forHandle=@<clean>`、1 unit）を優先して `UC` 形式のチャンネル ID を解決する（`yt-dlp` 不在環境でも動作する）。
+  公式 API がチャンネル不在（空 `items` または `HTTP 404`）を返した場合は `yt-dlp` へフォールバックせず `FeedError::NotFound` を返し、未設定や無効キーやクォータ上限や一時障害時のみ既存の `yt::channel_id`（`yt-dlp`）へフォールバックする
+- `playlist_import` で YouTube URL から `list` パラメータを抽出したとき、公式 API で取得できない個人用または自動生成プレイリスト（`WL`、`HL`、`LM`、`LL` で始まる ID、`RD` で始まる ID、大小文字区別なし）は `yt-dlp` 経路へ直行し、それ以外の標準プレイリストは `ytapi` の `playlist_items` を優先する
+  - `name` が未指定（`None`）のときだけ `playlists.list`（`part=snippet`、1 unit）でタイトルを取得し、`items` が空または欠落している場合は `playlistItems.list` を呼ばず `invalid_input` を返す（`name` 指定時は `playlists.list` を省略して 1 unit 節約する）
+  - `playlistItems.list`（`part=snippet,contentDetails,status`、`maxResults=50`）を重複トークンループ抑止付きで最大 100 ページ（5,000 件）まで巡回し、`status.privacyStatus` が `public` または `unlisted` の項目のみを採用する
+  - 各項目では動画の投稿者チャンネル ID として `snippet.videoOwnerChannelId`（`UC` 形式検証済み、プレイリスト所有者 `snippet.channelId` は不使用）を抽出し、`contentDetails.videoPublishedAt` を `iso8601_ms` と `iso_utc` により `+00:00` 形式へ正規化して保存する（既存の非 NULL `published_at` は `COALESCE` で上書きしない）
+  - 非公開または削除済み項目の除外後に有効項目が 0 件となった場合および公式 API が `HTTP 404`（プレイリスト不在）を返した場合は `yt-dlp` へフォールバックせず `invalid_input` を返し、未設定や無効キーやクォータ上限や一時障害時のみ `yt::playlist_meta`（`yt-dlp`）へフォールバックする
+
 ## 5. 非機能要件
 
 - メモリ目安：アイドル 300MB 未満、再生中 600MB 未満とする（仕様決定 I）

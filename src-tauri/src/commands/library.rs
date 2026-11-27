@@ -1,13 +1,16 @@
 //! 履歴・お気に入り・プレイリスト・あとで見る・横断検索系コマンド（FR-7、FR-59、FR-60）。
 
+use std::sync::Arc;
+
 use super::parse_video_id;
-use crate::db::Db;
+use crate::db::{Db, PlaylistImportItem};
 use crate::error::UiError;
 use crate::model::{
     FavoriteEntry, HistoryCursor, HistoryPage, HistoryStats, LibrarySearchItem, Playlist,
     PlaylistEntry, VideoRef, WatchHistory, WatchLaterEntry, MAX_PLAYLIST_NAME_LEN,
 };
 use crate::yt::{self, YtDlpResolver};
+use crate::ytapi::{YtApi, YtApiError};
 use tauri::{AppHandle, Emitter, State};
 
 /// 動画 1 件分の視聴履歴。`video_id` は `play_video` と同じ正規化を経る。
@@ -333,27 +336,36 @@ pub(crate) fn resolve_imported_playlist_name(
     }
 }
 
-/// `playlist_import`（FR-10、仕様決定 R・DZ）。
-/// YouTube プレイリストを yt-dlp の `--flat-playlist` で取り込み、
-/// ローカルのプレイリストへ登録する。各項目は `video_upsert` 経由で
-/// `videos` 台帳に集約し、`published_at` は未取得のまま（ソート時は末尾）。
-/// `name` 省略時は取り込んだプレイリストのタイトルを使い、
-/// それも取れないときは「取り込みプレイリスト」とする（暫定）。
-/// 戻り値は作成したプレイリスト（件数集計済み）。
-/// 成功時は `library://playlists_changed` で作成したプレイリストを通知し、
-/// deep link など画面外からの取り込みを表示中の /library が検知できるようにする
-/// （設計書 §3.2）。
-#[tauri::command]
-pub async fn playlist_import(
-    url: String,
-    name: Option<String>,
-    resolver: State<'_, YtDlpResolver>,
-    db: State<'_, Db>,
-    app: AppHandle,
+/// URL のクエリパラメータ `list` からプレイリスト ID を抽出する（FR-99）。
+pub(crate) fn extract_list_id(url: &url::Url) -> Option<String> {
+    url.query_pairs()
+        .find(|(k, _)| k == "list")
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// YouTube Data API v3 で取得できない個人用・自動生成プレイリスト ID かを判定する（FR-99）。
+/// `WL`（後で見る）、`HL`（履歴）、`LM`（高評価した音楽）、`LL*`（高く評価した動画）、
+/// `RD*`（ミックスリスト/ラジオ）は `yt-dlp` 経路へ直行させる。
+fn is_api_unsupported_playlist_id(list_id: &str) -> bool {
+    let upper = list_id.trim().to_ascii_uppercase();
+    upper == "WL"
+        || upper == "HL"
+        || upper == "LM"
+        || upper.starts_with("LL")
+        || upper.starts_with("RD")
+}
+
+async fn import_playlist_with(
+    url: &str,
+    name: Option<&str>,
+    ytapi: &YtApi,
+    resolver: &YtDlpResolver,
+    db: &Db,
 ) -> Result<Playlist, UiError> {
     // 取り込み対象は YouTube の URL のみ（yt-dlp の任意 extractor 呼び出しを防ぐ）
     let parsed =
-        url::Url::parse(&url).map_err(|_| UiError::invalid_input("URL を認識できませんでした"))?;
+        url::Url::parse(url).map_err(|_| UiError::invalid_input("URL を認識できませんでした"))?;
     let host_ok = matches!(parsed.scheme(), "https" | "http")
         && matches!(
             parsed.host_str(),
@@ -367,22 +379,76 @@ pub async fn playlist_import(
             "YouTube のプレイリスト URL を入力してください",
         ));
     }
-    let path = resolver
-        .resolve(&db)
-        .await
-        .ok_or_else(|| UiError::from(yt::YtError::NotFound))?;
-    let (fetched_title, items) =
-        yt::playlist_meta(&path, &url, yt::po_token_setting(&db).as_deref()).await?;
-    if items.is_empty() {
-        return Err(UiError::invalid_input(
-            "プレイリストから動画を取得できませんでした",
-        ));
+    if let Some(n) = name {
+        validate_playlist_name(n)?;
     }
-    let name = resolve_imported_playlist_name(name.as_deref(), fetched_title.as_deref())?;
-    let db = db.inner().clone();
-    let playlist = tokio::task::spawn_blocking(move || -> Result<Playlist, UiError> {
-        let mut playlist = db.playlist_create(&name)?;
-        if let Err(e) = db.playlist_add_many(playlist.id, &items) {
+
+    let mut api_result: Option<(Option<String>, Vec<PlaylistImportItem>)> = None;
+    if let Some(list_id) = extract_list_id(&parsed).filter(|id| !is_api_unsupported_playlist_id(id))
+    {
+        match ytapi.playlist_items(&list_id, name.is_none()).await {
+            Ok(yt_pl) => {
+                if yt_pl.items.is_empty() {
+                    return Err(UiError::invalid_input(
+                        "プレイリストから動画を取得できませんでした",
+                    ));
+                }
+                let items = yt_pl
+                    .items
+                    .into_iter()
+                    .map(|it| PlaylistImportItem {
+                        video: it.video_ref,
+                        published_at: it.published_at,
+                    })
+                    .collect();
+                api_result = Some((yt_pl.title, items));
+            }
+            Err(YtApiError::NotFound) => {
+                return Err(UiError::invalid_input(
+                    "プレイリストが見つからないか非公開です",
+                ));
+            }
+            Err(e) => {
+                let _ = e.should_fallback();
+                tracing::debug!(
+                    list_id = %list_id,
+                    error = %e,
+                    "YtApi プレイリスト取得に失敗したため yt-dlp へフォールバック"
+                );
+            }
+        }
+    }
+
+    let (fetched_title, items) = match api_result {
+        Some(res) => res,
+        None => {
+            let path = resolver
+                .resolve(db)
+                .await
+                .ok_or_else(|| UiError::from(yt::YtError::NotFound))?;
+            let (title, refs) =
+                yt::playlist_meta(&path, url, yt::po_token_setting(db).as_deref()).await?;
+            if refs.is_empty() {
+                return Err(UiError::invalid_input(
+                    "プレイリストから動画を取得できませんでした",
+                ));
+            }
+            let items = refs
+                .into_iter()
+                .map(|video| PlaylistImportItem {
+                    video,
+                    published_at: None,
+                })
+                .collect();
+            (title, items)
+        }
+    };
+
+    let resolved_name = resolve_imported_playlist_name(name, fetched_title.as_deref())?;
+    let db = db.clone();
+    tokio::task::spawn_blocking(move || -> Result<Playlist, UiError> {
+        let mut playlist = db.playlist_create(&resolved_name)?;
+        if let Err(e) = db.playlist_add_many_with_published(playlist.id, &items) {
             // 項目登録の失敗で空の一覧を残さない
             let _ = db.playlist_delete(playlist.id);
             return Err(e.into());
@@ -392,7 +458,36 @@ pub async fn playlist_import(
         Ok(playlist)
     })
     .await
-    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??;
+    .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
+}
+
+/// `playlist_import`（FR-10・FR-99、仕様決定 R・DZ・EE）。
+/// `list` クエリがある公開/限定公開プレイリストは YouTube Data API v3 を優先し、
+/// 未設定・クォータ上限・一時障害時や `WL`/`HL`/`LM`/`LL*`/`RD*` 等は
+/// yt-dlp の `--flat-playlist` へフォールバックする。
+/// `name` 省略時は取り込んだプレイリストのタイトルを使い、
+/// それも取れないときは「取り込みプレイリスト」とする（暫定）。
+/// 戻り値は作成したプレイリスト（件数集計済み）。
+/// 成功時は `library://playlists_changed` で作成したプレイリストを通知し、
+/// deep link など画面外からの取り込みを表示中の /library が検知できるようにする
+/// （設計書 §3.2）。
+#[tauri::command]
+pub async fn playlist_import(
+    url: String,
+    name: Option<String>,
+    ytapi: State<'_, Arc<YtApi>>,
+    resolver: State<'_, YtDlpResolver>,
+    db: State<'_, Db>,
+    app: AppHandle,
+) -> Result<Playlist, UiError> {
+    let playlist = import_playlist_with(
+        &url,
+        name.as_deref(),
+        ytapi.inner(),
+        resolver.inner(),
+        db.inner(),
+    )
+    .await?;
     let _ = app.emit("library://playlists_changed", &playlist);
     Ok(playlist)
 }
@@ -540,5 +635,322 @@ mod tests {
             resolve_imported_playlist_name(None, None).unwrap(),
             "取り込みプレイリスト"
         );
+    }
+
+    struct TempScript(std::path::PathBuf);
+    impl Drop for TempScript {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn write_fake_ytdlp(tag: &str, windows_body: &str, unix_body: &str) -> TempScript {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pid = std::process::id();
+        #[cfg(windows)]
+        let path = std::env::temp_dir().join(format!("ytb_fake_lib_{tag}_{pid}_{nonce}.cmd"));
+        #[cfg(not(windows))]
+        let path = std::env::temp_dir().join(format!("ytb_fake_lib_{tag}_{pid}_{nonce}.sh"));
+
+        #[cfg(windows)]
+        {
+            let _ = unix_body;
+            std::fs::write(&path, windows_body).unwrap();
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = windows_body;
+            std::fs::write(&path, unix_body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        TempScript(path)
+    }
+
+    /// DB-LD-43: `playlist_import`（`import_playlist_with`）で Data API v3 優先取り込み
+    /// （`yt-dlp` 不在でも成功、非公開除外、`videoOwnerChannelId` 抽出、`published_at` `+00:00` 保存と
+    /// 既存非 NULL `published_at` 保持、`name: Some` で `playlists.list` スキップ）、全件非公開/空/404 の
+    /// `invalid_input`（`yt-dlp` 非フォールバック）、`WL`/`HL`/`LL`/`LM`/`RD...` のバイパス、および
+    /// API 障害時（`500`/`403 quotaExceeded`）の `yt-dlp` フォールバックを検証する（FR-99、仕様決定 EE）。
+    #[tokio::test]
+    async fn playlist_import_prefers_ytapi_and_falls_back() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        assert!(is_api_unsupported_playlist_id("WL"));
+        assert!(is_api_unsupported_playlist_id("hl"));
+        assert!(is_api_unsupported_playlist_id("lm"));
+        assert!(is_api_unsupported_playlist_id("LLxyz"));
+        assert!(is_api_unsupported_playlist_id("RDMMabc"));
+        assert!(!is_api_unsupported_playlist_id("PL12345"));
+
+        let db = Db::connect_in_memory().unwrap();
+        let resolver = YtDlpResolver::new(None);
+
+        // 既存動画を 2 件投入: 1 件は非 NULL published_at あり、もう 1 件は NULL
+        let seed_pl = db.playlist_create("Seed").unwrap();
+        db.playlist_add_many_with_published(
+            seed_pl.id,
+            &[
+                PlaylistImportItem {
+                    video: VideoRef {
+                        video_id: "existPub001".to_string(),
+                        title: "Existing Pub".to_string(),
+                        channel_id: None,
+                        channel_title: None,
+                        thumbnail_url: None,
+                    },
+                    published_at: Some("2024-01-01T00:00:00+00:00".to_string()),
+                },
+                PlaylistImportItem {
+                    video: VideoRef {
+                        video_id: "nullPub0002".to_string(),
+                        title: "Null Pub".to_string(),
+                        channel_id: None,
+                        channel_title: None,
+                        thumbnail_url: None,
+                    },
+                    published_at: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        let recorded: StdArc<StdMutex<Vec<String>>> = StdArc::new(StdMutex::new(Vec::new()));
+        let rec_clone = StdArc::clone(&recorded);
+        let replies: StdArc<StdMutex<VecDeque<(u16, String)>>> =
+            StdArc::new(StdMutex::new(VecDeque::from(vec![
+                // 1) name: None 取り込み: playlists.list
+                (
+                    200,
+                    r#"{"items":[{"snippet":{"title":"  API Playlist  "}}]}"#.to_string(),
+                ),
+                // 2) playlistItems.list (existPub001 + nullPub0002 + private 1件)
+                (
+                    200,
+                    r#"{"items":[
+                        {"snippet":{"title":"Updated 1","channelId":"UCowner00000000000000001","videoOwnerChannelId":"UCvideo00000000000000001","videoOwnerChannelTitle":"Video CH 1","resourceId":{"videoId":"existPub001"}},"contentDetails":{"videoId":"existPub001","videoPublishedAt":"2026-05-01T00:00:00Z"},"status":{"privacyStatus":"public"}},
+                        {"snippet":{"title":"Updated 2","videoOwnerChannelId":"UCvideo00000000000000002","videoOwnerChannelTitle":"Video CH 2","resourceId":{"videoId":"nullPub0002"}},"contentDetails":{"videoId":"nullPub0002","videoPublishedAt":"2026-05-02T12:00:00Z"},"status":{"privacyStatus":"unlisted"}},
+                        {"snippet":{"title":"Hidden","resourceId":{"videoId":"privVid0003"}},"status":{"privacyStatus":"private"}}
+                    ]}"#
+                        .to_string(),
+                ),
+                // 3) name: Some 取り込み: playlists.list スキップされ直接 playlistItems.list
+                (
+                    200,
+                    r#"{"items":[{"snippet":{"title":"Named V","resourceId":{"videoId":"namedVid004"}},"contentDetails":{"videoPublishedAt":"2026-05-03T00:00:00Z"},"status":{"privacyStatus":"public"}}]}"#
+                        .to_string(),
+                ),
+                // 4) 全件 private (name: Some) -> empty items -> invalid_input
+                (
+                    200,
+                    r#"{"items":[{"snippet":{"title":"Priv","resourceId":{"videoId":"privOnly005"}},"status":{"privacyStatus":"private"}}]}"#
+                        .to_string(),
+                ),
+                // 5) playlists.list 空 items -> NotFound -> invalid_input
+                (200, r#"{"items":[]}"#.to_string()),
+                // 6) playlistItems.list 404 -> NotFound -> invalid_input
+                (404, r#"{"error":{"code":404}}"#.to_string()),
+                // 7) 500 -> yt-dlp フォールバック
+                (500, r#"{"error":{"code":500}}"#.to_string()),
+                // 8) 403 quotaExceeded -> yt-dlp フォールバック
+                (
+                    403,
+                    r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+                ),
+            ])));
+        let rep_clone = StdArc::clone(&replies);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let line = req.lines().next().unwrap_or_default().to_string();
+                rec_clone.lock().unwrap().push(line);
+                let (status, body) = rep_clone
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or((200, r#"{"items":[]}"#.to_string()));
+                let reason = match status {
+                    200 => "OK",
+                    403 => "Forbidden",
+                    404 => "Not Found",
+                    500 => "Internal Server Error",
+                    _ => "Error",
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+        let ytapi =
+            YtApi::with_test_base_url(Some("AIzaSyLD_43".to_string()), format!("http://{addr}"));
+
+        // 1 & 2) yt-dlp 失敗スクリプト下でも API 経由取り込みが成功し、COALESCE が効く
+        let fail_script = write_fake_ytdlp(
+            "ld43_fail",
+            "@echo off\r\nexit /b 1\r\n",
+            "#!/bin/sh\nexit 1\n",
+        );
+        db.setting_set(
+            crate::yt::SETTING_YTDLP_PATH,
+            fail_script.0.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let pl1 = import_playlist_with(
+            "https://www.youtube.com/playlist?list=PLapi001",
+            None,
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pl1.name, "API Playlist");
+        assert_eq!(pl1.item_count, 2);
+        let entries1 = db.playlist_items(pl1.id).unwrap();
+        assert_eq!(entries1[0].video_id, "existPub001");
+        assert_eq!(
+            entries1[0].channel_id.as_deref(),
+            Some("UCvideo00000000000000001")
+        );
+        // 既存の非 NULL published_at が保持されること
+        assert_eq!(
+            entries1[0].published_at.as_deref(),
+            Some("2024-01-01T00:00:00+00:00")
+        );
+        // 元々 NULL だった行には API からの +00:00 が補完されること
+        assert_eq!(entries1[1].video_id, "nullPub0002");
+        assert_eq!(
+            entries1[1].published_at.as_deref(),
+            Some("2026-05-02T12:00:00+00:00")
+        );
+
+        // name: Some 指定時は playlists.list をスキップする
+        let pl2 = import_playlist_with(
+            "https://www.youtube.com/playlist?list=PLapi002",
+            Some("Explicit Name"),
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pl2.name, "Explicit Name");
+        assert_eq!(pl2.item_count, 1);
+        {
+            let reqs = recorded.lock().unwrap();
+            assert_eq!(reqs.len(), 3);
+            assert!(reqs[0].contains("/playlists?"));
+            assert!(reqs[1].contains("/playlistItems?"));
+            assert!(reqs[2].contains("/playlistItems?"));
+        }
+
+        // 以降の異常系・バイパス・フォールバック検証のため成功する偽 yt-dlp に差し替える
+        let ok_script = write_fake_ytdlp(
+            "ld43_ok",
+            "@echo off\r\necho {\"title\":\"Fallback PL\",\"entries\":[{\"id\":\"fbVid000001\",\"title\":\"FB Video\",\"channel_id\":\"UCfb00000000000000000001\",\"channel\":\"FB CH\"}]}\r\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"title\":\"Fallback PL\",\"entries\":[{\"id\":\"fbVid000001\",\"title\":\"FB Video\",\"channel_id\":\"UCfb00000000000000000001\",\"channel\":\"FB CH\"}]}'\n",
+        );
+        db.setting_set(crate::yt::SETTING_YTDLP_PATH, ok_script.0.to_str().unwrap())
+            .unwrap();
+
+        // 全件 private / playlists.list 空 / 404 は yt-dlp へフォールバックせず invalid_input
+        let e_priv = import_playlist_with(
+            "https://www.youtube.com/playlist?list=PLprivOnly",
+            Some("PrivOnly"),
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e_priv.code, "invalid_input");
+
+        let e_empty = import_playlist_with(
+            "https://www.youtube.com/playlist?list=PLemptyMeta",
+            None,
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e_empty.code, "invalid_input");
+
+        let e_404 = import_playlist_with(
+            "https://www.youtube.com/playlist?list=PLnotFound404",
+            Some("NF404"),
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e_404.code, "invalid_input");
+
+        // WL / HL / LL / LM / RD... は ytapi を呼ばず yt-dlp へ直行する
+        let before_bypass_reqs = recorded.lock().unwrap().len();
+        let pl_wl = import_playlist_with(
+            "https://www.youtube.com/playlist?list=WL",
+            None,
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pl_wl.name, "Fallback PL");
+        let pl_rd = import_playlist_with(
+            "https://www.youtube.com/watch?v=fbVid000001&list=RDfbVid000001",
+            Some("Radio Mix"),
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pl_rd.name, "Radio Mix");
+        assert_eq!(recorded.lock().unwrap().len(), before_bypass_reqs);
+
+        // 500（Cooldown 入り）で yt-dlp フォールバック
+        let pl_500 = import_playlist_with(
+            "https://www.youtube.com/playlist?list=PLerr500",
+            None,
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pl_500.name, "Fallback PL");
+
+        // 403 quotaExceeded（別インスタンスで検証）で yt-dlp フォールバック
+        let ytapi_q =
+            YtApi::with_test_base_url(Some("AIzaSyLD_43_Q".to_string()), format!("http://{addr}"));
+        let pl_q = import_playlist_with(
+            "https://www.youtube.com/playlist?list=PLerrQuota",
+            Some("Quota FB"),
+            &ytapi_q,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pl_q.name, "Quota FB");
+
+        srv.abort();
     }
 }

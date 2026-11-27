@@ -6,6 +6,13 @@ use crate::model::{
     FavoriteEntry, LibrarySearchItem, LibrarySource, Playlist, PlaylistEntry, WatchLaterEntry,
 };
 
+/// `playlist_add_many_with_published` の 1 項目（FR-99）。
+#[derive(Debug, Clone)]
+pub struct PlaylistImportItem {
+    pub video: crate::model::VideoRef,
+    pub published_at: Option<String>,
+}
+
 impl Db {
     /// `videos` 台帳への登録（お気に入り・プレイリスト追加の前段）。
     /// フィード由来でない動画は channel_id を `VideoRef` の値（または空文字）で
@@ -17,22 +24,36 @@ impl Db {
         conn: &Connection,
         v: &crate::model::VideoRef,
     ) -> Result<(), DbError> {
+        Self::video_upsert_with_published(conn, v, None)
+    }
+
+    /// `published_at`（`+00:00` 正規化済み）付きの `videos` 台帳登録（FR-99）。
+    /// 既存行に非 NULL の `published_at`（RSS 由来等）がある場合は上書きしない
+    /// （`COALESCE(videos.published_at, excluded.published_at)`）。
+    pub(crate) fn video_upsert_with_published(
+        conn: &Connection,
+        v: &crate::model::VideoRef,
+        published_at: Option<&str>,
+    ) -> Result<(), DbError> {
+        let published_at = published_at.map(str::trim).filter(|s| !s.is_empty());
         conn.execute(
-            "INSERT INTO videos (video_id, channel_id, channel_title, title, thumbnail_url, kind)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'video')
+            "INSERT INTO videos (video_id, channel_id, channel_title, title, thumbnail_url, published_at, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'video')
              ON CONFLICT (video_id) DO UPDATE SET
                channel_id = CASE WHEN excluded.channel_id <> ''
                                  THEN excluded.channel_id ELSE videos.channel_id END,
                channel_title = COALESCE(excluded.channel_title, videos.channel_title),
                title = CASE WHEN excluded.title <> ''
                             THEN excluded.title ELSE videos.title END,
-               thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url)",
+               thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
+               published_at = COALESCE(videos.published_at, excluded.published_at)",
             rusqlite::params![
                 v.video_id,
                 v.channel_id.as_deref().unwrap_or(""),
                 v.channel_title,
                 v.title,
                 v.thumbnail_url,
+                published_at,
             ],
         )?;
         Ok(())
@@ -315,6 +336,29 @@ impl Db {
         playlist_id: i64,
         items: &[crate::model::VideoRef],
     ) -> Result<(), DbError> {
+        self.playlist_add_many_inner(playlist_id, items.iter().map(|v| (v, None)))
+    }
+
+    /// `published_at` 付きの取り込み用一括追加（FR-99）。
+    /// `playlist_add_many` と同じ単一トランザクション・末尾追加・`INSERT OR IGNORE` 規則で登録する。
+    pub fn playlist_add_many_with_published(
+        &self,
+        playlist_id: i64,
+        items: &[PlaylistImportItem],
+    ) -> Result<(), DbError> {
+        self.playlist_add_many_inner(
+            playlist_id,
+            items
+                .iter()
+                .map(|it| (&it.video, it.published_at.as_deref())),
+        )
+    }
+
+    fn playlist_add_many_inner<'a>(
+        &self,
+        playlist_id: i64,
+        items: impl IntoIterator<Item = (&'a crate::model::VideoRef, Option<&'a str>)>,
+    ) -> Result<(), DbError> {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
         let exists: bool = tx.query_row(
@@ -331,8 +375,8 @@ impl Db {
             [playlist_id],
             |r| r.get(0),
         )?;
-        for v in items {
-            Self::video_upsert(&tx, v)?;
+        for (v, published_at) in items {
+            Self::video_upsert_with_published(&tx, v, published_at)?;
             let inserted = tx.execute(
                 "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id, position)
                  VALUES (?1, ?2, ?3)",
