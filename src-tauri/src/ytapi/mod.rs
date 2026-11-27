@@ -17,8 +17,8 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::model::{
-    classify_kind, is_channel_id, is_video_id, BroadcastStatus, MetaSnapshot, VideoRef,
-    YtApiAvailability, YtApiStatus, YtApiTestOutcome,
+    classify_kind, is_channel_id, is_video_id, BroadcastStatus, MetaSnapshot, SearchResult,
+    VideoRef, YtApiAvailability, YtApiStatus, YtApiTestOutcome,
 };
 use crate::util::{iso8601_ms, iso_utc, lock, parse_iso8601_duration};
 
@@ -33,6 +33,15 @@ pub const PLAYLIST_ITEMS_PAGE_SIZE: usize = 50;
 
 /// `playlistItems.list` の最大取得ページ数（50 * 100 = 最大 5,000 件）。
 pub const PLAYLIST_ITEMS_MAX_PAGES: usize = 100;
+
+/// `search.list` 1 ページあたりの最大取得件数（FR-100、仕様決定 EF）。
+pub const SEARCH_LIST_PAGE_SIZE: usize = 50;
+
+/// 1 回の検索コマンド呼び出しで `search.list` を進める最大ページ数（FR-100、仕様決定 EF）。
+pub const SEARCH_MAX_PAGES_PER_CALL: usize = 2;
+
+/// `SearchSession` のキャッシュ有効期間（10 分 = 600 秒、FR-100、仕様決定 EF）。
+const SEARCH_SESSION_TTL_SECS: i64 = 600;
 
 /// 本番 API のベース URL。ダンプインポート経由のキー流出を防ぐため定数固定とし、
 /// 設定キーや環境変数での上書きは行わない（`#[cfg(test)]` のみモック注入可）。
@@ -49,7 +58,6 @@ pub enum QuotaBucket {
     /// 共通日次枠（10,000 units / 日、`videos.list` 等）。
     Shared,
     /// 検索専用枠（100 回 / 日、`search.list`）。
-    #[allow(dead_code)] // Phase 95 の search.list で使用予定
     Search,
 }
 
@@ -89,8 +97,8 @@ pub struct YtVideoItem {
     pub video_id: String,
     pub video_ref: VideoRef,
     pub meta: MetaSnapshot,
-    #[allow(dead_code)] // テストおよび後続フェーズの尺参照用
     pub duration_sec: Option<i64>,
+    pub view_count: Option<i64>,
 }
 
 /// `playlistItems.list` 1 件分のパース結果（FR-99、仕様決定 EE）。
@@ -135,6 +143,38 @@ impl YtVideoItem {
         }
         classify_kind(&self.meta)
     }
+
+    /// `YtVideoItem` を検索画面向けの `SearchResult` へ変換する（FR-100、仕様決定 EF）。
+    /// `channel_id` は正規 `UC...`（24 文字）を満たす値だけを採用する。
+    pub fn to_search_result(&self) -> SearchResult {
+        SearchResult {
+            video_id: self.video_id.clone(),
+            title: self.video_ref.title.clone(),
+            channel_id: self
+                .video_ref
+                .channel_id
+                .as_deref()
+                .filter(|s| is_channel_id(s))
+                .map(str::to_string),
+            uploader_id: None,
+            channel_title: self.video_ref.channel_title.clone(),
+            duration_sec: self.duration_sec,
+            view_count: self.view_count,
+            thumbnail_url: self.video_ref.thumbnail_url.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SearchSession {
+    query: String,
+    epoch: u64,
+    created_at_sec: i64,
+    items: Vec<YtVideoItem>,
+    seen_ids: HashSet<String>,
+    next_page_token: Option<String>,
+    seen_tokens: HashSet<String>,
+    exhausted: bool,
 }
 
 struct YtApiState {
@@ -145,6 +185,7 @@ struct YtApiState {
     transient_cooldown_until_sec: Option<i64>,
     transient_streak: u32,
     session_epoch: u64,
+    search_session: Option<SearchSession>,
 }
 
 /// YouTube Data API v3 クライアントとサーキットブレーカー状態。
@@ -169,6 +210,7 @@ impl fmt::Debug for YtApi {
             )
             .field("transient_streak", &st.transient_streak)
             .field("session_epoch", &st.session_epoch)
+            .field("has_search_session", &st.search_session.is_some())
             .finish()
     }
 }
@@ -208,6 +250,7 @@ impl YtApi {
                 transient_cooldown_until_sec: None,
                 transient_streak: 0,
                 session_epoch: 0,
+                search_session: None,
             }),
         }
     }
@@ -247,6 +290,7 @@ impl YtApi {
         st.transient_cooldown_until_sec = None;
         st.transient_streak = 0;
         st.session_epoch = st.session_epoch.wrapping_add(1);
+        st.search_session = None;
     }
 
     /// 現在の利用可否状態と次回リセット時刻（UTC epoch ms）を返す。
@@ -510,6 +554,182 @@ impl YtApi {
         Ok(YtPlaylist { title, items })
     }
 
+    /// `search.list(part=id, type=video, maxResults=50)` と `videos.list` を併用して
+    /// 検索結果を取得・補完し、`SearchSession`（10 分 TTL）で段階ページネーションをキャッシュする
+    /// （FR-100、仕様決定 EF）。
+    /// 1 回の呼び出しで最大 `max_pages` ページ（既定 2 ページ）まで進め、`enough(&items)` が
+    /// `true` になった時点で早期打ち切りする。`search.list` へ `relatedToVideoId` は絶対に含めない。
+    pub async fn search_videos<F>(
+        &self,
+        query: &str,
+        max_pages: usize,
+        enough: F,
+    ) -> Result<Vec<YtVideoItem>, YtApiError>
+    where
+        F: Fn(&[YtVideoItem]) -> bool,
+    {
+        self.search_videos_at(query, max_pages, now_utc_sec(), enough)
+            .await
+    }
+
+    pub(crate) async fn search_videos_at<F>(
+        &self,
+        query: &str,
+        max_pages: usize,
+        now_sec: i64,
+        enough: F,
+    ) -> Result<Vec<YtVideoItem>, YtApiError>
+    where
+        F: Fn(&[YtVideoItem]) -> bool,
+    {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (start_epoch, has_cached_session, mut sess) = {
+            let mut st = lock(&self.state);
+            clear_expired_breakers(&mut st, now_sec);
+            if st.api_key.is_none() {
+                return Err(YtApiError::Unset);
+            }
+            if st.key_invalid {
+                return Err(YtApiError::KeyInvalid);
+            }
+            let epoch = st.session_epoch;
+            let cached = st.search_session.as_ref().filter(|s| {
+                s.query == q
+                    && s.epoch == epoch
+                    && now_sec.saturating_sub(s.created_at_sec) < SEARCH_SESSION_TTL_SECS
+            });
+            match cached {
+                Some(s) => (epoch, true, s.clone()),
+                None => (
+                    epoch,
+                    false,
+                    SearchSession {
+                        query: q.to_string(),
+                        epoch,
+                        created_at_sec: now_sec,
+                        items: Vec::new(),
+                        seen_ids: HashSet::new(),
+                        next_page_token: None,
+                        seen_tokens: HashSet::new(),
+                        exhausted: false,
+                    },
+                ),
+            }
+        };
+
+        if has_cached_session && (enough(&sess.items) || sess.exhausted) {
+            return Ok(sess.items);
+        }
+
+        let max_results = SEARCH_LIST_PAGE_SIZE.to_string();
+        let mut fetched_any_page = has_cached_session;
+
+        for _ in 0..max_pages {
+            if sess.exhausted || (fetched_any_page && sess.next_page_token.is_none()) {
+                sess.exhausted = true;
+                break;
+            }
+
+            {
+                let mut st = lock(&self.state);
+                clear_expired_breakers(&mut st, now_sec);
+                if st.api_key.is_none() {
+                    return Err(YtApiError::Unset);
+                }
+                if st.key_invalid {
+                    return Err(YtApiError::KeyInvalid);
+                }
+                if st.transient_cooldown_until_sec.is_some() {
+                    return Err(YtApiError::Cooldown);
+                }
+                if st.search_quota_until_sec.is_some() {
+                    return Err(YtApiError::QuotaExhausted(QuotaBucket::Search));
+                }
+                if st.shared_quota_until_sec.is_some() {
+                    return Err(YtApiError::QuotaExhausted(QuotaBucket::Shared));
+                }
+            }
+
+            let mut params = vec![
+                ("part", "id"),
+                ("type", "video"),
+                ("maxResults", max_results.as_str()),
+                ("q", q),
+            ];
+            let page_tok_holder = sess.next_page_token.clone();
+            if let Some(ref tok) = page_tok_holder {
+                params.push(("pageToken", tok.as_str()));
+            }
+
+            let val = self
+                .get_json(QuotaBucket::Search, "/search", &params)
+                .await?;
+            fetched_any_page = true;
+
+            let mut new_ids: Vec<String> = Vec::new();
+            if let Some(arr) = val.get("items").and_then(|v| v.as_array()) {
+                for item in arr {
+                    let Some(vid) = item
+                        .get("id")
+                        .and_then(|id| id.get("videoId"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| is_video_id(s))
+                    else {
+                        continue;
+                    };
+                    if sess.seen_ids.insert(vid.to_string()) {
+                        new_ids.push(vid.to_string());
+                    }
+                }
+            }
+
+            let next_tok = val
+                .get("nextPageToken")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            match next_tok {
+                Some(tok) if sess.seen_tokens.insert(tok.clone()) => {
+                    sess.next_page_token = Some(tok);
+                    sess.exhausted = false;
+                }
+                _ => {
+                    sess.next_page_token = None;
+                    sess.exhausted = true;
+                }
+            }
+
+            if !new_ids.is_empty() {
+                let mut map = self.videos_list(&new_ids).await?;
+                for vid in &new_ids {
+                    if let Some(item) = map.remove(vid) {
+                        sess.items.push(item);
+                    }
+                }
+            }
+
+            {
+                let mut st = lock(&self.state);
+                if st.session_epoch != start_epoch {
+                    return Ok(sess.items);
+                }
+                st.search_session = Some(sess.clone());
+            }
+
+            if enough(&sess.items) || sess.exhausted {
+                break;
+            }
+        }
+
+        Ok(sess.items)
+    }
+
     /// 保存済みキーと指定バケットを使って GET リクエストを送る（遮断器チェック込み）。
     pub(crate) async fn get_json(
         &self,
@@ -763,6 +983,15 @@ fn parse_video_item(item: &Value) -> Option<YtVideoItem> {
         .and_then(|c| c.get("duration"))
         .and_then(|v| v.as_str())
         .and_then(parse_iso8601_duration);
+    let view_count = item
+        .get("statistics")
+        .and_then(|s| s.get("viewCount"))
+        .and_then(|v| match v {
+            Value::String(s) => s.trim().parse::<i64>().ok(),
+            Value::Number(n) => n.as_i64(),
+            _ => None,
+        })
+        .filter(|&c| c >= 0);
 
     let live_broadcast_content = snippet
         .and_then(|s| s.get("liveBroadcastContent"))
@@ -826,6 +1055,7 @@ fn parse_video_item(item: &Value) -> Option<YtVideoItem> {
             description,
         },
         duration_sec,
+        view_count,
     })
 }
 
@@ -2377,5 +2607,523 @@ mod tests {
         assert!(matches!(err_429, YtApiError::Status(429)));
         assert!(err_429.should_fallback());
         assert!(!api_429.can_use(QuotaBucket::Shared));
+    }
+
+    /// DB-YA-17: `search_videos` の基本動作（`part=id`・`type=video`・`maxResults=50`・`q=` 送信、`?key=` 不使用、
+    /// `X-Goog-Api-Key` ヘッダ付与、`relatedToVideoId` 非送信、続く `videos.list` からの非エスケープ文字列・
+    /// `duration_sec`・`view_count`・`+00:00` 正規化 `published_at`・正規 `UC...`・`search.list` 順位保持）を検証する。
+    #[tokio::test]
+    async fn search_videos_basic_order_headers_and_metadata() {
+        let key = "AIzaSySEARCH_17";
+        let (base, recorded) = spawn_mock_server(vec![
+            MockReply {
+                status: 200,
+                body: r#"{
+                    "items": [
+                        {"id": {"kind": "youtube#video", "videoId": "vidRank0001"}},
+                        {"id": {"kind": "youtube#video", "videoId": "vidRank0002"}}
+                    ]
+                }"#
+                .to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: r#"{
+                    "items": [
+                        {
+                            "id": "vidRank0002",
+                            "snippet": {
+                                "title": "B & \"Second\"",
+                                "channelId": "UCrank000000000000000002",
+                                "channelTitle": "Ch & <2>",
+                                "publishedAt": "2026-11-27T01:00:00Z",
+                                "description": "Desc 2"
+                            },
+                            "contentDetails": {"duration": "PT45S"},
+                            "statistics": {"viewCount": "42"}
+                        },
+                        {
+                            "id": "vidRank0001",
+                            "snippet": {
+                                "title": "A's <First>",
+                                "channelId": "UCrank000000000000000001",
+                                "channelTitle": "Ch & 1",
+                                "publishedAt": "2026-11-27T10:00:00+09:00",
+                                "description": "Desc 1 & more"
+                            },
+                            "contentDetails": {"duration": "PT2M10S"},
+                            "statistics": {"viewCount": "123456"}
+                        }
+                    ]
+                }"#
+                .to_string(),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some(key.to_string()), base);
+        let items = api
+            .search_videos("rust & tauri", SEARCH_MAX_PAGES_PER_CALL, |v| v.len() >= 20)
+            .await
+            .unwrap();
+
+        assert_eq!(items.len(), 2);
+        // videos.list が逆順で返しても search.list の順位を維持する
+        assert_eq!(items[0].video_id, "vidRank0001");
+        assert_eq!(items[0].video_ref.title, "A's <First>");
+        assert_eq!(items[0].video_ref.channel_title.as_deref(), Some("Ch & 1"));
+        assert_eq!(items[0].meta.description, "Desc 1 & more");
+        assert_eq!(items[0].duration_sec, Some(130));
+        assert_eq!(items[0].view_count, Some(123_456));
+        assert_eq!(
+            items[0].meta.published_at.as_deref(),
+            Some("2026-11-27T01:00:00+00:00")
+        );
+        let sr0 = items[0].to_search_result();
+        assert_eq!(sr0.channel_id.as_deref(), Some("UCrank000000000000000001"));
+        assert_eq!(sr0.view_count, Some(123_456));
+        assert_eq!(sr0.duration_sec, Some(130));
+
+        assert_eq!(items[1].video_id, "vidRank0002");
+        assert_eq!(items[1].video_ref.title, "B & \"Second\"");
+        assert_eq!(items[1].view_count, Some(42));
+
+        let reqs = recorded.lock().unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert!(reqs[0].request_line.starts_with("GET /search?"));
+        assert!(reqs[0].request_line.contains("part=id"));
+        assert!(reqs[0].request_line.contains("type=video"));
+        assert!(reqs[0].request_line.contains("maxResults=50"));
+        assert!(reqs[0].request_line.contains("q=rust"));
+        assert!(!reqs[0].request_line.contains("relatedToVideoId"));
+        assert!(!reqs[0].request_line.contains("key="));
+        assert!(reqs[0]
+            .headers_lower
+            .contains(&format!("x-goog-api-key: {key}").to_ascii_lowercase()));
+        assert!(reqs[1].request_line.starts_with("GET /videos?"));
+        assert!(!reqs[1].request_line.contains("key="));
+    }
+
+    /// DB-YA-18: `SearchSession` のページネーション・1 呼び出し最大 2 ページ上限・`enough` 早期打ち切り・
+    /// キャッシュ再利用（0 HTTP）・ページ内およびページ跨ぎの `video_id` 重複排除を検証する。
+    #[tokio::test]
+    async fn search_session_pagination_cap_cache_and_dedup() {
+        let make_video = |id: &str| {
+            format!(
+                r#"{{"id":"{id}","snippet":{{"title":"T {id}","channelId":"UCpage000000000000000001","channelTitle":"CH","publishedAt":"2026-11-27T00:00:00Z"}},"contentDetails":{{"duration":"PT1M"}},"statistics":{{"viewCount":"10"}}}}"#
+            )
+        };
+        let (base, recorded) = spawn_mock_server(vec![
+            // Page 1: 重複あり (v1, v1, v2) + nextPageToken=tok2
+            MockReply {
+                status: 200,
+                body: r#"{"nextPageToken":"tok2","items":[
+                    {"id":{"videoId":"vidPage0001"}},
+                    {"id":{"videoId":"vidPage0001"}},
+                    {"id":{"videoId":"vidPage0002"}}
+                ]}"#
+                .to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(
+                    r#"{{"items":[{},{}]}}"#,
+                    make_video("vidPage0001"),
+                    make_video("vidPage0002")
+                ),
+                delay: Duration::ZERO,
+            },
+            // Page 2: ページ跨ぎ重複あり (vidPage0002, vidPage0003) + nextPageToken=tok3
+            MockReply {
+                status: 200,
+                body: r#"{"nextPageToken":"tok3","items":[
+                    {"id":{"videoId":"vidPage0002"}},
+                    {"id":{"videoId":"vidPage0003"}}
+                ]}"#
+                .to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, make_video("vidPage0003")),
+                delay: Duration::ZERO,
+            },
+            // Page 3: vidPage0004 + nextPageToken=tok4（2 ページ上限でここで止まる）
+            MockReply {
+                status: 200,
+                body: r#"{"nextPageToken":"tok4","items":[{"id":{"videoId":"vidPage0004"}}]}"#
+                    .to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, make_video("vidPage0004")),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyPAGE_18".to_string()), base);
+
+        // 1) enough=2 ならページ 1 だけで停止（ページ 2 を呼ばない）
+        let first = api
+            .search_videos_at("test", 2, 1_700_000_000, |v| v.len() >= 2)
+            .await
+            .unwrap();
+        let ids1: Vec<&str> = first.iter().map(|i| i.video_id.as_str()).collect();
+        assert_eq!(ids1, vec!["vidPage0001", "vidPage0002"]);
+        assert_eq!(recorded.lock().unwrap().len(), 2);
+
+        // 2) キャッシュで既に満たせる場合は 0 HTTP で返却
+        let cached = api
+            .search_videos_at("test", 2, 1_700_000_010, |v| v.len() >= 2)
+            .await
+            .unwrap();
+        assert_eq!(cached.len(), 2);
+        assert_eq!(recorded.lock().unwrap().len(), 2);
+
+        // 3) enough=10 を要求しても 1 呼び出し最大 2 ページ（Page 2 + Page 3）で停止
+        let expanded = api
+            .search_videos_at("test", 2, 1_700_000_020, |v| v.len() >= 10)
+            .await
+            .unwrap();
+        let ids3: Vec<&str> = expanded.iter().map(|i| i.video_id.as_str()).collect();
+        assert_eq!(
+            ids3,
+            vec!["vidPage0001", "vidPage0002", "vidPage0003", "vidPage0004"]
+        );
+
+        let reqs = recorded.lock().unwrap();
+        assert_eq!(reqs.len(), 6);
+        assert!(reqs[2].request_line.contains("pageToken=tok2"));
+        assert!(reqs[3].request_line.contains("id=vidPage0003"));
+        assert!(!reqs[3].request_line.contains("vidPage0002"));
+        assert!(reqs[4].request_line.contains("pageToken=tok3"));
+    }
+
+    /// DB-YA-19: `SearchSession` の無効化条件（別クエリ切替・10 分 TTL 境界 `t0+599`/`t0+600`・
+    /// `on_key_changed` のトリム後同一保持と変化時破棄・`nextPageToken` 重複ループ防止）を検証する。
+    #[tokio::test]
+    async fn search_session_invalidation_ttl_key_change_and_token_loop_guard() {
+        let make_video = |id: &str| {
+            format!(
+                r#"{{"id":"{id}","snippet":{{"title":"T {id}","channelId":"UCttl0000000000000000001"}}}}"#
+            )
+        };
+        let (base, recorded) = spawn_mock_server(vec![
+            // 1) "alpha" 初回（nextPageToken: "dup_tok"）
+            MockReply {
+                status: 200,
+                body: r#"{"nextPageToken":"dup_tok","items":[{"id":{"videoId":"vidTtl00001"}}]}"#
+                    .to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, make_video("vidTtl00001")),
+                delay: Duration::ZERO,
+            },
+            // 2) "alpha" ページ 2 が再び同じ "dup_tok" を返す -> 無限ループ防止で打ち切り
+            MockReply {
+                status: 200,
+                body: r#"{"nextPageToken":"dup_tok","items":[{"id":{"videoId":"vidTtl00002"}}]}"#
+                    .to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, make_video("vidTtl00002")),
+                delay: Duration::ZERO,
+            },
+            // 3) TTL 600s 失効後の再取得
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"id":{"videoId":"vidTtl00003"}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, make_video("vidTtl00003")),
+                delay: Duration::ZERO,
+            },
+            // 4) 別クエリ "beta"
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"id":{"videoId":"vidBeta0001"}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, make_video("vidBeta0001")),
+                delay: Duration::ZERO,
+            },
+            // 5) キー変更後の再検索
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"id":{"videoId":"vidKeyCh001"}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: format!(r#"{{"items":[{}]}}"#, make_video("vidKeyCh001")),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyTTL_19".to_string()), base);
+        let t0 = 1_700_000_000;
+
+        // 重複 nextPageToken でも無限ループせず 2 ページで終了して exhausted=true
+        let r1 = api
+            .search_videos_at("alpha", 5, t0, |v| v.len() >= 10)
+            .await
+            .unwrap();
+        assert_eq!(r1.len(), 2);
+        assert_eq!(recorded.lock().unwrap().len(), 4);
+
+        // t0 + 599 は TTL 内かつ exhausted なので 0 HTTP でキャッシュ返却
+        let r_hit = api
+            .search_videos_at("alpha", 2, t0 + 599, |v| v.len() >= 10)
+            .await
+            .unwrap();
+        assert_eq!(r_hit.len(), 2);
+        assert_eq!(recorded.lock().unwrap().len(), 4);
+
+        // トリム後同一キーではセッション保持
+        api.on_key_changed(Some("  AIzaSyTTL_19  "));
+        let r_same_key = api
+            .search_videos_at("alpha", 2, t0 + 599, |v| v.len() >= 10)
+            .await
+            .unwrap();
+        assert_eq!(r_same_key.len(), 2);
+        assert_eq!(recorded.lock().unwrap().len(), 4);
+
+        // t0 + 600 で TTL 失効して再取得
+        let r_exp = api
+            .search_videos_at("alpha", 2, t0 + 600, |v| !v.is_empty())
+            .await
+            .unwrap();
+        assert_eq!(r_exp[0].video_id, "vidTtl00003");
+        assert_eq!(recorded.lock().unwrap().len(), 6);
+
+        // 別クエリ "beta" で新規セッション
+        let r_beta = api
+            .search_videos_at("beta", 2, t0 + 605, |v| !v.is_empty())
+            .await
+            .unwrap();
+        assert_eq!(r_beta[0].video_id, "vidBeta0001");
+        assert_eq!(recorded.lock().unwrap().len(), 8);
+
+        // キー実変更でセッション破棄
+        api.on_key_changed(Some("AIzaSyTTL_19_NEW"));
+        let r_new_key = api
+            .search_videos_at("beta", 2, t0 + 606, |v| !v.is_empty())
+            .await
+            .unwrap();
+        assert_eq!(r_new_key[0].video_id, "vidKeyCh001");
+        assert_eq!(recorded.lock().unwrap().len(), 10);
+    }
+
+    /// DB-YA-20: `search_videos` の独立サーキットブレーカー（`/search` 403 で `Search` 枠のみ遮断し
+    /// `Shared` 枠を維持、`Shared` 枠枯渇時は `/search` 通信を打たず `Search` 枠を維持、
+    /// `/videos` 403 でも `Search` 枠を維持、各種エラーで `should_fallback()` が `true`）を検証する。
+    #[tokio::test]
+    async fn search_videos_independent_breakers_and_fallback() {
+        // 1) /search 403 quotaExceeded -> Search のみ遮断、Shared は有効維持
+        let (base_sq, rec_sq) = spawn_mock_server(vec![MockReply {
+            status: 403,
+            body: r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_sq = YtApi::with_test_base_url(Some("AIzaSySQ_20".to_string()), base_sq);
+        let err_sq = api_sq
+            .search_videos("q", 2, |v| v.len() >= 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err_sq,
+            YtApiError::QuotaExhausted(QuotaBucket::Search)
+        ));
+        assert!(err_sq.should_fallback());
+        assert!(!api_sq.can_use(QuotaBucket::Search));
+        assert!(api_sq.can_use(QuotaBucket::Shared));
+        assert_eq!(rec_sq.lock().unwrap().len(), 1);
+        // 遮断中の再呼び出しは 0 HTTP
+        let err_sq2 = api_sq
+            .search_videos("q", 2, |v| v.len() >= 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err_sq2,
+            YtApiError::QuotaExhausted(QuotaBucket::Search)
+        ));
+        assert_eq!(rec_sq.lock().unwrap().len(), 1);
+
+        // 2) Shared 枯渇時は /search 通信を打たず Search 枠を消費しない
+        let (base_sh, rec_sh) = spawn_mock_server(vec![MockReply {
+            status: 403,
+            body: r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_sh = YtApi::with_test_base_url(Some("AIzaSySH_20".to_string()), base_sh);
+        let _ = api_sh.videos_list(&["dQw4w9WgXcQ"]).await.unwrap_err();
+        assert!(!api_sh.can_use(QuotaBucket::Shared));
+        assert!(api_sh.can_use(QuotaBucket::Search));
+        assert_eq!(rec_sh.lock().unwrap().len(), 1);
+
+        let err_sh = api_sh
+            .search_videos("q", 2, |v| v.len() >= 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err_sh,
+            YtApiError::QuotaExhausted(QuotaBucket::Shared)
+        ));
+        assert!(err_sh.should_fallback());
+        assert!(api_sh.can_use(QuotaBucket::Search));
+        assert_eq!(rec_sh.lock().unwrap().len(), 1);
+
+        // 3) /search 200 後に /videos 403 quotaExceeded -> Shared のみ遮断し Search 維持
+        let (base_v403, _) = spawn_mock_server(vec![
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"id":{"videoId":"vidV4030001"}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 403,
+                body: r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+        let api_v403 = YtApi::with_test_base_url(Some("AIzaSyV403_20".to_string()), base_v403);
+        let err_v403 = api_v403
+            .search_videos("q", 2, |v| v.len() >= 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err_v403,
+            YtApiError::QuotaExhausted(QuotaBucket::Shared)
+        ));
+        assert!(api_v403.can_use(QuotaBucket::Search));
+        assert!(!api_v403.can_use(QuotaBucket::Shared));
+
+        // 4) 400 keyInvalid / 429 / 500 / タイムアウトのフォールバック判定
+        for (status, body) in [
+            (400, r#"{"error":{"errors":[{"reason":"keyInvalid"}]}}"#),
+            (429, r#"{"error":{"code":429}}"#),
+            (500, r#"{"error":{"code":500}}"#),
+        ] {
+            let (base_e, _) = spawn_mock_server(vec![MockReply {
+                status,
+                body: body.to_string(),
+                delay: Duration::ZERO,
+            }])
+            .await;
+            let api_e = YtApi::with_test_base_url(Some("AIzaSyE_20".to_string()), base_e);
+            let err_e = api_e
+                .search_videos("q", 2, |v| v.len() >= 10)
+                .await
+                .unwrap_err();
+            assert!(err_e.should_fallback());
+        }
+
+        let (base_to, _) = spawn_mock_server(vec![MockReply {
+            status: 200,
+            body: r#"{"items":[]}"#.to_string(),
+            delay: Duration::from_millis(300),
+        }])
+        .await;
+        let api_to = YtApi::with_test_base_url(Some("AIzaSyTO_20".to_string()), base_to)
+            .with_test_timeouts(Duration::from_millis(50), Duration::from_millis(80));
+        let err_to = api_to
+            .search_videos("q", 2, |v| v.len() >= 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(err_to, YtApiError::Http(_)));
+        assert!(err_to.should_fallback());
+    }
+
+    /// DB-YA-21: `statistics.viewCount` の境界値（文字列・数値・0・欠落・不正文字列・負数）、
+    /// 空検索結果（`items: []` で `videos.list` 未呼出かつ `Ok(vec![])`）、および
+    /// `to_search_result()` での非 UC `channelId` 除外を検証する。
+    #[tokio::test]
+    async fn view_count_boundaries_empty_search_and_to_search_result_channel_guard() {
+        let (base, recorded) = spawn_mock_server(vec![
+            MockReply {
+                status: 200,
+                body: r#"{"items":[]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: r#"{
+                    "items": [
+                        {"id":"vidVc000001","snippet":{"title":"Str","channelId":"UCvalid00000000000000001"},"statistics":{"viewCount":"9876543210"}},
+                        {"id":"vidVc000002","snippet":{"title":"Num","channelId":"UCshort0000000000000001"},"statistics":{"viewCount":42}},
+                        {"id":"vidVc000003","snippet":{"title":"Zero","channelId":"@handle"},"statistics":{"viewCount":"0"}},
+                        {"id":"vidVc000004","snippet":{"title":"Missing"}},
+                        {"id":"vidVc000005","snippet":{"title":"BadStr"},"statistics":{"viewCount":"abc"}},
+                        {"id":"vidVc000006","snippet":{"title":"Neg"},"statistics":{"viewCount":-1}},
+                        {"id":"vidVc000007","snippet":{"title":"NegStr"},"statistics":{"viewCount":"-5"}}
+                    ]
+                }"#
+                .to_string(),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyVC_21".to_string()), base);
+
+        // 空検索結果では videos.list を呼ばない
+        let empty = api
+            .search_videos("no_hits", 2, |v| !v.is_empty())
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(recorded.lock().unwrap().len(), 1);
+
+        let map = api
+            .videos_list(&[
+                "vidVc000001",
+                "vidVc000002",
+                "vidVc000003",
+                "vidVc000004",
+                "vidVc000005",
+                "vidVc000006",
+                "vidVc000007",
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(map["vidVc000001"].view_count, Some(9_876_543_210));
+        assert_eq!(
+            map["vidVc000001"].to_search_result().channel_id.as_deref(),
+            Some("UCvalid00000000000000001")
+        );
+
+        assert_eq!(map["vidVc000002"].view_count, Some(42));
+        // 23 文字の非正規 UC ID は parse_video_item では互換保持されるが to_search_result では除外
+        assert_eq!(
+            map["vidVc000002"].video_ref.channel_id.as_deref(),
+            Some("UCshort0000000000000001")
+        );
+        assert_eq!(map["vidVc000002"].to_search_result().channel_id, None);
+
+        assert_eq!(map["vidVc000003"].view_count, Some(0));
+        assert_eq!(map["vidVc000003"].to_search_result().channel_id, None);
+
+        assert_eq!(map["vidVc000004"].view_count, None);
+        assert_eq!(map["vidVc000005"].view_count, None);
+        assert_eq!(map["vidVc000006"].view_count, None);
+        assert_eq!(map["vidVc000007"].view_count, None);
     }
 }

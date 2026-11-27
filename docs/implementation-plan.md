@@ -123,6 +123,14 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] `db/library.rs` と `db/mod.rs` へ `PlaylistImportItem`、`video_upsert_with_published`（`COALESCE(videos.published_at, excluded.published_at)` で既存非 NULL 保持）、`playlist_add_many_with_published` を追加し、`commands/library.rs` の `import_playlist_with` と `playlist_import` で `WL`、`HL`、`LM`、`LL` 系、`RD` 系は `yt::playlist_meta` へ直行し、それ以外の `list` 付きプレイリストは `ytapi.playlist_items` を優先して `NotFound` と有効 0 件を `invalid_input`（非フォールバック）とし、その他障害時のみ `yt::playlist_meta` へフォールバックする処理、ならびに設定画面案内文言（`i18n-ja.ts` と `i18n-en.ts`）と 7 文書を実装する（単体テスト `DB-LD-43`）
 - [ ] 受け入れ：有効な API キーを設定した実機環境で `@handle` チャンネル購読（`yt-dlp` なしでも成功すること、存在しないハンドルで `NotFound` になること）と標準プレイリスト取り込み（投稿日時の補完と非公開項目の除外、`WL` 等のフォールバック、クォータ上限時の `yt-dlp` 切替）を実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた GUI 実機確認は未実施）
 
+### Phase 95：YouTube Data API v3 によるキーワード検索と動画説明文フィルタ補完
+
+- [x] `ytapi/mod.rs` へ `SearchSession`（10 分 TTL、`SEARCH_MAX_PAGES_PER_CALL = 2`、トリム後キー変化時のみリセットする `on_key_changed` と `session_epoch` 保護）、`YtVideoItem.view_count`（`statistics.viewCount` 解析）、`YtVideoItem::to_search_result`（`is_channel_id` 厳格化）、および `search_videos` / `search_videos_at`（`search.list` `part=id`・`type=video`・`maxResults=50`・`relatedToVideoId` 非送信・`seen_tokens` ループ抑止・`HashSet` 重複排除・`videos_list` 併用・`Search` と `Shared` 独立遮断器）を実装する（FR-100、FR-25、仕様決定 EF、単体テスト `DB-YA-17` 〜 `DB-YA-21`）
+- [x] `filter/mod.rs` へ `Matcher::has_video_desc_rules`、`has_channel_id_rules`、`has_channel_title_rules`（有効な `literal` と空でない `RegexSet` のみを対象とし `highlight` と不正正規表現のみの空集合を除外）を追加し、`yt/mod.rs` の `parse_search_jsonl` へ `truncate(count)` 前段の `HashSet` 重複排除を組み込む
+- [x] `commands/search.rs` の `search` と `search_with` へ `Arc<YtApi>` を注入して `SearchSession` を優先配線し（`yt-dlp` 不在でも動作し、累積 `count` と既存 IPC 署名を維持）、`should_fallback` 時は `yt::search` へ透過フォールバックしたうえで事前フィルタ後の候補に対して条件付き（`QuotaBucket::Shared` 利用可能かつ `has_video_desc_rules` 真、または `channel_id` / `channel_title` 欠落かつ対応ブロックや NG ルール有効）50 件チャンク `videos_list` 補強と `survivors >= count` 早期打ち切りを行う（FR-85 改訂）
+- [x] 設定画面の API キー案内文言（`i18n-ja.ts` と `i18n-en.ts` の `settings.deps.youtubeApiKeyDesc`）から検索順次対応予定の文言を除いてキーワード検索を追加し、7 文書（`requirements-definition.md`・`decision-records.md`・`design.md`・`implementation-plan.md`・`features.md`・`user-guide.md`・`README.md`）を更新する
+- [ ] 受け入れ：有効な API キーを設定した実機環境でキーワード検索（`yt-dlp` 不在環境での検索成功、「さらに読み込む」時の 10 分 TTL セッション再利用、`video_desc` NG フィルタの評価、検索枠と共通枠の独立フォールバック）を実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた GUI 実機確認は未実施）
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。
