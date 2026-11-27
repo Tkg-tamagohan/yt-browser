@@ -121,9 +121,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `list_categories` | なし | `Result<Vec<Category>>` |
 | `create_category` | `name` | `Result<Category>` |
 | `category_reorder` | `category_ids`（カテゴリ全件の新しい表示順） | `Result<()>`（FR-63、仕様決定 CN） |
-| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`、`cursor`（`published_at`+`video_id`）、`channel_id`（チャンネル別フィード、仕様決定 AN）、全項目省略可。shorts 既定除外は `feed.show_shorts` で制御（仕様決定 AP）） | `Result<Vec<FeedItem>>` |
+| `list_feed` | `filter`（`unread_only`、`category_id`、`days`、`kind`（`video` / `short` / `live` / `live_now` / `upcoming`）、`cursor`（`is_live`+`published_at`+`video_id`）、`channel_id`（チャンネル別フィード、仕様決定 AN）、全項目省略可。shorts 既定除外は `feed.show_shorts` で制御（仕様決定 AP）） | `Result<Vec<FeedItem>>`（`broadcastState`・`broadcastStartMs` 付き、FR-96） |
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
-| `feed_refresh` | `channel_id?` | `Result<()>` |
+| `feed_refresh` | `channel_id?` | `Result<()>`（`FeedPoller::force_refresh` に加えて `MetaResolver::wake_manual` を呼ぶ、FR-96） |
 | `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams`・`/shorts` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN。`/shorts` は FR-55・仕様決定 CF） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置（`videos_pos`・`streams_pos`・`shorts_pos`）、`errors`） |
 | `search` | `query`, `count?`（返す表示件数の上限。省略時 20・上限 500。ytsearch に継続が無いため、「さらに読み込む」は count を増やした再取得＋画面側の差分追記とする（仕様決定 AR）） | `Result<Vec<SearchResult>>` |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
@@ -197,7 +197,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `queue_save` / `queue_load` は一時キューの永続化（FR-30、仕様決定 AY。構造は §4.6、DDL は §8）。`queue_save` は表示メタと `uid`（項目のユニーク ID、BG-10、仕様決定 BK）付きの項目列と現在位置を全置換で書き、`queue_load` は起動時の復元に使う。
 `video_meta_lookup` は拡張からのキュー追加（FR-29、仕様決定 AX）で動画 ID だけ判明する項目の表示メタを `videos` 台帳 → `watch_history` の順に補完する。
 `video_meta_resolve` は補完が外れた項目を InnerTube `player` 応答の `videoDetails` から遅延解決する（仕様決定 BD）。タイトルが取れなければ None を返し、呼び出し側は動画 ID 表示のままとする。
-`videos` 台帳の投稿日時・kind・説明文を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56・FR-85、仕様決定 CD・CG・DJ、§4.18）。
+`videos` 台帳の投稿日時・kind・説明文・動的放送状態を後から埋めるメタの遅延解決基盤も同じ InnerTube `player` 経路を共用する（FR-53・FR-56・FR-85・FR-96、仕様決定 CD・CG・DJ・EB、§4.18）。
+`list_feed` はライブ中（`broadcast_state='live'`）走査と非ライブ走査の 2 段階クエリでライブ中項目を先頭配置し、種別フィルタ `live_now`・`upcoming` に対応する（仕様決定 EB）。
 `history_list` のカーソルは末尾行の `(last_watched_at, rowid)` の対で、一覧の全順序（`last_watched_at` 降順、同時刻は rowid 降順）と同じ基準で「その行の次（より古い側）から」を取る（FR-52、仕様決定 CC。`history_prune` の保持対象とも同じ順序）。`next_cursor` の有無は `limit`+1 件の取得で確定し、末尾ちょうどのページでも空の次ページを要求しない。`query` はタイトルと `channel_title` への `%...%` 部分一致 LIKE で、`%`・`_`・`\` を退避して利用者入力のワイルドカードを無力化する（FR-61、仕様決定 CL。空・空白のみは絞り込みなし）。一覧取得のページングであり、保持上限 10000 件の剪定運用（仕様決定 AV）とは別物。
 `watch_later_add` は `favorite_add` と同じく `video_upsert` で `videos` 台帳へ登録してから `watch_later` へ挿入し、`watch_later_list` は台帳との JOIN で表示メタを取る（FR-59、仕様決定 CJ）。
 `library_search` は履歴・お気に入り・プレイリスト項目・あとで見るの 4 区分をタイトルとチャンネル名の `%...%` 部分一致 LIKE（`history_list` の `query` と同じ退避規則）で横断検索する（FR-60、仕様決定 CK）。`query` の空・空白のみは 0 件を返す（暫定解釈）。同一動画が複数区分でヒットしたときは 1 件へまとめ、ヒットした区分の列を `sources` に履歴→お気に入り→プレイリスト→あとで見るの正準順で持つ。表示メタは区分をまたいだ先出の行を使い、空欄は後出の行で補完する。履歴区分は履歴行自身の列に加えて `videos` 台帳のメタでも照合する（履歴行の channel 列が未入力でも台帳にあれば拾う）。結果の並びは履歴の新しい順→お気に入りの新しい順→プレイリストの登録順→あとで見るの新しい順の先出順（暫定解釈）で、`limit` は統合後の件数上限。UI はライブラリ画面の「検索」タブに検索ボックスを置き、各行はヒット区分のバッジを付ける（検索 UI の置き場所は FR-60 が指定しないため、タブ構成に合わせた暫定解釈）。
@@ -1060,8 +1061,8 @@ RSS・バックフィルの推定に留まる種別（`kind`）、説明文（`d
   する（FR-57、仕様決定 CH）。同一行の連続失敗が 1 起動内で 5 回を超えたら
   その起動中は対象から外し、次回起動で再び対象に戻す（恒久に失敗する行が
   選出順を占有しないための暫定解釈）
-- `kind` の値が変わった、または `published_at`・`description` を埋めた
-  件数の合計が 1 件以上で `feed://kind_updated` を出し、一覧の再読込を
+- `kind` の値が変わった、または `published_at`・`description`・動的放送状態を
+  更新した件数の合計が 1 件以上で `feed://kind_updated` を出し、一覧の再読込を
   促す（説明文の解決は `video_desc` フィルタの評価結果を変え得るため）
 - バックフィルのタブ由来など `video` 以外の推定 kind が付いた行へ
   「放送系でない」応答が返ったときは、由来の kind を残したまま確定する
@@ -1070,7 +1071,23 @@ RSS・バックフィルの推定に留まる種別（`kind`）、説明文（`d
   本文へ昇格するとき、`kind_state=1` の行は既に確定した kind を優先し、
   投入側の暫定値では上書きしない（解決済みの判定を守る暫定解釈）
 - フィードの種別フィルタ `live` は放送系の傘として `live`・`upcoming`・
-  `premiere` をまとめて拾う（暫定解釈）
+  `premiere` をまとめて拾う（暫定解釈）。加えて種別フィルタ `live_now`
+  （`broadcast_state='live'`）と `upcoming`（`broadcast_state='upcoming'`）を提供する（FR-96、仕様決定 EB）
+- 動的放送状態と開始時刻の追跡（FR-96、仕様決定 EB）:
+  `MetaResolver` は初回解決時に `videos_resolve_meta_tx` で `broadcast_state`
+  （`'live' | 'upcoming' | 'ended' | NULL`）・`broadcast_start_ms`・
+  `broadcast_checked_at_ms` を単一トランザクションで保存し、続けて毎 60 秒の
+  巡回後半で `ingested=1` のアクティブ行（`'live' | 'upcoming'`）を 1 サイクル最大 10 件
+  （緊急度階層 8:2 配分）で定期再確認する。再確認間隔はライブ中 3 分（開始 12 時間超は
+  10 分）、直前予定（15 分前〜2 時間後）2 分、遠い予定 15 分、基準時刻から 24 時間超の
+  未開始枠は 6 時間とし、最低 1 回確認済みかつ基準時刻から 7 日超過の `upcoming` 行は
+  一括解除する。HTTP 200 の `LOGIN_REQUIRED`/`ERROR` かつ詳細なしのボット判定応答は
+  直前状態を保護し、`live` 行で連続 6 回継続時のみ個別解除する。HTTP 429 検知時は
+  5→10→15 分の指数バックオフ、連続 3 回通信失敗時はサイクル中断を発動する。手動
+  `feed_refresh` では 60 秒クールダウン内で間隔ガードをバイパスして即時再確認し、
+  `LiveWaitPoller` も `meta_snapshot` 取得結果を `ingested=1` 行へ単調時刻ガード付きで
+  相乗り反映する（状態分類とボット応答保護の純粋関数は `innertube` 層へ集約し、3 層
+  一方向依存を維持する）
 
 ### 4.19 新着のデスクトップ通知と自動既読（FR-58・FR-64、仕様決定 CI・CO）
 
@@ -1446,8 +1463,12 @@ CREATE TABLE videos (
   ingested INTEGER NOT NULL DEFAULT 0,     -- 0=ライブラリ由来のプレースホルダ、1=フィード投入済み
   kind_state INTEGER NOT NULL DEFAULT 0,   -- kind の判定状態: 0=未確定, 1=確定, 2=直近の試行が失敗
   meta_checked INTEGER NOT NULL DEFAULT 0, -- InnerTube メタ応答の試行済み印（投稿日時解決の重複抑止）
-  description TEXT                         -- 遅延解決済みの説明文（FR-85、v22）。
+  description TEXT,                        -- 遅延解決済みの説明文（FR-85、v22）。
                                            -- NULL=未解決、''=解決済み・説明なし
+  broadcast_state TEXT
+    CHECK (broadcast_state IS NULL OR broadcast_state IN ('live', 'upcoming', 'ended')),
+  broadcast_start_ms INTEGER,
+  broadcast_checked_at_ms INTEGER
 );
 
 CREATE TABLE watch_history (
@@ -1553,6 +1574,12 @@ CREATE UNIQUE INDEX idx_queue_state_playlist
 CREATE INDEX idx_videos_meta_resolve
   ON videos (first_seen_at DESC, video_id)
   WHERE kind_state <> 1 OR (published_at IS NULL AND meta_checked = 0) OR description IS NULL;
+CREATE INDEX idx_videos_broadcast_active
+  ON videos (broadcast_state, broadcast_checked_at_ms, video_id)
+  WHERE ingested = 1 AND broadcast_state IN ('live', 'upcoming');
+CREATE INDEX idx_videos_feed_broadcast
+  ON videos (broadcast_state, published_at DESC, video_id)
+  WHERE ingested = 1 AND broadcast_state IN ('live', 'upcoming');
 ```
 
 設計上の注意を二点置く。

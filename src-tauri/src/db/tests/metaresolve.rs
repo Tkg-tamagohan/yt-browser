@@ -586,9 +586,20 @@ fn migrate_v22_adds_description_column() {
         .find(|t| t.video_id == "m_v")
         .expect("説明欠落行は対象");
     assert!(t.needs_desc);
-    // 書き込みと読み出しができ、一覧行は説明文を保持して返す
+    // 書き込みと読み出しができ、現行スキーマ移行後の一覧行は説明文を保持して返す
     // （video_desc 評価で説明文を参照する前提）
     db.videos_set_description("m_v", "説明文").unwrap();
+    {
+        let conn = db.lock().unwrap();
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version > 22) {
+            conn.execute_batch(m.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [m.version],
+            )
+            .unwrap();
+        }
+    }
     let items = db
         .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
         .unwrap();

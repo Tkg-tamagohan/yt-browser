@@ -590,7 +590,99 @@ fn migrate_v24_backfills_watch_history_and_updates_feed_indexes() {
         );
     }
 
-    // 新規接続時の最新スキーマバージョンが 24 になる
+    // 新規接続時の最新スキーマバージョンが 25 以上になる（v25 の詳細は migrate_v25_* で検証）
     let fresh = Db::connect_in_memory().unwrap();
-    assert_eq!(fresh.schema_version().unwrap(), 24);
+    assert!(fresh.schema_version().unwrap() >= 24);
+}
+
+/// DB-LD-38: v24 からの v25 マイグレーション（FR-96、仕様決定 EB）。
+/// broadcast_state / broadcast_start_ms / broadcast_checked_at_ms 列と
+/// 部分索引 2 本の作成、および直近 14 日 upcoming・直近 24 時間 live/premiere のみ
+/// kind_state=0 へ戻る（ingested=0・short・古い行・published_at=NULL 境界）を検証する。
+#[test]
+fn migrate_v25_adds_broadcast_columns_and_selective_backfill() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 24) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+
+    conn.execute(
+        "INSERT INTO videos (video_id, channel_id, title, published_at, kind, ingested, kind_state, first_seen_at)
+         VALUES
+           ('up_recent14', 'UC1', '予定直近', NULL, 'upcoming', 1, 1, datetime('now', '-5 days')),
+           ('up_old15___', 'UC1', '予定古い', datetime('now', '-20 days'), 'upcoming', 1, 1, datetime('now', '-20 days')),
+           ('live_rec24_', 'UC1', 'ライブ直近', datetime('now', '-2 hours'), 'live', 1, 1, datetime('now', '-2 hours')),
+           ('prem_rec24_', 'UC1', 'プレミア直近', NULL, 'premiere', 1, 1, datetime('now', '-12 hours')),
+           ('live_old25_', 'UC1', 'ライブ古い', datetime('now', '-2 days'), 'live', 1, 1, datetime('now', '-2 days')),
+           ('un_ingest__', 'UC1', '未投入', datetime('now', '-1 hours'), 'upcoming', 0, 1, datetime('now', '-1 hours')),
+           ('short_keep_', 'UC1', 'ショート', datetime('now', '-1 hours'), 'short', 1, 1, datetime('now', '-1 hours'))",
+        [],
+    )
+    .unwrap();
+
+    let v25 = migrations::MIGRATIONS
+        .iter()
+        .find(|m| m.version == 25)
+        .expect("v25 マイグレーションが存在すること");
+    {
+        let tx = conn.transaction().unwrap();
+        tx.execute_batch(v25.sql).unwrap();
+        tx.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [v25.version],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    let state_of = |id: &str| -> (i64, Option<String>) {
+        conn.query_row(
+            "SELECT kind_state, broadcast_state FROM videos WHERE video_id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(state_of("up_recent14"), (0, None));
+    assert_eq!(state_of("up_old15___"), (1, None));
+    assert_eq!(state_of("live_rec24_"), (0, None));
+    assert_eq!(state_of("prem_rec24_"), (0, None));
+    assert_eq!(state_of("live_old25_"), (1, None));
+    assert_eq!(state_of("un_ingest__"), (1, None));
+    assert_eq!(state_of("short_keep_"), (1, None));
+
+    // broadcast_state の CHECK 制約が有効
+    assert!(conn
+        .execute(
+            "UPDATE videos SET broadcast_state = 'bogus' WHERE video_id = 'live_rec24_'",
+            [],
+        )
+        .is_err());
+
+    // 部分索引 2 本が作成されている
+    for idx in ["idx_videos_broadcast_active", "idx_videos_feed_broadcast"] {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [idx],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "{idx} が存在すること");
+    }
+
+    let fresh = Db::connect_in_memory().unwrap();
+    assert_eq!(fresh.schema_version().unwrap(), 25);
 }

@@ -30,6 +30,16 @@ pub enum InnerTubeError {
     CfgMissing(&'static str),
 }
 
+impl InnerTubeError {
+    /// HTTP 429（Too Many Requests）かどうかを返す（FR-96、仕様決定 EB）。
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(
+            self,
+            InnerTubeError::Status(s) if *s == reqwest::StatusCode::TOO_MANY_REQUESTS
+        )
+    }
+}
+
 /// watch ページから取得するクライアント構成。
 #[derive(Debug, Clone)]
 struct YtCfg {
@@ -255,6 +265,77 @@ impl InnerTube {
         )
         .await
     }
+}
+
+/// ボット判定やログイン要求・一時エラー応答（HTTP 200 で返る `LOGIN_REQUIRED` /
+/// `ERROR` かつ放送詳細・予定フラグが無い形）かどうかを返す（FR-96、仕様決定 EB）。
+/// この応答を「放送情報なし」と誤解して進行中ライブ状態を消去しないためのガード。
+pub fn is_transient_or_blocked_playability(s: &MetaSnapshot) -> bool {
+    !s.broadcast.has_details
+        && !s.broadcast.is_upcoming
+        && matches!(
+            s.playability.as_deref(),
+            Some("LOGIN_REQUIRED" | "ERROR")
+        )
+}
+
+/// InnerTube メタ応答から放送系 kind を分類する（FR-56、仕様決定 CG）。
+/// `liveBroadcastDetails` と `videoDetails` 系の値・再生状態を材料にする。
+/// 戻り値は `kind` の確定値。放送系の手掛かりが無いときは `None`
+/// （呼び出し側は `kind='video'` の行だけ shorts 判定へ回す）。
+pub fn classify_kind(s: &MetaSnapshot) -> Option<&'static str> {
+    let b = &s.broadcast;
+    if b.is_live_now == Some(true) {
+        return Some(if s.is_live_content == Some(false) {
+            "premiere"
+        } else {
+            "live"
+        });
+    }
+    if b.has_details || b.is_upcoming {
+        if b.end_ms.is_some() {
+            return Some(if s.is_live_content == Some(true) {
+                "live"
+            } else {
+                "premiere"
+            });
+        }
+        return Some("upcoming");
+    }
+    if s.is_live_content == Some(true) {
+        return Some("live");
+    }
+    if s.playability.as_deref() == Some("LIVE_STREAM_OFFLINE") {
+        return Some("upcoming");
+    }
+    None
+}
+
+/// InnerTube メタ応答からフィード表示用の動的放送状態と開始時刻（epoch ms）を
+/// 抽出する（FR-96、仕様決定 EB）。
+/// 戻り値は `(broadcast_state, broadcast_start_ms)` で、`<= 0` の不正タイムスタンプは
+/// `None` へ正規化する。プレミア公開も公開中は `"live"`、予定は `"upcoming"`、
+/// 終了後は `"ended"` として統一的に分類する。
+pub fn classify_broadcast_meta(s: &MetaSnapshot) -> (Option<&'static str>, Option<i64>) {
+    let b = &s.broadcast;
+    let start = b.start_ms.filter(|&ms| ms > 0);
+    let sched = b.scheduled_start_ms.filter(|&ms| ms > 0);
+    if b.is_live_now == Some(true) {
+        return (Some("live"), start.or(sched));
+    }
+    if b.has_details || b.is_upcoming {
+        if b.end_ms.is_some() {
+            return (Some("ended"), start.or(sched));
+        }
+        return (Some("upcoming"), sched.or(start));
+    }
+    if s.is_live_content == Some(true) {
+        return (Some("ended"), start);
+    }
+    if s.playability.as_deref() == Some("LIVE_STREAM_OFFLINE") {
+        return (Some("upcoming"), sched.or(start));
+    }
+    (None, None)
 }
 
 /// 継続トークンの種別（仕様決定 AQ のライブ/リプレイ自動判定）。

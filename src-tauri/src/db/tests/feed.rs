@@ -326,6 +326,7 @@ fn feed_list_filtered_cursor_paging() {
     let cur = |published_at: Option<&str>, video_id: &str| FeedCursor {
         published_at: published_at.map(str::to_string),
         video_id: video_id.to_string(),
+        is_live: false,
     };
     let ids_of =
         |rows: &[(String, Option<String>)]| rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>();
@@ -988,6 +989,7 @@ fn feed_list_filtered_query_plans_avoid_table_scan_and_temp_btree() {
         cursor = Some(crate::model::FeedCursor {
             published_at: last.published_at.clone(),
             video_id: last.video_id.clone(),
+            is_live: last.broadcast_state.as_deref() == Some("live"),
         });
     }
     assert_eq!(paged, ["planvid0001", "plannull001", "plannull002"]);
@@ -1018,4 +1020,521 @@ fn feed_list_filtered_query_plans_avoid_table_scan_and_temp_btree() {
         conn.execute_batch("ANALYZE;").unwrap();
         assert_plans(&conn, "after_analyze");
     }
+}
+
+/// DB-LD-39: FR-96/EB — `feed_list_broadcast_sql`（Live / Upcoming × 4 分岐）および
+/// `feed_list_filtered_sql`（フェーズ 2 × 4 分岐）のすべてで、`ANALYZE` 前後とも
+/// 素の `SCAN v` および `USE TEMP B-TREE` が 0 件であることを検証する。
+#[test]
+fn feed_list_broadcast_query_plans_avoid_table_scan_and_temp_btree() {
+    use crate::db::feed::{feed_list_broadcast_sql, BroadcastQueryState};
+    let db = Db::connect_in_memory().unwrap();
+    let cat = db.category_create("ゲーム").unwrap();
+    let ch1 = "UCbplan0000000000000001";
+    let ch2 = "UCbplan0000000000000002";
+    let mk = |id: &'static str, ch: &'static str, pub_at: &'static str| NewVideo {
+        video_id: id,
+        channel_id: ch,
+        channel_title: "CH",
+        title: id,
+        thumbnail_url: None,
+        published_at: Some(pub_at),
+        kind: "live",
+    };
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch1,
+        title: "CH1",
+        thumbnail_url: None,
+        category_id: Some(cat.id),
+        entries: &[mk("blive000001", ch1, "2026-11-27T10:00:00+00:00")],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch2,
+        title: "CH2",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[mk("bup00000001", ch2, "2026-11-27T11:00:00+00:00")],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    db.videos_apply_broadcast_refresh("blive000001", Some("live"), Some("live"), Some(1_000), 100, false)
+        .unwrap();
+    db.videos_apply_broadcast_refresh(
+        "bup00000001",
+        Some("upcoming"),
+        Some("upcoming"),
+        Some(2_000),
+        100,
+        false,
+    )
+    .unwrap();
+
+    let assert_broadcast_plans = |conn: &Connection, stage: &str| {
+        for state in [BroadcastQueryState::Live, BroadcastQueryState::Upcoming] {
+            let kind_val = if state == BroadcastQueryState::Live {
+                Some("live_now")
+            } else {
+                Some("upcoming")
+            };
+            for (unread_only, ch) in [
+                (false, None),
+                (true, None),
+                (false, Some(ch1)),
+                (true, Some(ch1)),
+            ] {
+                for (category_id, days, kind, show_shorts, cur_pub, cur_vid) in [
+                    (None, None, kind_val, 1i64, None, None),
+                    (
+                        Some(cat.id),
+                        Some(7i64),
+                        if state == BroadcastQueryState::Live {
+                            None
+                        } else {
+                            Some("upcoming")
+                        },
+                        0i64,
+                        Some("2026-11-27T10:00:00+00:00"),
+                        Some("blive000001"),
+                    ),
+                ] {
+                    let sql = format!(
+                        "EXPLAIN QUERY PLAN {}",
+                        feed_list_broadcast_sql(state, unread_only, ch.is_some())
+                    );
+                    let mut stmt = conn.prepare(&sql).unwrap();
+                    let details: Vec<String> = match ch {
+                        Some(cid) => stmt
+                            .query_map(
+                                rusqlite::params![
+                                    category_id,
+                                    days,
+                                    kind,
+                                    show_shorts,
+                                    cur_pub,
+                                    cur_vid,
+                                    cid,
+                                ],
+                                |r| r.get::<_, String>(3),
+                            )
+                            .unwrap()
+                            .collect::<Result<_, _>>()
+                            .unwrap(),
+                        None => stmt
+                            .query_map(
+                                rusqlite::params![
+                                    category_id,
+                                    days,
+                                    kind,
+                                    show_shorts,
+                                    cur_pub,
+                                    cur_vid,
+                                ],
+                                |r| r.get::<_, String>(3),
+                            )
+                            .unwrap()
+                            .collect::<Result<_, _>>()
+                            .unwrap(),
+                    };
+                    let joined = details.join(" | ");
+                    assert!(
+                        !details.iter().any(|d| d.contains("USE TEMP B-TREE")),
+                        "[{stage}] {state:?} unread={unread_only} ch={ch:?} で USE TEMP B-TREE: {joined}"
+                    );
+                    assert!(
+                        !details.iter().any(|d| {
+                            d == "SCAN v" || (d.starts_with("SCAN v ") && !d.contains("USING "))
+                        }),
+                        "[{stage}] {state:?} unread={unread_only} ch={ch:?} で素の SCAN v: {joined}"
+                    );
+                    let expected_idx_ok = if ch.is_some() {
+                        details.iter().any(|d| {
+                            d.contains("idx_videos_feed_broadcast")
+                                || d.contains("idx_videos_channel_pub")
+                        })
+                    } else {
+                        details
+                            .iter()
+                            .any(|d| d.contains("idx_videos_feed_broadcast"))
+                    };
+                    assert!(
+                        expected_idx_ok,
+                        "[{stage}] {state:?} unread={unread_only} ch={ch:?} で期待索引未使用: {joined}"
+                    );
+                }
+            }
+        }
+    };
+
+    {
+        let conn = db.lock().unwrap();
+        assert_broadcast_plans(&conn, "before_analyze");
+        let tx = conn.unchecked_transaction().unwrap();
+        for i in 0..200 {
+            let cid = if i % 2 == 0 { ch1 } else { ch2 };
+            let vid = format!("bkup{i:07}");
+            let pub_at = format!("2026-10-{:02}T10:00:00+00:00", (i % 28) + 1);
+            tx.execute(
+                "INSERT INTO videos (video_id, channel_id, channel_title, title, published_at, kind, is_read, ingested)
+                 VALUES (?1, ?2, 'CH', ?1, ?3, 'video', ?4, 1)",
+                rusqlite::params![vid, cid, pub_at, i % 2],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        conn.execute_batch("ANALYZE;").unwrap();
+        assert_broadcast_plans(&conn, "after_analyze");
+    }
+}
+
+/// DB-LD-40: FR-96/EB — ライブ中先頭配置、2 段階カーソル跨ぎ（NULL 含む）、
+/// および 6 種フィルタ × show_shorts の 12 通り判定を検証する。
+#[test]
+fn feed_list_filtered_live_priority_cursor_and_12_matrix() {
+    use crate::model::FeedCursor;
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCmat000000000000000001";
+    let entry = |id: &'static str, pub_at: Option<&'static str>, kind: &'static str| NewVideo {
+        video_id: id,
+        channel_id: ch,
+        channel_title: "CH",
+        title: id,
+        thumbnail_url: None,
+        published_at: pub_at,
+        kind,
+    };
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[
+            entry("vod_newest_", Some("2026-11-27T12:00:00+00:00"), "video"),
+            entry("live_older_", Some("2026-11-25T10:00:00+00:00"), "live"),
+            entry("live_null__", None, "premiere"),
+            entry("up_next____", Some("2026-11-27T11:00:00+00:00"), "upcoming"),
+            entry("arch_live__", Some("2026-11-27T10:00:00+00:00"), "live"),
+            entry("short_vod__", Some("2026-11-27T09:00:00+00:00"), "short"),
+            entry("short_live_", Some("2026-11-24T09:00:00+00:00"), "short"),
+            entry("short_up___", Some("2026-11-27T08:00:00+00:00"), "short"),
+        ],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+    db.videos_apply_broadcast_refresh("live_older_", Some("live"), Some("live"), Some(1_000), 100, false)
+        .unwrap();
+    db.videos_apply_broadcast_refresh(
+        "live_null__",
+        Some("premiere"),
+        Some("live"),
+        Some(1_500),
+        100,
+        false,
+    )
+    .unwrap();
+    db.videos_apply_broadcast_refresh(
+        "up_next____",
+        Some("upcoming"),
+        Some("upcoming"),
+        Some(2_000),
+        100,
+        false,
+    )
+    .unwrap();
+    db.videos_apply_broadcast_refresh(
+        "arch_live__",
+        Some("live"),
+        Some("ended"),
+        Some(500),
+        100,
+        false,
+    )
+    .unwrap();
+    db.videos_apply_broadcast_refresh("short_live_", None, Some("live"), Some(3_000), 100, false)
+        .unwrap();
+    db.videos_apply_broadcast_refresh(
+        "short_up___",
+        None,
+        Some("upcoming"),
+        Some(4_000),
+        100,
+        false,
+    )
+    .unwrap();
+
+    // 1) 全件カーソルページング（limit=2 ずつ、ライブ中先頭＋NULL 末尾→非ライブ先頭へ跨ぐ）
+    let mut cur: Option<FeedCursor> = None;
+    let mut paged = Vec::new();
+    loop {
+        let rows = db
+            .feed_list_filtered(
+                &FeedFilter {
+                    cursor: cur.clone(),
+                    ..Default::default()
+                },
+                true,
+                2,
+                |_| true,
+            )
+            .unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        for r in &rows {
+            paged.push(r.video_id.clone());
+        }
+        let last = rows.last().unwrap();
+        cur = Some(FeedCursor {
+            published_at: last.published_at.clone(),
+            video_id: last.video_id.clone(),
+            is_live: last.broadcast_state.as_deref() == Some("live"),
+        });
+    }
+    assert_eq!(
+        paged,
+        [
+            "live_older_", // live & pub 11-25
+            "short_live_", // live & pub 11-24
+            "live_null__", // live & pub NULL（ライブ中内で末尾）
+            "vod_newest_", // 非ライブ先頭 11-27 12:00
+            "up_next____", // 11-27 11:00
+            "arch_live__", // 11-27 10:00
+            "short_vod__", // 11-27 09:00
+            "short_up___", // 11-27 08:00
+        ]
+    );
+
+    // 2) 6 種別フィルタ × show_shorts (true / false) の 12 通り検証
+    let ids = |kind: Option<&str>, show_shorts: bool| -> Vec<String> {
+        db.feed_list_filtered(
+            &FeedFilter {
+                kind: kind.map(str::to_string),
+                ..Default::default()
+            },
+            show_shorts,
+            FEED_LIST_LIMIT,
+            |_| true,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|i| i.video_id)
+        .collect()
+    };
+
+    assert_eq!(
+        ids(None, false),
+        ["live_older_", "live_null__", "vod_newest_", "up_next____", "arch_live__"]
+    );
+    assert_eq!(
+        ids(Some("video"), true),
+        ["vod_newest_"]
+    );
+    assert_eq!(
+        ids(Some("video"), false),
+        ["vod_newest_"]
+    );
+    // Shorts 明示は show_shorts=false でも表示し、short_live_ を先頭に置く
+    assert_eq!(
+        ids(Some("short"), false),
+        ["short_live_", "short_vod__", "short_up___"]
+    );
+    assert_eq!(
+        ids(Some("short"), true),
+        ["short_live_", "short_vod__", "short_up___"]
+    );
+    // 傘「ライブ」は kind IN ('live','upcoming','premiere') でライブ中が先頭
+    assert_eq!(
+        ids(Some("live"), true),
+        ["live_older_", "live_null__", "up_next____", "arch_live__"]
+    );
+    assert_eq!(
+        ids(Some("live"), false),
+        ["live_older_", "live_null__", "up_next____", "arch_live__"]
+    );
+    // 「ライブ中」
+    assert_eq!(
+        ids(Some("live_now"), true),
+        ["live_older_", "short_live_", "live_null__"]
+    );
+    assert_eq!(
+        ids(Some("live_now"), false),
+        ["live_older_", "live_null__"]
+    );
+    // 「配信予定」
+    assert_eq!(
+        ids(Some("upcoming"), true),
+        ["up_next____", "short_up___"]
+    );
+    assert_eq!(
+        ids(Some("upcoming"), false),
+        ["up_next____"]
+    );
+}
+
+/// DB-LD-41: FR-96/EB — 7 日超過打ち切り、緊急度 8:2 選出・間隔別フィルタ・手動強制、
+/// 単調時刻ガード、ingested_only、short 保護、touch_broadcast_checked を検証する。
+#[test]
+fn broadcast_refresh_targets_expiry_and_monotonic_guard() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCref000000000000000001";
+    let day = 86_400_000i64;
+    let min = 60_000i64;
+    let now = 2_000_000_000_000i64;
+
+    let mut entries = Vec::new();
+    let ids_owned: Vec<String> = (0..14).map(|i| format!("refvid{i:05}")).collect();
+    for id in &ids_owned {
+        entries.push(NewVideo {
+            video_id: id,
+            channel_id: ch,
+            channel_title: "CH",
+            title: id,
+            thumbnail_url: None,
+            published_at: Some("2026-11-27T00:00:00+00:00"),
+            kind: "upcoming",
+        });
+    }
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "CH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &entries,
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+
+    // 階層 1 を 9 件（live 8 件 + 直前 upcoming 1 件）、階層 2（遠い upcoming）を 3 件用意し、8:2 枠割当を確認
+    for (i, id) in ids_owned.iter().enumerate().take(9) {
+        let state = if i < 8 { "live" } else { "upcoming" };
+        let start = if i < 8 { now - 30 * min } else { now + 5 * min };
+        db.videos_apply_broadcast_refresh(
+            id,
+            Some(state),
+            Some(state),
+            Some(start),
+            now - 10 * min,
+            false,
+        )
+        .unwrap();
+    }
+    for id in &ids_owned[9..12] {
+        db.videos_apply_broadcast_refresh(
+            id,
+            Some("upcoming"),
+            Some("upcoming"),
+            Some(now + 2 * day),
+            now - 20 * min,
+            false,
+        )
+        .unwrap();
+    }
+    // 期限未到達の live (checked 1 分前) と、12 時間超の長時間 live (checked 5 分前、10 分未満なので未到達)
+    db.videos_apply_broadcast_refresh(
+        &ids_owned[12],
+        Some("live"),
+        Some("live"),
+        Some(now - 2 * min),
+        now - min,
+        false,
+    )
+    .unwrap();
+    db.videos_apply_broadcast_refresh(
+        &ids_owned[13],
+        Some("live"),
+        Some("live"),
+        Some(now - 13 * 3_600_000),
+        now - 5 * min,
+        false,
+    )
+    .unwrap();
+
+    // 通常選出（limit=10）は階層 1 が 8 件、階層 2 が 2 件選ばれ、未到達 2 件は入らない
+    let picked = db.broadcast_refresh_targets(now, false, 10).unwrap();
+    assert_eq!(picked.len(), 10);
+    let tier1_count = picked
+        .iter()
+        .filter(|t| t.broadcast_state == "live" || t.video_id == ids_owned[8])
+        .count();
+    let tier2_count = picked
+        .iter()
+        .filter(|t| t.video_id >= ids_owned[9] && t.video_id <= ids_owned[11])
+        .count();
+    assert_eq!((tier1_count, tier2_count), (8, 2));
+    assert!(!picked.iter().any(|t| t.video_id == ids_owned[12]));
+    assert!(!picked.iter().any(|t| t.video_id == ids_owned[13]));
+
+    // force_manual=true 時は間隔未到達の id[12]/id[13] も候補に入る
+    let manual = db.broadcast_refresh_targets(now, true, 14).unwrap();
+    assert_eq!(manual.len(), 14);
+
+    // 7 日超過打ち切り：checked_ms == 0 の未確認行は残し、checked_ms > 0 かつ 7 日超のみ NULL 解除
+    db.videos_apply_broadcast_refresh(
+        &ids_owned[9],
+        Some("upcoming"),
+        Some("upcoming"),
+        Some(now - 8 * day),
+        now - 10 * min,
+        false,
+    )
+    .unwrap();
+    {
+        let conn = db.lock().unwrap();
+        // ingested=0 行は打ち切り対象外、checked=0 行も打ち切り対象外
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title, kind, ingested, broadcast_state, broadcast_start_ms, broadcast_checked_at_ms)
+             VALUES ('un_exp_0001', ?1, 'u', 'upcoming', 0, 'upcoming', ?2, ?3),
+                    ('unchk_00001', ?1, 'u2', 'upcoming', 1, 'upcoming', ?2, 0)",
+            rusqlite::params![ch, now - 8 * day, now - 10 * min],
+        )
+        .unwrap();
+    }
+    assert_eq!(db.videos_expire_stale_upcoming(now).unwrap(), 1);
+    // ingested_only=true は ingested=0 行を更新しない
+    assert!(!db
+        .videos_apply_broadcast_refresh("un_exp_0001", Some("live"), Some("live"), Some(now), now, true)
+        .unwrap());
+
+    // 単調時刻ガード：古い now_ms では更新されず false
+    assert!(!db
+        .videos_apply_broadcast_refresh(&ids_owned[0], Some("live"), Some("ended"), Some(now), now - 20 * min, false)
+        .unwrap());
+
+    // touch_broadcast_checked は状態を維持して時刻だけ進める
+    db.videos_touch_broadcast_checked(&ids_owned[0], now).unwrap();
+    let item0 = db
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.video_id == ids_owned[0])
+        .unwrap();
+    assert_eq!(item0.broadcast_state.as_deref(), Some("live"));
+
+    // kind='short' は live へ昇格せず保護される
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title, kind, kind_state, ingested)
+             VALUES ('shortprot01', ?1, 's', 'short', 1, 1)",
+            [ch],
+        )
+        .unwrap();
+    }
+    assert!(db
+        .videos_apply_broadcast_refresh("shortprot01", Some("live"), Some("live"), Some(now), now, false)
+        .unwrap());
+    let conn = db.lock().unwrap();
+    let (k, bs): (String, Option<String>) = conn
+        .query_row(
+            "SELECT kind, broadcast_state FROM videos WHERE video_id = 'shortprot01'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((k.as_str(), bs.as_deref()), ("short", Some("live")));
 }
