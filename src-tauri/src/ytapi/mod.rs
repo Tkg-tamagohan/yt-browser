@@ -17,8 +17,8 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::model::{
-    classify_kind, BroadcastStatus, MetaSnapshot, VideoRef, YtApiAvailability, YtApiStatus,
-    YtApiTestOutcome,
+    classify_kind, is_channel_id, is_video_id, BroadcastStatus, MetaSnapshot, VideoRef,
+    YtApiAvailability, YtApiStatus, YtApiTestOutcome,
 };
 use crate::util::{iso8601_ms, iso_utc, lock, parse_iso8601_duration};
 
@@ -27,6 +27,12 @@ pub const SETTING_YOUTUBE_API_KEY: &str = "youtube.api_key";
 
 /// `videos.list` 1 リクエストあたりの最大 ID 件数（FR-98、仕様決定 ED）。
 pub const VIDEOS_BATCH_MAX: usize = 50;
+
+/// `playlistItems.list` 1 ページあたりの最大取得件数（FR-99）。
+pub const PLAYLIST_ITEMS_PAGE_SIZE: usize = 50;
+
+/// `playlistItems.list` の最大取得ページ数（50 * 100 = 最大 5,000 件）。
+pub const PLAYLIST_ITEMS_MAX_PAGES: usize = 100;
 
 /// 本番 API のベース URL。ダンプインポート経由のキー流出を防ぐため定数固定とし、
 /// 設定キーや環境変数での上書きは行わない（`#[cfg(test)]` のみモック注入可）。
@@ -85,6 +91,20 @@ pub struct YtVideoItem {
     pub meta: MetaSnapshot,
     #[allow(dead_code)] // テストおよび後続フェーズの尺参照用
     pub duration_sec: Option<i64>,
+}
+
+/// `playlistItems.list` 1 件分のパース結果（FR-99、仕様決定 EE）。
+#[derive(Debug, Clone)]
+pub struct YtPlaylistItem {
+    pub video_ref: VideoRef,
+    pub published_at: Option<String>,
+}
+
+/// `playlists.list` + `playlistItems.list` の取得結果（FR-99、仕様決定 EE）。
+#[derive(Debug, Clone)]
+pub struct YtPlaylist {
+    pub title: Option<String>,
+    pub items: Vec<YtPlaylistItem>,
 }
 
 impl YtVideoItem {
@@ -385,6 +405,111 @@ impl YtApi {
         Ok(out)
     }
 
+    /// `channels.list(part=id, forHandle)` で `@handle` から `UC...` チャンネル ID を解決する（1 unit、FR-99・仕様決定 EE）。
+    /// 空ハンドルや該当なし（空 `items`）は `Ok(None)`、HTTP 404 は `Err(YtApiError::NotFound)` を返す。
+    pub async fn resolve_channel_handle(&self, handle: &str) -> Result<Option<String>, YtApiError> {
+        let clean = handle.trim().trim_start_matches('@').trim();
+        if clean.is_empty() {
+            return Ok(None);
+        }
+        let for_handle = format!("@{clean}");
+        let val = self
+            .get_json(
+                QuotaBucket::Shared,
+                "/channels",
+                &[("part", "id"), ("forHandle", &for_handle)],
+            )
+            .await?;
+        let id = val
+            .get("items")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|item| item.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| is_channel_id(s))
+            .map(str::to_string);
+        Ok(id)
+    }
+
+    /// `playlists.list`（`fetch_title == true` 時のみ）と `playlistItems.list` でプレイリスト項目を一括取得する（FR-99、仕様決定 EE）。
+    /// `fetch_title == true` かつ `playlists.list` の `items` が空または欠落している場合は `playlistItems.list` を呼ばず `Err(YtApiError::NotFound)` を返す。
+    /// `status.privacyStatus` が `"public"` または `"unlisted"` の項目のみを採用し、最大 100 ページ（5,000 件）までページネーションする。
+    pub async fn playlist_items(
+        &self,
+        playlist_id: &str,
+        fetch_title: bool,
+    ) -> Result<YtPlaylist, YtApiError> {
+        let id = playlist_id.trim();
+        if id.is_empty() {
+            return Err(YtApiError::NotFound);
+        }
+
+        let title = if fetch_title {
+            let val = self
+                .get_json(
+                    QuotaBucket::Shared,
+                    "/playlists",
+                    &[("part", "snippet"), ("id", id)],
+                )
+                .await?;
+            let first = val
+                .get("items")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .ok_or(YtApiError::NotFound)?;
+            first
+                .get("snippet")
+                .and_then(|s| s.get("title"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        } else {
+            None
+        };
+
+        let max_results = PLAYLIST_ITEMS_PAGE_SIZE.to_string();
+        let mut items = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_tokens: HashSet<String> = HashSet::new();
+
+        for _ in 0..PLAYLIST_ITEMS_MAX_PAGES {
+            let mut query = vec![
+                ("part", "snippet,contentDetails,status"),
+                ("playlistId", id),
+                ("maxResults", max_results.as_str()),
+            ];
+            if let Some(ref tok) = page_token {
+                query.push(("pageToken", tok.as_str()));
+            }
+            let val = self
+                .get_json(QuotaBucket::Shared, "/playlistItems", &query)
+                .await?;
+            if let Some(arr) = val.get("items").and_then(|v| v.as_array()) {
+                for item in arr {
+                    if let Some(parsed) = parse_playlist_item(item) {
+                        items.push(parsed);
+                    }
+                }
+            }
+            let next = val
+                .get("nextPageToken")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            match next {
+                Some(tok) if seen_tokens.insert(tok.clone()) => {
+                    page_token = Some(tok);
+                }
+                _ => break,
+            }
+        }
+
+        Ok(YtPlaylist { title, items })
+    }
+
     /// 保存済みキーと指定バケットを使って GET リクエストを送る（遮断器チェック込み）。
     pub(crate) async fn get_json(
         &self,
@@ -631,19 +756,7 @@ fn parse_video_item(item: &Value) -> Option<YtVideoItem> {
         .and_then(|v| v.as_str())
         .and_then(iso8601_ms)
         .map(iso_utc);
-    let thumbnails = snippet.and_then(|s| s.get("thumbnails"));
-    let thumbnail_url = ["maxres", "standard", "high", "medium", "default"]
-        .into_iter()
-        .find_map(|key| {
-            thumbnails
-                .and_then(|t| t.get(key))
-                .and_then(|entry| entry.get("url"))
-                .and_then(|u| u.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        })
-        .or_else(|| Some(format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")));
+    let thumbnail_url = extract_thumbnail_url(snippet, &video_id);
 
     let duration_sec = item
         .get("contentDetails")
@@ -713,6 +826,87 @@ fn parse_video_item(item: &Value) -> Option<YtVideoItem> {
             description,
         },
         duration_sec,
+    })
+}
+
+fn extract_thumbnail_url(snippet: Option<&Value>, video_id: &str) -> Option<String> {
+    let thumbnails = snippet.and_then(|s| s.get("thumbnails"));
+    ["maxres", "standard", "high", "medium", "default"]
+        .into_iter()
+        .find_map(|key| {
+            thumbnails
+                .and_then(|t| t.get(key))
+                .and_then(|entry| entry.get("url"))
+                .and_then(|u| u.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| Some(format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")))
+}
+
+fn parse_playlist_item(item: &Value) -> Option<YtPlaylistItem> {
+    let privacy = item
+        .get("status")
+        .and_then(|s| s.get("privacyStatus"))
+        .and_then(|v| v.as_str())
+        .map(str::trim);
+    if !matches!(privacy, Some("public") | Some("unlisted")) {
+        return None;
+    }
+
+    let snippet = item.get("snippet");
+    let content_details = item.get("contentDetails");
+    let video_id = snippet
+        .and_then(|s| s.get("resourceId"))
+        .and_then(|r| r.get("videoId"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| is_video_id(s))
+        .or_else(|| {
+            content_details
+                .and_then(|c| c.get("videoId"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| is_video_id(s))
+        })?
+        .to_string();
+
+    // snippet.channelId はプレイリスト所有者のため絶対に使わず、videoOwnerChannelId のみを採用する
+    let channel_id = snippet
+        .and_then(|s| s.get("videoOwnerChannelId"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| is_channel_id(s))
+        .map(str::to_string);
+    let channel_title = snippet
+        .and_then(|s| s.get("videoOwnerChannelTitle"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let title = snippet
+        .and_then(|s| s.get("title"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    let thumbnail_url = extract_thumbnail_url(snippet, &video_id);
+    let published_at = content_details
+        .and_then(|c| c.get("videoPublishedAt"))
+        .and_then(|v| v.as_str())
+        .and_then(iso8601_ms)
+        .map(iso_utc);
+
+    Some(YtPlaylistItem {
+        video_ref: VideoRef {
+            video_id,
+            title,
+            channel_id,
+            channel_title,
+            thumbnail_url,
+        },
+        published_at,
     })
 }
 
@@ -1799,5 +1993,389 @@ mod tests {
         assert!(matches!(err_k, YtApiError::KeyInvalid));
         assert!(err_k.should_fallback());
         assert!(!api_k.can_use(QuotaBucket::Shared));
+    }
+
+    /// DB-YA-13: `channels.list(part=id, forHandle)` による `@handle` 解決（`@` あり/なしの `%40` 送信、
+    /// `X-Goog-Api-Key` ヘッダ確認、正常 `UC...` 抽出、空 `items` / `items` 欠落で `Ok(None)`、
+    /// HTTP 404 非遮断、`KeyInvalid`/`QuotaExhausted`/`500` の `should_fallback()`）を検証する。
+    #[tokio::test]
+    async fn channels_list_for_handle_resolution() {
+        let (base, recorded) = spawn_mock_server(vec![
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"id":"UC0123456789abcdefghijkl"}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"id":"UCabcdefghijklmnopqrstuv"}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: r#"{"items":[]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 200,
+                body: r#"{}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 404,
+                body: r#"{"error":{"code":404}}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 500,
+                body: r#"{"error":{"code":500}}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyHANDLE_13".to_string()), base);
+
+        // 空文字や `@` のみは通信せず Ok(None)
+        assert_eq!(api.resolve_channel_handle("  ").await.unwrap(), None);
+        assert_eq!(api.resolve_channel_handle("@@ ").await.unwrap(), None);
+        assert!(recorded.lock().unwrap().is_empty());
+
+        // @ なし / @ あり双方で forHandle=%40... を送り、X-Goog-Api-Key のみ付与する
+        assert_eq!(
+            api.resolve_channel_handle("my_handle").await.unwrap(),
+            Some("UC0123456789abcdefghijkl".to_string())
+        );
+        assert_eq!(
+            api.resolve_channel_handle(" @second_handle ")
+                .await
+                .unwrap(),
+            Some("UCabcdefghijklmnopqrstuv".to_string())
+        );
+        assert_eq!(api.resolve_channel_handle("missing").await.unwrap(), None);
+        assert_eq!(api.resolve_channel_handle("no_items").await.unwrap(), None);
+
+        // HTTP 404 は NotFound だが Shared 遮断器は開かない
+        let err_404 = api.resolve_channel_handle("not_found").await.unwrap_err();
+        assert!(matches!(err_404, YtApiError::NotFound));
+        assert!(err_404.should_fallback());
+        assert!(api.can_use(QuotaBucket::Shared));
+
+        // 500 はクールダウンに入り should_fallback()
+        let err_500 = api.resolve_channel_handle("server_err").await.unwrap_err();
+        assert!(matches!(err_500, YtApiError::Status(500)));
+        assert!(err_500.should_fallback());
+        assert!(!api.can_use(QuotaBucket::Shared));
+
+        {
+            let reqs = recorded.lock().unwrap();
+            assert_eq!(reqs.len(), 6);
+            assert!(reqs[0].request_line.contains("/channels?"));
+            assert!(reqs[0].request_line.contains("part=id"));
+            assert!(reqs[0].request_line.contains("forHandle=%40my_handle"));
+            assert!(!reqs[0].request_line.contains("key="));
+            assert!(reqs[0].headers_lower.contains("x-goog-api-key: aiza"));
+            assert!(reqs[1].request_line.contains("forHandle=%40second_handle"));
+        }
+
+        // 未設定・KeyInvalid・QuotaExhausted の should_fallback()
+        assert!(YtApi::new(None)
+            .resolve_channel_handle("abc")
+            .await
+            .unwrap_err()
+            .should_fallback());
+        let (base_k, _) = spawn_mock_server(vec![MockReply {
+            status: 400,
+            body: r#"{"error":{"errors":[{"reason":"keyInvalid"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let err_k = YtApi::with_test_base_url(Some("AIzaSyBAD_13".to_string()), base_k)
+            .resolve_channel_handle("abc")
+            .await
+            .unwrap_err();
+        assert!(matches!(err_k, YtApiError::KeyInvalid));
+        assert!(err_k.should_fallback());
+
+        let (base_q, _) = spawn_mock_server(vec![MockReply {
+            status: 403,
+            body: r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let err_q = YtApi::with_test_base_url(Some("AIzaSyQ_13".to_string()), base_q)
+            .resolve_channel_handle("abc")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err_q,
+            YtApiError::QuotaExhausted(QuotaBucket::Shared)
+        ));
+        assert!(err_q.should_fallback());
+    }
+
+    /// DB-YA-14: `playlists.list` + `playlistItems.list` の複数ページ結合（`nextPageToken` 追従・
+    /// 同一トークン無限ループ防止、`part=snippet,contentDetails,status`・`maxResults=50` 検証）および
+    /// `fetch_title = false` 時の `playlists.list` スキップを検証する。
+    #[tokio::test]
+    async fn playlist_items_pagination_and_skip_title() {
+        let (base, recorded) = spawn_mock_server(vec![
+            // fetch_title = true: 1) playlists.list
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"snippet":{"title":"  My Playlist Title  "}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            // 2) playlistItems.list page 1 -> nextPageToken=tok2
+            MockReply {
+                status: 200,
+                body: r#"{"nextPageToken":"tok2","items":[{"snippet":{"title":"V1","resourceId":{"videoId":"vid00000001"}},"status":{"privacyStatus":"public"}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            // 3) playlistItems.list page 2 -> duplicate nextPageToken=tok2 (must break loop)
+            MockReply {
+                status: 200,
+                body: r#"{"nextPageToken":"tok2","items":[{"snippet":{"title":"V2","resourceId":{"videoId":"vid00000002"}},"status":{"privacyStatus":"unlisted"}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            // fetch_title = false: 4) playlistItems.list directly (no /playlists call)
+            MockReply {
+                status: 200,
+                body: r#"{"items":[{"snippet":{"title":"V3","resourceId":{"videoId":"vid00000003"}},"status":{"privacyStatus":"public"}}]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+
+        let api = YtApi::with_test_base_url(Some("AIzaSyPL_14".to_string()), base);
+
+        let pl1 = api.playlist_items("PLtest001", true).await.unwrap();
+        assert_eq!(pl1.title.as_deref(), Some("My Playlist Title"));
+        assert_eq!(pl1.items.len(), 2);
+        assert_eq!(pl1.items[0].video_ref.video_id, "vid00000001");
+        assert_eq!(pl1.items[1].video_ref.video_id, "vid00000002");
+
+        let pl2 = api.playlist_items("PLtest001", false).await.unwrap();
+        assert_eq!(pl2.title, None);
+        assert_eq!(pl2.items.len(), 1);
+        assert_eq!(pl2.items[0].video_ref.video_id, "vid00000003");
+
+        let reqs = recorded.lock().unwrap();
+        assert_eq!(reqs.len(), 4);
+        assert!(reqs[0].request_line.contains("/playlists?"));
+        assert!(reqs[0].request_line.contains("part=snippet"));
+        assert!(reqs[0].request_line.contains("id=PLtest001"));
+
+        assert!(reqs[1].request_line.contains("/playlistItems?"));
+        assert!(reqs[1]
+            .request_line
+            .contains("part=snippet%2CcontentDetails%2Cstatus"));
+        assert!(reqs[1].request_line.contains("playlistId=PLtest001"));
+        assert!(reqs[1].request_line.contains("maxResults=50"));
+        assert!(!reqs[1].request_line.contains("pageToken="));
+
+        assert!(reqs[2].request_line.contains("/playlistItems?"));
+        assert!(reqs[2].request_line.contains("pageToken=tok2"));
+
+        // fetch_title = false では /playlists をスキップして 1 通信のみ
+        assert!(reqs[3].request_line.contains("/playlistItems?"));
+    }
+
+    /// DB-YA-15: `playlistItems.list` の項目パース（`privacyStatus` フィルタ、`videoOwnerChannelId` 抽出と
+    /// `snippet.channelId` 非混入、`videoPublishedAt` の `+00:00` 正規化）を検証する。
+    #[tokio::test]
+    async fn playlist_items_item_parsing_and_privacy_filter() {
+        let body = r#"{
+            "items": [
+                {
+                    "snippet": {
+                        "title": "  Public Video  ",
+                        "channelId": "UCplaylistOwner000000001",
+                        "channelTitle": "Playlist Owner",
+                        "publishedAt": "2026-01-01T00:00:00Z",
+                        "videoOwnerChannelId": "UCvideoOwner000000000001",
+                        "videoOwnerChannelTitle": "  Video Author  ",
+                        "resourceId": { "videoId": "pubVid00001" },
+                        "thumbnails": { "high": { "url": "https://i.ytimg.com/vi/pubVid00001/hq.jpg" } }
+                    },
+                    "contentDetails": {
+                        "videoId": "pubVid00001",
+                        "videoPublishedAt": "2025-12-20T15:30:00Z"
+                    },
+                    "status": { "privacyStatus": "public" }
+                },
+                {
+                    "snippet": {
+                        "title": "Unlisted No Owner",
+                        "channelId": "UCplaylistOwner000000001",
+                        "videoOwnerChannelId": "not-a-uc-id",
+                        "videoOwnerChannelTitle": "   "
+                    },
+                    "contentDetails": {
+                        "videoId": "unlVid00002",
+                        "videoPublishedAt": "2025-11-10T01:02:03+09:00"
+                    },
+                    "status": { "privacyStatus": "unlisted" }
+                },
+                {
+                    "snippet": {
+                        "title": "Private video",
+                        "resourceId": { "videoId": "prvVid00003" }
+                    },
+                    "status": { "privacyStatus": "private" }
+                },
+                {
+                    "snippet": {
+                        "title": "Deleted video",
+                        "resourceId": { "videoId": "delVid00004" }
+                    },
+                    "status": { "privacyStatus": "privacyStatusUnspecified" }
+                },
+                {
+                    "snippet": {
+                        "title": "Missing status",
+                        "resourceId": { "videoId": "misVid00005" }
+                    }
+                }
+            ]
+        }"#;
+        let (base, _) = spawn_mock_server(vec![MockReply {
+            status: 200,
+            body: body.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api = YtApi::with_test_base_url(Some("AIzaSyPARSE_15".to_string()), base);
+        let pl = api.playlist_items("PLparse001", false).await.unwrap();
+        assert_eq!(pl.items.len(), 2);
+
+        let first = &pl.items[0];
+        assert_eq!(first.video_ref.video_id, "pubVid00001");
+        assert_eq!(first.video_ref.title, "Public Video");
+        assert_eq!(
+            first.video_ref.channel_id.as_deref(),
+            Some("UCvideoOwner000000000001")
+        );
+        assert_eq!(
+            first.video_ref.channel_title.as_deref(),
+            Some("Video Author")
+        );
+        assert_eq!(
+            first.video_ref.thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/pubVid00001/hq.jpg")
+        );
+        assert_eq!(
+            first.published_at.as_deref(),
+            Some("2025-12-20T15:30:00+00:00")
+        );
+
+        let second = &pl.items[1];
+        assert_eq!(second.video_ref.video_id, "unlVid00002");
+        assert_eq!(second.video_ref.channel_id, None);
+        assert_eq!(second.video_ref.channel_title, None);
+        assert_eq!(
+            second.video_ref.thumbnail_url.as_deref(),
+            Some("https://i.ytimg.com/vi/unlVid00002/hqdefault.jpg")
+        );
+        assert_eq!(
+            second.published_at.as_deref(),
+            Some("2025-11-09T16:02:03+00:00")
+        );
+    }
+
+    /// DB-YA-16: `playlist_items` の異常系（`playlists.list` 空 `items` / `404` による `Err(NotFound)` かつ
+    /// `playlistItems.list` 未呼出・非遮断、ならびに `Unset`/`KeyInvalid`/`QuotaExhausted`/`429` の
+    /// フォールバック判定）を検証する。
+    #[tokio::test]
+    async fn playlist_items_error_cases_and_not_found() {
+        // 空プレイリストメタ（HTTP 200 で items: []）は playlistItems.list を呼ばず NotFound
+        let (base_empty, rec_empty) = spawn_mock_server(vec![
+            MockReply {
+                status: 200,
+                body: r#"{"items":[]}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+            MockReply {
+                status: 404,
+                body: r#"{"error":{"code":404}}"#.to_string(),
+                delay: Duration::ZERO,
+            },
+        ])
+        .await;
+        let api_empty = YtApi::with_test_base_url(Some("AIzaSyNF_16".to_string()), base_empty);
+
+        let err_empty = api_empty
+            .playlist_items("PLmissing1", true)
+            .await
+            .unwrap_err();
+        assert!(matches!(err_empty, YtApiError::NotFound));
+        assert!(api_empty.can_use(QuotaBucket::Shared));
+
+        let err_404 = api_empty
+            .playlist_items("PLmissing2", false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err_404, YtApiError::NotFound));
+        assert!(api_empty.can_use(QuotaBucket::Shared));
+
+        {
+            let reqs = rec_empty.lock().unwrap();
+            assert_eq!(reqs.len(), 2);
+            assert!(reqs[0].request_line.contains("/playlists?"));
+            assert!(reqs[1].request_line.contains("/playlistItems?"));
+        }
+
+        // 空 ID は通信せず NotFound
+        let err_blank = api_empty.playlist_items("   ", true).await.unwrap_err();
+        assert!(matches!(err_blank, YtApiError::NotFound));
+        assert_eq!(rec_empty.lock().unwrap().len(), 2);
+
+        // Unset
+        let err_unset = YtApi::new(None)
+            .playlist_items("PLx", true)
+            .await
+            .unwrap_err();
+        assert!(matches!(err_unset, YtApiError::Unset));
+        assert!(err_unset.should_fallback());
+
+        // KeyInvalid
+        let (base_k, _) = spawn_mock_server(vec![MockReply {
+            status: 400,
+            body: r#"{"error":{"errors":[{"reason":"keyInvalid"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_k = YtApi::with_test_base_url(Some("AIzaSyK_16".to_string()), base_k);
+        let err_k = api_k.playlist_items("PLx", false).await.unwrap_err();
+        assert!(matches!(err_k, YtApiError::KeyInvalid));
+        assert!(err_k.should_fallback());
+
+        // QuotaExhausted
+        let (base_q, _) = spawn_mock_server(vec![MockReply {
+            status: 403,
+            body: r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_q = YtApi::with_test_base_url(Some("AIzaSyQ_16".to_string()), base_q);
+        let err_q = api_q.playlist_items("PLx", false).await.unwrap_err();
+        assert!(matches!(
+            err_q,
+            YtApiError::QuotaExhausted(QuotaBucket::Shared)
+        ));
+        assert!(err_q.should_fallback());
+
+        // 429 Cooldown
+        let (base_429, _) = spawn_mock_server(vec![MockReply {
+            status: 429,
+            body: r#"{"error":{"code":429}}"#.to_string(),
+            delay: Duration::ZERO,
+        }])
+        .await;
+        let api_429 = YtApi::with_test_base_url(Some("AIzaSy429_16".to_string()), base_429);
+        let err_429 = api_429.playlist_items("PLx", false).await.unwrap_err();
+        assert!(matches!(err_429, YtApiError::Status(429)));
+        assert!(err_429.should_fallback());
+        assert!(!api_429.can_use(QuotaBucket::Shared));
     }
 }

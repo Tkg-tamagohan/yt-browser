@@ -7,14 +7,14 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::db::Db;
 use crate::error::UiError;
-use crate::feed::{self, FeedPoller};
+use crate::feed::{self, FeedError, FeedPoller};
 use crate::innertube::InnerTube;
 use crate::model::{
     is_channel_id, parse_channel_ref, BackfillOutcome, Category, Channel, ChannelRef, FeedFilter,
     FeedItem, FeedNewItems, PlayingChannel,
 };
 use crate::yt::{self, YtDlpResolver};
-use crate::ytapi::{QuotaBucket, YtApi};
+use crate::ytapi::{QuotaBucket, YtApi, YtApiError};
 
 use super::parse_video_id;
 
@@ -190,6 +190,40 @@ async fn resolve_video_channel_with_timeout(
     }
 }
 
+async fn resolve_channel_ref(
+    r: ChannelRef,
+    db: &Db,
+    ytapi: &YtApi,
+    resolver: &YtDlpResolver,
+) -> Result<String, UiError> {
+    match r {
+        ChannelRef::Id(id) => Ok(id),
+        ChannelRef::Handle(h) => {
+            match ytapi.resolve_channel_handle(&h).await {
+                Ok(Some(id)) => return Ok(id),
+                Ok(None) | Err(YtApiError::NotFound) => {
+                    return Err(FeedError::NotFound.into());
+                }
+                Err(e) => {
+                    let _ = e.should_fallback();
+                    tracing::debug!(
+                        handle = %h,
+                        error = %e,
+                        "YtApi channels.list によるハンドル解決に失敗したため yt-dlp へフォールバック"
+                    );
+                }
+            }
+            let path = resolver.resolve(db).await.ok_or(yt::YtError::NotFound)?;
+            // 非 ASCII ハンドルは Url::parse 経由でパーセントエンコードしてから渡す
+            let url = url::Url::parse(&format!("https://www.youtube.com/@{h}"))
+                .map_err(|_| UiError::invalid_input("ハンドルの形式が不正です"))?;
+            yt::channel_id(&path, url.as_str(), yt::po_token_setting(db).as_deref())
+                .await
+                .map_err(UiError::from)
+        }
+    }
+}
+
 /// `subscribe_channel`（設計書 §3.1）。UC ID・channel URL・@handle を受け取り、
 /// RSS を 1 回取得して存在確認と初期一覧の投入を行う。取得したエントリは未読で積む
 /// （登録直後に新着が一覧に現れるのが受け入れ条件）。
@@ -199,6 +233,7 @@ pub async fn subscribe_channel(
     category_id: Option<i64>,
     db: State<'_, Db>,
     poller: State<'_, Arc<FeedPoller>>,
+    ytapi: State<'_, Arc<YtApi>>,
     resolver: State<'_, YtDlpResolver>,
     app: AppHandle,
 ) -> Result<Channel, UiError> {
@@ -208,18 +243,7 @@ pub async fn subscribe_channel(
             "チャンネル ID（UC...）、youtube.com/channel/UC...、または @handle を入力してください",
         )
     })?;
-    let channel_id = match r {
-        ChannelRef::Id(id) => id,
-        ChannelRef::Handle(h) => {
-            let path = resolver.resolve(&db).await.ok_or(yt::YtError::NotFound)?;
-            // 非 ASCII ハンドルは Url::parse 経由でパーセントエンコードしてから渡す
-            let url = url::Url::parse(&format!("https://www.youtube.com/@{h}"))
-                .map_err(|_| UiError::invalid_input("ハンドルの形式が不正です"))?;
-            yt::channel_id(&path, url.as_str(), yt::po_token_setting(&db).as_deref())
-                .await
-                .map_err(UiError::from)?
-        }
-    };
+    let channel_id = resolve_channel_ref(r, &db, &ytapi, &resolver).await?;
     match feed::fetch_feed(&poller.client, &channel_id, None, None).await? {
         feed::FetchOutcome::Parsed {
             feed,
@@ -874,5 +898,131 @@ mod tests {
 
         yt_srv.abort();
         tube_srv.abort();
+    }
+
+    /// DB-PF-14: `subscribe_channel` の `@handle` 解決（`resolve_channel_ref`）で
+    /// `YtApi` 成功時は `yt-dlp` 不在でも解決すること、`Ok(None)` / HTTP 404 は `yt-dlp` へ
+    /// フォールバックせず `feed_not_found` を返すこと、`Unset`/`KeyInvalid`/`QuotaExhausted`/`500` 時のみ
+    /// `yt-dlp` へフォールバックすることを検証する（FR-99、仕様決定 EE）。
+    #[tokio::test]
+    async fn subscribe_channel_handle_prefers_ytapi_and_falls_back() {
+        use super::resolve_channel_ref;
+        use crate::model::ChannelRef;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let db = Db::connect_in_memory().unwrap();
+        let resolver = YtDlpResolver::new(None);
+
+        // yt-dlp が呼ばれたら確実に失敗するダミーパスを設定し、API 成功/NotFound 時の非呼出を保証する
+        let failing_script = write_fake_ytdlp(
+            "pf14_fail",
+            "@echo off\r\nexit /b 1\r\n",
+            "#!/bin/sh\nexit 1\n",
+        );
+        db.setting_set(SETTING_YTDLP_PATH, failing_script.0.to_str().unwrap())
+            .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            let mut count = 0usize;
+            while let Ok((mut stream, _)) = listener.accept().await {
+                count += 1;
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let (status, body) = match count {
+                    1 => ("200 OK", r#"{"items":[{"id":"UCpf14ytapi0000000000001"}]}"#),
+                    2 => ("200 OK", r#"{"items":[]}"#),
+                    3 => ("404 Not Found", r#"{"error":{"code":404}}"#),
+                    _ => ("500 Internal Server Error", r#"{"error":{"code":500}}"#),
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+        let ytapi =
+            YtApi::with_test_base_url(Some("AIzaSyPF_14".to_string()), format!("http://{addr}"));
+
+        // 1) UC ID 入力は API も yt-dlp も使わずそのまま返す
+        let direct = resolve_channel_ref(
+            ChannelRef::Id("UCdirect0000000000000001".to_string()),
+            &db,
+            &ytapi,
+            &resolver,
+        )
+        .await
+        .unwrap();
+        assert_eq!(direct, "UCdirect0000000000000001");
+
+        // 2) YtApi 成功時は yt-dlp 不在相当（失敗スクリプト）でも解決する
+        let resolved = resolve_channel_ref(
+            ChannelRef::Handle("sample_handle".to_string()),
+            &db,
+            &ytapi,
+            &resolver,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved, "UCpf14ytapi0000000000001");
+
+        // 以降のケースでフォールバック有無を見分けるため、成功する偽 yt-dlp に差し替える
+        let ok_script = write_fake_ytdlp(
+            "pf14_ok",
+            "@echo off\r\necho {\"channel_id\":\"UCpf14ytdlp0000000000002\"}\r\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"channel_id\":\"UCpf14ytdlp0000000000002\"}'\n",
+        );
+        db.setting_set(SETTING_YTDLP_PATH, ok_script.0.to_str().unwrap())
+            .unwrap();
+
+        // 3) Ok(None)（空 items）は feed_not_found を返し yt-dlp へフォールバックしない
+        let err_empty = resolve_channel_ref(
+            ChannelRef::Handle("unknown_handle".to_string()),
+            &db,
+            &ytapi,
+            &resolver,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_empty.code, "feed_not_found");
+
+        // 4) HTTP 404 も feed_not_found を返し yt-dlp へフォールバックしない
+        let err_404 = resolve_channel_ref(
+            ChannelRef::Handle("missing_404".to_string()),
+            &db,
+            &ytapi,
+            &resolver,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_404.code, "feed_not_found");
+
+        // 5) 500（および続くクールダウン状態）では yt-dlp へフォールバックする
+        let fb_500 = resolve_channel_ref(
+            ChannelRef::Handle("fallback_500".to_string()),
+            &db,
+            &ytapi,
+            &resolver,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fb_500, "UCpf14ytdlp0000000000002");
+
+        // 6) Unset でも yt-dlp へフォールバックする
+        let ytapi_unset = YtApi::new(None);
+        let fb_unset = resolve_channel_ref(
+            ChannelRef::Handle("fallback_unset".to_string()),
+            &db,
+            &ytapi_unset,
+            &resolver,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fb_unset, "UCpf14ytdlp0000000000002");
+
+        srv.abort();
     }
 }

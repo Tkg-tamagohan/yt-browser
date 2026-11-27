@@ -116,6 +116,13 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] 単発 4 経路（`commands/search.rs` の `get_description`、`commands/feed.rs` の `resolve_video_channel` と `playing_channel`、`commands/queue.rs` の `video_meta_resolve`、`commands/livewait.rs` の `live_wait_add`）および `lib.rs` の `VideoStartHook` と常駐ワーカー生成へ `Arc<YtApi>` の優先配線と透過フォールバックを組み込み、設定画面の案内文言（`i18n-ja.ts` と `i18n-en.ts`）と 7 文書を更新する
 - [ ] 受け入れ：有効な API キーを設定した実機環境でメタ遅延解決の 50 件バッチ化、ライブ待機巡回、概要欄と動画メタとチャンネル解決の公式 API 優先動作、およびクォータ上限または無効キー時の `InnerTube` と `yt-dlp` への透過フォールバックを確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた実機確認は未実施）
 
+### Phase 94：YouTube Data API v3 による @handle チャンネル購読とプレイリスト取り込み
+
+- [x] `ytapi/mod.rs` へ `PLAYLIST_ITEMS_PAGE_SIZE = 50`、`PLAYLIST_ITEMS_MAX_PAGES = 100`、`YtPlaylistItem`、`YtPlaylist`、`resolve_channel_handle`（`GET /channels?part=id&forHandle`、1 unit、`is_channel_id` 検証、空 `items` は `Ok(None)`）、および `playlist_items`（`fetch_title == true` 時のみ `GET /playlists?part=snippet`、空 `items` は `playlistItems.list` を呼ばず `NotFound`、`GET /playlistItems?part=snippet,contentDetails,status` を `seen_tokens` ループ抑止付き最大 100 ページ巡回、`public` と `unlisted` のみ採用、`videoOwnerChannelId` の `is_channel_id` 検証、`videoPublishedAt` の `iso8601_ms` と `iso_utc` による `+00:00` 正規化）を実装する（FR-99、仕様決定 EE、単体テスト `DB-YA-13` 〜 `DB-YA-16`）
+- [x] `commands/feed.rs` の `resolve_channel_ref` と `subscribe_channel` へ `Arc<YtApi>` を注入し、`@handle` 購読時に `ytapi.resolve_channel_handle` を優先して `yt-dlp` 不在環境でも購読を完結させ、空 `items` と `HTTP 404` は `FeedError::NotFound` で即エラーとし、未設定や無効キーやクォータ上限や一時障害時のみ `yt::channel_id` へフォールバックする経路を実装する（単体テスト `DB-PF-14`）
+- [x] `db/library.rs` と `db/mod.rs` へ `PlaylistImportItem`、`video_upsert_with_published`（`COALESCE(videos.published_at, excluded.published_at)` で既存非 NULL 保持）、`playlist_add_many_with_published` を追加し、`commands/library.rs` の `import_playlist_with` と `playlist_import` で `WL`、`HL`、`LM`、`LL` 系、`RD` 系は `yt::playlist_meta` へ直行し、それ以外の `list` 付きプレイリストは `ytapi.playlist_items` を優先して `NotFound` と有効 0 件を `invalid_input`（非フォールバック）とし、その他障害時のみ `yt::playlist_meta` へフォールバックする処理、ならびに設定画面案内文言（`i18n-ja.ts` と `i18n-en.ts`）と 7 文書を実装する（単体テスト `DB-LD-43`）
+- [ ] 受け入れ：有効な API キーを設定した実機環境で `@handle` チャンネル購読（`yt-dlp` なしでも成功すること、存在しないハンドルで `NotFound` になること）と標準プレイリスト取り込み（投稿日時の補完と非公開項目の除外、`WL` 等のフォールバック、クォータ上限時の `yt-dlp` 切替）を実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた GUI 実機確認は未実施）
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

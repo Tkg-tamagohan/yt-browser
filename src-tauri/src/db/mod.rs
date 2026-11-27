@@ -27,6 +27,7 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 pub use channels::PollTarget;
+pub use library::PlaylistImportItem;
 // IngestOutcome は戻り値型としてのみ使われ外部から名前参照されないが、
 // 公開面（crate::db::IngestOutcome）を維持するため re-export する。
 #[allow(unused_imports)]

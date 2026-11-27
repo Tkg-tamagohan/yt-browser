@@ -49,7 +49,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
-| `ytapi` | YouTube Data API v3 クライアント（`videos.list` 一括取得を含む）、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、FR-98、§4.24、§4.25） |
+| `ytapi` | YouTube Data API v3 クライアント（`videos.list`、`channels.list`、`playlists.list`、`playlistItems.list` の取得を含む）、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、FR-98、FR-99、§4.24、§4.25、§4.26） |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回（`ytapi` 優先と `InnerTube` フォールバック）、開始と終了と自動解除の検出、および `live_wait.action` に応じた動作（FR-44、FR-98、§4.16） |
 | `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時、説明文、未確定や失敗の kind を `ytapi` `videos.list` 優先（フォールバック時は InnerTube `player`）で後から埋める（FR-53、FR-56、FR-57、FR-85、FR-96、FR-98、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
@@ -102,7 +102,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_add` | `playlist_id`, `video`（`VideoRef`） | `Result<()>` |
 | `playlist_remove` | `playlist_id`, `video_id` | `Result<Option<PlaylistEntry>>`（削除した行のスナップショット。対象行が無ければ null。FR-54、仕様決定 CE） |
 | `playlist_item_restore` | `playlist_id`, `entry`（`playlist_remove` が返した `PlaylistEntry`） | `Result<PlaylistEntry>`（実際に登録された行。FR-54、仕様決定 CE） |
-| `playlist_import` | `url`, `name?` | `Result<Playlist>` |
+| `playlist_import` | `url`, `name?` | `Result<Playlist>`（FR-10、FR-99、仕様決定 R、DZ、EE、§4.26：標準プレイリストは `ytapi` の `playlists.list` と `playlistItems.list` を優先し、個人用リストや障害時は `yt-dlp` へフォールバック） |
 | `playlist_reorder` | `playlist_id`, `video_ids` | `Result<()>` |
 | `playlist_reorder_lists` | `playlist_ids`（プレイリスト全件の新しい表示順） | `Result<()>` |
 | `playlist_sort` | `playlist_id` | `Result<()>` |
@@ -115,7 +115,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `ytdlp_update` | なし | `Result<String>`（`yt-dlp -U` の出力） |
 | `deps_status` | なし | `Result<Vec<DepStatus>>`（mpv・yt-dlp・deno の検出状況・バージョン・解決パス。FR-74、仕様決定 CY、§5） |
 | `setup_deps_pending` | なし | `Result<bool>`（初回起動の依存検出画面が未表示か。FR-75、仕様決定 CZ、§5） |
-| `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>` |
+| `subscribe_channel` | `input`（UC ID、channel URL、`@handle` のいずれか）, `category_id?` | `Result<Channel>`（FR-3、FR-99、仕様決定 EE、§4.26：`@handle` は `ytapi` の `channels.list` を優先し、不在時は `NotFound`、失敗や未設定時は `yt-dlp` へフォールバック） |
 | `playing_channel` | `video_id` | `Result<PlayingChannel>`（FR-12、FR-98、仕様決定 U、DY、ED。videos → watch_history → 外部メタ（`ytapi` `videos.list` を優先し、失敗時や UC ID 未取得時は InnerTube `video_meta` → 15 秒タイムアウト付き yt-dlp `video_channel_ref`）の順に `subscribe_channel` へ渡せる入力と表示名を解決し、UC 確定時は購読済みかも返す） |
 | `unsubscribe_channel` | `channel_id` | `Result<()>` |
 | `list_channels` | なし | `Result<Vec<Channel>>` |
@@ -181,9 +181,9 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する項目の順序列で、各項目は `uid`＋`video_id` の対（`QueueArmItem`、空列は武装の解除）。`uid` はフロント側のキュー項目のユニーク ID で、継続時に `player://ended` の `continuedUid` としてそのまま返す（BG-10、仕様決定 BK）。`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
 登録済み項目は次の終端（自然終了・途中失敗）で同一 mpv が先頭から読み込む。
-`playlist_import` は YouTube プレイリストを `yt-dlp --flat-playlist` で取り込み、
-各項目を `video_upsert` で `videos` 台帳に集約したうえで新規プレイリストへ登録する（FR-10、仕様決定 R・DZ）。
-`url` は YouTube 系ホスト（youtube.com / youtu.be / music.youtube.com）のみ受け付け、
+`playlist_import` は YouTube プレイリストを取り込み、各項目を `videos` テーブルへ集約したうえで新規プレイリストへ登録する（FR-10、FR-99、仕様決定 R、DZ、EE、§4.26）。
+`url` は YouTube 系ホスト（youtube.com、youtu.be、music.youtube.com、www.youtube.com）のみ受け付け、`list` クエリを持つ標準プレイリストでは `ytapi` の `playlists.list`（`name` 省略時のみ）と `playlistItems.list`（最大 100 ページ、5,000 件、非公開と削除済み項目を除外）を優先する。
+個人用または自動生成リスト（`WL`、`HL`、`LM`、`LL` で始まる ID、`RD` で始まる ID）と公式 API 障害時は `yt-dlp --flat-playlist` へフォールバックし、登録は `playlist_add_many_with_published` により `+00:00` 正規化済みの投稿日時を既存の非 NULL 値を保持したまま補完する。
 項目登録に失敗したときは作成済みの空プレイリストを削除してからエラーを返す。
 プレイリスト名の上限は YouTube 本家と同じ 150 文字（Unicode スカラ値単位）とし、`name` 省略時は取り込んだプレイリストのタイトルの前後空白をトリムして 150 文字超のみ省略記号なしで単純切り詰めし、空のときは「取り込みプレイリスト」とする（仕様決定 DZ、回帰テスト DB-LD-37）。
 `playlist_reorder` は項目順の一括書き換え（FR-11、仕様決定 T）。渡した `video_ids` が
@@ -1287,6 +1287,26 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 
 回帰テストは `DB-YA-09` 〜 `DB-YA-12`（重複除去と 50 件チャンク分割、`+00:00` 正規化とサムネイル優先順、ガード 4、フォールバック遷移）、`DB-MR-13` 〜 `DB-MR-16`（50 件統合バッチと `JoinSet` 並列 Shorts 判定、ガード 2、ガード 3、ガード 4 と InnerTube フォールバック）、`DB-LW-08` 〜 `DB-LW-10`（50 件チャンク巡回と `premiere` 保持、単発欠落非削除、クォータ上限時 InnerTube フォールバック）。
 
+### 4.26 YouTube Data API v3 による @handle チャンネル購読とプレイリスト取り込み（FR-99、仕様決定 EE）
+
+`ytapi/mod.rs` は純粋リーフモジュール（`crate::model` と `crate::util` のみ参照）のまま、`resolve_channel_handle` と `playlist_items`（`PLAYLIST_ITEMS_PAGE_SIZE = 50`、`PLAYLIST_ITEMS_MAX_PAGES = 100`）を提供する。
+呼び出し元の振り分けは上位層 `commands/feed.rs`（`resolve_channel_ref` と `subscribe_channel`）および `commands/library.rs`（`import_playlist_with` と `playlist_import`）が担う。
+
+- `@handle` チャンネル購読（`resolve_channel_handle` と `resolve_channel_ref`）：`subscribe_channel` が `@handle` 形式を受け取ったとき、`resolve_channel_ref` は前後の空白と先頭 `@` を取り除いて `GET {api_base}/channels?part=id&forHandle=@<clean>`（`QuotaBucket::Shared`、1 unit）を優先実行する（空ハンドルは通信せず `Ok(None)` を返す）。
+  応答の `items[0].id` が正規 `UC` 形式（`is_channel_id`）を満たせば `yt-dlp` を一切呼ばずに購読および RSS 取得へ進むため、`yt-dlp` 不在環境でも `@handle` 購読が成立する。
+  公式 API が空 `items`（`Ok(None)`）または `YtApiError::NotFound`（`HTTP 404`）を返した場合は対象チャンネル不在とみなし、`yt-dlp` へフォールバックせず `FeedError::NotFound` を返す。
+  未設定、無効キー、クォータ上限、段階クールダウン、タイムアウト、通信失敗時は既存の `yt::channel_id`（`yt-dlp`）へフォールバックする。
+- プレイリスト取り込み（`playlist_items` と `import_playlist_with`）：`import_playlist_with` は YouTube ホスト検証と任意の `name` 事前検証の後、`extract_list_id` で `list` パラメータを抽出する。
+  `is_api_unsupported_playlist_id` が真となる個人用または自動生成リスト（`WL`、`HL`、`LM`、`LL` で始まる ID、`RD` で始まる ID、大小文字区別なし）および `list` 不在の URL は直接 `yt::playlist_meta`（`yt-dlp`）へ進む。
+  対象プレイリストでは `ytapi.playlist_items(&list_id, name.is_none())` を優先し、`fetch_title == true` の場合だけ `GET {api_base}/playlists?part=snippet&id=<id>`（1 unit）を実行する（`items` が空または欠落なら `playlistItems.list` を呼ばず `YtApiError::NotFound` を返す）。
+  続けて `GET {api_base}/playlistItems?part=snippet,contentDetails,status&playlistId=<id>&maxResults=50` を `nextPageToken` と `seen_tokens` ループ抑止付きで最大 100 ページ（5,000 件）まで巡回する。
+  項目抽出（`parse_playlist_item`）では `status.privacyStatus` が `"public"` または `"unlisted"` の項目だけを残して非公開や削除済み項目を除外し、動画 ID は `snippet.resourceId.videoId`（フォールバックで `contentDetails.videoId`）を `is_video_id` 検証し、チャンネル ID はプレイリスト所有者 `snippet.channelId` を除外して `snippet.videoOwnerChannelId` のみを `is_channel_id` 検証する。
+  投稿日時は `contentDetails.videoPublishedAt` を `iso8601_ms` と `iso_utc` により `+00:00` UTC 文字列へ正規化し、サムネイルは `extract_thumbnail_url`（`videos.list` と共有）で解決して `YtPlaylist`（`YtPlaylistItem` 列）を返す。
+  `NotFound` または有効項目 0 件時は `yt-dlp` へフォールバックせず `invalid_input` を返し、その他の失敗時のみ `yt::playlist_meta` へフォールバックする。
+- DB 永続化（`db/library.rs`）：既存の `VideoRef`、`video_upsert`、`playlist_add_many` の契約を維持したまま `PlaylistImportItem`、`video_upsert_with_published`、`playlist_add_many_with_published` を追加し、`COALESCE(videos.published_at, excluded.published_at)` により既存の非 NULL 投稿日時を上書きせず新規行および NULL 行のみ `+00:00` 投稿日時を補完する。
+
+回帰テストは `DB-YA-13` 〜 `DB-YA-16`（`@handle` 解決の正常系と空 `items` と `HTTP 404`、プレイリストのページネーションと `seen_tokens` と `fetch_title=false` 時の `playlists.list` 省略、非公開と削除済み項目の除外と `videoOwnerChannelId` と `+00:00` 正規化、`playlists.list` 空 `items` 時の `NotFound` と非巡回）、`DB-PF-14`（`subscribe_channel` の `yt-dlp` 不在成功、不在時非フォールバック、クォータ上限時フォールバック）、`DB-LD-43`（`playlist_import` の公式 API 優先と `+00:00` 保存および既存非 NULL 保持、`NotFound` と有効 0 件の非フォールバック、`WL` と `RD` の直行、`yt-dlp` フォールバック）。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1296,7 +1316,7 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 | 動画詳細 | `yt-dlp -J <url>` |
 | 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む） |
 | チャンネル一覧の補完 | `yt-dlp <channel_url> --flat-playlist --dump-json` |
-| プレイリスト取り込み | `yt-dlp <playlist_url> --flat-playlist --dump-single-json` |
+| プレイリスト取り込み | `yt-dlp <playlist_url> --flat-playlist --dump-single-json`（任意 API キー設定時は `ytapi` 優先、`WL`、`HL`、`LM`、`LL` 系、`RD` 系と障害時のフォールバック経路、§4.26） |
 | チャンネルの過去動画（バックフィル） | `yt-dlp <channel>/videos`・`<channel>/streams`・`<channel>/shorts` を `--flat-playlist` で区間取得（仕様決定 AN。1 回各タブ 100 件・暫定。`/shorts` は FR-55・仕様決定 CF で追加） |
 
 運用面の決定を次に置く（Phase 1 確定事項）。
@@ -1309,7 +1329,7 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 - **PO Token**：要求される環境では yt-dlp 側の手順（`--cookies-from-browser` や外部プロバイダ）を利用する。
   アプリからの伝達経路は FR-86・仕様決定 DK で追加した。設定 `ytdlp.po_token`（空・未設定は未指定）の値を、
   YouTube へ問い合わせる yt-dlp 呼び出しへ `--extractor-args "youtube:po_token=<値>"` として自動構成する。
-  対象は検索・チャンネル ID 解決・再生中動画のチャンネル解決・バックフィル・プレイリスト取り込みの各呼び出しと、
+  対象は検索、チャンネル ID 解決（`@handle` は任意 API キー設定時 `ytapi` 優先のフォールバック、§4.26）、再生中動画のチャンネル解決、バックフィル、プレイリスト取り込み（任意 API キー設定時 `ytapi` 優先のフォールバック、§4.26）の各呼び出しと、
   ストリーム解決を担う mpv の ytdl_hook が起動する yt-dlp（`--ytdl-raw-options=extractor-args=<値>` で伝達、§4.1）。
   `--version` と `-U`（更新）は extractor を走らせないため対象外とする（暫定解釈）。
   値はトリムしてそのまま埋め込み、`<client>.<context>+<token>` 形式や `;` 以降の併記の解釈は yt-dlp 側に委ねる。
@@ -1706,7 +1726,7 @@ yt-browser/
       mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）・再生開始失敗診断（error_diag.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
-      ytapi/          # YouTube Data API v3 クライアント・2 系統サーキットブレーカー・videos.list 一括照会（§4.24、§4.25）
+      ytapi/          # YouTube Data API v3 クライアント、2 系統サーキットブレーカー、videos.list と channels.list と playlists.list と playlistItems.list の照会（§4.24、§4.25、§4.26）
       chat/           # get_live_chat ポーラー・正規化・ポップアップ窓の位置保存と表示設定の解釈（popup.rs）
       feed/           # RSS ポーラー
       livewait/       # ライブ配信待機のポーラー（§4.16）

@@ -152,6 +152,60 @@ fn feed_ingest_backfills_library_placeholder() {
     assert!(!feed.iter().any(|i| i.video_id == "pend1234567"));
 }
 
+/// プレイリスト取り込み等で先に `published_at` が保存された未フィード行（`ingested = 0`）へ
+/// 後着の RSS が `published_at = None` で到達しても、既存の `published_at` を消さずに保持する。
+#[test]
+fn feed_ingest_preserves_existing_published_at_when_rss_omits_it() {
+    let db = Db::connect_in_memory().unwrap();
+    let ch = "UCchan000000000000001";
+    let pl = db.playlist_create("API取込PL").unwrap();
+    let mut v = vref("plVid000001", "プレイリスト動画");
+    v.channel_id = Some(ch.to_string());
+    db.playlist_add_many_with_published(
+        pl.id,
+        &[PlaylistImportItem {
+            video: v,
+            published_at: Some("2025-12-20T15:30:00+00:00".to_string()),
+        }],
+    )
+    .unwrap();
+
+    db.feed_subscribe(&SubscribeArgs {
+        channel_id: ch,
+        title: "テストCH",
+        thumbnail_url: None,
+        category_id: None,
+        entries: &[],
+        etag: None,
+        last_modified: None,
+    })
+    .unwrap();
+
+    let rss_without_date = NewVideo {
+        video_id: "plVid000001",
+        channel_id: ch,
+        channel_title: "テストCH",
+        title: "プレイリスト動画",
+        thumbnail_url: None,
+        published_at: None,
+        kind: "video",
+    };
+    let out = db
+        .feed_ingest(ch, &[rss_without_date], None, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.inserted, 1);
+
+    let feed = db
+        .feed_list_filtered(&FeedFilter::default(), true, FEED_LIST_LIMIT, |_| true)
+        .unwrap();
+    let item = feed.iter().find(|i| i.video_id == "plVid000001").unwrap();
+    assert_eq!(
+        item.published_at.as_deref(),
+        Some("2025-12-20T15:30:00+00:00")
+    );
+}
+
 /// 新規投入の video_id が IngestOutcome.new_video_ids に返り、
 /// 再投入では空になる（shorts 判定の対象集合、仕様決定 V）。
 #[test]

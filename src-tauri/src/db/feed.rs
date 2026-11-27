@@ -1352,7 +1352,7 @@ fn ingest_rows(
                title = CASE WHEN excluded.title <> '' THEN excluded.title
                             ELSE videos.title END,
                thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
-               published_at = excluded.published_at,
+               published_at = COALESCE(excluded.published_at, videos.published_at),
                kind = CASE WHEN videos.kind_state = 1 THEN videos.kind
                            ELSE excluded.kind END,
                is_read = 0,
