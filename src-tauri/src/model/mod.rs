@@ -613,6 +613,10 @@ pub struct PlaylistEntry {
     pub thumbnail_url: Option<String>,
     /// 投稿日時（フィード投入済み項目のみ。未取得は NULL、ソート時は末尾）
     pub published_at: Option<String>,
+    /// `playlist_remove` が発行した削除スナップショットの復元世代。
+    /// `playlist_item_restore` がバックアップ復元後の別リストへの誤追加を防ぐため照合する
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_epoch: Option<u64>,
 }
 
 /// `queue_save` / `queue_load` のキュー項目（FR-30、仕様決定 AY）。

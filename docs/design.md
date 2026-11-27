@@ -1349,7 +1349,7 @@ DB マイグレーション `v26` で `playlists` テーブルに `source_list_i
   `validate_dump` では `source_list_id` の `is_playlist_source_id` 判定と `synced_at` の長さ上限（1〜64 バイト）および `util::iso8601_ms` 解析可能性を検査して不正値を拒否する。
 - フロントエンド UI とページング整合（`src/lib/LibraryPlaylists.svelte`、`src/lib/library-page.svelte.ts`）：右ペインに `class:hidden={selectedPlaylist === null || selectedPlaylist.sourceListId === null}` による常時マウント（FR-80）の詳細ヘッダを配置し、項目をすべてローカル削除した後の空表示状態でも「同期」ボタンと `fmtDateTime(selectedPlaylist?.syncedAt)` による最終同期日時を表示する。
   `syncPlaylist` は `syncingId` による二重実行抑止と `listsReq` / `itemsReq` 世代ガードを持ち、`selectedId === plId && res.addedCount > 0 && (!plHasMore || plTailDirty)` のとき `afterPosition: null` から安全に再取得する（`removeItem` は末尾要素削除時に `plTailPos` を繰り下げて `plTailDirty` を立て、100 件ちょうどのリストで末尾削除後に同期して同じ位置番号が再利用されても取りこぼさない）。
-  `addedCount > PL_PAGE` または `plTailDirty` 時は `limit` 指定で `plHasMore` を維持し、同期中の削除取り消し（`playlist_item_restore`）は `syncPromise` 完了待ちと `restoringIds` で直列化する。
+  `addedCount > PL_PAGE` または `plTailDirty` 時は `limit` 指定で `plHasMore` を維持し、削除取り消し（`playlist_item_restore`）は `playlist_remove` が付与した `import_epoch` 照合と `syncReloadPromise`・`restoringIds`（ボタン無効化連動）で同期再取得と整合させる。
 
 回帰テストは `DB-LD-44`（`v26` マイグレーションと既存行 `NULL` 維持）、`DB-LD-45`（非破壊追記と既存順および手動追加と `queue_state` 保持と `import_epoch` / `source_list_id` 不一致の `StaleSync` 拒否）、`DB-LD-46`（`ExportPlaylist` の前後互換と `validate_dump` 境界検証）、`DB-LD-47`（`playlist_import` 同期メタ保存、`playlist_sync` の 1 unit 節約と非破壊追記と空 `HTTP 200` と `404` 非フォールバックと手動リスト拒否と `RD` 視聴 URL 同期）、`DB-YA-22` および `DB-YA-23`（同期モード `fetch_title = false` のページネーションと空 200 とエラーおよび部分ページ失敗）、`PS-01` 〜 `PS-05`（フロント状態同期、再取得条件、多重抑止と選択変更、100 件超ページング、100 件末尾削除後の同期表示）、`LN-05`（日英同期キーとプレースホルダー検証）。
 

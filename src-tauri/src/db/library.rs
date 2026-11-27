@@ -360,6 +360,7 @@ impl Db {
                 channel_title: row.get(4)?,
                 thumbnail_url: row.get(5)?,
                 published_at: row.get(6)?,
+                import_epoch: None,
             });
         }
         Ok(out)
@@ -595,11 +596,15 @@ impl Db {
         video_id: &str,
     ) -> Result<Option<PlaylistEntry>, DbError> {
         let conn = self.lock()?;
-        let removed = Self::playlist_item_get_conn(&conn, playlist_id, video_id)?;
+        let epoch = self.import_epoch.load(Ordering::Acquire);
+        let mut removed = Self::playlist_item_get_conn(&conn, playlist_id, video_id)?;
         conn.execute(
             "DELETE FROM playlist_items WHERE playlist_id = ?1 AND video_id = ?2",
             rusqlite::params![playlist_id, video_id],
         )?;
+        if let Some(ref mut entry) = removed {
+            entry.import_epoch = Some(epoch);
+        }
         Ok(removed)
     }
 
@@ -608,15 +613,31 @@ impl Db {
     /// 使われていなければ元位置へ、埋まっていれば末尾（MAX(position)+1）へ
     /// 挿す（暫定: 削除と追加の間に並べ替えや末尾への追加が走った場合の
     /// 収束先）。同一動画が既に登録済みなら既存行をそのまま返す（冪等）。
-    /// 戻り値は実際に登録された行（実効 position 付き）。
     /// 存在しないプレイリストは `DbError::NotFound`。
+    #[cfg(test)]
     pub fn playlist_item_restore(
         &self,
         playlist_id: i64,
         v: &crate::model::VideoRef,
         position: i64,
     ) -> Result<PlaylistEntry, DbError> {
+        self.playlist_item_restore_with_epoch(playlist_id, v, position, None)
+    }
+
+    /// `playlist_item_restore` の `import_epoch` 照合付き実装。
+    /// `expected_import_epoch` が指定されており復元世代が変化していれば
+    /// `DbError::StaleSync` で中止し、バックアップ復元後の別リストへ書き込まない。
+    pub fn playlist_item_restore_with_epoch(
+        &self,
+        playlist_id: i64,
+        v: &crate::model::VideoRef,
+        position: i64,
+        expected_import_epoch: Option<u64>,
+    ) -> Result<PlaylistEntry, DbError> {
         let mut conn = self.lock()?;
+        if expected_import_epoch.is_some_and(|e| e != self.import_epoch.load(Ordering::Acquire)) {
+            return Err(DbError::StaleSync);
+        }
         let tx = conn.transaction()?;
         let exists: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
@@ -677,6 +698,7 @@ impl Db {
                 channel_title: row.get(4)?,
                 thumbnail_url: row.get(5)?,
                 published_at: row.get(6)?,
+                import_epoch: None,
             })),
             None => Ok(None),
         }

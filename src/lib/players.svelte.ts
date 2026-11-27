@@ -178,6 +178,8 @@ export type PlaylistEntry = {
   thumbnailUrl: string | null;
   /// 投稿日時（フィード投入済み項目のみ。未取得は null、ソート時は末尾）
   publishedAt: string | null;
+  /// `playlist_remove` が発行した復元世代（`playlist_item_restore` の世代照合用）
+  importEpoch?: number;
 };
 
 /// `watch_later_list` の 1 行（FR-59、仕様決定 CJ）。

@@ -312,7 +312,7 @@ pub async fn playlist_item_restore(
         channel_title: entry.channel_title.clone(),
         thumbnail_url: entry.thumbnail_url.clone(),
     };
-    Ok(db.playlist_item_restore(playlist_id, &v, entry.position)?)
+    Ok(db.playlist_item_restore_with_epoch(playlist_id, &v, entry.position, entry.import_epoch)?)
 }
 
 /// `playlist_import` で使用するプレイリスト名を決める（FR-10、仕様決定 R・DZ）。

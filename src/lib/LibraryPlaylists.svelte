@@ -155,7 +155,7 @@
           <button
             type="button"
             class="link"
-            disabled={lib.syncingId !== null || lib.sortBusy}
+            disabled={lib.syncingId !== null || lib.sortBusy || lib.restoring}
             onclick={() => void lib.syncPlaylist()}
           >
             {lib.syncingId !== null && lib.syncingId === lib.selectedId

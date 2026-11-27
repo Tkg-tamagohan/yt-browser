@@ -102,11 +102,12 @@ export function createLibraryPageState(opts: Options) {
   let importName = $state("");
   let importing = $state(false);
   let syncingId = $state<number | null>(null);
-  let syncPromise: Promise<void> | null = null;
+  let syncReloadPromise: Promise<void> | null = null;
   // 項目削除の飛行中件数をプレイリスト ID ごとに数え、syncPlaylist との並走を防ぐ
   const removingIds = new Map<number, number>();
   // 項目復元の飛行中件数をプレイリスト ID ごとに数え、syncPlaylist との並走を防ぐ
   const restoringIds = new Map<number, number>();
+  let restoringVersion = $state(0);
 
   // 項目の並べ替え（FR-11、仕様決定 T）。DnD はドラッグ中の行番号と
   // ホバー先の番号を持ち、ドロップ時に一括 reorder として保存する
@@ -644,26 +645,26 @@ export function createLibraryPageState(opts: Options) {
       return;
     }
     syncingId = plId;
-    const run = (async () => {
-      try {
-        const res = await invoke<PlaylistSyncOutcome>("playlist_sync", {
-          playlistId: plId,
-        });
-        ++listsReq;
-        va.playlists = va.playlists.map((p) =>
-          p.id === res.playlist.id ? res.playlist : p,
-        );
-        notify(
-          res.addedCount > 0
-            ? t("library.playlist.synced", {
-                name: res.playlist.name,
-                count: res.addedCount,
-              })
-            : t("library.playlist.syncedNoChanges", {
-                name: res.playlist.name,
-              }),
-        );
-        if (selectedId === plId && res.addedCount > 0 && (!plHasMore || plTailDirty)) {
+    try {
+      const res = await invoke<PlaylistSyncOutcome>("playlist_sync", {
+        playlistId: plId,
+      });
+      ++listsReq;
+      va.playlists = va.playlists.map((p) =>
+        p.id === res.playlist.id ? res.playlist : p,
+      );
+      notify(
+        res.addedCount > 0
+          ? t("library.playlist.synced", {
+              name: res.playlist.name,
+              count: res.addedCount,
+            })
+          : t("library.playlist.syncedNoChanges", {
+              name: res.playlist.name,
+            }),
+      );
+      if (selectedId === plId && res.addedCount > 0 && (!plHasMore || plTailDirty)) {
+        const reload = (async () => {
           const req = ++itemsReq;
           const prevLen = playlistItems.length;
           const pageLimit =
@@ -683,16 +684,19 @@ export function createLibraryPageState(opts: Options) {
           plTailPos = last ? last.position : null;
           plHasMore = pageLimit !== null && items.length >= pageLimit;
           plTailDirty = false;
+        })();
+        syncReloadPromise = reload;
+        try {
+          await reload;
+        } finally {
+          if (syncReloadPromise === reload) syncReloadPromise = null;
         }
-      } catch (e) {
-        notify(t("library.playlist.syncFailed", { message: asErrorMessage(e) }));
-      } finally {
-        syncingId = null;
-        syncPromise = null;
       }
-    })();
-    syncPromise = run;
-    await run;
+    } catch (e) {
+      notify(t("library.playlist.syncFailed", { message: asErrorMessage(e) }));
+    } finally {
+      syncingId = null;
+    }
   }
 
   /// 並べ替え保存の直列化。飛行中に次の変更が来たら最新順で追い送りし、
@@ -1095,46 +1099,73 @@ export function createLibraryPageState(opts: Options) {
         label: t("library.undo"),
         run: () => {
           void (async () => {
-            // 同期と取り消し復元が並走すると ++itemsReq で同期の再取得が破棄されるため、
-            // 先行する同期を待ってから復元し、復元中も新しい同期をブロックする
-            if (syncingId === playlistId && syncPromise !== null) {
-              await syncPromise;
-            }
+            const listsBefore = listsReq;
+            const hadActiveSync = syncingId === playlistId;
             restoringIds.set(
               playlistId,
               (restoringIds.get(playlistId) ?? 0) + 1,
             );
+            ++restoringVersion;
             try {
+              // DB 復元はリモート同期の完了を待たずに即実行し、
+              // 元の空き位置へ戻せるようにする
               const restored = await invoke<PlaylistEntry>(
                 "playlist_item_restore",
                 { playlistId, entry: removed },
               );
+              // syncPlaylist の再取得が進行中なら、完了後に UI を反映して
+              // ++itemsReq による再取得破棄を防ぐ
+              if (syncingId === playlistId && syncReloadPromise !== null) {
+                await syncReloadPromise;
+              }
+              const syncUpdatedDuringRestore =
+                hadActiveSync && listsReq !== listsBefore;
               // 件数が変わるので飛行中の一覧応答は無効化する
-              ++listsReq;
+              const listReqAfterRestore = ++listsReq;
+              let alreadyPresent = false;
               // 表示中のプレイリストが変わっていなければ項目一覧へ
               // 挿し直す（別プレイリスト表示中なら DB のみ復元済みで
               // 一覧は次回選択時に取り直される）
               if (selectedId === playlistId) {
-                ++itemsReq;
-                const rest = playlistItems.filter(
-                  (i) => i.videoId !== restored.videoId,
+                alreadyPresent = playlistItems.some(
+                  (i) => i.videoId === restored.videoId,
                 );
-                const at = rest.findIndex(
-                  (i) => i.position > restored.position,
-                );
-                playlistItems =
-                  at < 0
-                    ? [...rest, restored]
-                    : [...rest.slice(0, at), restored, ...rest.slice(at)];
-                if (plTailPos === null || restored.position > plTailPos) {
-                  plTailPos = restored.position;
+                if (
+                  !alreadyPresent &&
+                  (!syncUpdatedDuringRestore ||
+                    !plHasMore ||
+                    plTailPos === null ||
+                    restored.position <= plTailPos)
+                ) {
+                  ++itemsReq;
+                  const rest = playlistItems;
+                  const at = rest.findIndex(
+                    (i) => i.position > restored.position,
+                  );
+                  playlistItems =
+                    at < 0
+                      ? [...rest, restored]
+                      : [...rest.slice(0, at), restored, ...rest.slice(at)];
+                  if (plTailPos === null || restored.position > plTailPos) {
+                    plTailPos = restored.position;
+                  }
                 }
               }
-              va.playlists = va.playlists.map((p) =>
-                p.id === playlistId
-                  ? { ...p, itemCount: p.itemCount + 1 }
-                  : p,
-              );
+              if (syncUpdatedDuringRestore) {
+                const fresh = await invoke<Playlist[]>("playlist_list");
+                if (
+                  Array.isArray(fresh) &&
+                  listReqAfterRestore === listsReq
+                ) {
+                  va.playlists = fresh;
+                }
+              } else if (!alreadyPresent) {
+                va.playlists = va.playlists.map((p) =>
+                  p.id === playlistId
+                    ? { ...p, itemCount: p.itemCount + 1 }
+                    : p,
+                );
+              }
               notify(t("library.restored"));
             } catch (e) {
               notify(
@@ -1144,6 +1175,7 @@ export function createLibraryPageState(opts: Options) {
               const next = (restoringIds.get(playlistId) ?? 1) - 1;
               if (next <= 0) restoringIds.delete(playlistId);
               else restoringIds.set(playlistId, next);
+              ++restoringVersion;
             }
           })();
         },
@@ -1248,6 +1280,10 @@ export function createLibraryPageState(opts: Options) {
     },
     get syncingId() {
       return syncingId;
+    },
+    get restoring() {
+      void restoringVersion;
+      return selectedId !== null && (restoringIds.get(selectedId) ?? 0) > 0;
     },
     set importing(v: boolean) {
       importing = v;

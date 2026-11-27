@@ -644,6 +644,31 @@ fn playlist_remove_and_restore_snapshot() {
         db.playlist_item_restore(999, &v2, 0),
         Err(DbError::NotFound)
     ));
+
+    // import_dump により復元世代が進んだ後は同一 ID の別リストへ復元させない（StaleSync）
+    let stale_removed = db.playlist_remove(pl.id, "aaaaaaaaaa1").unwrap().unwrap();
+    assert!(stale_removed.import_epoch.is_some());
+    let mut dump = db.export_dump().unwrap();
+    dump.playlists = vec![crate::model::ExportPlaylist {
+        id: pl.id,
+        name: "復元先別リスト".to_string(),
+        sort_order: 0,
+        items: vec![],
+        source_list_id: None,
+        synced_at: None,
+    }];
+    db.import_dump(&dump).unwrap();
+    let v_stale = vref(&stale_removed.video_id, &stale_removed.title);
+    assert!(matches!(
+        db.playlist_item_restore_with_epoch(
+            pl.id,
+            &v_stale,
+            stale_removed.position,
+            stale_removed.import_epoch,
+        ),
+        Err(DbError::StaleSync)
+    ));
+    assert!(db.playlist_items(pl.id).unwrap().is_empty());
 }
 
 /// DB-LD-45: `playlist_sync_apply` の非破壊差分追記同期（FR-101、仕様決定 EG）。
