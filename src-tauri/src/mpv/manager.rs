@@ -647,9 +647,7 @@ impl PlayerManager {
                         let mut continued_uid: Option<i64> = None;
                         if let Some(next) = player.take_next_for_end(&reason, &ended_video) {
                             let next_id = next.video_id.clone();
-                            let armed_replace =
-                                player.prepare_continue_after_end(&reason, kept_open);
-                            match player.load_video(&next_id, 0.0).await {
+                            match player.continue_video(&next_id, 0.0, &reason, kept_open).await {
                                 Ok(()) => {
                                     continued = true;
                                     continued_video_id = Some(next_id.clone());
@@ -661,7 +659,6 @@ impl PlayerManager {
                                     Self::spawn_sponsor_fetch(&db, &http, player.clone(), next_id);
                                 }
                                 Err(e) => {
-                                    player.cancel_prepared_replace(armed_replace);
                                     tracing::warn!(video_id = %next_id, error = %e, "連続再生の次項目ロードに失敗");
                                 }
                             }

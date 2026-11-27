@@ -827,4 +827,10 @@ fn prepare_replace_handles_unloaded_error_and_retry_windows() {
         !t4.prepare_replace(),
         "アンロード済み状態へのロールバック後も不要な pending_replaces を積まないべき"
     );
+
+    // 5. 自動再送の実行可否（can_execute_load_retry）は世代一致と未切断のみで判定し、
+    //    --keep-open=no の EOF 後画質変更などで残存する PlayStatus に阻まれない
+    assert!(super::can_execute_load_retry(3, 3, false));
+    assert!(!super::can_execute_load_retry(4, 3, false));
+    assert!(!super::can_execute_load_retry(3, 3, true));
 }

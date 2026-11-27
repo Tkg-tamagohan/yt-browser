@@ -750,17 +750,21 @@ impl MpvPlayer {
         self.terminal.rearm_after_eof();
     }
 
-    /// 連続再生の次項目へ進む直前に `TerminalTracker` を次ファイル向けに整える（FR-95）。
-    /// - `kept_open == true`（`--keep-open=yes` の `eof-reached=true` 経由）：
-    ///   `loadfile replace` が旧ファイルの `end-file (reason="stop")` を 1 回発火するため、
-    ///   先に `begin_replace()` を張ってから `ended_reason` を解除し、次項目が
-    ///   `file-loaded` 前に失敗しても診断へ届くようにする。戻り値 `true` は `begin_replace()` を
-    ///   張ったことを示す（`load_video` 失敗時に `cancel_replace()` で取り消す）。
-    /// - `kept_open == false` かつ `reason` が `"eof"` または `"error"`（`--keep-open=no` の
-    ///   `end-file(eof)` や読み込み失敗の `end-file(error)`）：旧ファイルの `end-file` は
-    ///   既に消費済みのため `begin_replace()` は張らず `ended_reason` のみを解除して `false` を返す。
-    pub(crate) fn prepare_continue_after_end(&self, reason: &str, kept_open: bool) -> bool {
-        prepare_terminal_for_continue(&self.terminal, reason, kept_open)
+    /// 連続再生の次項目読み込み前に `TerminalTracker` を次ファイル向けに整える用途を
+    /// `video_switch_op` 内で直列化するための準備指定（FR-95）。
+    pub(crate) async fn continue_video(
+        &self,
+        video_id: &str,
+        start_sec: f64,
+        reason: &str,
+        kept_open: bool,
+    ) -> Result<(), MpvError> {
+        self.load_video_inner(
+            video_id,
+            start_sec,
+            LoadTerminalPrep::Continue { reason, kept_open },
+        )
+        .await
     }
 
     /// SponsorBlock 状態・シークの現在世代番号を返す。
@@ -817,11 +821,6 @@ impl MpvPlayer {
     /// 取り出し世代（`player://ended` に載せてフロントの置換基準に使う）。
     pub(crate) fn armed_seq(&self) -> u64 {
         lock(&self.armed).seq
-    }
-
-    /// 連続再生の次項目読み込み失敗時に `prepare_continue_after_end` の予約・状態を巻き戻す。
-    pub(crate) fn cancel_prepared_replace(&self, armed_replace: bool) {
-        self.terminal.cancel_prepared_replace(armed_replace);
     }
 
     /// 生存確認用の軽いコマンド（ウォッチドッグの ping、仕様決定 BE）。
@@ -891,15 +890,17 @@ impl MpvPlayer {
     }
 
     /// 予約済みの自動再送。遅延の間にインスタンス終了・ポンプ停止・別のロードへの
-    /// 置き換えが起きた世代は再送しない。再送コマンド自体の失敗は
-    /// 従来の reason=error 終端経路へ流す。
+    /// 置き換え・IPC 切断が起きた世代は再送しない（表示用 `PlayStatus::Ended` は
+    /// `--keep-open=no` の EOF 後に画質変更した際も残存し得るため使わない）。
+    /// 再送コマンド自体の失敗は従来の reason=error 終端経路へ流す。
     async fn retry_failed_load(self: &Arc<Self>, retry_gen: u64, expected_load_gen: u64) {
         tokio::time::sleep(LOAD_RETRY_DELAY).await;
         let _switch = self.video_switch_op.lock().await;
-        if self.load_gen.load(Ordering::SeqCst) != expected_load_gen {
-            return;
-        }
-        if lock(&self.state).state == PlayStatus::Ended {
+        if !can_execute_load_retry(
+            self.load_gen.load(Ordering::SeqCst),
+            expected_load_gen,
+            lock(&self.ytdl_errors).is_disconnected(),
+        ) {
             return;
         }
         let spec = lock(&self.load_retry).spec_for(retry_gen);
@@ -1054,14 +1055,6 @@ impl MpvPlayer {
         Ok(())
     }
 
-    /// 連続再生: 同じ mpv プロセスで別動画を再生する。`start_sec` は開始位置
-    /// （秒、0 で先頭）。旧ファイルの end-file は emitter が既に消費済みか
-    /// 呼び出し側が `prepare_continue_after_end` で整える前提で、ここでは予約を張らない。
-    /// 状態の video_id / 経過時間 / SponsorBlock 区間を次項目用に初期化する。
-    pub(crate) async fn load_video(&self, video_id: &str, start_sec: f64) -> Result<(), MpvError> {
-        self.load_video_inner(video_id, start_sec, false).await
-    }
-
     /// 既存インスタンスの動画差し替え（`PlayerManager::switch` 経路）。
     /// `video_switch_op` 内で `TerminalTracker::prepare_replace` と `arm_load` を直列化し、
     /// `handle_load_error` 待機中や自動再送待機中（旧ファイルは既にアンロード済み）に
@@ -1072,14 +1065,15 @@ impl MpvPlayer {
         video_id: &str,
         start_sec: f64,
     ) -> Result<(), MpvError> {
-        self.load_video_inner(video_id, start_sec, true).await
+        self.load_video_inner(video_id, start_sec, LoadTerminalPrep::Replace)
+            .await
     }
 
     async fn load_video_inner(
         &self,
         video_id: &str,
         start_sec: f64,
-        prepare_replace: bool,
+        prep: LoadTerminalPrep<'_>,
     ) -> Result<(), MpvError> {
         // 旧動画の SponsorBlock 予約シークが次動画へ誤発火しないよう即座に無効化し、
         // 実行中のスキップシークがあれば完了を待ってから loadfile を発行する。
@@ -1088,12 +1082,15 @@ impl MpvPlayer {
         self.reset_sponsor_state();
         let url = format!("https://www.youtube.com/watch?v={video_id}");
         let options = json!({ "start": format!("{start_sec}") });
-        let armed_replace = prepare_replace.then(|| self.terminal.prepare_replace());
+        let armed_replace = match prep {
+            LoadTerminalPrep::Replace => self.terminal.prepare_replace(),
+            LoadTerminalPrep::Continue { reason, kept_open } => {
+                prepare_terminal_for_continue(&self.terminal, reason, kept_open)
+            }
+        };
         self.arm_load(&url, options.clone());
         if let Err(e) = loadfile_replace(&*self.ipc.read().await, &url, options).await {
-            if let Some(armed) = armed_replace {
-                self.terminal.cancel_prepared_replace(armed);
-            }
+            self.terminal.cancel_prepared_replace(armed_replace);
             self.end_loading();
             return Err(MpvError::Ipc(e));
         }
@@ -1182,8 +1179,12 @@ impl MpvPlayer {
                     self.end_loading();
                     return Err(MpvError::Ipc(e));
                 }
-                // 適用済みの画質式を状態へ反映する（カードの画質表示が追従する）
-                lock(&self.state).format = format.clone();
+                // 適用済みの画質式と読み込み中状態を反映する（EOF 後の Ended 残存も解消する）
+                {
+                    let mut st = lock(&self.state);
+                    st.format = format.clone();
+                    st.state = PlayStatus::Idle;
+                }
             }
             PlayerAction::FrameStep => {
                 // コマ送りは wheel.lua の無音化ラッパへ委譲する（FR-22、仕様決定 AO）。
@@ -1871,6 +1872,25 @@ async fn wait_for_load_error_snapshot(
         return None;
     }
     Some(lock(ytdl_errors).snapshot())
+}
+
+/// `load_video_inner` が `video_switch_op` 内で `TerminalTracker` を整える方式。
+enum LoadTerminalPrep<'a> {
+    /// `switch_video`: 未アンロード時のみ replace 予約を張る。
+    Replace,
+    /// `continue_video`: 終端理由と `kept_open` に応じて次項目読み込み向けに整える。
+    Continue { reason: &'a str, kept_open: bool },
+}
+
+/// 予約済み自動再送を実行してよいかの判定（FR-95、仕様決定 BJ・EA）。
+/// 表示用の `PlayStatus::Ended` は `--keep-open=no` の EOF 後に画質変更した際も残存し得るため、
+/// ロード世代の一致と IPC 未切断のみで判定する。
+fn can_execute_load_retry(
+    current_load_gen: u64,
+    expected_load_gen: u64,
+    disconnected: bool,
+) -> bool {
+    current_load_gen == expected_load_gen && !disconnected
 }
 
 /// `video_unavailable` は再送しても結果が変わらないため自動再送を省く（仕様決定 EA）。
