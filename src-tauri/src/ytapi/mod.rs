@@ -1196,36 +1196,64 @@ mod tests {
         assert!(!reason.contains(key), "{reason}");
         assert!(lock(&api.state).transient_streak >= 1);
 
-        // ヘッダー到着後に本文受信でタイムアウトした場合も、日次クォータ超過に化けず一過性失敗となる
-        for (status_line, expect_status_msg) in [("200 OK", false), ("403 Forbidden", true)] {
+        // ヘッダー到着後に本文受信でタイムアウト・中途切断した場合も、
+        // 日次クォータ超過に化けず一過性失敗（YtApiError::Http）となる
+        for (status_line, truncate_immediately) in [
+            ("200 OK", false),
+            ("403 Forbidden", false),
+            ("403 Forbidden", true),
+        ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let status_owned = status_line.to_string();
+            let body_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let body_started_srv = std::sync::Arc::clone(&body_started);
             tokio::spawn(async move {
                 if let Ok((mut stream, _)) = listener.accept().await {
                     let mut buf = [0u8; 1024];
                     let _ = stream.read(&mut buf).await;
                     let head = format!(
-                        "HTTP/1.1 {status_owned}\r\nContent-Type: application/json\r\nContent-Length: 32\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 {status_owned}\r\nContent-Type: application/json\r\nContent-Length: 32\r\nConnection: close\r\n\r\n{{\"error\":"
                     );
                     let _ = stream.write_all(head.as_bytes()).await;
                     let _ = stream.flush().await;
-                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    body_started_srv.store(true, std::sync::atomic::Ordering::SeqCst);
+                    if !truncate_immediately {
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                    }
+                    let _ = stream.shutdown().await;
                 }
             });
 
             let body_api =
                 YtApi::with_test_base_url(Some(key.to_string()), format!("http://{addr}"))
                     .with_test_timeouts(Duration::from_millis(100), Duration::from_millis(100));
-            let body_out = body_api.test_connection(None).await;
+            let err = body_api
+                .get_json(QuotaBucket::Shared, "/videos", &[("part", "id")])
+                .await
+                .unwrap_err();
             assert!(
-                !body_out.ok,
-                "{status_line} (expect_status_msg={expect_status_msg})"
+                body_started.load(std::sync::atomic::Ordering::SeqCst),
+                "server did not reach body phase: {status_line}"
             );
+            match &err {
+                YtApiError::Http(e) => {
+                    if truncate_immediately {
+                        assert!(
+                            e.is_body() || e.is_decode(),
+                            "expected body read/decode error, got: {e}"
+                        );
+                        assert!(!e.is_timeout(), "unexpected timeout on EOF: {e}");
+                    } else {
+                        assert!(e.is_timeout(), "expected body timeout error, got: {e}");
+                    }
+                }
+                other => panic!("expected YtApiError::Http for {status_line}, got: {other:?}"),
+            }
             assert_eq!(
                 body_api.status().state,
                 YtApiAvailability::Active,
-                "body timeout must not trip quota breaker: {status_line}"
+                "body error must not trip quota breaker: {status_line}"
             );
             let st = lock(&body_api.state);
             assert!(st.shared_quota_until_sec.is_none());

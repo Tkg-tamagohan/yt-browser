@@ -681,7 +681,7 @@ export const ja = {
   "settings.deps.youtubeApiKey": "YouTube Data API v3 キー",
   "settings.deps.youtubeApiKeyPlaceholder": "未設定（空欄で従来方式）",
   "settings.deps.youtubeApiKeyDesc":
-    "任意設定（OAuth 不要・無料枠）。現在は API キーの保存と接続テストのみ公式 API を使用します（検索・メタ解決・再生リスト取込は順次対応予定）",
+    "任意設定（OAuth 不要・無料枠）。キーをローカルに保存でき、現在は「接続テスト」のみ公式 API へ通信します（検索・メタ解決・再生リスト取込は順次対応予定）",
   "settings.deps.youtubeApiKeyShow": "表示",
   "settings.deps.youtubeApiKeyHide": "隠す",
   "settings.deps.youtubeApiKeyTest": "接続テスト",
