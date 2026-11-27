@@ -3,11 +3,12 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { t } from "$lib/i18n";
-  import { fmtDateTime } from "$lib/format";
   import {
-    feedItemCompare,
-    feedItemSortsAfter,
+    broadcastDisplayOf,
     markFeedItemRead,
+    mergeFeedLoadMore,
+    mergeFeedReload,
+    type FeedCursorKey,
   } from "$lib/feed-page-logic";
   import { notify } from "$lib/notices.svelte";
   import { navigateOnPlay } from "$lib/ui-prefs";
@@ -42,6 +43,8 @@
     publishedAt: string | null;
     kind: string;
     isRead: boolean;
+    broadcastState: "live" | "upcoming" | "ended" | null;
+    broadcastStartMs: number | null;
   }
   interface FeedNewItems {
     count: number;
@@ -51,11 +54,8 @@
     level: string;
     message: string;
   }
-  // ページングカーソル（FR-25、仕様決定 AR）。前ページの末尾行を指す
-  interface FeedCursor {
-    publishedAt: string | null;
-    videoId: string;
-  }
+  // ページングカーソル（FR-25・FR-96、仕様決定 AR・EB）。前ページの末尾行を指す
+  type FeedCursor = FeedCursorKey;
   interface BackfillOutcome {
     inserted: number;
     videosPos: number;
@@ -159,54 +159,33 @@
       },
     });
     if (seq === loadSeq) {
-      const last = res[res.length - 1];
-      // 同一フィルタでの再取得（更新通知など）かつ先頭ページが満杯の
-      // ときだけ、既に読み込んだ過去ページ（新しい先頭ページの末尾より
-      // 後に続く部分）を保持する。部分ページ（末尾まで取れた）では
-      // 保持分は membership の切れた古い行になるため捨てる。
-      // 保持分と先頭ページの間に入る新着の空白は loadMoreItems が
-      // 整列追記で埋めるため、カーソルは常に先頭ページの末尾に戻す
-      const tail =
-        last && res.length >= 500 && filterKey === itemsFilterKey
-          ? items.filter((i) =>
-              feedItemSortsAfter(i, last.publishedAt, last.videoId),
-            )
-          : [];
-      if (tail.length > 0) {
-        // 空白補完が未完の前回状態があれば深い側はそのまま引き継ぐ
-        // （gap 走査の途中で再度の再取得が来ても最深カーソルを失わない）
-        if (!gapBoundary) {
-          deepCursor = feedCursor;
-          deepHasMore = feedHasMore;
-        }
-        const head = tail[0];
-        gapBoundary = { publishedAt: head.publishedAt, videoId: head.videoId };
-      } else {
-        gapBoundary = null;
-        deepCursor = null;
-        deepHasMore = false;
-      }
-      const seen = new Set(res.map((i) => i.videoId));
-      items = [...res, ...tail.filter((i) => !seen.has(i.videoId))];
+      const merged = mergeFeedReload({
+        res,
+        prevItems: items,
+        sameFilter: filterKey === itemsFilterKey,
+        prevFeedCursor: feedCursor,
+        prevFeedHasMore: feedHasMore,
+        prevGapBoundary: gapBoundary,
+        prevDeepCursor: deepCursor,
+        prevDeepHasMore: deepHasMore,
+      });
+      items = merged.items;
+      feedCursor = merged.feedCursor;
+      feedHasMore = merged.feedHasMore;
+      gapBoundary = merged.gapBoundary;
+      deepCursor = merged.deepCursor;
+      deepHasMore = merged.deepHasMore;
       itemsFilterKey = filterKey;
-      feedCursor = last
-        ? { publishedAt: last.publishedAt, videoId: last.videoId }
-        : null;
-      feedHasMore = res.length >= 500;
     }
   }
 
   // 末尾の次ページを追記する。カーソルは末尾行の
-  // （published_at, video_id）。フィルタ変更や既読化で並びが
-  // 変わっても、バックエンドのカーソル比較が同じ全順序なので
-  // 重複せず続きを取れる（新規追加分は念のため videoId で重複除去）
+  // （isLive, publishedAt, videoId）。状態遷移で重複が生じても videoId で除去し、
+  // 全順序（ライブ中先頭 → 投稿日時降順 → videoId 昇順）へ再整列する。
   async function loadMoreItems(): Promise<void> {
     const cursor = feedCursor;
     if (!cursor || loadingMore) return;
     loadingMore = true;
-    // 世代は進めず、進行中の初期取得と同じ世代に属させる。
-    // フィルタ切替（loadItems）が始まればこの追記は自動で失効し、
-    // 古い条件の続きが新しい一覧へ混入しない
     const seq = loadSeq;
     try {
       const res = await invoke<FeedItem[]>("list_feed", {
@@ -220,46 +199,20 @@
         },
       });
       if (seq === loadSeq) {
-        const seen = new Set(items.map((i) => i.videoId));
-        // 再取得で保持した過去ページの手前に属する項目（先頭ページとの
-        // 間に入った新着の空白）を正しい位置へ挿すため全体を整列する。
-        // 通常は既に整列済みなので実質の移動は起きない
-        items = [...items, ...res.filter((i) => !seen.has(i.videoId))].sort(
-          feedItemCompare,
-        );
-        const last = res[res.length - 1];
-        if (
-          last &&
-          gapBoundary &&
-          feedItemCompare(last, gapBoundary) >= 0
-        ) {
-          // 空白を埋め切った（取得末尾が保持分の先頭に到達・追い越し）。
-          // 保持分の区間は全て表示済みなので、保持前の深い側の
-          // カーソルへ復帰し、既表示ページの再走査を省く
-          feedCursor = deepCursor ?? {
-            publishedAt: last.publishedAt,
-            videoId: last.videoId,
-          };
-          feedHasMore = deepHasMore;
-          gapBoundary = null;
-          deepCursor = null;
-          deepHasMore = false;
-        } else {
-          if (last) {
-            feedCursor = {
-              publishedAt: last.publishedAt,
-              videoId: last.videoId,
-            };
-          }
-          feedHasMore = res.length >= 500;
-          if (!feedHasMore) {
-            // 走査が末尾へ達した。保持分との間の空白はここまでで
-            // 打ち止め（取得順の集合が尽きた）ため状態を畳む
-            gapBoundary = null;
-            deepCursor = null;
-            deepHasMore = false;
-          }
-        }
+        const merged = mergeFeedLoadMore({
+          res,
+          prevItems: items,
+          prevFeedCursor: cursor,
+          gapBoundary,
+          deepCursor,
+          deepHasMore,
+        });
+        items = merged.items;
+        feedCursor = merged.feedCursor;
+        feedHasMore = merged.feedHasMore;
+        gapBoundary = merged.gapBoundary;
+        deepCursor = merged.deepCursor;
+        deepHasMore = merged.deepHasMore;
       }
     } catch (e) {
       notify(t("feed.failed", { message: asErrorMessage(e) }));
@@ -620,6 +573,8 @@
             <option value="video">{t("feed.filters.kindVideo")}</option>
             <option value="short">{t("feed.filters.kindShort")}</option>
             <option value="live">{t("feed.filters.kindLive")}</option>
+            <option value="live_now">{t("feed.filters.kindLiveNow")}</option>
+            <option value="upcoming">{t("feed.filters.kindUpcoming")}</option>
           </select>
           <label class="filter">
             <input type="checkbox" bind:checked={groupByChannel} />
@@ -661,6 +616,27 @@
     <p class="subtle" class:hidden={items.length > 0}>
       {t("feed.items.empty")}
     </p>
+    {#snippet feedMeta(it: FeedItem)}
+      {@const disp = broadcastDisplayOf(it)}
+      <span class="feed-meta">
+        {#if disp.badge === "live"}
+          <span class="badge-live">{t("feed.badge.live")}</span>
+        {:else if disp.badge === "upcoming"}
+          <span class="badge-upcoming">{t("feed.badge.upcoming")}</span>
+        {/if}
+        <span>{it.channelTitle ?? it.channelId}</span>
+        {#if disp.timeKind === "started"}
+          <span>· {t("feed.broadcast.startedAt", { time: disp.formattedTime })}</span>
+        {:else if disp.timeKind === "scheduled"}
+          <span>· {t("feed.broadcast.scheduledAt", { time: disp.formattedTime })}</span>
+        {:else if disp.timeKind === "scheduledUnknown"}
+          <span>· {t("feed.broadcast.scheduledUnknown")}</span>
+        {:else if disp.timeKind === "published"}
+          <span>· {disp.formattedTime}</span>
+        {/if}
+      </span>
+    {/snippet}
+
     {#if groupByChannel}
       {#each groupedItems as group (group.channelId)}
         <section class="chan-group">
@@ -682,10 +658,7 @@
                   openVideoContextMenu(e, videoRefOf(it), va)}
               >
                 {#snippet sub()}
-                  <span class="feed-meta">
-                    <span>{it.channelTitle ?? it.channelId}</span>
-                    <span>{fmtDateTime(it.publishedAt)}</span>
-                  </span>
+                  {@render feedMeta(it)}
                 {/snippet}
                 {#snippet actions()}
                   <button
@@ -733,10 +706,7 @@
               openVideoContextMenu(e, videoRefOf(it), va)}
           >
             {#snippet sub()}
-              <span class="feed-meta">
-                <span>{it.channelTitle ?? it.channelId}</span>
-                <span>{fmtDateTime(it.publishedAt)}</span>
-              </span>
+              {@render feedMeta(it)}
             {/snippet}
             {#snippet actions()}
               <button
@@ -870,7 +840,27 @@
   }
   .feed-meta {
     display: flex;
-    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .badge-live,
+  .badge-upcoming {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1.4;
+    letter-spacing: 0.03em;
+  }
+  .badge-live {
+    background: #c62828;
+    color: #ffffff;
+  }
+  .badge-upcoming {
+    background: var(--warn);
+    color: var(--on-warn);
   }
   .chan-group {
     margin-top: 12px;

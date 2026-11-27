@@ -91,6 +91,14 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] フロントエンドへ `playback-error-logic.ts`（日英 7 カテゴリ文言と後方互換、未知値フォールバック、単体テスト `PE-01` 〜 `PE-05`）、`notices.svelte.ts` と `+layout.svelte` の 12 秒表示オプションおよび手動閉じるボタン（`×`）とタイマー解放、`PlayerCards.svelte` の導線配線、`settings/+page.svelte` の `/settings?section=deps` スクロール遷移とクエリ消費、および日英 i18n キーを実装する
 - [ ] 受け入れ：`--verbose` 有無の URL 解決時間計測（10 回ずつ、中央値差 -3ms を確認済み）、現行 `mpv` での IPC `log-message` 先着と `--verbose` / `--extractor-args` 展開および正常再生時 0 件確認（確認済み）、および隔離 dev インスタンス（`scripts/e2e_dev.py`、CDP）での `scripts/e2e_smoke.py`（9 項目）、実 `play_video`（`00000000000`）による `video_unavailable` 即時通知と `×` ボタン消去、別画面から `/settings?section=deps` 遷移時の `loadSettings` 完了後スクロールと同一画面フィルタ解除後スクロール、通知履歴記録、英語 UI 切替時の通知表示までは確認済み。`deno` 無効化・配信開始前・オフラインの実機再現および OS ファイルマネージャのログフォルダ起動（`diag_open_log_dir`）の目視確認のみ未実施
 
+### Phase 91：フィード画面のライブ中・配信予定検出表示と上部配置（v25）
+
+- [x] `innertube/mod.rs` へ `classify_broadcast_meta`（`<= 0` 開始時刻正規化、プレミア公開含む）、`is_transient_or_blocked_playability`、`InnerTubeError::is_rate_limited`、`classify_kind` 集約を追加する（FR-96、仕様決定 EB、単体テスト `DB-IT-01`、`DB-IT-02`）
+- [x] SQLite マイグレーション `v25`（`broadcast_state`・`broadcast_start_ms`・`broadcast_checked_at_ms` 追加、部分索引 `idx_videos_broadcast_active`・`idx_videos_feed_broadcast`、直近 14 日 `upcoming`・直近 24 時間 `live`/`premiere` バックフィル）、`model/mod.rs`（`FeedItem`・`FeedCursor.is_live`・`FeedFilter.kind`）、`db/feed.rs`（2 段階 `feed_list_filtered`・`feed_list_broadcast_sql`・`videos_resolve_meta_tx`・`videos_expire_stale_upcoming`・`broadcast_refresh_targets`・`videos_apply_broadcast_refresh`・`videos_touch_broadcast_checked`）を実装する（単体テスト `DB-LD-38` 〜 `DB-LD-41`）
+- [x] `metaresolve/mod.rs` へ定期再確認（緊急度 8:2 配分、7 日超過打ち切り、HTTP 429 指数バックオフ、連続 3 回失敗中断、連続 6 回ボット応答個別解除、手動 60 秒クールダウン `wake_manual`）を実装し、`livewait/mod.rs` から `meta_snapshot` 相乗り同期（`ingested_only`）、`commands/feed.rs` の `feed_refresh` から `wake_manual` 呼び出しを組み込む（単体テスト `DB-MR-12`、`DB-LW-07`）
+- [x] フロントエンドへ `fmtBroadcastDateTime`、`feed-page-logic.ts`（ライブ中優先全順序、`broadcastDisplayOf`、`mergeFeedReload` / `mergeFeedLoadMore`）、`routes/feed/+page.svelte`（`live_now` / `upcoming` フィルタ、バッジ・開始時刻描画）、日英 i18n キー 7 件を実装する（単体テスト `FMT-01`、`FP-04` 〜 `FP-06`）
+- [ ] 受け入れ：実際のライブ配信中・配信予定（時刻あり/未定）・終了済みアーカイブ・プレミア公開を含む購読チャンネルで、ライブ中上部表示、バッジ・開始時刻表示、6 種別フィルタ、チャンネル別グループ表示、手動「今すぐ更新」、英語 UI、開始/終了後の自動追従を実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェックは通過済み、実配信を用いた GUI 実機検証は未実施）
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

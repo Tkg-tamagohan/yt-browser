@@ -523,3 +523,179 @@ async fn cfg_request_times_out_when_server_stalls() {
 
     srv.abort();
 }
+
+/// DB-IT-01: FR-96/EB — `classify_broadcast_meta` の全状態マトリクスと
+/// `<= 0` 開始時刻の None 正規化を検証する。
+#[test]
+fn classify_broadcast_meta_matrix() {
+    let mk = |is_live_now: Option<bool>,
+              has_details: bool,
+              start_ms: Option<i64>,
+              end_ms: Option<i64>,
+              scheduled_start_ms: Option<i64>,
+              is_upcoming: bool,
+              is_live_content: Option<bool>,
+              playability: Option<&str>| MetaSnapshot {
+        published_at: None,
+        broadcast: BroadcastStatus {
+            is_live_now,
+            start_ms,
+            end_ms,
+            scheduled_start_ms,
+            has_details,
+            is_upcoming,
+        },
+        is_live_content,
+        playability: playability.map(str::to_string),
+        description: String::new(),
+    };
+
+    // 放送中ライブ（start_ms 優先、<=0 は除外して scheduled へフォールバック）
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            Some(true),
+            true,
+            Some(1_700_000_000_000),
+            None,
+            Some(1_699_999_000_000),
+            false,
+            Some(true),
+            Some("OK")
+        )),
+        (Some("live"), Some(1_700_000_000_000))
+    );
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            Some(true),
+            true,
+            Some(0),
+            None,
+            Some(1_700_000_000_000),
+            false,
+            Some(false), // 公開中プレミアも "live" 扱い・実開始時刻欠落時は予定時刻を流用しない
+            Some("OK")
+        )),
+        (Some("live"), None)
+    );
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            Some(true),
+            true,
+            Some(-1),
+            None,
+            Some(0),
+            false,
+            None,
+            None
+        )),
+        (Some("live"), None)
+    );
+
+    // 終了済み（ライブアーカイブ・終了プレミア・details なしアーカイブ）
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            Some(false),
+            true,
+            Some(1_000),
+            Some(2_000),
+            None,
+            false,
+            Some(true),
+            Some("OK")
+        )),
+        (Some("ended"), Some(1_000))
+    );
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            Some(false),
+            true,
+            Some(1_000),
+            Some(2_000),
+            None,
+            false,
+            Some(false),
+            Some("OK")
+        )),
+        (Some("ended"), Some(1_000))
+    );
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+            Some(true),
+            Some("OK")
+        )),
+        (Some("ended"), None)
+    );
+
+    // 配信予定・プレミア予定（scheduled_start_ms 優先、無ければ start_ms）
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            Some(false),
+            true,
+            Some(1_000),
+            None,
+            Some(2_000),
+            true,
+            None,
+            Some("LIVE_STREAM_OFFLINE")
+        )),
+        (Some("upcoming"), Some(2_000))
+    );
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some("LIVE_STREAM_OFFLINE")
+        )),
+        (Some("upcoming"), None)
+    );
+
+    // 通常動画
+    assert_eq!(
+        classify_broadcast_meta(&mk(
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+            Some(false),
+            Some("OK")
+        )),
+        (None, None)
+    );
+}
+
+/// DB-IT-02: FR-96/EB — ボット応答保護判定と HTTP 429 判定ヘルパを検証する。
+#[test]
+fn transient_blocked_and_rate_limit_helpers() {
+    let mut s = MetaSnapshot {
+        playability: Some("LOGIN_REQUIRED".to_string()),
+        ..Default::default()
+    };
+    assert!(is_transient_or_blocked_playability(&s));
+
+    s.playability = Some("ERROR".to_string());
+    assert!(is_transient_or_blocked_playability(&s));
+
+    // 放送詳細または is_upcoming が立っていればボット判定とみなさない
+    s.broadcast.has_details = true;
+    assert!(!is_transient_or_blocked_playability(&s));
+
+    s.broadcast.has_details = false;
+    s.playability = Some("UNPLAYABLE".to_string());
+    assert!(!is_transient_or_blocked_playability(&s));
+
+    assert!(InnerTubeError::Status(reqwest::StatusCode::TOO_MANY_REQUESTS).is_rate_limited());
+    assert!(!InnerTubeError::Status(reqwest::StatusCode::FORBIDDEN).is_rate_limited());
+}

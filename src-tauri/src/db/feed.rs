@@ -72,10 +72,310 @@ pub struct SubscribeArgs<'a> {
     pub last_modified: Option<&'a str>,
 }
 
+/// `videos` テーブルへの遅延解決一括書き込み引数（FR-53・FR-56・FR-85・FR-96）。
+#[derive(Debug)]
+pub struct ResolveMetaParams<'a> {
+    pub video_id: &'a str,
+    pub needs_published: bool,
+    pub published_at: Option<&'a str>,
+    pub needs_desc: bool,
+    pub description: &'a str,
+    pub needs_kind: bool,
+    pub resolved_kind: Option<&'a str>,
+    pub broadcast_state: Option<&'a str>,
+    pub broadcast_start_ms: Option<i64>,
+    pub now_ms: i64,
+}
+
+/// 定期再確認対象のアクティブ放送行（FR-96、仕様決定 EB）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BroadcastRefreshTarget {
+    pub video_id: String,
+    pub broadcast_state: String,
+    pub broadcast_start_ms: Option<i64>,
+    pub broadcast_checked_at_ms: Option<i64>,
+}
+
+/// 放送状態別シーク SQL の対象状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BroadcastQueryState {
+    Live,
+    Upcoming,
+}
+
+const MS_2_MIN: i64 = 120_000;
+const MS_3_MIN: i64 = 180_000;
+const MS_10_MIN: i64 = 600_000;
+const MS_15_MIN: i64 = 900_000;
+const MS_2_HOURS: i64 = 7_200_000;
+const MS_12_HOURS: i64 = 12 * 3_600_000;
+const MS_24_HOURS: i64 = 86_400_000;
+const MS_6_HOURS: i64 = 6 * 3_600_000;
+const MS_7_DAYS: i64 = 7 * 86_400_000;
+
+/// 放送状態専用の部分索引 `idx_videos_feed_broadcast` を使う 4 分岐 SQL（FR-96）。
+/// SQLite の部分索引一致をコンパイル時に確定させるため `v.broadcast_state` は
+/// `'live'` または `'upcoming'` をリテラルで埋め込む。
+///
+/// バインド順は `feed_list_filtered_sql` と同一（?1..=?6、チャンネル指定時 ?7）。
+pub(crate) fn feed_list_broadcast_sql(
+    state: BroadcastQueryState,
+    unread_only: bool,
+    has_channel_id: bool,
+) -> &'static str {
+    match (state, unread_only, has_channel_id) {
+        (BroadcastQueryState::Live, false, false) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'live'
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (BroadcastQueryState::Live, true, false) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'live'
+               AND +v.is_read = 0
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (BroadcastQueryState::Live, false, true) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.channel_id = ?7
+               AND c.channel_id = ?7
+               AND v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'live'
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (BroadcastQueryState::Live, true, true) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.channel_id = ?7
+               AND c.channel_id = ?7
+               AND v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'live'
+               AND +v.is_read = 0
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (BroadcastQueryState::Upcoming, false, false) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'upcoming'
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (BroadcastQueryState::Upcoming, true, false) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'upcoming'
+               AND +v.is_read = 0
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (BroadcastQueryState::Upcoming, false, true) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.channel_id = ?7
+               AND c.channel_id = ?7
+               AND v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'upcoming'
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+        (BroadcastQueryState::Upcoming, true, true) => {
+            "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
+                    v.thumbnail_url, v.published_at, v.kind, v.is_read,
+                    v.broadcast_state, v.broadcast_start_ms, v.description
+             FROM videos v
+             CROSS JOIN channels c ON c.channel_id = v.channel_id
+             WHERE v.channel_id = ?7
+               AND c.channel_id = ?7
+               AND v.ingested = 1
+               AND v.broadcast_state IN ('live', 'upcoming')
+               AND v.broadcast_state = 'upcoming'
+               AND +v.is_read = 0
+               AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
+               AND (?1 IS NULL
+                    OR (?1 = 0 AND c.category_id IS NULL)
+                    OR c.category_id = ?1)
+               AND (?2 IS NULL
+                    OR datetime(v.published_at) >= datetime('now', '-' || ?2 || ' days'))
+               AND (?3 IS NULL
+                    OR ?3 IN ('live_now', 'upcoming')
+                    OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere'))
+                    OR (?3 NOT IN ('live','live_now','upcoming') AND v.kind = ?3))
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
+               AND (
+                    ?6 IS NULL
+                    OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
+                    OR (?5 IS NOT NULL AND (
+                         v.published_at IS NULL
+                         OR v.published_at < ?5
+                         OR (v.published_at = ?5 AND v.video_id > ?6))))
+             ORDER BY v.published_at DESC, v.video_id"
+        }
+    }
+}
+
 /// `feed_list_filtered` の `(unread_only, has_channel_id)` 4 分岐 SQL を返す（F-08）。
 /// 全 4 分岐で `ORDER BY v.published_at DESC, v.video_id` を維持しつつ、
 /// v24 索引（`idx_videos_feed_pub` / `idx_videos_unread` / `idx_videos_channel_pub`）を
 /// 直接走査させて `SCAN v` 素走査と `USE TEMP B-TREE` を排除する。
+/// フェーズ 2（非ライブ中走査）として `broadcast_state <> 'live'`（NULL 含む）のみ返す。
 ///
 /// バインド順:
 /// - `?1`: `category_id`
@@ -90,10 +390,11 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
         (false, false) => {
             "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
                     v.thumbnail_url, v.published_at, v.kind, v.is_read,
-                    v.description
+                    v.broadcast_state, v.broadcast_start_ms, v.description
              FROM videos v
              CROSS JOIN channels c ON c.channel_id = v.channel_id
              WHERE v.ingested = 1
+               AND (v.broadcast_state IS NULL OR v.broadcast_state <> 'live')
                AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
                AND (?1 IS NULL
                     OR (?1 = 0 AND c.category_id IS NULL)
@@ -103,7 +404,7 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
                AND (?3 IS NULL
                     OR v.kind = ?3
                     OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
-               AND (?4 = 1 OR v.kind <> 'short')
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
                AND (
                     ?6 IS NULL
                     OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
@@ -116,10 +417,11 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
         (true, false) => {
             "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
                     v.thumbnail_url, v.published_at, v.kind, v.is_read,
-                    v.description
+                    v.broadcast_state, v.broadcast_start_ms, v.description
              FROM videos v
              CROSS JOIN channels c ON c.channel_id = v.channel_id
              WHERE v.ingested = 1
+               AND (v.broadcast_state IS NULL OR v.broadcast_state <> 'live')
                AND v.is_read = 0
                AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
                AND (?1 IS NULL
@@ -130,7 +432,7 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
                AND (?3 IS NULL
                     OR v.kind = ?3
                     OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
-               AND (?4 = 1 OR v.kind <> 'short')
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
                AND (
                     ?6 IS NULL
                     OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
@@ -143,12 +445,13 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
         (false, true) => {
             "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
                     v.thumbnail_url, v.published_at, v.kind, v.is_read,
-                    v.description
+                    v.broadcast_state, v.broadcast_start_ms, v.description
              FROM videos v
              CROSS JOIN channels c ON c.channel_id = v.channel_id
              WHERE v.channel_id = ?7
                AND c.channel_id = ?7
                AND v.ingested = 1
+               AND (v.broadcast_state IS NULL OR v.broadcast_state <> 'live')
                AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
                AND (?1 IS NULL
                     OR (?1 = 0 AND c.category_id IS NULL)
@@ -158,7 +461,7 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
                AND (?3 IS NULL
                     OR v.kind = ?3
                     OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
-               AND (?4 = 1 OR v.kind <> 'short')
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
                AND (
                     ?6 IS NULL
                     OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
@@ -174,12 +477,13 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
             // 他チャンネルの未読全件走査と `ANALYZE` 後の `SCAN c` 起因ソートを同時に防ぐ。
             "SELECT v.video_id, v.channel_id, v.channel_title, v.title,
                     v.thumbnail_url, v.published_at, v.kind, v.is_read,
-                    v.description
+                    v.broadcast_state, v.broadcast_start_ms, v.description
              FROM videos v
              CROSS JOIN channels c ON c.channel_id = v.channel_id
              WHERE v.channel_id = ?7
                AND c.channel_id = ?7
                AND v.ingested = 1
+               AND (v.broadcast_state IS NULL OR v.broadcast_state <> 'live')
                AND +v.is_read = 0
                AND v.channel_id NOT IN (SELECT channel_id FROM blocked_channels)
                AND (?1 IS NULL
@@ -190,7 +494,7 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
                AND (?3 IS NULL
                     OR v.kind = ?3
                     OR (?3 = 'live' AND v.kind IN ('live','upcoming','premiere')))
-               AND (?4 = 1 OR v.kind <> 'short')
+               AND (?4 = 1 OR ?3 = 'short' OR v.kind <> 'short')
                AND (
                     ?6 IS NULL
                     OR (?5 IS NULL AND v.published_at IS NULL AND v.video_id > ?6)
@@ -201,6 +505,65 @@ pub(crate) fn feed_list_filtered_sql(unread_only: bool, has_channel_id: bool) ->
              ORDER BY v.published_at DESC, v.video_id"
         }
     }
+}
+
+struct FeedQuery<'a> {
+    sql: &'a str,
+    filter: &'a FeedFilter,
+    cursor: Option<&'a crate::model::FeedCursor>,
+    show_shorts: bool,
+    limit: usize,
+}
+
+fn collect_feed_rows(
+    conn: &rusqlite::Connection,
+    q: &FeedQuery<'_>,
+    keep: &impl Fn(&FeedItem) -> bool,
+    out: &mut Vec<FeedItem>,
+) -> Result<(), DbError> {
+    if out.len() >= q.limit {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(q.sql)?;
+    let mut rows = match q.filter.channel_id.as_deref() {
+        Some(channel_id) => stmt.query(rusqlite::params![
+            q.filter.category_id,
+            q.filter.days.map(|d| d as i64),
+            q.filter.kind,
+            q.show_shorts as i64,
+            q.cursor.and_then(|c| c.published_at.as_deref()),
+            q.cursor.map(|c| c.video_id.as_str()),
+            channel_id,
+        ])?,
+        None => stmt.query(rusqlite::params![
+            q.filter.category_id,
+            q.filter.days.map(|d| d as i64),
+            q.filter.kind,
+            q.show_shorts as i64,
+            q.cursor.and_then(|c| c.published_at.as_deref()),
+            q.cursor.map(|c| c.video_id.as_str()),
+        ])?,
+    };
+    while out.len() < q.limit {
+        let Some(row) = rows.next()? else { break };
+        let item = FeedItem {
+            video_id: row.get(0)?,
+            channel_id: row.get(1)?,
+            channel_title: row.get(2)?,
+            title: row.get(3)?,
+            thumbnail_url: row.get(4)?,
+            published_at: row.get(5)?,
+            kind: row.get(6)?,
+            is_read: row.get::<_, i64>(7)? != 0,
+            broadcast_state: row.get(8)?,
+            broadcast_start_ms: row.get(9)?,
+            description: row.get(10)?,
+        };
+        if keep(&item) {
+            out.push(item);
+        }
+    }
+    Ok(())
 }
 
 impl Db {
@@ -284,46 +647,61 @@ impl Db {
         keep: impl Fn(&FeedItem) -> bool,
     ) -> Result<Vec<FeedItem>, DbError> {
         let conn = self.lock()?;
-        let sql = feed_list_filtered_sql(filter.unread_only, filter.channel_id.is_some());
-        let mut stmt = conn.prepare(sql)?;
-        let cursor = filter.cursor.as_ref();
-        let mut rows = match filter.channel_id.as_deref() {
-            Some(channel_id) => stmt.query(rusqlite::params![
-                filter.category_id,
-                filter.days.map(|d| d as i64),
-                filter.kind,
-                show_shorts as i64,
-                cursor.and_then(|c| c.published_at.as_deref()),
-                cursor.map(|c| c.video_id.as_str()),
-                channel_id,
-            ])?,
-            None => stmt.query(rusqlite::params![
-                filter.category_id,
-                filter.days.map(|d| d as i64),
-                filter.kind,
-                show_shorts as i64,
-                cursor.and_then(|c| c.published_at.as_deref()),
-                cursor.map(|c| c.video_id.as_str()),
-            ])?,
-        };
         let mut out = Vec::new();
-        while out.len() < limit {
-            let Some(row) = rows.next()? else { break };
-            let item = FeedItem {
-                video_id: row.get(0)?,
-                channel_id: row.get(1)?,
-                channel_title: row.get(2)?,
-                title: row.get(3)?,
-                thumbnail_url: row.get(4)?,
-                published_at: row.get(5)?,
-                kind: row.get(6)?,
-                is_read: row.get::<_, i64>(7)? != 0,
-                description: row.get(8)?,
-            };
-            if keep(&item) {
-                out.push(item);
-            }
+        let kind = filter.kind.as_deref();
+        let cursor = filter.cursor.as_ref();
+
+        // フェーズ 1（ライブ中走査）：全表示 / ライブ傘 / ライブ中 / Shorts 選択時、
+        // かつ先頭ページまたは前ページ末尾がライブ中だった場合のみ実行する。
+        let run_phase1 = matches!(kind, None | Some("live") | Some("live_now") | Some("short"))
+            && cursor.is_none_or(|c| c.is_live);
+        if run_phase1 {
+            let sql = feed_list_broadcast_sql(
+                BroadcastQueryState::Live,
+                filter.unread_only,
+                filter.channel_id.is_some(),
+            );
+            collect_feed_rows(
+                &conn,
+                &FeedQuery {
+                    sql,
+                    filter,
+                    cursor,
+                    show_shorts,
+                    limit,
+                },
+                &keep,
+                &mut out,
+            )?;
         }
+
+        // フェーズ 2（非ライブ中走査）：まだ上限に達しておらず、かつ live_now 限定でない場合に実行する。
+        // 前ページ末尾がライブ中（c.is_live == true）だった場合は非ライブ側の先頭から走査する。
+        if out.len() < limit && kind != Some("live_now") {
+            let phase2_cursor = cursor.filter(|c| !c.is_live);
+            let sql = if kind == Some("upcoming") {
+                feed_list_broadcast_sql(
+                    BroadcastQueryState::Upcoming,
+                    filter.unread_only,
+                    filter.channel_id.is_some(),
+                )
+            } else {
+                feed_list_filtered_sql(filter.unread_only, filter.channel_id.is_some())
+            };
+            collect_feed_rows(
+                &conn,
+                &FeedQuery {
+                    sql,
+                    filter,
+                    cursor: phase2_cursor,
+                    show_shorts,
+                    limit,
+                },
+                &keep,
+                &mut out,
+            )?;
+        }
+
         Ok(out)
     }
 
@@ -476,6 +854,7 @@ impl Db {
     /// 投稿日時の遅延書き戻し（FR-53、仕様決定 CD）。published_at が NULL の
     /// 行だけを埋め、既存値は上書きしない（RSS・ローカル由来の値を守る）。
     /// 実際に書き込めたら true（UI 更新イベントの要否判定用）。
+    #[cfg(test)]
     pub fn videos_set_published_at(&self, video_id: &str, at: &str) -> Result<bool, DbError> {
         let conn = self.lock()?;
         Ok(conn.execute(
@@ -485,25 +864,7 @@ impl Db {
         )? > 0)
     }
 
-    /// InnerTube メタ応答の試行済み印（FR-53、仕様決定 CD）。
-    /// publishDate を持たない応答でも立て、投稿日時だけが欠けた行を
-    /// 「もう一度問う」対象から外す（kind の再試行選出には影響しない）。
-    pub fn videos_mark_meta_checked(&self, video_id: &str) -> Result<(), DbError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "UPDATE videos SET meta_checked = 1 WHERE video_id = ?1",
-            [video_id],
-        )?;
-        Ok(())
-    }
-
-    /// 説明文の遅延書き戻し（FR-85、仕様決定 DJ）。
-    /// InnerTube メタ応答の `videoDetails.shortDescription` を入れる。
-    /// description が NULL の行だけを埋め、既存値は上書きしない
-    /// （投稿日時と同じく解決済みの値を守る暫定解釈: 投稿後に説明文が
-    /// 編集されても追従しない）。応答が説明文を持たない（パース結果が
-    /// 空文字）場合も空文字を書き込み、説明なしを確定させて
-    /// 「もう一度問う」対象から外す。実際に書き込めたら true。
+    #[cfg(test)]
     pub fn videos_set_description(&self, video_id: &str, desc: &str) -> Result<bool, DbError> {
         let conn = self.lock()?;
         Ok(conn.execute(
@@ -632,6 +993,290 @@ impl Db {
         tx.commit()?;
         Ok(total)
     }
+
+    /// 遅延解決（FR-53・FR-56・FR-85・FR-96）の結果を単一トランザクションで書き戻す。
+    /// `published_at` / `description` / `kind`（既存 `'short'` 保護）/ `broadcast_*`（単調時刻ガード）を更新し、
+    /// 一覧表示に影響する変化があった場合に `true` を返す。
+    pub fn videos_resolve_meta_tx(&self, p: &ResolveMetaParams<'_>) -> Result<bool, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let mut changed = false;
+
+        if p.needs_published {
+            if let Some(at) = p.published_at {
+                if tx.execute(
+                    "UPDATE videos SET published_at = ?2
+                       WHERE video_id = ?1 AND published_at IS NULL",
+                    rusqlite::params![p.video_id, at],
+                )? > 0
+                {
+                    changed = true;
+                }
+            }
+        }
+        tx.execute(
+            "UPDATE videos SET meta_checked = 1 WHERE video_id = ?1",
+            [p.video_id],
+        )?;
+        if p.needs_desc
+            && tx.execute(
+                "UPDATE videos SET description = ?2
+                   WHERE video_id = ?1 AND description IS NULL",
+                rusqlite::params![p.video_id, p.description],
+            )? > 0
+        {
+            changed = true;
+        }
+        if p.needs_kind {
+            if let Some(kind) = p.resolved_kind {
+                debug_assert!(kind != "video");
+                if tx.execute(
+                    "UPDATE videos SET kind = ?2, kind_state = 1
+                       WHERE video_id = ?1 AND kind <> 'short' AND kind <> ?2",
+                    rusqlite::params![p.video_id, kind],
+                )? > 0
+                {
+                    changed = true;
+                }
+                tx.execute(
+                    "UPDATE videos SET kind_state = 1
+                       WHERE video_id = ?1 AND (kind = 'short' OR kind = ?2)",
+                    rusqlite::params![p.video_id, kind],
+                )?;
+            } else {
+                // 通常動画候補（kind='video'）はトランザクション外の shorts_probe で確定するため、
+                // それ以外の由来 kind だけをここで確定印にする。
+                tx.execute(
+                    "UPDATE videos SET kind_state = 1
+                       WHERE video_id = ?1 AND kind <> 'video' AND kind_state <> 1",
+                    [p.video_id],
+                )?;
+            }
+        }
+
+        if apply_broadcast_columns_tx(
+            &tx,
+            p.video_id,
+            None,
+            p.broadcast_state,
+            p.broadcast_start_ms,
+            p.now_ms,
+            false,
+        )? {
+            changed = true;
+        }
+
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// 7 日超過した未開始の配信予定（`ingested = 1`, `broadcast_state = 'upcoming'`,
+    /// かつ最低 1 回確認済み `broadcast_checked_at_ms > 0`）を一括で解除する（FR-96、仕様決定 EB）。
+    pub fn videos_expire_stale_upcoming(&self, now_ms: i64) -> Result<usize, DbError> {
+        let conn = self.lock()?;
+        let n = conn.execute(
+            "UPDATE videos
+                SET broadcast_state = NULL,
+                    broadcast_start_ms = NULL,
+                    broadcast_checked_at_ms = ?1
+              WHERE ingested = 1
+                AND broadcast_state = 'upcoming'
+                AND COALESCE(broadcast_checked_at_ms, 0) > 0
+                AND ?1 > (
+                    CASE WHEN broadcast_start_ms > 0 THEN broadcast_start_ms
+                         ELSE COALESCE(CAST(strftime('%s', first_seen_at) AS INTEGER) * 1000, broadcast_checked_at_ms)
+                    END
+                ) + ?2",
+            rusqlite::params![now_ms, MS_7_DAYS],
+        )?;
+        Ok(n)
+    }
+
+    /// 定期再確認対象のアクティブ放送行を選出する（FR-96、仕様決定 EB）。
+    /// `ingested = 1` かつ `broadcast_state IN ('live', 'upcoming')` の行から、
+    /// 緊急度別の再確認期限を過ぎたものを階層 1（最大 8 枠）・階層 2（最低 2 枠、相互融通）で最大 `limit` 件返す。
+    pub fn broadcast_refresh_targets(
+        &self,
+        now_ms: i64,
+        force_manual: bool,
+        limit: usize,
+    ) -> Result<Vec<BroadcastRefreshTarget>, DbError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT video_id, broadcast_state, broadcast_start_ms, broadcast_checked_at_ms,
+                    CAST(strftime('%s', first_seen_at) AS INTEGER) * 1000 AS first_seen_ms
+               FROM videos
+              WHERE ingested = 1
+                AND broadcast_state IN ('live', 'upcoming')",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut tier1: Vec<BroadcastRefreshTarget> = Vec::new();
+        let mut tier2: Vec<BroadcastRefreshTarget> = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let video_id: String = row.get(0)?;
+            let broadcast_state: String = row.get(1)?;
+            let raw_start_ms: Option<i64> = row.get(2)?;
+            let broadcast_start_ms = raw_start_ms.filter(|&m| m > 0);
+            let broadcast_checked_at_ms: Option<i64> = row.get(3)?;
+            let first_seen_ms: Option<i64> = row.get(4)?;
+            let checked_ms = broadcast_checked_at_ms.unwrap_or(0);
+            let ref_ms = broadcast_start_ms.or(first_seen_ms).unwrap_or(checked_ms);
+
+            let (is_tier1, interval_ms) = if broadcast_state == "live" {
+                let long_live = broadcast_start_ms.is_some_and(|s| now_ms - s > MS_12_HOURS);
+                (true, if long_live { MS_10_MIN } else { MS_3_MIN })
+            } else if broadcast_start_ms
+                .is_some_and(|s| now_ms >= s - MS_15_MIN && now_ms <= s + MS_2_HOURS)
+            {
+                (true, MS_2_MIN)
+            } else {
+                let over_24h = now_ms > ref_ms + MS_24_HOURS;
+                (false, if over_24h { MS_6_HOURS } else { MS_15_MIN })
+            };
+
+            if !force_manual && checked_ms > now_ms - interval_ms {
+                continue;
+            }
+            let item = BroadcastRefreshTarget {
+                video_id,
+                broadcast_state,
+                broadcast_start_ms,
+                broadcast_checked_at_ms,
+            };
+            if is_tier1 {
+                tier1.push(item);
+            } else {
+                tier2.push(item);
+            }
+        }
+
+        let sort_key = |a: &BroadcastRefreshTarget, b: &BroadcastRefreshTarget| {
+            a.broadcast_checked_at_ms
+                .unwrap_or(0)
+                .cmp(&b.broadcast_checked_at_ms.unwrap_or(0))
+                .then_with(|| a.video_id.cmp(&b.video_id))
+        };
+        tier1.sort_by(sort_key);
+        tier2.sort_by(sort_key);
+
+        let tier2_min = if limit >= 2 { (limit / 5).max(2) } else { 0 };
+        let tier1_cap = limit.saturating_sub(tier2.len().min(tier2_min));
+        let mut out: Vec<BroadcastRefreshTarget> = tier1.into_iter().take(tier1_cap).collect();
+        let rem = limit.saturating_sub(out.len());
+        out.extend(tier2.into_iter().take(rem));
+        Ok(out)
+    }
+
+    /// 定期再確認およびライブ待機相乗りから `videos` の放送状態・開始時刻・`kind` を更新する。
+    /// 単調時刻ガード（`COALESCE(broadcast_checked_at_ms, 0) <= now_ms`）と
+    /// `ingested_only`（未投入行の抑止）を単一トランザクションで保証する。
+    pub fn videos_apply_broadcast_refresh(
+        &self,
+        video_id: &str,
+        new_kind: Option<&str>,
+        broadcast_state: Option<&str>,
+        broadcast_start_ms: Option<i64>,
+        now_ms: i64,
+        ingested_only: bool,
+    ) -> Result<bool, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let changed = apply_broadcast_columns_tx(
+            &tx,
+            video_id,
+            new_kind,
+            broadcast_state,
+            broadcast_start_ms,
+            now_ms,
+            ingested_only,
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// 通信失敗・ボット応答保護時に直前状態を維持したまま確認時刻のみ進める（FR-96）。
+    pub fn videos_touch_broadcast_checked(
+        &self,
+        video_id: &str,
+        now_ms: i64,
+    ) -> Result<(), DbError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE videos SET broadcast_checked_at_ms = ?2
+               WHERE video_id = ?1 AND COALESCE(broadcast_checked_at_ms, 0) <= ?2",
+            rusqlite::params![video_id, now_ms],
+        )?;
+        Ok(())
+    }
+}
+
+/// トランザクション内で `broadcast_state` / `broadcast_start_ms` / `broadcast_checked_at_ms`
+/// （および必要時は `kind`）を更新する共通ヘルパ。表示上の変化があれば `true` を返す。
+fn apply_broadcast_columns_tx(
+    tx: &rusqlite::Transaction<'_>,
+    video_id: &str,
+    new_kind: Option<&str>,
+    broadcast_state: Option<&str>,
+    broadcast_start_ms: Option<i64>,
+    now_ms: i64,
+    ingested_only: bool,
+) -> Result<bool, DbError> {
+    let mut stmt = tx.prepare(
+        "SELECT kind, ingested, broadcast_state, broadcast_start_ms, broadcast_checked_at_ms
+           FROM videos WHERE video_id = ?1",
+    )?;
+    let mut rows = stmt.query([video_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(false);
+    };
+    let cur_kind: String = row.get(0)?;
+    let ingested: i64 = row.get(1)?;
+    let cur_state: Option<String> = row.get(2)?;
+    let cur_start: Option<i64> = row.get(3)?;
+    let cur_checked: Option<i64> = row.get(4)?;
+    drop(rows);
+    drop(stmt);
+
+    if ingested_only && ingested == 0 {
+        return Ok(false);
+    }
+    if cur_checked.unwrap_or(0) > now_ms {
+        return Ok(false);
+    }
+
+    let norm_start = broadcast_start_ms.filter(|&m| m > 0);
+    let next_start = match broadcast_state {
+        None => None,
+        Some(st) if cur_state.as_deref() == Some(st) => norm_start.or(cur_start.filter(|&m| m > 0)),
+        _ => norm_start,
+    };
+
+    let mut changed = cur_state.as_deref() != broadcast_state || cur_start != next_start;
+
+    tx.execute(
+        "UPDATE videos
+            SET broadcast_state = ?2,
+                broadcast_start_ms = ?3,
+                broadcast_checked_at_ms = ?4
+          WHERE video_id = ?1 AND COALESCE(broadcast_checked_at_ms, 0) <= ?4",
+        rusqlite::params![video_id, broadcast_state, next_start, now_ms],
+    )?;
+
+    if let Some(k) = new_kind {
+        if cur_kind != "short" && cur_kind != k {
+            tx.execute(
+                "UPDATE videos SET kind = ?2, kind_state = 1 WHERE video_id = ?1 AND kind <> 'short'",
+                rusqlite::params![video_id, k],
+            )?;
+            changed = true;
+        }
+    }
+
+    Ok(changed)
 }
 
 /// 実行する前提で、チャンネルの存在確認はここでは行わない。

@@ -517,4 +517,30 @@ pub const MIGRATIONS: &[Migration] = &[
               DROP INDEX IF EXISTS idx_videos_channel_pub;
               CREATE INDEX idx_videos_channel_pub ON videos(channel_id, published_at DESC, video_id);",
     },
+    // Phase 91: フィード画面のライブ中・配信予定判定と開始時刻表示（FR-96、仕様決定 EB）。
+    // videos テーブルへ broadcast_state / broadcast_start_ms / broadcast_checked_at_ms を追加し、
+    // アクティブ放送の再確認用とフィード一覧 2 段階取得用の部分索引を作成する。
+    // 既存の未開始予定枠（直近 14 日）と放送系（直近 24 時間）のみ kind_state=0 へ戻して再判定する。
+    Migration {
+        version: 25,
+        name: "videos_broadcast_state",
+        sql: "ALTER TABLE videos ADD COLUMN broadcast_state TEXT CHECK (broadcast_state IS NULL OR broadcast_state IN ('live', 'upcoming', 'ended'));
+              ALTER TABLE videos ADD COLUMN broadcast_start_ms INTEGER;
+              ALTER TABLE videos ADD COLUMN broadcast_checked_at_ms INTEGER;
+              CREATE INDEX idx_videos_broadcast_active
+                ON videos (broadcast_state, broadcast_checked_at_ms, video_id)
+                WHERE ingested = 1 AND broadcast_state IN ('live', 'upcoming');
+              CREATE INDEX idx_videos_feed_broadcast
+                ON videos (broadcast_state, published_at DESC, video_id)
+                WHERE ingested = 1 AND broadcast_state IN ('live', 'upcoming');
+              UPDATE videos
+                 SET kind_state = 0
+               WHERE ingested = 1
+                 AND broadcast_state IS NULL
+                 AND (
+                   (kind = 'upcoming' AND (first_seen_at >= datetime('now', '-14 days') OR datetime(published_at) >= datetime('now', '-14 days')))
+                   OR
+                   (kind IN ('live', 'premiere') AND (first_seen_at >= datetime('now', '-1 day') OR datetime(published_at) >= datetime('now', '-1 day')))
+                 );",
+    },
 ];

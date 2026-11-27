@@ -406,13 +406,16 @@ pub async fn mark_read(
     .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
-/// 手動の即時更新。全チャンネル（または指定チャンネル）の次回予定を現在に戻す。
+/// 手動の即時更新。全チャンネル（または指定チャンネル）の次回予定を現在に戻し、
+/// メタ遅延解決・ライブ状態再確認ワーカーも手動トリガーで起床させる（FR-96）。
 #[tauri::command]
 pub fn feed_refresh(
     channel_id: Option<String>,
     poller: State<'_, Arc<FeedPoller>>,
+    meta_resolver: State<'_, Arc<crate::metaresolve::MetaResolver>>,
 ) -> Result<(), UiError> {
     poller.force_refresh(channel_id.as_deref());
+    meta_resolver.wake_manual();
     Ok(())
 }
 

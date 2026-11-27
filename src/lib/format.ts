@@ -30,6 +30,31 @@ export function fmtDateTime(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(localeTag());
 }
 
+/// ライブ放送開始時刻・開始予定時刻の整形表示（FR-96、仕様決定 EB）。
+/// 端末のローカルタイムゾーンおよび UI 言語設定に従い、当年は月日時分、
+/// 異年は年月日時分を表示する。不正値（null/非有限/0 以下/NaN）は空文字を返す。
+export function fmtBroadcastDateTime(
+  ms: number | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms <= 0) {
+    return "";
+  }
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const opts: Intl.DateTimeFormatOptions = {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  };
+  if (d.getFullYear() !== now.getFullYear()) {
+    opts.year = "numeric";
+  }
+  return d.toLocaleString(localeTag(), opts);
+}
+
 /// チャット投稿時刻の時刻表示（チャットパネルの行内タイムスタンプ）。
 /// postedAtUsec はマイクロ秒なのでミリ秒に直して解釈する。
 export function fmtChatTime(usec: number): string {

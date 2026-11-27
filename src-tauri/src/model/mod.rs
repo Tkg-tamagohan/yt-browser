@@ -289,6 +289,10 @@ pub struct FeedCursor {
     pub published_at: Option<String>,
     /// 末尾行の動画 ID（同時刻の並びの決め手）。
     pub video_id: String,
+    /// 末尾行が現在放送中（`broadcast_state = 'live'`）かどうか（FR-96、仕様決定 EB）。
+    /// 省略・旧クライアントからの送信時は false として扱う。
+    #[serde(default)]
+    pub is_live: bool,
 }
 
 /// `list_feed` のフィルタ（設計書 §3.1）。全項目省略可。
@@ -301,7 +305,7 @@ pub struct FeedFilter {
     pub category_id: Option<i64>,
     /// 公開日が指定日数以降のものだけに絞る。
     pub days: Option<u32>,
-    /// 動画の種別（"video" | "short" | "live"）で絞る（FR-13）。
+    /// 動画の種別（"video" | "short" | "live" | "live_now" | "upcoming"）で絞る（FR-13・FR-96）。
     /// kind が未検出（'video' のまま）の項目は video として扱う（仕様決定 V）。
     pub kind: Option<String>,
     /// ページングカーソル。Some のとき末尾行の次から返す（FR-25、仕様決定 AR）。
@@ -339,6 +343,10 @@ pub struct FeedItem {
     pub published_at: Option<String>,
     pub kind: String,
     pub is_read: bool,
+    /// 動的な放送状態（"live" | "upcoming" | "ended" | None、FR-96、仕様決定 EB）。
+    pub broadcast_state: Option<String>,
+    /// 放送予定時刻または実開始時刻（epoch ms、FR-96、仕様決定 EB）。
+    pub broadcast_start_ms: Option<i64>,
     /// 遅延解決済みの説明文（FR-85、仕様決定 DJ）。`video_desc` フィルタの
     /// 評価だけに使う内部フィールドで、一覧行のペイロード増大を避けるため
     /// 直列化では送らない（NULL は未解決、空文字は解決済み・説明なし）。

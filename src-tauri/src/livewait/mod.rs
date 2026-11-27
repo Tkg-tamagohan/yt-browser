@@ -15,8 +15,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 
 use crate::db::Db;
-use crate::innertube::{BroadcastStatus, InnerTube};
-use crate::model::{LiveWait, LiveWaitChanged, LiveWaitStatus};
+use crate::innertube::{
+    classify_broadcast_meta, classify_kind, is_transient_or_blocked_playability, BroadcastStatus,
+    InnerTube, MetaSnapshot,
+};
+use crate::model::{FeedNewItems, LiveWait, LiveWaitChanged, LiveWaitStatus};
 use crate::util::lock;
 
 /// 巡回ティック。直前窓の短間隔（15 秒）を粒度内に収めるため 10 秒とする。
@@ -100,6 +103,29 @@ pub fn wait_action_of(value: Option<String>) -> WaitAction {
     match value.as_deref() {
         Some("notify") => WaitAction::Notify,
         _ => WaitAction::Play,
+    }
+}
+
+/// ライブ待機ポーラーが取得した `MetaSnapshot` を、フィード台帳（`ingested = 1` の行のみ）へ
+/// 単調時刻ガード付きで相乗り反映する（FR-96、仕様決定 EB）。
+/// ボット判定・一時制限応答（`LOGIN_REQUIRED` / `ERROR`）時は直前状態を保護し、変更があれば `true` を返す。
+pub(crate) fn sync_feed_from_snapshot(
+    db: &Db,
+    video_id: &str,
+    snap: &MetaSnapshot,
+    now_ms: i64,
+) -> bool {
+    if is_transient_or_blocked_playability(snap) {
+        return false;
+    }
+    let (b_state, b_start) = classify_broadcast_meta(snap);
+    let kind_opt = classify_kind(snap);
+    match db.videos_apply_broadcast_refresh(video_id, kind_opt, b_state, b_start, now_ms, true) {
+        Ok(changed) => changed,
+        Err(e) => {
+            tracing::warn!(error = %e, "ライブ待機からの放送状態相乗り更新に失敗");
+            false
+        }
     }
 }
 
@@ -237,11 +263,16 @@ impl LiveWaitPoller {
             );
             return;
         }
-        match self.innertube.broadcast_status(&wait.video_id).await {
+        match self.innertube.meta_snapshot(&wait.video_id).await {
             Err(e) => self.after_failure(wait, e.to_string()),
-            Ok(status) => {
+            Ok(snap) => {
                 self.after_success(wait);
-                match classify_broadcast(&status) {
+                if sync_feed_from_snapshot(&self.db, &wait.video_id, &snap, now_ms) {
+                    let _ = self
+                        .app
+                        .emit("feed://kind_updated", FeedNewItems { count: 1 });
+                }
+                match classify_broadcast(&snap.broadcast) {
                     WaitBroadcast::Live => self.on_live(wait).await,
                     WaitBroadcast::Ended => self.remove_wait(
                         wait,
@@ -561,5 +592,93 @@ mod tests {
         assert_eq!(wait_action_of(Some("play".to_string())), WaitAction::Play);
         assert_eq!(wait_action_of(Some("bogus".to_string())), WaitAction::Play);
         assert_eq!(wait_action_of(Some("".to_string())), WaitAction::Play);
+    }
+
+    /// DB-LW-07: FR-96/EB — `sync_feed_from_snapshot` による相乗り更新、
+    /// `ingested = 0`・未登録動画の抑止、およびボット判定応答での状態保護を検証する。
+    #[test]
+    fn sync_feed_from_snapshot_respects_ingested_and_bot_guard() {
+        let db = Db::connect_in_memory().unwrap();
+        let ch = "UClw0000000000000000001";
+        db.feed_subscribe(&crate::db::SubscribeArgs {
+            channel_id: ch,
+            title: "CH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &[crate::db::NewVideo {
+                video_id: "lw_ingested",
+                channel_id: ch,
+                channel_title: "CH",
+                title: "Stream",
+                thumbnail_url: None,
+                published_at: Some("2026-11-27T08:00:00+00:00"),
+                kind: "upcoming",
+            }],
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+        db.favorite_add(&crate::model::VideoRef {
+            video_id: "lw_placehld".to_string(),
+            title: "Placeholder".to_string(),
+            channel_id: Some(ch.to_string()),
+            channel_title: Some("CH".to_string()),
+            thumbnail_url: None,
+        })
+        .unwrap();
+
+        let live_snap = MetaSnapshot {
+            published_at: None,
+            broadcast: BroadcastStatus {
+                is_live_now: Some(true),
+                start_ms: Some(1_795_767_000_000),
+                end_ms: None,
+                scheduled_start_ms: None,
+                has_details: true,
+                is_upcoming: false,
+            },
+            is_live_content: Some(true),
+            playability: Some("OK".to_string()),
+            description: String::new(),
+        };
+
+        // ingested=1 は更新され true
+        assert!(sync_feed_from_snapshot(&db, "lw_ingested", &live_snap, 100));
+        let item = db
+            .feed_list_filtered(&crate::model::FeedFilter::default(), true, 10, |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.video_id == "lw_ingested")
+            .unwrap();
+        assert_eq!(item.broadcast_state.as_deref(), Some("live"));
+        assert_eq!(item.broadcast_start_ms, Some(1_795_767_000_000));
+
+        // ingested=0 や未登録動画は false（通知不要）
+        assert!(!sync_feed_from_snapshot(
+            &db,
+            "lw_placehld",
+            &live_snap,
+            100
+        ));
+        assert!(!sync_feed_from_snapshot(
+            &db,
+            "lw_unknown_",
+            &live_snap,
+            100
+        ));
+
+        // ボット判定応答（LOGIN_REQUIRED かつ詳細なし）は状態を消さず false
+        let bot_snap = MetaSnapshot {
+            playability: Some("LOGIN_REQUIRED".to_string()),
+            ..Default::default()
+        };
+        assert!(!sync_feed_from_snapshot(&db, "lw_ingested", &bot_snap, 200));
+        let kept = db
+            .feed_list_filtered(&crate::model::FeedFilter::default(), true, 10, |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.video_id == "lw_ingested")
+            .unwrap();
+        assert_eq!(kept.broadcast_state.as_deref(), Some("live"));
     }
 }
