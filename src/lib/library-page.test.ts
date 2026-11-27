@@ -891,5 +891,72 @@ describe("library-page playlist sync", () => {
       t("library.restoreFailed", { message: "reload failed" }),
     );
     failLib.dispose();
+
+    // 同期が Undo より先に完了（syncingId === null）してから残存トーストの Undo を押した場合でも、
+    // 元の位置（99）より先の末尾（249）へ復元された項目を plHasMore === true の既読ページへ差し込まず、
+    // plTailPos = 198 を維持して loadMoreItems() が 199..249 を欠落なく読み込むこと
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    let postSyncSynced = false;
+    const postSyncAfterPositions: Array<number | null | undefined> = [];
+
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          postSyncAfterPositions.push(args?.afterPosition);
+          if (args?.afterPosition === null && !postSyncSynced) {
+            return Promise.resolve(bigInitial);
+          }
+          if (args?.afterPosition === null && postSyncSynced) {
+            return Promise.resolve(bigReloadPage);
+          }
+          if (args?.afterPosition === 198) {
+            return Promise.resolve(bigTailPage);
+          }
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_remove") {
+          return Promise.resolve(bigOrig99);
+        }
+        if (cmd === "playlist_sync") {
+          postSyncSynced = true;
+          return Promise.resolve({ playlist: bigPlAfterSync, addedCount: 150 });
+        }
+        if (cmd === "playlist_item_restore") {
+          return Promise.resolve(bigRestoredOrig99);
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const postSyncLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    postSyncLib.va.playlists = [bigPlBefore];
+    await postSyncLib.selectPlaylist(bigPlBefore);
+    await postSyncLib.removeItem(bigOrig99);
+    const postSyncUndo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+
+    await postSyncLib.syncPlaylist();
+    expect(postSyncLib.syncingId).toBeNull();
+    expect(postSyncLib.playlistItems).toHaveLength(199);
+    expect(postSyncLib.playlistItems[198].position).toBe(198);
+    expect(postSyncLib.plHasMore).toBe(true);
+
+    postSyncUndo!.run!();
+    await vi.waitFor(() => expect(postSyncLib.restoring).toBe(false));
+
+    expect(postSyncLib.playlistItems).toHaveLength(199);
+    expect(postSyncLib.playlistItems[198].position).toBe(198);
+    expect(postSyncLib.plHasMore).toBe(true);
+    expect(postSyncLib.va.playlists[0].itemCount).toBe(250);
+
+    await postSyncLib.loadMoreItems();
+    expect(postSyncAfterPositions.at(-1)).toBe(198);
+    expect(postSyncLib.playlistItems).toHaveLength(250);
+    expect(postSyncLib.playlistItems[199].position).toBe(199);
+    expect(postSyncLib.playlistItems[249]).toEqual(bigRestoredOrig99);
+    expect(postSyncLib.plHasMore).toBe(false);
+    postSyncLib.dispose();
   });
 });

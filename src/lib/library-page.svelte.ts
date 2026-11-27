@@ -1102,7 +1102,6 @@ export function createLibraryPageState(opts: Options) {
             const listsBefore = listsReq;
             const hadActiveSync = syncingId === playlistId;
             const initialReload = hadActiveSync ? syncReloadPromise : null;
-            let awaitedSyncReload = initialReload !== null;
             restoringIds.set(
               playlistId,
               (restoringIds.get(playlistId) ?? 0) + 1,
@@ -1123,7 +1122,6 @@ export function createLibraryPageState(opts: Options) {
                   ? syncReloadPromise
                   : initialReload;
               if (reloadToAwait !== null) {
-                awaitedSyncReload = true;
                 try {
                   await reloadToAwait;
                 } catch {}
@@ -1140,12 +1138,14 @@ export function createLibraryPageState(opts: Options) {
                 alreadyPresent = playlistItems.some(
                   (i) => i.videoId === restored.videoId,
                 );
+                // ページング中に同期後・同期中の末尾再配置（MAX+1）を既読末尾へ
+                // 差し込むと plTailPos が未読項目を飛び越えるため、元の位置以下に
+                // 戻った場合のみ既読ページへ反映する
                 if (
                   !alreadyPresent &&
-                  (!(syncUpdatedDuringRestore || awaitedSyncReload) ||
-                    !plHasMore ||
-                    plTailPos === null ||
-                    restored.position <= plTailPos)
+                  (!plHasMore ||
+                    (plTailPos !== null && restored.position <= plTailPos) ||
+                    restored.position <= removed.position)
                 ) {
                   ++itemsReq;
                   const rest = playlistItems;
