@@ -1597,4 +1597,41 @@ fn broadcast_refresh_targets_expiry_and_monotonic_guard() {
         )
         .unwrap();
     assert_eq!(cleared_start, None);
+
+    // ガード 4 補完: new_kind=None かつ ended のとき upcoming/video は live へ遷移し premiere は維持する
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO videos (video_id, channel_id, title, kind, kind_state, ingested, broadcast_state)
+             VALUES ('up_end_0001', ?1, 'u', 'upcoming', 1, 1, 'upcoming'),
+                    ('pr_end_0001', ?1, 'p', 'premiere', 1, 1, 'live')",
+            [ch],
+        )
+        .unwrap();
+    }
+    assert!(db
+        .videos_apply_broadcast_refresh("up_end_0001", None, Some("ended"), None, now + 3000, false)
+        .unwrap());
+    assert!(db
+        .videos_apply_broadcast_refresh("pr_end_0001", None, Some("ended"), None, now + 3000, false)
+        .unwrap());
+    {
+        let conn = db.lock().unwrap();
+        let k_up: String = conn
+            .query_row(
+                "SELECT kind FROM videos WHERE video_id = 'up_end_0001'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let k_pr: String = conn
+            .query_row(
+                "SELECT kind FROM videos WHERE video_id = 'pr_end_0001'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(k_up, "live");
+        assert_eq!(k_pr, "premiere");
+    }
 }

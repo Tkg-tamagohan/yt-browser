@@ -690,11 +690,11 @@ export const en = {
   "settings.deps.poToken.placeholder": "Not set (empty)",
   "settings.deps.poToken.desc":
     "Format: e.g. mweb.gvs+<token> (per yt-dlp PO Token Guide). Takes effect on the next call after saving",
-  // Phase 92: YouTube Data API v3 キー（FR-97、仕様決定 EC）
+  // Phase 92–93: YouTube Data API v3 キー（FR-97・FR-98、仕様決定 EC・ED）
   "settings.deps.youtubeApiKey": "YouTube Data API v3 key",
   "settings.deps.youtubeApiKeyPlaceholder": "Not set (empty uses legacy mode)",
   "settings.deps.youtubeApiKeyDesc":
-    "Optional (no OAuth, free tier). Saves the key locally; currently only Test connection calls the official API (search, metadata, and playlist import will switch in upcoming phases)",
+    "Optional (no OAuth, free tier). Prioritizes the official API for metadata resolution, live wait polling, descriptions, and video/channel lookup with automatic legacy fallback (search and playlist import will switch in upcoming phases)",
   "settings.deps.youtubeApiKeyShow": "Show",
   "settings.deps.youtubeApiKeyHide": "Hide",
   "settings.deps.youtubeApiKeyTest": "Test connection",

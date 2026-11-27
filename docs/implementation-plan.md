@@ -108,6 +108,14 @@ Phase 0〜81 の完了済み記録は [implementation-history.md](implementation
 - [x] フロントエンドへ `SettingsDepsSection.svelte` の API キー入力欄（単一 `<input>` の `type` 切替）、状態バッジ表示、1 unit 接続テストボタン、および `settings-diff-logic.ts`（`***` マスク）、`settings/+page.svelte`（`onCommitted` 内 `savedSnapshot.youtubeApiKey` 更新）、`settings-filter.ts`、日英 i18n キーと各単体テスト（`SD-06`、`SF-03`、`SV-05`、`LN-04`）を実装する
 - [ ] 受け入れ：設定画面「依存コマンド」節で API キーの入力、表示切替、保存差分マスク、状態バッジ表示、1 unit 接続テスト、データエクスポート除外および診断 zip マスクを実機 UI で確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた GUI 実機確認は未実施）
 
+### Phase 93：YouTube Data API v3 のメタ遅延解決とライブ待機および単発メタ取得への優先適用
+
+- [x] `util.rs` の `parse_iso8601_duration` と `ytapi/mod.rs` の `can_use` と `get_json` の未使用許可を外し、`YtApi::videos_list`（重複除去と最大 50 件チャンクの `GET /videos?part=snippet,contentDetails,liveStreamingDetails,statistics` 呼び出し、1 unit 消費、`+00:00` 正規化、サムネイル優先選択、`classify_kind_for_initial` / `classify_kind_for_refresh` によるガード 4、フォールバック判定 `should_fallback`）を実装する（FR-98、仕様決定 ED、単体テスト `DB-YA-09` 〜 `DB-YA-12`）
+- [x] `db/feed.rs` の `videos_resolve_meta_tx` と `apply_broadcast_columns_tx` で既存 `cur_kind == "premiere"` を `None` や `"live"` で上書きしないよう SQL と分岐で保護し、`metaresolve/mod.rs` へ `Arc<YtApi>` を配線して共通枠利用可能時は期限切れ予定解除後に `FR-96` 再確認対象（最大 10 件）と未解決対象（`fails < 5`）を最大 50 件 1 バッチで照会し、ガード 2（`HTTP 200` 欠落時に `meta_checked=1` や空説明文の書込と毎 tick フォールバックを行わず `fails` 加算と `KIND_FAILED` に留める）、`JoinSet` 並列 `shorts_probe`、ガード 3（`live` と `upcoming` 双方の 3 回連続欠落で `broadcast_state = None` 解除）、および `InnerTube` 透過フォールバックを実装する（単体テスト `DB-MR-13` 〜 `DB-MR-16`）
+- [x] `livewait/mod.rs` へ `Arc<YtApi>` を配線し、`poll_due` で存在確認と 24 時間超過解除後の `active_due` を 50 件チャンク単位で `ytapi.videos_list` 巡回（利用不可またはエラー時はチャンク単位で `InnerTube` フォールバック、単発 `HTTP 200` 欠落では `live_wait` 行と `broadcast_state` を保持して次回へ繰越、`ingested = 1` 同期では `premiere` を保護）する処理を実装する（単体テスト `DB-LW-08` 〜 `DB-LW-10`）
+- [x] 単発 4 経路（`commands/search.rs` の `get_description`、`commands/feed.rs` の `resolve_video_channel` と `playing_channel`、`commands/queue.rs` の `video_meta_resolve`、`commands/livewait.rs` の `live_wait_add`）および `lib.rs` の `VideoStartHook` と常駐ワーカー生成へ `Arc<YtApi>` の優先配線と透過フォールバックを組み込み、設定画面の案内文言（`i18n-ja.ts` と `i18n-en.ts`）と 7 文書を更新する
+- [ ] 受け入れ：有効な API キーを設定した実機環境でメタ遅延解決の 50 件バッチ化、ライブ待機巡回、概要欄と動画メタとチャンネル解決の公式 API 優先動作、およびクォータ上限または無効キー時の `InnerTube` と `yt-dlp` への透過フォールバックを確認する（自動テスト、lint、ビルド、docs 整合チェック、モックサーバー検証は実装 PR で通過確認、実 API キーを用いた実機確認は未実施）
+
 ## 残課題（既知の制限と観察メモ）
 
 ここに挙げるのは現在未解消の制限と観察メモであり、いずれも通常利用を妨げない。

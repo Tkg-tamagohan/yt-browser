@@ -185,6 +185,7 @@ pub fn run() {
             // DB の watch_history.channel_id が空のときだけ外部解決する。
             let video_start_hook: mpv::VideoStartHook = {
                 let hook_db = db.clone();
+                let hook_ytapi = ytapi.clone();
                 let hook_innertube = innertube.clone();
                 let hook_resolver = ytdlp_resolver.clone();
                 let in_flight = InFlightSet::new();
@@ -194,6 +195,7 @@ pub fn run() {
                     };
                     let vid = video_id.to_string();
                     let db = hook_db.clone();
+                    let ytapi = std::sync::Arc::clone(&hook_ytapi);
                     let innertube = std::sync::Arc::clone(&hook_innertube);
                     let resolver = hook_resolver.clone();
                     tauri::async_runtime::spawn(async move {
@@ -216,9 +218,10 @@ pub fn run() {
                         if has_channel {
                             return;
                         }
-                        let resolved =
-                            commands::feed::resolve_video_channel(&vid, &db, &innertube, &resolver)
-                                .await;
+                        let resolved = commands::feed::resolve_video_channel(
+                            &vid, &db, &ytapi, &innertube, &resolver,
+                        )
+                        .await;
                         if resolved.channel_id.is_some() || resolved.channel_title.is_some() {
                             if let Err(e) = db.history_set_channel(
                                 &vid,
@@ -267,19 +270,24 @@ pub fn run() {
             poller.apply_auto_read();
             tauri::async_runtime::spawn(poller.run());
 
-            // メタの遅延解決ワーカー（Phase 62、FR-53・FR-56・FR-57、
-            // 仕様決定 CD・CG・CH）。投稿日時・kind の欠けた videos 行を
-            // InnerTube `player` 応答で後から埋める。フィードの新規投入時に
-            // 即時起こされる。
-            let meta_resolver =
-                metaresolve::MetaResolver::new(db.clone(), app.handle().clone(), innertube.clone());
+            // メタの遅延解決ワーカー（Phase 62、FR-53・FR-56・FR-57・FR-98、
+            // 仕様決定 CD・CG・CH・ED）。投稿日時・kind の欠けた videos 行を
+            // YouTube Data API v3（優先）または InnerTube `player` 応答で後から埋める。
+            // フィードの新規投入時に即時起こされる。
+            let meta_resolver = metaresolve::MetaResolver::new(
+                db.clone(),
+                app.handle().clone(),
+                ytapi.clone(),
+                innertube.clone(),
+            );
             app.manage(meta_resolver.clone());
             tauri::async_runtime::spawn(meta_resolver.run());
 
-            // ライブ配信待機のポーラー（FR-44、仕様決定 BT）。
-            // DB の待機リストを復元し、予定時刻に応じた間隔で InnerTube
-            // `player` の放送状態を巡回する。再起動後もそのまま再開される
-            let live_wait = livewait::LiveWaitPoller::new(db, app.handle().clone(), innertube);
+            // ライブ配信待機のポーラー（FR-44・FR-98、仕様決定 BT・ED）。
+            // DB の待機リストを復元し、予定時刻に応じた間隔で YouTube Data API v3
+            // （優先）または InnerTube `player` の放送状態を巡回する。再起動後もそのまま再開される
+            let live_wait =
+                livewait::LiveWaitPoller::new(db, app.handle().clone(), ytapi, innertube);
             app.manage(live_wait.clone());
             tauri::async_runtime::spawn(live_wait.run());
 

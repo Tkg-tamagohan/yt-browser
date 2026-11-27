@@ -129,7 +129,6 @@ pub(crate) fn iso8601_ms(s: &str) -> Option<i64> {
 /// ISO 8601 期間文字列（`"P0D"`, `"PT0S"`, `"P#DT#H#M#S"`）を秒数へ変換する。
 /// ライブ配信の `"P0D"` / `"PT0S"` は `Some(0)` を返す。
 /// 月・年・週（`Y`/`M`/`W` の日付部）や負数・逆順・空形式（`"P"`, `"PT"`）は拒否する。
-#[allow(dead_code)] // Phase 93 の videos.list 尺パースから本番参照する
 pub(crate) fn parse_iso8601_duration(s: &str) -> Option<i64> {
     let rest = s.strip_prefix('P')?;
     if rest.is_empty() {

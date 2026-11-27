@@ -143,14 +143,122 @@ pub async fn video_meta_lookup(
     Ok(db.video_meta_lookup(&id)?)
 }
 
-/// `video_meta_resolve`（FR-29、仕様決定 BD）。台帳・履歴の補完が外れた
-/// キュー項目の表示メタを InnerTube `player` の `videoDetails` から
+/// `video_meta_resolve`（FR-29・FR-98、仕様決定 BD・ED）。台帳・履歴の補完が外れた
+/// キュー項目の表示メタを YouTube Data API v3 優先 → 失敗/欠落時 InnerTube `player` で
 /// 遅延解決する。タイトルが取れなければ None。
 #[tauri::command]
 pub async fn video_meta_resolve(
     video_id: String,
+    ytapi: State<'_, Arc<crate::ytapi::YtApi>>,
     innertube: State<'_, Arc<crate::innertube::InnerTube>>,
 ) -> Result<Option<VideoRef>, UiError> {
     let id = parse_video_id(&video_id)?;
-    Ok(innertube.video_meta(&id).await?)
+    fetch_video_meta(&id, &ytapi, &innertube).await
+}
+
+async fn fetch_video_meta(
+    video_id: &str,
+    ytapi: &crate::ytapi::YtApi,
+    innertube: &crate::innertube::InnerTube,
+) -> Result<Option<VideoRef>, UiError> {
+    if ytapi.can_use(crate::ytapi::QuotaBucket::Shared) {
+        match ytapi.videos_list(&[video_id]).await {
+            Ok(mut map) => {
+                if let Some(item) = map.remove(video_id) {
+                    if !item.video_ref.title.trim().is_empty() {
+                        return Ok(Some(item.video_ref));
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = e.should_fallback();
+            }
+        }
+    }
+    Ok(innertube.video_meta(video_id).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fetch_video_meta;
+    use crate::innertube::InnerTube;
+    use crate::ytapi::YtApi;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn fetch_video_meta_prefers_ytapi_and_falls_back_to_innertube() {
+        let yt_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let yt_addr = yt_listener.local_addr().unwrap();
+        let yt_srv = tokio::spawn(async move {
+            let mut count = 0usize;
+            while let Ok((mut stream, _)) = yt_listener.accept().await {
+                count += 1;
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let resp = if count == 1 {
+                    let body = r#"{"items":[{"id":"dQw4w9WgXcQ","snippet":{"title":"YtApi Title","channelId":"UCq00000000000000000001","channelTitle":"YtApi CH"}}]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{\"items\":[]}".to_string()
+                };
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let tube_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tube_addr = tube_listener.local_addr().unwrap();
+        let tube_srv = tokio::spawn(async move {
+            let html = r#"<script>ytcfg.set({"INNERTUBE_API_KEY":"k","INNERTUBE_CONTEXT_CLIENT_VERSION":"v","VISITOR_DATA":"d"});</script>"#;
+            while let Ok((mut stream, _)) = tube_listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let resp = if req.starts_with("GET ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+                        html.len()
+                    )
+                } else {
+                    let body = r#"{"videoDetails":{"videoId":"dQw4w9WgXcQ","title":"InnerTube Title","channelId":"UCtube00000000000000001","author":"Tube CH"}}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let ytapi = YtApi::with_test_base_url(
+            Some("AIzaSyMETA_KEY".to_string()),
+            format!("http://{yt_addr}"),
+        );
+        let tube = InnerTube::with_test_urls(
+            format!("http://{tube_addr}/watch"),
+            format!("http://{tube_addr}/api"),
+            Duration::from_secs(5),
+        );
+
+        let first = fetch_video_meta("dQw4w9WgXcQ", &ytapi, &tube)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.title, "YtApi Title");
+        assert_eq!(first.channel_id.as_deref(), Some("UCq00000000000000000001"));
+
+        // 欠落時は InnerTube へフォールバック
+        let second = fetch_video_meta("dQw4w9WgXcQ", &ytapi, &tube)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.title, "InnerTube Title");
+
+        yt_srv.abort();
+        tube_srv.abort();
+    }
 }

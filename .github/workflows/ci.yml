@@ -113,7 +113,17 @@ jobs:
           workspaces: src-tauri
       - run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: src-tauri
-      - run: cargo test --locked
+      - name: Run Rust lib tests (Common Controls v6 manifest)
+        shell: powershell
+        run: |
+          $sep = [char]0x1f
+          $env:CARGO_ENCODED_RUSTFLAGS = "-Clink-arg=/MANIFEST:EMBED${sep}-Clink-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+          cargo test --locked --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        working-directory: src-tauri
+      - run: cargo test --locked --bin yt-browser
+        working-directory: src-tauri
+      - run: cargo test --locked --doc
         working-directory: src-tauri
       - name: PowerShell 5.1 構文と署名スクリプトを検証
         shell: powershell
