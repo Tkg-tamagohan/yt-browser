@@ -150,14 +150,29 @@ mod tests {
                 count += 1;
                 let mut buf = [0u8; 2048];
                 let _ = stream.read(&mut buf).await;
-                let resp = if count == 1 {
-                    let body = r#"{"items":[{"id":"dQw4w9WgXcQ","snippet":{"title":"T","description":"From YtApi"}}]}"#;
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                } else {
-                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+                let resp = match count {
+                    1 => {
+                        let body = r#"{"items":[{"id":"dQw4w9WgXcQ","snippet":{"title":"T","description":"From YtApi"}}]}"#;
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    2 => {
+                        let body = r#"{"items":[{"id":"dQw4w9WgXcQ","snippet":{"title":"T","description":""}}]}"#;
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    3 => {
+                        let body = r#"{"items":[]}"#;
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    _ => "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string(),
                 };
                 let _ = stream.write_all(resp.as_bytes()).await;
             }
@@ -203,6 +218,21 @@ mod tests {
                 .unwrap(),
             "From YtApi"
         );
+        // 空説明文はそのまま "" を返し InnerTube へフォールバックしない
+        assert_eq!(
+            fetch_description("dQw4w9WgXcQ", &ytapi, &tube)
+                .await
+                .unwrap(),
+            ""
+        );
+        // videos.list 200 応答から動画が欠落した場合は InnerTube へフォールバックする
+        assert_eq!(
+            fetch_description("dQw4w9WgXcQ", &ytapi, &tube)
+                .await
+                .unwrap(),
+            "From InnerTube"
+        );
+        // 通信/サーバ障害時は InnerTube へフォールバックする
         assert_eq!(
             fetch_description("dQw4w9WgXcQ", &ytapi, &tube)
                 .await

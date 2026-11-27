@@ -1296,7 +1296,19 @@ fn apply_broadcast_columns_tx(
         rusqlite::params![video_id, broadcast_state, next_start, now_ms],
     )?;
 
-    if let Some(k) = new_kind {
+    let effective_kind = match new_kind {
+        Some(k) => Some(k),
+        // ガード 4 補完: 終了後（ended）かつ既存が upcoming/video なら live へ遷移させる
+        // （premiere と short はそのまま維持する）。
+        None if broadcast_state == Some("ended")
+            && matches!(cur_kind.as_str(), "upcoming" | "video") =>
+        {
+            Some("live")
+        }
+        None => None,
+    };
+
+    if let Some(k) = effective_kind {
         // ガード 4: 既存の premiere は終了後の live 判定で上書きしない
         if cur_kind != "short" && !(cur_kind == "premiere" && k == "live") && cur_kind != k {
             tx.execute(

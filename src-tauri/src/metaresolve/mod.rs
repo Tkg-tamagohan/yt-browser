@@ -77,6 +77,12 @@ enum ResolveError {
     Shorts(reqwest::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BroadcastStreakKind {
+    YtApiMissing,
+    InnerTubeBlocked,
+}
+
 /// メタの遅延解決およびアクティブ放送再確認の中核状態（`AppHandle` 非依存で単体テスト可能）。
 pub(crate) struct ResolverCore {
     db: Db,
@@ -98,8 +104,8 @@ pub(crate) struct ResolverCore {
     /// 手動「今すぐ更新」からの即時再確認要求と前回強制実行時刻。
     manual_pending: Mutex<bool>,
     last_manual_at: Mutex<Option<Instant>>,
-    /// `live` / `upcoming` 行に対する連続制限・欠落回数。
-    blocked_live_streaks: Mutex<HashMap<String, u32>>,
+    /// `live` / `upcoming` 行に対する連続制限・欠落の種別と回数。
+    blocked_live_streaks: Mutex<HashMap<String, (BroadcastStreakKind, u32)>>,
 }
 
 /// メタの遅延解決およびアクティブ放送再確認ワーカー（仕様決定 CD・CG・CH・DJ・EB・ED）。
@@ -223,11 +229,24 @@ impl ResolverCore {
         }
     }
 
-    fn record_blocked_or_missing(&self, video_id: &str, threshold: u32) -> bool {
+    fn record_blocked_or_missing(
+        &self,
+        video_id: &str,
+        kind: BroadcastStreakKind,
+        threshold: u32,
+    ) -> bool {
         let mut map = lock(&self.blocked_live_streaks);
-        let count = map.entry(video_id.to_string()).or_insert(0);
-        *count += 1;
-        if *count >= threshold {
+        let next = match map.get_mut(video_id) {
+            Some((prev_kind, count)) if *prev_kind == kind => {
+                *count += 1;
+                *count
+            }
+            _ => {
+                map.insert(video_id.to_string(), (kind, 1));
+                1
+            }
+        };
+        if next >= threshold {
             map.remove(video_id);
             true
         } else {
@@ -329,6 +348,8 @@ impl ResolverCore {
                                 None
                             };
                             let (b_state, b_start) = classify_broadcast_meta(&item.meta);
+                            let needs_shorts =
+                                t.needs_kind && resolved_kind.is_none() && t.kind == "video";
                             match self.db.videos_resolve_meta_tx(&ResolveMetaParams {
                                 video_id: &t.video_id,
                                 needs_published: t.needs_published,
@@ -341,15 +362,20 @@ impl ResolverCore {
                                 broadcast_start_ms: b_start,
                                 now_ms,
                             }) {
-                                Ok(true) => changed += 1,
-                                Ok(false) => {}
+                                Ok(did_change) => {
+                                    if did_change {
+                                        changed += 1;
+                                    }
+                                    if needs_shorts {
+                                        shorts_candidates.push(t.video_id.clone());
+                                    } else {
+                                        lock(&self.fails).remove(&t.video_id);
+                                    }
+                                }
                                 Err(e) => {
                                     warn!(video_id = %t.video_id, error = %e, "遅延解決の DB 保存に失敗");
+                                    *lock(&self.fails).entry(t.video_id.clone()).or_insert(0) += 1;
                                 }
-                            }
-                            lock(&self.fails).remove(&t.video_id);
-                            if t.needs_kind && resolved_kind.is_none() && t.kind == "video" {
-                                shorts_candidates.push(t.video_id.clone());
                             }
                         }
                         None => {
@@ -397,6 +423,7 @@ impl ResolverCore {
                             if is_active
                                 && self.record_blocked_or_missing(
                                     &t.video_id,
+                                    BroadcastStreakKind::YtApiMissing,
                                     YTAPI_MISSING_BROADCAST_THRESHOLD,
                                 )
                             {
@@ -463,14 +490,27 @@ impl ResolverCore {
                 Ok((id, Ok(resp))) => {
                     if resp.status() == reqwest::StatusCode::OK {
                         match self.db.videos_resolve_kind(&id, "short") {
-                            Ok(true) => changed += 1,
-                            Ok(false) => {}
+                            Ok(did_change) => {
+                                if did_change {
+                                    changed += 1;
+                                }
+                                lock(&self.fails).remove(&id);
+                            }
                             Err(e) => {
-                                warn!(video_id = %id, error = %e, "short 確定の保存に失敗")
+                                *lock(&self.fails).entry(id.clone()).or_insert(0) += 1;
+                                warn!(video_id = %id, error = %e, "short 確定の保存に失敗");
                             }
                         }
-                    } else if let Err(e) = self.db.videos_set_kind_state(&id, KIND_RESOLVED) {
-                        warn!(video_id = %id, error = %e, "非 short 確定の保存に失敗");
+                    } else {
+                        match self.db.videos_set_kind_state(&id, KIND_RESOLVED) {
+                            Ok(_) => {
+                                lock(&self.fails).remove(&id);
+                            }
+                            Err(e) => {
+                                *lock(&self.fails).entry(id.clone()).or_insert(0) += 1;
+                                warn!(video_id = %id, error = %e, "非 short 確定の保存に失敗");
+                            }
+                        }
                     }
                 }
                 Ok((id, Err(e))) => {
@@ -665,7 +705,11 @@ impl ResolverCore {
                 Ok(s) if is_transient_or_blocked_playability(&s) => {
                     consecutive_fails = 0;
                     if t.broadcast_state == "live"
-                        && self.record_blocked_or_missing(&t.video_id, BLOCKED_LIVE_THRESHOLD)
+                        && self.record_blocked_or_missing(
+                            &t.video_id,
+                            BroadcastStreakKind::InnerTubeBlocked,
+                            BLOCKED_LIVE_THRESHOLD,
+                        )
                     {
                         if let Ok(true) = self.db.videos_apply_broadcast_refresh(
                             &t.video_id,
@@ -1767,5 +1811,318 @@ mod tests {
         yt_srv.abort();
         sh_srv.abort();
         tube_srv.abort();
+    }
+
+    /// ガード 3: `ytapi` 欠落（3 回）と `InnerTube` 制限応答（6 回）の連続カウンタを分離し、
+    /// 経路が切り替わったときに前経路のカウントを引き継がないことを検証する。
+    #[tokio::test]
+    async fn ytapi_guard3_separates_ytapi_missing_and_innertube_blocked_streaks() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let db = Db::connect_in_memory().unwrap();
+        let ch = "UCmr1700000000000000001";
+        let now_ms = 1_795_767_000_000i64;
+        db.feed_subscribe(&crate::db::SubscribeArgs {
+            channel_id: ch,
+            title: "CH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &[
+                crate::db::NewVideo {
+                    video_id: "mix_live_01",
+                    channel_id: ch,
+                    channel_title: "CH",
+                    title: "Mixed Live 1",
+                    thumbnail_url: None,
+                    published_at: Some("2026-11-27T08:00:00+00:00"),
+                    kind: "live",
+                },
+                crate::db::NewVideo {
+                    video_id: "mix_live_02",
+                    channel_id: ch,
+                    channel_title: "CH",
+                    title: "Mixed Live 2",
+                    thumbnail_url: None,
+                    published_at: Some("2026-11-27T08:00:00+00:00"),
+                    kind: "live",
+                },
+            ],
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+
+        for id in ["mix_live_01", "mix_live_02"] {
+            db.videos_resolve_meta_tx(&ResolveMetaParams {
+                video_id: id,
+                needs_published: false,
+                published_at: None,
+                needs_desc: true,
+                description: "desc",
+                needs_kind: false,
+                resolved_kind: None,
+                broadcast_state: Some("live"),
+                broadcast_start_ms: Some(now_ms),
+                now_ms: now_ms - 3_600_000,
+            })
+            .unwrap();
+        }
+
+        let yt_mode = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let yt_mode_srv = Arc::clone(&yt_mode);
+        let (yt_base, sh_base, _, yt_srv, sh_srv) = spawn_ytapi_and_shorts_mocks(
+            move |_| {
+                if yt_mode_srv.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    (
+                        403,
+                        r#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.to_string(),
+                    )
+                } else {
+                    (200, r#"{"items":[]}"#.to_string())
+                }
+            },
+            |_| (303, Duration::ZERO),
+        )
+        .await;
+
+        let tube_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tube_addr = tube_listener.local_addr().unwrap();
+        let tube_srv = tokio::spawn(async move {
+            let html = r#"<script>ytcfg.set({"INNERTUBE_API_KEY":"k","INNERTUBE_CONTEXT_CLIENT_VERSION":"v","VISITOR_DATA":"d"});</script>"#;
+            while let Ok((mut stream, _)) = tube_listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let resp = if req.starts_with("GET ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+                        html.len()
+                    )
+                } else {
+                    let body = r#"{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let ytapi = Arc::new(YtApi::with_test_base_url(
+            Some("AIzaSyMIX_17".to_string()),
+            yt_base,
+        ));
+        let tube = Arc::new(InnerTube::with_test_urls(
+            format!("http://{tube_addr}/watch"),
+            format!("http://{tube_addr}/api"),
+            Duration::from_secs(2),
+        ));
+        let core =
+            ResolverCore::new(db.clone(), ytapi.clone(), tube).with_test_shorts_base_url(sh_base);
+
+        // 1) 経路横断 1: InnerTube 制限応答 2 回 → ytapi 復帰後の欠落 1 回目で消えず、3 回目で消える
+        let t0 = Instant::now();
+        // 先に ytapi を 403 quotaExceeded にして InnerTube 経路へ落とす（2 巡）
+        ytapi.on_key_changed(Some("AIzaSyMIX_17_A"));
+        core.wake_manual();
+        assert_eq!(core.resolve_once(t0, now_ms).await, 0);
+        // クォータ遮断中に InnerTube で 2 回目の LOGIN_REQUIRED を記録
+        core.wake_manual();
+        assert_eq!(
+            core.resolve_once(t0 + Duration::from_secs(120), now_ms + 120_000)
+                .await,
+            0
+        );
+
+        // API キー変更で ytapi 復帰（200 items:[]）。1 回目・2 回目は維持され、3 回目で解除される
+        yt_mode.store(1, std::sync::atomic::Ordering::SeqCst);
+        ytapi.on_key_changed(Some("AIzaSyMIX_17_B"));
+        for step in 1..=2 {
+            core.wake_manual();
+            let c = core
+                .resolve_once(
+                    t0 + Duration::from_secs(120 * (step + 1)),
+                    now_ms + 120_000 * (step as i64 + 1),
+                )
+                .await;
+            assert_eq!(c, 0, "ytapi omission #{step} should not clear live state");
+            let feed = db
+                .feed_list_filtered(&crate::model::FeedFilter::default(), true, 10, |_| true)
+                .unwrap();
+            assert_eq!(
+                feed.iter()
+                    .find(|r| r.video_id == "mix_live_01")
+                    .unwrap()
+                    .broadcast_state
+                    .as_deref(),
+                Some("live")
+            );
+        }
+        core.wake_manual();
+        assert_eq!(
+            core.resolve_once(t0 + Duration::from_secs(480), now_ms + 480_000)
+                .await,
+            2
+        );
+        let feed_after = db
+            .feed_list_filtered(&crate::model::FeedFilter::default(), true, 10, |_| true)
+            .unwrap();
+        assert_eq!(
+            feed_after
+                .iter()
+                .find(|r| r.video_id == "mix_live_01")
+                .unwrap()
+                .broadcast_state,
+            None
+        );
+
+        // 2) 経路横断 2: ytapi 欠落 2 回 → InnerTube 制限応答へ切り替えても 6 回必要（合計 3 で消えない）
+        let t1 = t0 + Duration::from_secs(600);
+        let m1 = now_ms + 600_000;
+        for step in 0..2 {
+            core.wake_manual();
+            assert_eq!(
+                core.resolve_once(
+                    t1 + Duration::from_secs(120 * step),
+                    m1 + 120_000 * step as i64
+                )
+                .await,
+                0
+            );
+        }
+        // ここで mix_live_02 だけ復活させ、InnerTube 制限応答が 6 回必要であることを確認
+        db.videos_apply_broadcast_refresh(
+            "mix_live_02",
+            Some("live"),
+            Some("live"),
+            Some(m1),
+            m1 + 250_000,
+            false,
+        )
+        .unwrap();
+        // ytapi 欠落 2 回を積む
+        for step in 0..2 {
+            core.wake_manual();
+            assert_eq!(
+                core.resolve_once(
+                    t1 + Duration::from_secs(360 + 120 * step),
+                    m1 + 360_000 + 120_000 * step as i64
+                )
+                .await,
+                0
+            );
+        }
+        // InnerTube へ切替：1〜5 回目は維持、6 回目で解除
+        yt_mode.store(0, std::sync::atomic::Ordering::SeqCst);
+        ytapi.on_key_changed(Some("AIzaSyMIX_17_C"));
+        for step in 0..5 {
+            core.wake_manual();
+            let c = core
+                .resolve_once(
+                    t1 + Duration::from_secs(600 + 120 * step),
+                    m1 + 600_000 + 120_000 * step as i64,
+                )
+                .await;
+            assert_eq!(
+                c, 0,
+                "InnerTube blocked #{step} should not clear before threshold 6"
+            );
+        }
+        core.wake_manual();
+        assert_eq!(
+            core.resolve_once(t1 + Duration::from_secs(1200), m1 + 1_200_000)
+                .await,
+            1
+        );
+
+        yt_srv.abort();
+        sh_srv.abort();
+        tube_srv.abort();
+    }
+
+    /// Shorts 判定だけが連続失敗する場合に `ytapi` 成功だけで `fails` を消さず、
+    /// `FAIL_MAX (5)` 回で選出から外れることを検証する。
+    #[tokio::test]
+    async fn ytapi_shorts_probe_repeated_failure_reaches_fail_max() {
+        use tokio::net::TcpListener;
+
+        let db = Db::connect_in_memory().unwrap();
+        let ch = "UCmr1800000000000000001";
+        let now_ms = 1_795_767_000_000i64;
+        db.feed_subscribe(&crate::db::SubscribeArgs {
+            channel_id: ch,
+            title: "CH",
+            thumbnail_url: None,
+            category_id: None,
+            entries: &[crate::db::NewVideo {
+                video_id: "sh_fail_001",
+                channel_id: ch,
+                channel_title: "CH",
+                title: "Shorts Fail",
+                thumbnail_url: None,
+                published_at: None,
+                kind: "video",
+            }],
+            etag: None,
+            last_modified: None,
+        })
+        .unwrap();
+
+        let (yt_base, _, yt_reqs, yt_srv, sh_srv_unused) = spawn_ytapi_and_shorts_mocks(
+            |_| {
+                (
+                    200,
+                    r#"{"items":[{"id":"sh_fail_001","snippet":{"title":"Shorts Fail","publishedAt":"2026-11-27T10:00:00Z","description":"ok","liveBroadcastContent":"none"},"contentDetails":{"duration":"PT45S"}}]}"#.to_string(),
+                )
+            },
+            |_| (303, Duration::ZERO),
+        )
+        .await;
+        sh_srv_unused.abort();
+
+        // 接続即切断で HEAD /shorts/sh_fail_001 を毎回エラーにする
+        let bad_sh_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bad_sh_addr = bad_sh_listener.local_addr().unwrap();
+        let bad_sh_srv = tokio::spawn(async move {
+            while let Ok((stream, _)) = bad_sh_listener.accept().await {
+                drop(stream);
+            }
+        });
+
+        let ytapi = Arc::new(YtApi::with_test_base_url(
+            Some("AIzaSySH_FAIL_18".to_string()),
+            yt_base,
+        ));
+        let tube = Arc::new(InnerTube::with_test_urls(
+            "http://127.0.0.1:9/watch".to_string(),
+            "http://127.0.0.1:9/api".to_string(),
+            Duration::from_millis(100),
+        ));
+        let core = ResolverCore::new(db.clone(), ytapi, tube)
+            .with_test_shorts_base_url(format!("http://{bad_sh_addr}/shorts/"));
+
+        for step in 1..=FAIL_MAX {
+            let _ = core
+                .resolve_once(Instant::now(), now_ms + step as i64 * 1000)
+                .await;
+            assert_eq!(
+                lock(&core.fails).get("sh_fail_001").copied(),
+                Some(step),
+                "fails should reach {step} even though videos.list succeeded"
+            );
+        }
+
+        // FAIL_MAX 到達後は選出から外れ、以降の tick では videos.list を呼ばない
+        let reqs_before = yt_reqs.lock().unwrap().len();
+        let c_after = core
+            .resolve_once(Instant::now(), now_ms + (FAIL_MAX as i64 + 1) * 1000)
+            .await;
+        assert_eq!(c_after, 0);
+        assert_eq!(yt_reqs.lock().unwrap().len(), reqs_before);
+
+        yt_srv.abort();
+        bad_sh_srv.abort();
     }
 }
