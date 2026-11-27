@@ -385,3 +385,173 @@ fn sponsor_fetch_rejected_while_video_switch_in_progress() {
     ));
     assert_eq!(super::lock(&sponsor).segments[0].start, 30.0);
 }
+
+/// DB-ED-11: 終端印待機ヘルパの非同期挙動（FR-95、仕様決定 EA）。
+/// 終端印の先行到着・遅延到着・新規読み込みによる世代切替打ち切り・切断即時終了を検証する。
+#[tokio::test]
+async fn wait_for_load_error_snapshot_handles_marker_generation_and_disconnect() {
+    use super::super::error_diag::YtdlErrorBuffer;
+    use super::wait_for_load_error_snapshot;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::watch;
+
+    // 1. 終端印が先行到着済みなら待機せず即座にスナップショットを返す
+    let buf = Arc::new(Mutex::new(YtdlErrorBuffer::default()));
+    let (sig_tx, _) = watch::channel(0u64);
+    let gen = Arc::new(AtomicU64::new(1));
+    {
+        let mut g = super::lock(&buf);
+        g.push_log_message("ytdl_hook", "ERROR: Requested format is not available\n");
+        g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+    }
+    let snap = wait_for_load_error_snapshot(&buf, &sig_tx, &gen, 1, Duration::from_secs(5))
+        .await
+        .expect("終端印到着済みなのでスナップショットを返すべき");
+    assert_eq!(snap.len(), 2);
+
+    // 2. 終端印が遅延到着した場合、到着通知で起床して追加行を含めて返す
+    let buf2 = Arc::new(Mutex::new(YtdlErrorBuffer::default()));
+    let (sig_tx2, _) = watch::channel(0u64);
+    let gen2 = Arc::new(AtomicU64::new(2));
+    let buf2_bg = buf2.clone();
+    let sig_tx2_bg = sig_tx2.clone();
+    let waiter = tokio::spawn(async move {
+        wait_for_load_error_snapshot(&buf2, &sig_tx2, &gen2, 2, Duration::from_secs(5)).await
+    });
+    tokio::task::yield_now().await;
+    {
+        let mut g = super::lock(&buf2_bg);
+        g.push_log_message(
+            "ytdl_hook",
+            "[debug] WARNING: [youtube] abcdefghijk: n challenge solving failed\n",
+        );
+        assert!(g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n"));
+    }
+    sig_tx2_bg.send_modify(|v| *v = v.wrapping_add(1));
+    let snap2 = waiter
+        .await
+        .unwrap()
+        .expect("遅延終端印の到着でスナップショットを返すべき");
+    assert_eq!(snap2.len(), 2);
+
+    // 3. 待機中に新規ロードで load_gen が進んだら None を返して打ち切る（旧動画の終端送出防止）
+    let buf3 = Arc::new(Mutex::new(YtdlErrorBuffer::default()));
+    let (sig_tx3, _) = watch::channel(0u64);
+    let gen3 = Arc::new(AtomicU64::new(10));
+    let gen3_bg = gen3.clone();
+    let sig_tx3_bg = sig_tx3.clone();
+    let waiter3 = tokio::spawn(async move {
+        wait_for_load_error_snapshot(&buf3, &sig_tx3, &gen3, 10, Duration::from_secs(5)).await
+    });
+    tokio::task::yield_now().await;
+    gen3_bg.fetch_add(1, Ordering::SeqCst);
+    sig_tx3_bg.send_modify(|v| *v = v.wrapping_add(1));
+    assert!(
+        waiter3.await.unwrap().is_none(),
+        "世代切替時は旧ロードの分類を打ち切って None を返すべき"
+    );
+
+    // 4. 待機中に IPC 切断が起きたらタイムアウトを待たず現時点の行を返す
+    let buf4 = Arc::new(Mutex::new(YtdlErrorBuffer::default()));
+    let (sig_tx4, _) = watch::channel(0u64);
+    let gen4 = Arc::new(AtomicU64::new(20));
+    super::lock(&buf4).push_log_message("ytdl_hook", "ERROR: Unable to download webpage\n");
+    let buf4_bg = buf4.clone();
+    let sig_tx4_bg = sig_tx4.clone();
+    let waiter4 = tokio::spawn(async move {
+        wait_for_load_error_snapshot(&buf4, &sig_tx4, &gen4, 20, Duration::from_secs(5)).await
+    });
+    tokio::task::yield_now().await;
+    super::lock(&buf4_bg).mark_disconnected();
+    sig_tx4_bg.send_modify(|v| *v = v.wrapping_add(1));
+    let snap4 = waiter4.await.unwrap().expect("切断時は既存行を返すべき");
+    assert_eq!(snap4, vec!["ERROR: Unable to download webpage"]);
+    assert!(super::lock(&buf4_bg).is_disconnected());
+}
+
+/// DB-ED-12: 初回と自動再送で異なる原因の行が出たとき、再送時の終端印リセット後に
+/// 両方の行を合算して優先順位どおりに分類される（受け入れ基準 4）。
+#[tokio::test]
+async fn retry_combines_first_and_second_attempt_logs() {
+    use super::super::error_diag::{classify, PlaybackErrorKind, YtdlErrorBuffer};
+    use super::{should_retry_load_error, wait_for_load_error_snapshot};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::watch;
+
+    let buf = Arc::new(Mutex::new(YtdlErrorBuffer::default()));
+    let (sig_tx, _) = watch::channel(0u64);
+    let gen = Arc::new(AtomicU64::new(1));
+    let mut retry = LoadRetryState::default();
+    retry.arm("https://www.youtube.com/watch?v=jNQXAC9IVRw", json!({}));
+
+    // 初回失敗: network エラー
+    {
+        let mut g = super::lock(&buf);
+        g.push_log_message(
+            "ytdl_hook",
+            "ERROR: Unable to download API page: timed out\n",
+        );
+        g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+    }
+    let first_snap = wait_for_load_error_snapshot(&buf, &sig_tx, &gen, 1, Duration::from_secs(1))
+        .await
+        .unwrap();
+    let first = classify(&first_snap);
+    assert_eq!(first.kind, PlaybackErrorKind::Network);
+    assert!(should_retry_load_error(first.kind));
+
+    // 1 回目の再送予約: 行は保持したまま終端印だけリセット
+    let retry_gen = retry.begin_retry().expect("初回失敗は再送予約できるべき");
+    assert!(retry.spec_for(retry_gen).is_some());
+    super::lock(&buf).reset_end_marker_for_retry();
+    assert!(!super::lock(&buf).is_ready_to_classify());
+
+    // 再送失敗: JS チャレンジ失敗警告 + フォーマットなし
+    {
+        let mut g = super::lock(&buf);
+        g.push_log_message(
+            "ytdl_hook",
+            "[debug] WARNING: [youtube] jNQXAC9IVRw: n challenge solving failed\n",
+        );
+        g.push_log_message("ytdl_hook", "ERROR: Requested format is not available\n");
+        g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+    }
+    let combined_snap =
+        wait_for_load_error_snapshot(&buf, &sig_tx, &gen, 1, Duration::from_secs(1))
+            .await
+            .unwrap();
+    // 初回の network 行と再送の js_challenge/no_format 行が両方含まれる
+    assert!(combined_snap.iter().any(|l| l.contains("timed out")));
+    assert!(combined_snap
+        .iter()
+        .any(|l| l.contains("challenge solving failed")));
+    assert_eq!(classify(&combined_snap).kind, PlaybackErrorKind::JsChallenge);
+    // 2 回目の再送予約は拒否され最終失敗となる
+    assert!(retry.begin_retry().is_none());
+}
+
+/// DB-ED-13: `video_unavailable` では自動再送を省略し、他の 6 カテゴリでは再送を許容する（受け入れ基準 4、仕様決定 EA）。
+#[test]
+fn video_unavailable_skips_auto_retry_while_other_kinds_retry() {
+    use super::super::error_diag::PlaybackErrorKind;
+    use super::should_retry_load_error;
+
+    assert!(!should_retry_load_error(PlaybackErrorKind::VideoUnavailable));
+    for kind in [
+        PlaybackErrorKind::CookieFailed,
+        PlaybackErrorKind::Blocked,
+        PlaybackErrorKind::JsChallenge,
+        PlaybackErrorKind::NoFormat,
+        PlaybackErrorKind::Network,
+        PlaybackErrorKind::Unknown,
+    ] {
+        assert!(
+            should_retry_load_error(kind),
+            "{kind:?} は自動再送の対象であるべき"
+        );
+    }
+}

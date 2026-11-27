@@ -7,6 +7,7 @@
   // 常時マウントし、開閉はラッパの hidden 切替にする（FR-80、仕様決定 DE）。
   // チャットと関連動画のパネルは ChatPanel / RelatedPanel に切り出し、
   // チャットの状態とイベント購読は chat.svelte.ts の共有ストアが持つ。
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { onDestroy, onMount, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -17,6 +18,7 @@
   import { fmtDuration } from "$lib/format";
   import { focusDisabledKey } from "$lib/focus-logic";
   import { linkCopyText } from "$lib/copy-link-logic";
+  import { resolvePlaybackErrorNotice } from "$lib/playback-error-logic";
   import { subTrackLabel } from "$lib/subtitle-logic";
   import { QUALITY_PRESETS } from "$lib/quality";
   import {
@@ -558,10 +560,29 @@
         const looping =
           ev.payload.continued && loopMode(ev.payload.instanceId) !== "none";
         // reason=error はロード失敗（yt-dlp 解決エラーやフォーマット不一致）として
-        // 終わった終端なので、ループ抑制より優先して強い文言で知らせる
-        // （継続先も失敗し続ける場合に原因が不可視になるのを防ぐ）
+        // 終わった終端なので、ループ抑制より優先して原因別の案内と導線を出す
+        // （FR-95、仕様決定 EA。継続先も失敗し続ける場合に原因が不可視になるのを防ぐ）
         if (ev.payload.reason === "error") {
-          notify(t("player.failed", { videoId: ev.payload.videoId }));
+          const resolved = resolvePlaybackErrorNotice(ev.payload, t);
+          const action =
+            resolved.actionKind && resolved.actionLabelKey
+              ? {
+                  label: t(resolved.actionLabelKey),
+                  run:
+                    resolved.actionKind === "open_deps"
+                      ? () => void goto("/settings?section=deps")
+                      : () =>
+                          void invoke("diag_open_log_dir").catch((e) =>
+                            notify(
+                              t("player.error", { message: asErrorMessage(e) }),
+                            ),
+                          ),
+                }
+              : undefined;
+          notify(resolved.msg, action, {
+            durationMs: 12000,
+            dismissible: true,
+          });
         } else if (!looping) {
           notify(t("player.ended", { reason: ev.payload.reason }));
         }

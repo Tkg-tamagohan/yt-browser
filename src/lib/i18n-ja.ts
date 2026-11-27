@@ -689,7 +689,27 @@ export const ja = {
   "settings.notices.action": "アクション: {label}",
   "settings.notices.clear": "履歴を消去",
 
-
+  // Phase 90: 再生開始失敗の原因別エラー表示と通知閉じるボタン（FR-95、仕様決定 EA）
+  "player.failed.videoUnavailable": "再生できない動画です（理由：{reason}）",
+  "player.failed.reason.private": "非公開",
+  "player.failed.reason.unavailable": "削除済み",
+  "player.failed.reason.membersOnly": "メンバー限定",
+  "player.failed.reason.upcoming": "配信開始前",
+  "player.failed.reason.other": "再生制限",
+  "player.failed.cookieFailed":
+    "ブラウザの Cookie を読み取れなかった可能性があります。ブラウザを再起動するか、yt-dlp の設定を確認してください",
+  "player.failed.blocked":
+    "YouTube に再生を拒否された可能性があります。PO Token または Cookie の設定を確認してください",
+  "player.failed.jsChallenge":
+    "YouTube の再生検証に失敗した可能性があります。deno の導入と yt-dlp の更新を確認してください",
+  "player.failed.noFormat":
+    "再生できる形式を取得できなかった可能性があります。yt-dlp を更新するか、画質設定を確認してください",
+  "player.failed.network":
+    "ネットワークに接続できないか、応答がなかった可能性があります",
+  "player.failed.detailLine": "{base}\n詳細: {detail}",
+  "player.failed.action.openDeps": "依存コマンド設定を開く",
+  "player.failed.action.openLogs": "ログフォルダを開く",
+  "notice.close": "通知を閉じる",
 } as const;
 
 export type MessageKey = keyof typeof ja;

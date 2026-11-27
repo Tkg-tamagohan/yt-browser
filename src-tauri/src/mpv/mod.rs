@@ -3,6 +3,7 @@
 //! （仕様決定 B / FR-1）。再生制御はすべてこのモジュールを経由する。
 
 mod devices;
+mod error_diag;
 mod foreground;
 mod ipc;
 mod manager;

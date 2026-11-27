@@ -1,7 +1,7 @@
 //! 全 mpv インスタンスの管理（`PlayerManager`）と履歴の永続化。
 use super::player::{
-    prune_mpv_logs, screenshot_file_name, MpvPlayer, SpawnOptions, LOADING_GRACE, MAX_RESTARTS,
-    MPV_LOG_KEEP, RECOVERY_WINDOW,
+    prune_mpv_logs, screenshot_file_name, EndedSignal, MpvPlayer, SpawnOptions, LOADING_GRACE,
+    MAX_RESTARTS, MPV_LOG_KEEP, RECOVERY_WINDOW,
 };
 use super::{
     close_instance_on_end, close_on_eof_enabled, hwdec_mode, initial_speed, initial_volume,
@@ -631,8 +631,11 @@ impl PlayerManager {
                             player.end_with("error");
                         }
                     }
-                    reason = ended_rx.recv() => {
-                        let reason = reason.unwrap_or_else(|_| "unknown".into());
+                    signal = ended_rx.recv() => {
+                        let signal = signal.unwrap_or_else(|_| EndedSignal::plain("unknown"));
+                        let reason = signal.reason;
+                        let error_kind = signal.error_kind;
+                        let error_detail = signal.error_detail;
                         // close_on_eof=off で残されたインスタンスの後続終端
                         // （窓の手動終了等）でも履歴の completed を維持する
                         // （FR-43、仕様決定 BS）
@@ -682,6 +685,8 @@ impl PlayerManager {
                             continued_uid,
                             armed_seq: player.armed_seq(),
                             closed: close_instance,
+                            error_kind,
+                            error_detail,
                         };
                         if let Err(e) = app.emit("player://ended", &payload) {
                             tracing::warn!(error = %e, "player://ended の送出に失敗");

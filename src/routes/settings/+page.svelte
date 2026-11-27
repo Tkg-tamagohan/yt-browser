@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { beforeNavigate, goto } from "$app/navigation";
+  import { beforeNavigate, goto, replaceState } from "$app/navigation";
+  import { page } from "$app/state";
   import { onDestroy, onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t, TONE_MAPPING_MPV } from "$lib/i18n";
@@ -157,6 +158,7 @@
   const hasChanges = $derived(changes.length > 0);
 
   let disposed = false;
+  let mounted = $state(false);
   let loadSeq = 0;
   const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -1144,8 +1146,29 @@
   }
 
   onMount(async () => {
+    mounted = true;
     await initPlayerEvents();
     await loadSettings();
+  });
+
+  // 再生失敗通知の「依存コマンド設定を開く」等から /settings?section=deps で
+  // 遷移してきたとき、節フィルタを解除して依存コマンド節へスクロールする
+  // （FR-95、仕様決定 EA）。既に /settings にいる状態での再押下にも反応できるよう、
+  // スクロール後にクエリを静かに消費する
+  $effect(() => {
+    if (!mounted) return;
+    const target = page.url.searchParams.get("section");
+    if (target !== "deps") return;
+    sectionQuery = "";
+    const cleanUrl = new URL(page.url);
+    cleanUrl.searchParams.delete("section");
+    void tick().then(() => {
+      if (disposed) return;
+      document
+        .getElementById("settings-section-deps")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      replaceState(cleanUrl, page.state);
+    });
   });
 
   let categoriesSection: SettingsCategoriesSection | undefined;
@@ -1379,7 +1402,7 @@
         <SettingsNoticesSection />
       </div>
 
-      <div class:hidden={!visibleSectionIds.has("deps")}>
+      <div id="settings-section-deps" class:hidden={!visibleSectionIds.has("deps")}>
         <SettingsDepsSection
           {loading}
           bind:ytdlpPath={form.ytdlpPath}
