@@ -586,17 +586,76 @@ describe("library-page playlist sync", () => {
         invokeMock.mock.calls.filter(([c]) => c === "playlist_items").length,
       ).toBe(2),
     );
-    midReloadDef.resolve([midA, midC, makeEntry(2, "midB0000002")]);
+    midReloadDef.resolve([midA, midC, makeEntry(3, "midB0000002")]);
     await midSyncTask;
 
-    midRestoreDef.resolve(makeEntry(2, "midB0000002"));
+    midRestoreDef.resolve(makeEntry(3, "midB0000002"));
     await vi.waitFor(() => expect(midLib.restoring).toBe(false));
     expect(midLib.playlistItems.map((i) => i.videoId)).toEqual([
       "midA0000001",
       "midC0000003",
       "midB0000002",
     ]);
+    expect(midLib.playlistItems[2].position).toBe(3);
     expect(midLib.va.playlists[0].itemCount).toBe(3);
     midLib.dispose();
+
+    // 同期のリモート取得中に削除取り消しが先に確定したときは元の position=1 へ戻り、
+    // 後続の同期完了後も元の並び（0, 1, 2）と件数 3 が保たれること
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const undoFirstSyncDef = deferred<PlaylistSyncOutcome>();
+    const undoFirstRestoreDef = deferred<PlaylistEntry>();
+    let undoFirstRestoreCalls = 0;
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") {
+        return Promise.resolve([midA, midB, midC]);
+      }
+      if (cmd === "playlist_remove") {
+        return Promise.resolve(midB);
+      }
+      if (cmd === "playlist_sync") {
+        return undoFirstSyncDef.promise;
+      }
+      if (cmd === "playlist_item_restore") {
+        undoFirstRestoreCalls += 1;
+        return undoFirstRestoreDef.promise;
+      }
+      return Promise.resolve(null);
+    });
+
+    const undoFirstLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    undoFirstLib.va.playlists = [midPlBefore];
+    await undoFirstLib.selectPlaylist(midPlBefore);
+    await undoFirstLib.removeItem(midB);
+    const undoFirstAction = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+
+    const undoFirstSyncTask = undoFirstLib.syncPlaylist();
+    undoFirstAction!.run!();
+    await vi.waitFor(() => expect(undoFirstRestoreCalls).toBe(1));
+
+    undoFirstRestoreDef.resolve(midB);
+    await vi.waitFor(() => expect(undoFirstLib.restoring).toBe(false));
+    expect(undoFirstLib.playlistItems.map((i) => i.videoId)).toEqual([
+      "midA0000001",
+      "midB0000002",
+      "midC0000003",
+    ]);
+    expect(undoFirstLib.playlistItems.map((i) => i.position)).toEqual([0, 1, 2]);
+    expect(undoFirstLib.va.playlists[0].itemCount).toBe(3);
+
+    undoFirstSyncDef.resolve({ playlist: midPlAfterSync, addedCount: 0 });
+    await undoFirstSyncTask;
+    expect(undoFirstLib.playlistItems.map((i) => i.videoId)).toEqual([
+      "midA0000001",
+      "midB0000002",
+      "midC0000003",
+    ]);
+    expect(undoFirstLib.playlistItems.map((i) => i.position)).toEqual([0, 1, 2]);
+    expect(undoFirstLib.va.playlists[0].itemCount).toBe(3);
+    undoFirstLib.dispose();
   });
 });
