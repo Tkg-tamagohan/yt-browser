@@ -539,15 +539,33 @@ export function loopMode(instanceId: number): LoopMode {
   return loopModes.list.get(instanceId) ?? "none";
 }
 
+// キュー外の単独ループで使う項目（インスタンスごと）。
+// 全体ループと 1 項目ループを切り替えても同じ動画を繰り返す限り同一 uid を保ち、
+// 画質変更失敗時等に別 uid とみなされてもう一巡再読み込みされるのを防ぐ（FR-95）。
+const standaloneLoopEntries = new Map<number, QueueEntry>();
+
+function standaloneLoopEntry(instanceId: number, videoId: string): QueueEntry {
+  const existing = standaloneLoopEntries.get(instanceId);
+  if (existing && existing.videoId === videoId) return existing;
+  const entry = newQueueEntry(videoId);
+  standaloneLoopEntries.set(instanceId, entry);
+  return entry;
+}
+
 function setLoopMode(instanceId: number, mode: LoopMode): void {
   const next = new Map(loopModes.list);
-  if (mode === "none") next.delete(instanceId);
-  else next.set(instanceId, mode);
+  if (mode === "none") {
+    next.delete(instanceId);
+    standaloneLoopEntries.delete(instanceId);
+  } else {
+    next.set(instanceId, mode);
+  }
   loopModes.list = next;
 }
 
 /// インスタンス終了・クローズ時にループ状態を外す。
 export function clearLoop(instanceId: number): void {
+  standaloneLoopEntries.delete(instanceId);
   if (!loopModes.list.has(instanceId)) return;
   setLoopMode(instanceId, "none");
 }
@@ -633,7 +651,10 @@ function latestPlan(instanceId: number): {
   }
   if (loopMode(instanceId) === "none") return { items: [], loop: false };
   const vid = playerStates.list.get(instanceId)?.videoId;
-  return { items: vid ? [newQueueEntry(vid)] : [], loop: true };
+  return {
+    items: vid ? [standaloneLoopEntry(instanceId, vid)] : [],
+    loop: true,
+  };
 }
 
 /// ループ状態を なし → 全体 → 1 項目 の順に切り替える（仕様決定 AA）。
@@ -666,7 +687,10 @@ export async function cycleLoop(instanceId: number): Promise<void> {
     await enqueueArm(instanceId, () => {
       if (loopMode(instanceId) === "none") return { items: [], loop: false };
       const vid = playerStates.list.get(instanceId)?.videoId;
-      return { items: vid ? [newQueueEntry(vid)] : [], loop: true };
+      return {
+        items: vid ? [standaloneLoopEntry(instanceId, vid)] : [],
+        loop: true,
+      };
     });
   } catch {
     // インスタンスが既に無い場合はキュー・ループ状態を畳む。
@@ -768,7 +792,7 @@ function detachInstance(q: QueueState): void {
   void enqueueArm(id, () =>
     loopMode(id) === "none" || vid === null
       ? { items: [], loop: false }
-      : { items: [newQueueEntry(vid)], loop: true },
+      : { items: [standaloneLoopEntry(id, vid)], loop: true },
   ).catch(() => {});
 }
 
@@ -1070,7 +1094,7 @@ export function initQueueEvents(): Promise<void> {
               void enqueueArm(p.instanceId, () =>
                 loopMode(p.instanceId) === "none"
                   ? { items: [], loop: false }
-                  : { items: [newQueueEntry(vid)], loop: true },
+                  : { items: [standaloneLoopEntry(p.instanceId, vid)], loop: true },
               ).catch(() => clearLoop(p.instanceId));
             }
           }),

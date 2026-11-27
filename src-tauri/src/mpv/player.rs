@@ -272,7 +272,16 @@ impl ArmedQueue {
     /// 武装の登録（`player_set_queue` 経路の本体）。
     /// `base_seq` 指定時は現在世代と一致するときだけ置き換える。
     /// 世代ずれは置き換えず false を返す。
-    fn set(&mut self, items: Vec<QueueArmItem>, loop_all: bool, base_seq: Option<u64>) -> bool {
+    /// `current_video_id` は初回武装時（`current_uid` 未設定かつ `loop_all`）に
+    /// 末尾の現在項目 `uid` を捕捉し、初回ロード中に重複動画の現在項目が削除されても
+    /// 残存する同一動画の別 `uid` と取り違えないために使う（FR-95）。
+    fn set(
+        &mut self,
+        items: Vec<QueueArmItem>,
+        loop_all: bool,
+        base_seq: Option<u64>,
+        current_video_id: Option<&str>,
+    ) -> bool {
         if base_seq.is_some_and(|s| s != self.seq) {
             return false;
         }
@@ -282,6 +291,15 @@ impl ArmedQueue {
             self.current_uid = None;
             self.failed_uids.clear();
         } else {
+            if loop_all && self.current_uid.is_none() {
+                if let Some(vid) = current_video_id {
+                    self.current_uid = self
+                        .items
+                        .back()
+                        .filter(|it| it.video_id == vid)
+                        .map(|it| it.uid);
+                }
+            }
             let valid: HashSet<i64> = self.items.iter().map(|it| it.uid).collect();
             self.failed_uids.retain(|uid| valid.contains(uid));
         }
@@ -792,7 +810,8 @@ impl MpvPlayer {
         loop_all: bool,
         base_seq: Option<u64>,
     ) -> bool {
-        lock(&self.armed).set(items, loop_all, base_seq)
+        let cur_vid = self.video_id();
+        lock(&self.armed).set(items, loop_all, base_seq, Some(&cur_vid))
     }
 
     /// 取り出し世代（`player://ended` に載せてフロントの置換基準に使う）。
