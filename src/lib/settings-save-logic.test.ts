@@ -3,6 +3,7 @@
 // SV-02: saveToggleSetting / saveStringSetting / saveSettingBatch のスナップショット競合検出
 // SV-03: saveOptionalRangeSetting の空欄・数値入力・範囲外スキップ・待機中変更検出
 // SV-04: saveSettingBatch の途中失敗時に成功済みキーだけ onCommitted が発火する
+// SV-05: youtube.api_key の saveStringSetting による onCommitted スナップショット確定
 import { describe, expect, test } from "vitest";
 import { TONE_MAPPING_MPV } from "./i18n";
 import {
@@ -353,5 +354,52 @@ describe("SV-04: saveSettingBatch の途中失敗時の部分コミット確定"
     ).rejects.toThrow("db busy");
 
     expect(committed).toEqual(["ui.theme"]);
+  });
+});
+
+describe("SV-05: youtube.api_key の onCommitted スナップショット更新", () => {
+  test("保存中に別値へ書き換わっても DB 成功直後の onCommitted で確定値へ更新される", async () => {
+    const writes: [string, string][] = [];
+    const unsaved: string[] = [];
+    const savedSnapshot = { youtubeApiKey: "" };
+    const form = { youtubeApiKey: "  AIzaSyTEST_KEY_ABC  " };
+
+    const snap = form.youtubeApiKey.trim();
+    const okConflict = await saveStringSetting(
+      async (k, v) => {
+        writes.push([k, v]);
+        // 保存待ち中にユーザーが別のキーへ書き換えた場合を再現
+        form.youtubeApiKey = "AIzaSyTEST_KEY_XYZ";
+      },
+      "youtube.api_key",
+      snap,
+      () => form.youtubeApiKey.trim(),
+      () => unsaved.push("deps"),
+      () => {
+        savedSnapshot.youtubeApiKey = snap;
+      },
+    );
+
+    expect(okConflict).toBe(false);
+    expect(writes).toEqual([["youtube.api_key", "AIzaSyTEST_KEY_ABC"]]);
+    expect(unsaved).toEqual(["deps"]);
+    expect(savedSnapshot.youtubeApiKey).toBe("AIzaSyTEST_KEY_ABC");
+
+    // DB 書込が失敗した場合は onCommitted が呼ばれずスナップショットを据え置く
+    await expect(
+      saveStringSetting(
+        async () => {
+          throw new Error("db error");
+        },
+        "youtube.api_key",
+        "AIzaSyTEST_KEY_XYZ",
+        () => form.youtubeApiKey.trim(),
+        () => unsaved.push("deps"),
+        () => {
+          savedSnapshot.youtubeApiKey = "AIzaSyTEST_KEY_XYZ";
+        },
+      ),
+    ).rejects.toThrow("db error");
+    expect(savedSnapshot.youtubeApiKey).toBe("AIzaSyTEST_KEY_ABC");
   });
 });

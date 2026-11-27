@@ -74,7 +74,10 @@
   import SettingsBlockedSection from "$lib/SettingsBlockedSection.svelte";
   import SettingsCategoriesSection from "$lib/SettingsCategoriesSection.svelte";
   import SettingsChatPopupSection from "$lib/SettingsChatPopupSection.svelte";
-  import SettingsDepsSection from "$lib/SettingsDepsSection.svelte";
+  import SettingsDepsSection, {
+    type YtApiStatus,
+    type YtApiTestOutcome,
+  } from "$lib/SettingsDepsSection.svelte";
   import SettingsDiagSection from "$lib/SettingsDiagSection.svelte";
   import SettingsFeedSection from "$lib/SettingsFeedSection.svelte";
   import SettingsFiltersSection from "$lib/SettingsFiltersSection.svelte";
@@ -124,13 +127,16 @@
   // - ui.theme / ui.density / ui.language（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF）
   // - ui.confirm_unsaved（未保存タブ移動時の確認、FR-91・仕様決定 DT、既定 on）
   // - hdr.tone_mapping / hdr.compute_peak / mpv.extra_args / mpv.network_timeout_ms / mpv.hwdec（仕様決定 Y・BE）
-  // - ytdlp.path / ytdlp.po_token（FR-72・仕様決定 CW、FR-86・仕様決定 DK）
+  // - ytdlp.path / ytdlp.po_token / youtube.api_key（FR-72/CW・FR-86/DK・FR-97/EC）
   let form = $state<SettingsFormState>(defaultSettingsFormState());
   let savedSnapshot = $state<SettingsFormState>(defaultSettingsFormState());
 
   let loading = $state(true);
   let saving = $state(false);
   let notices = $state<string[]>([]);
+  let ytApiStatus = $state<YtApiStatus | null>(null);
+  let ytApiTesting = $state(false);
+  let ytApiTestResult = $state<YtApiTestOutcome | null>(null);
   // DB に最後に書き込んだ画質式（読込時点では読み取った値）。
   // 書込み済みと適用完了を分けて追うため、即時適用の成否とは独立に進める
   let persistedFormat = $state("");
@@ -827,7 +833,7 @@
         }
       }
 
-      // 13. ytdlp.path / ytdlp.po_token（FR-72/CW・FR-86/DK）
+      // 13. ytdlp.path / ytdlp.po_token / youtube.api_key（FR-72/CW・FR-86/DK・FR-97/EC）
       if (form.ytdlpPath.trim() !== savedSnapshot.ytdlpPath.trim()) {
         const snap = form.ytdlpPath.trim();
         if (
@@ -861,6 +867,29 @@
         ) {
           invalid = true;
         }
+      }
+      let ytApiKeySaved = false;
+      if (form.youtubeApiKey.trim() !== savedSnapshot.youtubeApiKey.trim()) {
+        const snap = form.youtubeApiKey.trim();
+        if (
+          !(await saveStringSetting(
+            setSetting,
+            "youtube.api_key",
+            snap,
+            () => form.youtubeApiKey.trim(),
+            () => notify(t("settings.deps.unsaved")),
+            () => {
+              savedSnapshot.youtubeApiKey = snap;
+            },
+          ))
+        ) {
+          invalid = true;
+        }
+        ytApiKeySaved = true;
+      }
+      if (ytApiKeySaved) {
+        ytApiTestResult = null;
+        await refreshYtApiStatus();
       }
 
       // 画質の即時適用（pendingApply）は不正値があっても最後まで実行する。
@@ -969,7 +998,40 @@
     "mpv.hwdec",
     "ytdlp.path",
     "ytdlp.po_token",
+    "youtube.api_key",
   ] as const;
+
+  async function refreshYtApiStatus(): Promise<void> {
+    try {
+      const status = await invoke<YtApiStatus>("ytapi_status");
+      if (!disposed) ytApiStatus = status;
+    } catch {
+      // ステータス取得失敗時は直前の表示を維持する
+    }
+  }
+
+  async function handleTestYtApi(): Promise<void> {
+    if (ytApiTesting) return;
+    ytApiTesting = true;
+    try {
+      const trimmed = form.youtubeApiKey.trim();
+      const result = await invoke<YtApiTestOutcome>("ytapi_test_connection", {
+        apiKey: trimmed || null,
+      });
+      if (!disposed) {
+        ytApiTestResult = result;
+      }
+    } catch (e) {
+      if (!disposed) {
+        ytApiTestResult = { ok: false, reason: asErrorMessage(e) };
+      }
+    } finally {
+      if (!disposed) {
+        ytApiTesting = false;
+      }
+      await refreshYtApiStatus();
+    }
+  }
 
   async function loadSettings(): Promise<void> {
     const seq = ++loadSeq;
@@ -983,6 +1045,13 @@
         })
         .catch(() => {
           if (!disposed && seq === loadSeq) monitors = [];
+        }),
+      invoke<YtApiStatus>("ytapi_status")
+        .then((status) => {
+          if (!disposed && seq === loadSeq) ytApiStatus = status;
+        })
+        .catch(() => {
+          if (!disposed && seq === loadSeq) ytApiStatus = null;
         }),
       ...SETTING_KEYS.map(async (key) => {
         try {
@@ -1113,6 +1182,11 @@
     if (poTokenRaw !== null) {
       next.poToken = poTokenRaw.trim();
     }
+    // youtube.api_key（FR-97、仕様決定 EC）。空・未設定は未設定
+    const ytApiKeyRaw = raw("youtube.api_key");
+    if (ytApiKeyRaw !== null) {
+      next.youtubeApiKey = ytApiKeyRaw.trim();
+    }
     if (wheelRaw !== null) {
       const n = Number(wheelRaw);
       if (Number.isFinite(n)) next.wheelDelta = n;
@@ -1196,6 +1270,7 @@
   let categoriesSection: SettingsCategoriesSection | undefined;
 
   async function handleImported(): Promise<void> {
+    ytApiTestResult = null;
     await Promise.all([
       loadSettings(),
       refreshUiPrefs(),
@@ -1429,6 +1504,11 @@
           {loading}
           bind:ytdlpPath={form.ytdlpPath}
           bind:poToken={form.poToken}
+          bind:youtubeApiKey={form.youtubeApiKey}
+          {ytApiStatus}
+          {ytApiTesting}
+          {ytApiTestResult}
+          onTestYtApi={handleTestYtApi}
         />
       </div>
 

@@ -20,6 +20,7 @@ mod sponsor;
 mod ui;
 mod util;
 mod yt;
+mod ytapi;
 
 use std::path::PathBuf;
 
@@ -150,6 +151,16 @@ pub fn run() {
 
             let ytdlp_resolver = yt::YtDlpResolver::new(app.path().resource_dir().ok());
             app.manage(ytdlp_resolver.clone());
+
+            let ytapi_initial_key = match db.setting_get(ytapi::SETTING_YOUTUBE_API_KEY) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "youtube.api_key の初期読み込みに失敗");
+                    None
+                }
+            };
+            let ytapi = std::sync::Arc::new(ytapi::YtApi::new(ytapi_initial_key));
+            app.manage(ytapi.clone());
             // mpv から chat への直接依存を避けるため、動画離脱時のポップアップ自動クローズは
             // ここでコールバックとして PlayerManager へ注入する（FR-93、仕様決定 DV）
             let popup_close_hook: mpv::VideoEndHook = {
@@ -288,6 +299,8 @@ pub fn run() {
             commands::db_status,
             commands::settings_get,
             commands::settings_set,
+            commands::ytapi_status,
+            commands::ytapi_test_connection,
             commands::monitor_list,
             commands::windowing_system,
             commands::play_video,

@@ -1006,6 +1006,133 @@ pub(crate) fn is_video_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// 放送状態（FR-44・FR-97、仕様決定 BT・EC）。InnerTube `player` と
+/// YouTube Data API v3 `videos.list` の双方がここへマッピングする。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BroadcastStatus {
+    /// 現在放送中か（`isLiveNow` または Data API `liveBroadcastContent == "live"`）。
+    pub is_live_now: Option<bool>,
+    /// 実配信開始時刻（epoch ms）。
+    pub start_ms: Option<i64>,
+    /// 実配信終了時刻（epoch ms）。
+    pub end_ms: Option<i64>,
+    /// 予定開始時刻（epoch ms）。
+    pub scheduled_start_ms: Option<i64>,
+    /// 放送詳細オブジェクト（`liveBroadcastDetails` / `liveStreamingDetails`）の有無。
+    pub has_details: bool,
+    /// 公開予定のロビー動画か（`isUpcoming` / `liveBroadcastContent == "upcoming"`）。
+    pub is_upcoming: bool,
+}
+
+/// 遅延解決用の動画メタ一式（FR-53・FR-56・FR-85・FR-97、仕様決定 CD・CG・DJ・EC）。
+/// InnerTube `player` と YouTube Data API v3 `videos.list` が共用する。
+#[derive(Debug, Clone, Default)]
+pub struct MetaSnapshot {
+    /// 投稿日時（UTC へ正規化した `"YYYY-MM-DDTHH:MM:SS+00:00"`）。
+    pub published_at: Option<String>,
+    /// 放送状態。
+    pub broadcast: BroadcastStatus,
+    /// 実放送系かどうかの補助材料（プレミア公開は false、ライブは true、終了後は None 許容）。
+    pub is_live_content: Option<bool>,
+    /// `playabilityStatus.status`（"OK" / "LIVE_STREAM_OFFLINE" / "UNPLAYABLE" 等）。
+    pub playability: Option<String>,
+    /// 動画説明文（欠落時は空文字列）。
+    pub description: String,
+}
+
+/// メタ応答から放送系 kind を分類する（FR-56、仕様決定 CG）。
+/// 戻り値は `kind` の確定値。放送系の手掛かりが無いときは `None`
+/// （呼び出し側は `kind='video'` の行だけ shorts 判定へ回す）。
+pub fn classify_kind(s: &MetaSnapshot) -> Option<&'static str> {
+    let b = &s.broadcast;
+    if b.is_live_now == Some(true) {
+        return Some(if s.is_live_content == Some(false) {
+            "premiere"
+        } else {
+            "live"
+        });
+    }
+    if b.has_details || b.is_upcoming {
+        if b.end_ms.is_some() {
+            return Some(if s.is_live_content == Some(true) {
+                "live"
+            } else {
+                "premiere"
+            });
+        }
+        return Some("upcoming");
+    }
+    if s.is_live_content == Some(true) {
+        return Some("live");
+    }
+    if s.playability.as_deref() == Some("LIVE_STREAM_OFFLINE") {
+        return Some("upcoming");
+    }
+    None
+}
+
+/// メタ応答からフィード表示用の動的放送状態と開始時刻（epoch ms）を
+/// 抽出する（FR-96、仕様決定 EB）。
+/// 戻り値は `(broadcast_state, broadcast_start_ms)` で、`<= 0` の不正タイムスタンプは
+/// `None` へ正規化する。プレミア公開も公開中は `"live"`、予定は `"upcoming"`、
+/// 終了後は `"ended"` として統一的に分類する。
+pub fn classify_broadcast_meta(s: &MetaSnapshot) -> (Option<&'static str>, Option<i64>) {
+    let b = &s.broadcast;
+    let start = b.start_ms.filter(|&ms| ms > 0);
+    let sched = b.scheduled_start_ms.filter(|&ms| ms > 0);
+    if b.is_live_now == Some(true) {
+        return (Some("live"), start);
+    }
+    if b.has_details || b.is_upcoming {
+        if b.end_ms.is_some() {
+            return (Some("ended"), start.or(sched));
+        }
+        return (Some("upcoming"), sched.or(start));
+    }
+    if s.is_live_content == Some(true) {
+        return (Some("ended"), start);
+    }
+    if s.playability.as_deref() == Some("LIVE_STREAM_OFFLINE") {
+        return (Some("upcoming"), sched.or(start));
+    }
+    (None, None)
+}
+
+/// YouTube Data API v3 の利用可否状態（FR-97、仕様決定 EC）。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum YtApiAvailability {
+    Unset,
+    Active,
+    KeyInvalid,
+    SharedQuota,
+    SearchQuota,
+}
+
+/// YouTube Data API v3 の現在状態（FR-97、仕様決定 EC）。
+/// 設定画面の状態バッジおよび次回リセット時刻表示に使う。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct YtApiStatus {
+    pub state: YtApiAvailability,
+    pub configured: bool,
+    pub key_invalid: bool,
+    pub shared_quota_exhausted: bool,
+    pub search_quota_exhausted: bool,
+    /// 次回太平洋時間 00:00 (+60s) の UTC epoch ms（共通クォータ超過中のみ Some）。
+    pub shared_reset_ms: Option<i64>,
+    /// 次回太平洋時間 00:00 (+60s) の UTC epoch ms（検索クォータ超過中のみ Some）。
+    pub search_reset_ms: Option<i64>,
+}
+
+/// YouTube Data API v3 接続テストの結果（FR-97、仕様決定 EC）。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct YtApiTestOutcome {
+    pub ok: bool,
+    pub reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

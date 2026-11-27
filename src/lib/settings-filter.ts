@@ -137,8 +137,17 @@ export const SETTINGS_SECTION_DEFS: readonly SettingsSectionKeyDef[] = [
       "settings.deps.title",
       "settings.deps.ytdlpPath",
       "settings.deps.poToken",
+      "settings.deps.youtubeApiKey",
     ],
-    extraLabels: ["yt-dlp", "ytdlp.path", "ytdlp.po_token", "po token"],
+    extraLabels: [
+      "yt-dlp",
+      "ytdlp.path",
+      "ytdlp.po_token",
+      "po token",
+      "youtube.api_key",
+      "api key",
+      "youtube data api",
+    ],
   },
   {
     id: "diag",

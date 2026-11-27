@@ -49,6 +49,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
+| `ytapi` | YouTube Data API v3 クライアント、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、§4.24） |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回・開始/終了/自動解除の検出と `live_wait.action` に応じた動作（FR-44、§4.16） |
 | `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時・説明文と未確定・失敗の kind を InnerTube `player` で後から埋める（FR-53・FR-56・FR-57・FR-85、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
@@ -56,11 +57,12 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
 | `ui` | 表示設定（`ui.*` キー）の解釈の正。配色・一覧密度・UI 言語はフロントだけで使う（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF） |
 | `db` | 接続、マイグレーション、クエリ |
-| `model` | `Video`、`ChatEvent`、`FeedItem` などの共通型 |
-| `util` | ロック取得、設定値解釈などの共通補助関数 |
+| `model` | `Video`、`ChatEvent`、`FeedItem`、`BroadcastStatus`、`MetaSnapshot` などの共通型と放送状態分類 |
+| `util` | ロック取得、設定値解釈、時刻および ISO 8601 継続時間変換などの共通補助関数 |
 | `error` | `UiError { code, message }` への直列化と、各エラー型からの変換 |
 
-モジュール間の依存方向は「上位層（`lib`・`main`・`commands`・`error`）→ ドメイン層（`mpv`・`yt`・`feed`・`innertube`・`livewait`・`metaresolve`・`chat`・`filter`・`sponsor`・`ui`・`deep_link`・`deps`・`diag`・`native_host`）→ 下位共有層（`db`・`model`・`util`）」の 3 層一方向に揃える。
+モジュール間の依存方向は「上位層（`lib`・`main`・`commands`・`error`）→ ドメイン層（`mpv`・`yt`・`feed`・`innertube`・`ytapi`・`livewait`・`metaresolve`・`chat`・`filter`・`sponsor`・`ui`・`deep_link`・`deps`・`diag`・`native_host`）→ 下位共有層（`db`・`model`・`util`）」の 3 層一方向に揃える。
+このうち `ytapi` は `model` と `util` のみに依存する純粋リーフモジュールとし、他のドメインモジュールおよび上位層（`lib`、`commands`、`error`）への依存を持たない。
 ドメイン層および下位共有層から上位層への逆参照、下位共有層からドメイン層への逆参照、ならびに 2 ノード以上の循環依存を禁止する。
 ドメイン層間の非循環な一方向参照は許容し、連携で循環が生じる場合はフックやコールバックを定義して上位層（`lib` / `commands`）から注入する。
 これら 3 層の逆参照禁止と循環禁止は `scripts/check_docs_consistency.py`（check 19）で機械検証する。
@@ -162,6 +164,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `db_cleanup_orphans` | なし | `Result<u64>`（削除した行数。FR-66、仕様決定 CQ） |
 | `diag_export` | `path`（保存先ファイルパス。保存ダイアログで選択） | `Result<()>`（FR-82、仕様決定 DG、§4.21） |
 | `diag_open_log_dir` | なし | `Result<()>`（FR-95、仕様決定 EA、§4.23。アプリログディレクトリを未作成なら作成して OS のファイルマネージャで開く） |
+| `ytapi_status` | なし | `Result<YtApiStatus>`（FR-97、仕様決定 EC、§4.24。設定有無、キー無効状態、クォータ残状態、次回リセット時刻を返す） |
+| `ytapi_test_connection` | `api_key`（任意） | `Result<YtApiTestOutcome>`（FR-97、仕様決定 EC、§4.24。`videos.list` 1 unit で疎通を検証し、未保存候補キー試行時は保存済み遮断器を変えない） |
 
 `play_video` の `video_id` は URL 各形式（`watch?v=`、`youtu.be/`、`/shorts/`、`/live/`、`/embed/`）と裸の動画 ID の両方を受け取り、サーバ側で正規化する。
 開始位置の解決順は「`start_sec` 引数の明示指定 > `video_id` が URL ならその `t=`/`start=` パラメータ > `resume` が true なら履歴位置 > 0」。`t=` は `2630s`・`1h2m3s` のような h/m/s 接尾辞と素の秒数を受理する（仕様決定 AF）。
@@ -225,10 +229,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `data_export` / `data_import` は `channels`、`categories`、`settings`、`playlists`（＋項目）のダンプと復元（FR-62、FR-94、仕様決定 CM、DX）。
 ファイル選択は設定画面から `tauri-plugin-dialog` の保存/開くダイアログで行い、選んだパスをそのままコマンドへ渡す。
 ダンプ形式は `{ version, exportedAt, channels, categories, settings, playlists }` の JSON で、`version` は `EXPORT_FORMAT_VERSION = 1`。
-ローカル環境依存および秘密情報を含む保護 4 キー（`ytdlp.po_token`、`ytdlp.path`、`mpv.extra_args`、`setup.deps_shown`）は `export_dump` の出力から除外し、`import_dump` では単一トランザクション内の `DELETE FROM settings` 直前に既存 DB の同 4 キーを退避してダンプ側の同 4 キーを読み飛ばした上で復元する（行不在のローカル未設定時は注入せず、空文字 `""` の既存行は保護値として保持する。回帰テスト DB-LD-31、DB-LD-32）。
+ローカル環境依存および秘密情報を含む保護 5 キー（`ytdlp.po_token`、`ytdlp.path`、`mpv.extra_args`、`setup.deps_shown`、`youtube.api_key`）は `export_dump` の出力から除外し、`import_dump` では単一トランザクション内の `DELETE FROM settings` 直前に既存 DB の同 5 キーを退避してダンプ側の同 5 キーを読み飛ばした上で復元する（行不在のローカル未設定時は注入せず、空文字 `""` の既存行は保護値として保持する。FR-94、FR-97、仕様決定 DX、EC、回帰テスト DB-LD-31、DB-LD-32、DB-LD-42）。
 チャンネル行は `channels` の全列（バックフィル位置・条件付き取得メタを含む）、プレイリスト項目は `position` と `videos` 台帳の表示メタを持つ。
 インポートは「ダンプした時点の状態へ戻す」リストア扱いで、対象テーブルの内容をダンプで置き換える（マージではなく置き換え。ダンプに無い行は消える）。
-書き込みは 1 トランザクションで行い、先に全内容を検証する（形式版の一致、ID の一意性、`category_id` 参照の有効性、項目の `video_id` 重複に加えて、保護 4 キーを検証ループ先頭で読み飛ばした上で `ExportChannel.channel_id` の `is_channel_id`、`ExportPlaylistItem.video_id` の `is_video_id`、`settings` のキー 1〜128 UTF-8 バイトおよび値 0〜16,384 UTF-8 バイト上限、`playlists.name` のトリム後 1〜150 文字上限とトリム保存を強制し、`ExportPlaylistItem.channel_id` の非 UC 値のみ `None` へ正規化する。回帰テスト DB-LD-33）。
+書き込みは 1 トランザクションで行い、先に全内容を検証する（形式版の一致、ID の一意性、`category_id` 参照の有効性、項目の `video_id` 重複に加えて、保護 5 キーを検証ループ先頭で読み飛ばした上で `ExportChannel.channel_id` の `is_channel_id`、`ExportPlaylistItem.video_id` の `is_video_id`、`settings` のキー 1〜128 UTF-8 バイトおよび値 0〜16,384 UTF-8 バイト上限、`playlists.name` のトリム後 1〜150 文字上限とトリム保存を強制し、`ExportPlaylistItem.channel_id` の非 UC 値のみ `None` へ正規化する。回帰テスト DB-LD-33）。
 受理できないダンプは `DbError::Import` で拒否して DB を変更しない。
 `categories.id` / `playlists.id` はダンプの値をそのまま使い（参照の整合だけ取る。AUTOINCREMENT 採番は最大 ID 以降へ進む）、プレイリスト項目の表示メタは `video_upsert` と同じ規則で `videos` 台帳へ補完登録する（既存メタは壊さない）。
 `watch_history` など対象外のユーザーデータは保持する。
@@ -240,6 +244,10 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 `db_vacuum` は接続を 1 本しか持たないため、そのロック内で `VACUUM` をそのまま実行できる。
 `db_cleanup_orphans` は孤児行を削除して件数を返す（暫定解釈の対象: `channels` に無いチャンネルの `videos` 行のうち favorites/playlist_items/watch_later/watch_history/queue_items/live_waits/video_bookmarks のどれにも参照されないもの、および `videos` 台帳に無い `video_id` を持つ playlist_items/favorites/watch_later の参照切れ行。`watch_history` は表示メタを自列に持つユーザーデータのため消さない）。
 フロントは「インポート」「孤児行整理」の実行前にダイアログで確認し、「VACUUM」はデータを壊さないため確認なしで実行する。
+
+`ytapi_status` と `ytapi_test_connection` は設定画面「依存コマンド」節が YouTube Data API v3 の任意キー状態を確認するために使う（FR-97、仕様決定 EC、§4.24）。
+`ytapi_status` は `YtApi` が保持する設定有無、キー無効ラッチ状態、共通枠と検索枠の遮断状態と次回リセット時刻（ミリ秒）を返す。
+`ytapi_test_connection` は `api_key` 省略時（または保存済みキーと同値時）に保存済みキーで `videos.list` 1 unit を試し、未保存の候補キーを渡された場合は保存済みキーの遮断器やラッチを変えずに試行結果のみを返す。
 
 ### 3.2 イベント（Rust → フロント）
 
@@ -260,7 +268,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `sponsor://segments` | `{ instanceId, videoId, segments: [{ category, start, end, action }] }` | SponsorBlock 区間の取得完了時にインスタンスごとに送出（FR-36、仕様決定 BI）。区間なしと取得失敗は空列。`action` は `"skip"` / `"notify"` / `"off"` |
 | `app://open_url` | `{ seq, url }` | deep link（`yt-browser://open?url=` / `yt-browser://queue?url=`）の受信（§3.4） |
 | `library://playlists_changed` | `Playlist`（作成されたプレイリスト） | `playlist_import`・`queue_save_as_playlist` 成功時。表示中の /library が deep link など画面外からの一覧変更を検知するために使う。他のプレイリスト操作コマンドからは現時点で発火しない |
-| `settings://changed` | `{ key, value }` | `settings_set` のコミット毎に発火。コミット済みの値を載せるため購読側の再読み取りは不要。設定値を保持する画面（ホームの逆モードボタンが使う `pip.default` など）が画面外の変更に追従するために使う |
+| `settings://changed` | `{ key, value }` | `settings_set` のコミット毎および `data_import` の非保護設定変化時に発火。コミット済みの値を載せるため購読側の再読み取りは不要で、設定値を保持する画面（ホームの逆モードボタンが使う `pip.default` など）が画面外の変更に追従するために使う。秘匿キー（`youtube.api_key`、`ytdlp.po_token`）では送出時に `value` を空文字 `""` へ伏せる（FR-97、仕様決定 EC） |
 | `livewait://changed` | `{ videoId? }` | 待機集合の変更（登録・解除・開始検出・終了・自動解除・予定時刻の追随更新）。購読側は `live_wait_list` で一覧を取り直す（FR-44、仕様決定 BT） |
 | `livewait://status` | `{ videoId?, level, message }` | 待機の状態通知。開始検出（`notify` 動作・自動再生の成否）、終了・自動解除、状態確認の劣化・復帰をトーストへ流す（FR-44、仕様決定 BT） |
 
@@ -312,6 +320,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `ui.shortcuts` | `on` / `off` | アプリ側キーボードショートカットの有効化（§4.20、FR-79、仕様決定 DD）。受理集合は `feed.show_shorts` と同一で、未設定・その他の値は `off`（暫定解釈の既定）。値の解釈と既定キーマップの適用はフロント側が持つ |
 | `ui.language` | `ja` / `en` | UI 言語（FR-81、仕様決定 DF）。i18n の現行ロケールを切り替え、`en` で UI が英語リソース表示になる（未翻訳キーは ja へフォールバックする機構を持つが、en リソースは全キーを網羅）。`<html>` の `lang` 属性と日時・再生数表示のロケールも連動する。`settings://changed` で即時に反映される。未設定・その他の値は `ja`。解釈の正は Rust 側 `src-tauri/src/ui.rs` |
 | `ui.confirm_unsaved` | `on` / `off` | 設定画面に未保存の変更がある状態で別タブや別ルートへ離脱するとき確認ダイアログを出すか（FR-91、仕様決定 DT）。受理集合は `pip.default` と同一で、未設定・その他の値は `on`（確認する）。フロント側 `settings/+page.svelte` の `beforeNavigate` で保存済みスナップショットの値を参照する |
+| `youtube.api_key` | 文字列 | YouTube Data API v3 の任意 API キー（FR-97、仕様決定 EC、§4.24）。空文字または未設定時は利用せず既存の `InnerTube` と `yt-dlp` のみで動作する。保存前後のトリム後文字列が変化したときのみ `YtApi` の遮断器とラッチをリセットし、ローカル保護 5 キーとしてダンプ出力から除外する |
 
 ### 3.4 外部起動（deep link）と Chrome 拡張（FR-17、仕様決定 AC）
 
@@ -1195,7 +1204,7 @@ mpv 自身の出力として記録され得て内容を制御できないため�
 2. URL クエリで秘匿名の値を `***` へ置き換える
    （`sig=ABC&x=1` → `sig=***&x=1`）
 3. JSON 片の `"<秘匿名>": <値>` を `"<秘匿名>": "***"` へ置き換える
-4. `Authorization: Bearer|Basic <値>`、`Cookie:`、`Set-Cookie:` の
+4. `Authorization: Bearer|Basic <値>`、`Cookie:`、`Set-Cookie:`、`X-Goog-Api-Key:`、`X-Api-Key:` の
    ヘッダ値を `***` へ置き換える（行末まで）
 5. 上記に残った汎用ユーザーディレクトリ（`C:\Users\<名>`・
    `/home/<名>`・`/Users/<名>`）のユーザー名を `***` へ置き換える
@@ -1203,20 +1212,22 @@ mpv 自身の出力として記録され得て内容を制御できないため�
 秘匿名は名前の列挙式（暫定解釈）で、署名系（`sig`・`lsig`・
 `signature`・`pot`・`po_token`）、認証系（`token` 系・`auth`・
 `authorization`・`key`・`api_key`・`apikey`・`secret`・
-`client_secret`・`password`・`passwd`・`bearer`）、セッション系
+`client_secret`・`password`・`passwd`・`bearer`・`x-goog-api-key`・
+`x-api-key`）、セッション系
 （`session`・`session_id`・`sid`・`visitor_data`・`continuation`・
 `cookie`・`cookies`）、発信元の秘匿（`ip`・`ipbits`）を対象とする。
 動画 ID・itag・`expire` などの再生系パラメータは診断に要るため残す。
 `settings.json` ではこれに加えて、キー名が `token`・`secret`・
-`password`・`passwd`・`credential`・`cookie` の断片を含む設定は
-値全体を `"***"` とする（`ytdlp.po_token` など、値の中身を解析せず
+`password`・`passwd`・`credential`・`cookie`・`api_key`・`apikey` の断片を含む設定は
+値全体を `"***"` とする（`ytdlp.po_token` や `youtube.api_key` など、値の中身を解析せず
 潰す）。それ以外の設定値は上記テキスト規則を適用する。
 
 マスク規則は網羅を保証するものではなく、未知の形式の秘匿値が残り得る。
 共有前に内容を確認するようユーザーガイドでも案内する。
 
-回帰テストは DB-DG-01 〜 DB-DG-09（マスク・設定出力・ログ収集・
-zip 生成の一通り）と DX-01（既定ファイル名の規則）。
+回帰テストは DB-DG-01 〜 DB-DG-11（マスク、設定出力、`youtube.api_key` や
+`X-Goog-Api-Key`、`x-api-key` の伏せ字、ログ収集、zip 生成の一通り）と
+DX-01（既定ファイル名の規則）。
 
 ### 4.22 通知履歴（FR-83、仕様決定 DH）
 
@@ -1275,6 +1286,34 @@ mpv 自身の `mpv-*.log` は `diag_export` から除外したうえで、Unix �
 `PlayerCards.svelte` は再生失敗通知を 12 秒表示かつ手動の閉じるボタン（`×`）付きで発行し、`blocked`、`js_challenge`、`no_format` では `/settings?section=deps` へ遷移して `afterNavigate` 経由で節フィルタ解除と依存コマンド節へのスクロール（別画面からの遷移時は `loadSettings` による上位節の展開完了後にスクロール）を行う「依存コマンド設定を開く」ボタンを、`unknown` では専用コマンド `diag_open_log_dir` を呼ぶ「ログフォルダを開く」ボタンを添える。
 
 回帰テストは DB-ED-01 〜 DB-ED-17（選別、優先順位、レート制限と地域制限の除外、署名解決失敗の分類、PO Token 破棄、認証付きプロキシ URL と `=/` パスを含む伏せ字処理、上限破棄、終端印待機と世代打ち切り、再送合算と再送省略、連続失敗と正常→失敗→正常キューの終端受理、ループ再生の無限エラー再読み込み抑止、アンロード済み待機中の動画切替・画質変更での終端保護、mpv ログ `0600` 権限保護、IPC コマンド送出と退避）と PE-01 〜 PE-05（全 7 カテゴリ、理由列挙、後方互換、未知値フォールバック、英語ロケール）、QS-05（単独ループ切替時の `uid` 維持）。
+
+### 4.24 YouTube Data API v3 クライアント基盤と秘匿保護（FR-97、仕様決定 EC）
+
+OAuth 認証や Google アカウント連携を持たない方針（仕様決定 H）を保ったまま、利用者が任意に設定した API キー（`youtube.api_key`）がある場合だけ公式 YouTube Data API v3 の無料枠に接続するための基盤を `src-tauri/src/ytapi/mod.rs` に設ける。
+未設定時、キー無効時、タイムアウト時、クォータ上限到達時は既存の `InnerTube` と `yt-dlp` のみにフォールバックする。
+
+`ytapi` は Check 19（§2）に従って `crate::model` と `crate::util` のみに依存する純粋リーフドメインモジュールとし、他ドメインや上位層（`lib`、`commands`、`error`）を参照しない。
+共用する型と判定関数（`BroadcastStatus`、`MetaSnapshot`、`classify_kind`、`classify_broadcast_meta`）は `innertube/mod.rs` から `model/mod.rs` へ移設し、時刻変換（`iso_utc`、`iso8601_ms`）と新規の ISO 8601 継続時間パーサ `parse_iso8601_duration`（`P0D`、`PT0S`、`P#DT#H#M#S` に対応し、外部クレートを使わずオーバーフローを検査）は `util.rs` へ集約する。
+
+本番のベース URL はコード内定数 `https://www.googleapis.com/youtube/v3` に固定し、中継サーバーやベース URL の設定キーは設けない。
+モックサーバー向けのベース URL 差し替えは `#[cfg(test)]` ビルドに限定し、設定ダンプの取り込み経由で第三者 URL へ API キーが送出される経路を塞ぐ。
+HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし、API キーは URL クエリ `?key=` を禁止して `X-Goog-Api-Key` ヘッダに `HeaderValue::set_sensitive(true)` を付けて送出する。
+`YtApi` はカスタム `Debug` 実装で保持キーを伏せ字化し、`reqwest::Error` は `.without_url()` で変換してからエラーやログへ載せる。
+
+`YtApi` 内部では日次クォータ上限の異なる 2 系統を独立して遮断管理する。
+共通枠（日次 10,000 units）は `shared_quota_until`、検索枠（日次 100 回）は `search_quota_until` で管理し、超過時は `std::time::SystemTime` と米国夏時間（DST）計算により求めた次回 `00:00 America/Los_Angeles` プラス 60 秒まで該当枠の呼び出しだけを止める。
+`HTTP 400`（`keyInvalid`）、`HTTP 401`、`HTTP 403`（`keyExpired`、`accessNotConfigured`、`ipRefererBlocked`）を受けたときはキー文字列が変更されるまで `key_invalid` をラッチして全呼び出しを停止する。
+`HTTP 429`、`5xx`、タイムアウトを含む通信失敗では 30 秒、60 秒、300 秒の段階クールダウンに入り、`HTTP 404` は遮断器を開かず個別フォールバックとする。
+`settings_set` と `data_import` によるホットリロード時は、前後空白トリム後のキー文字列が実際に変化したときだけ `key_invalid` ラッチ、両クォータ遮断器、クールダウンをリセットし、同じ値の再保存では遮断状態を維持する。
+
+フロントエンド向けコマンドは `ytapi_status` と `ytapi_test_connection`（§3.1）を提供する。
+`ytapi_status` は `YtApiAvailability`（`Unset`、`Active`、`KeyInvalid`、`SharedQuota`、`SearchQuota`）と次回リセット時刻（ミリ秒）を含む `YtApiStatus` を返す。
+`ytapi_test_connection` は `GET {api_base}/videos?part=id&id=dQw4w9WgXcQ`（1 unit）を実行して `YtApiTestOutcome` を返し、保存済みと異なる未保存の入力欄候補キーで試行した場合は保存済みキーの遮断器とラッチを変更しない。
+
+設定画面の `SettingsDepsSection.svelte` は WebKitGTK でのヒットずれを防ぐため `{#if}` による再マウントを行わず単一 `<input type={showApiKey ? "text" : "password"}>` で表示と非表示を切り替え、保存済み状態バッジ（未設定、有効、キー無効、共通クォータ上限、検索クォータ上限と次回リセット時刻）と接続テスト結果を表示する。
+`settings-diff-logic.ts` は `youtube.api_key` の差分表示を `***` と変更あり表記でマスクし、`routes/settings/+page.svelte` の一括保存では `saveStringSetting` の `onCommitted` コールバック内でのみ `savedSnapshot.youtubeApiKey` を更新する。
+
+回帰テストは `DB-YA-01` 〜 `DB-YA-08`（キー変更リセットと同一キー維持、共通と検索の独立クォータ遮断と太平洋時間リセット、キー無効ラッチ、段階クールダウン、`HTTP 404` 非遮断、接続テストの保存済み遮断器非破壊、`X-Goog-Api-Key` ヘッダ送出と `?key=` 非使用、ISO 8601 継続時間パース）、`DB-LD-42`（保護 5 キー一致）、`DB-DG-10` と `DB-DG-11`（診断マスク）、`SD-06`、`SF-03`、`SV-05`、`LN-04`（差分マスク、設定検索、保存確定スナップショット更新、翻訳プレースホルダ整合）。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
@@ -1666,7 +1705,11 @@ WebKitGTK 環境で今後同じ症状が観測された場合も、同じ方針�
 
 - WebView は `csp` を既定 `default-src 'self'`、サムネイル表示のために `img-src https://i.ytimg.com https://*.ggpht.com` だけを許可する
 - 外部リンクは WebView 内遷移ではなくシステムブラウザに開く
-- アカウント連携を持たないため Cookie やトークンの保存は発生しない（仕様決定 H）
+- アカウント連携を持たないため Google アカウントの認証情報（OAuth トークンやログイン Cookie）の保存は発生しない（仕様決定 H）
+- 一方、利用者自身がローカル環境向けに任意設定する非アカウント保護 5 キー（`ytdlp.po_token`、`ytdlp.path`、`mpv.extra_args`、`setup.deps_shown`、`youtube.api_key`）は秘密保護の対象とする（FR-86、FR-94、FR-97、仕様決定 DK、DX、EC）
+  - 保護 5 キーは `data_export` の出力から除外し、`data_import` 時もダンプ側の値を読み飛ばしてローカルの既存値を保持する（行不在の未設定時は注入しない）
+  - 秘匿キー（`youtube.api_key`、`ytdlp.po_token`）は `settings://changed` 送出時に `value` を空文字 `""` へ伏せ、設定 UI の入力欄と変更差分表示でも伏せ字化する
+  - 診断情報 zip 出力（`diag_export`、§4.21）では設定名断片（`api_key`、`apikey` 等）、HTTP ヘッダ（`X-Goog-Api-Key`、`X-Api-Key`）、JSON キーを `***` でマスクし、YouTube Data API v3 通信は `?key=` クエリを禁止して `HeaderValue::set_sensitive(true)` 付き `X-Goog-Api-Key` ヘッダ、カスタム `Debug`、`reqwest::Error::without_url()` によりログ漏洩を防ぐ
 - アプリの自動更新は tauri-plugin-updater で `latest.json`（GitHub Releases の `releases/latest/download/latest.json`）を確認する。起動時の自動確認と設定画面の手動確認を併用し、検知時は確認ダイアログ→承認でダウンロード・インストール・再起動する（FR-15、仕様決定 AB）。対象は AppImage と NSIS。更新成果物は minisign で署名し、公開鍵を `tauri.conf.json` の `plugins.updater.pubkey`、秘密鍵を GitHub Secrets（`TAURI_SIGNING_PRIVATE_KEY`）に置く。確認・ダウンロードはネイティブ側で行うため WebView の CSP には影響しない
 - クリップボードへの書き込みは tauri-plugin-clipboard-manager 経由に限定し、capabilities では `clipboard-manager:allow-write-text` のみを許可する。読み取り権限は付けない（FR-34、仕様決定 BC）
 - ファイル選択は tauri-plugin-dialog 経由に限定し、capabilities では `dialog:allow-open`・`dialog:allow-save`・`dialog:allow-message`（確認ダイアログ）のみを許可する（FR-62・FR-66、仕様決定 CM・CQ）
@@ -1690,6 +1733,7 @@ yt-browser/
       mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）・再生開始失敗診断（error_diag.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
+      ytapi/          # YouTube Data API v3 クライアントおよび 2 系統サーキットブレーカー（§4.24）
       chat/           # get_live_chat ポーラー・正規化・ポップアップ窓の位置保存と表示設定の解釈（popup.rs）
       feed/           # RSS ポーラー
       livewait/       # ライブ配信待機のポーラー（§4.16）

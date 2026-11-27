@@ -2,6 +2,7 @@
 // LN-01: en リソースが ja の全キーを網羅する（フォールバック対象なし）
 // LN-02: resolveMessage のロケール別解決・ja フォールバック・未知キー
 // LN-03: setLocale / currentLocale の反映と t() のプレースホルダー置換
+// LN-04: Phase 92 の YouTube Data API キー関連メッセージ解決と protectedNote 5 キー記載
 import { describe, expect, test } from "vitest";
 import { en } from "./i18n-en";
 import {
@@ -99,5 +100,70 @@ describe("LN-03 setLocale と t()", () => {
   test("LOCALES は ja / en を持つ", () => {
     expect(LOCALES).toContain("ja");
     expect(LOCALES).toContain("en");
+  });
+});
+
+describe("LN-04 YouTube Data API キーの i18n キーと保護対象案内", () => {
+  test("protectedNote は ja/en ともに 5 つのローカル保護設定を列挙する", () => {
+    const expectedKeys = [
+      "youtube.api_key",
+      "ytdlp.po_token",
+      "ytdlp.path",
+      "mpv.extra_args",
+      "setup.deps_shown",
+    ];
+    for (const locale of LOCALES) {
+      const note = resolveMessage(locale, "settings.ops.protectedNote");
+      for (const settingKey of expectedKeys) {
+        expect(note, `${locale}: ${settingKey}`).toContain(settingKey);
+      }
+    }
+  });
+
+  test("settings.deps.youtubeApiKey 系キーが ja/en で解決されプレースホルダーを置換できる", () => {
+    const keys: MessageKey[] = [
+      "settings.deps.youtubeApiKey",
+      "settings.deps.youtubeApiKeyPlaceholder",
+      "settings.deps.youtubeApiKeyDesc",
+      "settings.deps.youtubeApiKeyShow",
+      "settings.deps.youtubeApiKeyHide",
+      "settings.deps.youtubeApiKeyTest",
+      "settings.deps.youtubeApiKeyTesting",
+      "settings.deps.youtubeApiKeyTestOk",
+      "settings.deps.youtubeApiKeyTestFailed",
+      "settings.deps.youtubeApiKeyStatusUnset",
+      "settings.deps.youtubeApiKeyStatusActive",
+      "settings.deps.youtubeApiKeyStatusKeyInvalid",
+      "settings.deps.youtubeApiKeyStatusSharedQuota",
+      "settings.deps.youtubeApiKeyStatusSearchQuota",
+      "settings.deps.youtubeApiKeyResetAt",
+    ];
+    for (const locale of LOCALES) {
+      for (const key of keys) {
+        const msg = resolveMessage(locale, key);
+        expect(msg).not.toBe(key);
+        expect(msg.trim()).not.toBe("");
+      }
+    }
+
+    try {
+      setLocale("ja");
+      expect(
+        t("settings.deps.youtubeApiKeyTestFailed", { reason: "keyInvalid" }),
+      ).toContain("keyInvalid");
+      expect(
+        t("settings.deps.youtubeApiKeyResetAt", { time: "11/28 17:01" }),
+      ).toContain("11/28 17:01");
+
+      setLocale("en");
+      expect(
+        t("settings.deps.youtubeApiKeyTestFailed", { reason: "keyInvalid" }),
+      ).toContain("keyInvalid");
+      expect(
+        t("settings.deps.youtubeApiKeyResetAt", { time: "11/28 17:01" }),
+      ).toContain("11/28 17:01");
+    } finally {
+      setLocale("ja");
+    }
   });
 });

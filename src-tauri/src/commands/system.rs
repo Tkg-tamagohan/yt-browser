@@ -53,6 +53,7 @@ pub async fn settings_set(
     app: AppHandle,
     db: State<'_, Db>,
     players: State<'_, crate::mpv::PlayerManager>,
+    ytapi: State<'_, Arc<crate::ytapi::YtApi>>,
     key: String,
     value: String,
 ) -> Result<(), UiError> {
@@ -63,6 +64,11 @@ pub async fn settings_set(
         )));
     }
     db.setting_set(&key, &value)?;
+    // YouTube Data API キーの変更を即座にホットリロードする（FR-97、仕様決定 EC）。
+    // トリム後文字列が変わった場合のみ遮断器・ラッチをリセットする。
+    if key == crate::ytapi::SETTING_YOUTUBE_API_KEY {
+        ytapi.on_key_changed(Some(&value));
+    }
     // PiP 追従の切替は稼働中のインスタンスへ即時反映する（仕様決定 AL）。
     // emit より先に配っておくと、画面の再読み取り表示と窓の実態が揃う
     if key == crate::mpv::SETTING_PIP_FIT_ASPECT {
@@ -70,10 +76,39 @@ pub async fn settings_set(
             .set_pip_fit_all(crate::mpv::pip_fit_aspect_enabled(Some(value.clone())))
             .await;
     }
-    // コミット済みの値を載せて変更を通知する。設定値を保持する画面は
-    // 再読み取りなしで同期できる。購読者がいなくても正常なので失敗は捨てる
-    let _ = app.emit("settings://changed", SettingChanged { key, value });
+    // コミット済みの値を載せて変更を通知する。秘匿設定はイベント経路への露出を
+    // 防ぐため空文字へ伏せる（設計書 §3.2、FR-97）。
+    let emit_value =
+        if key == crate::ytapi::SETTING_YOUTUBE_API_KEY || key == crate::yt::SETTING_PO_TOKEN {
+            String::new()
+        } else {
+            value
+        };
+    let _ = app.emit(
+        "settings://changed",
+        SettingChanged {
+            key,
+            value: emit_value,
+        },
+    );
     Ok(())
+}
+
+/// YouTube Data API v3 の現在状態（未設定 / 有効 / キー無効 / クォータ上限）を返す（FR-97、仕様決定 EC）。
+#[tauri::command]
+pub async fn ytapi_status(
+    ytapi: State<'_, Arc<crate::ytapi::YtApi>>,
+) -> Result<crate::model::YtApiStatus, UiError> {
+    Ok(ytapi.status())
+}
+
+/// YouTube Data API v3 の接続テスト（`videos.list` 1 unit）を実行する（FR-97、仕様決定 EC）。
+#[tauri::command]
+pub async fn ytapi_test_connection(
+    ytapi: State<'_, Arc<crate::ytapi::YtApi>>,
+    api_key: Option<String>,
+) -> Result<crate::model::YtApiTestOutcome, UiError> {
+    Ok(ytapi.test_connection(api_key.as_deref()).await)
 }
 
 /// `monitor_list`（FR-31、仕様決定 AZ）。再生窓の起動ディスプレイ選択肢として
@@ -189,6 +224,7 @@ pub async fn data_import(
     players: State<'_, crate::mpv::PlayerManager>,
     feed_poller: State<'_, Arc<crate::feed::FeedPoller>>,
     meta_resolver: State<'_, Arc<crate::metaresolve::MetaResolver>>,
+    ytapi: State<'_, Arc<crate::ytapi::YtApi>>,
 ) -> Result<(), UiError> {
     let path = path.trim().to_string();
     if path.is_empty() {
@@ -197,6 +233,7 @@ pub async fn data_import(
     struct ImportOutcome {
         changed: Vec<(String, Option<String>)>,
         pip_fit_raw: Option<String>,
+        ytapi_key: Option<String>,
     }
     let db_owned = db.inner().clone();
     let outcome = tokio::task::spawn_blocking(move || -> Result<ImportOutcome, UiError> {
@@ -206,14 +243,17 @@ pub async fn data_import(
             .map_err(|e| UiError::invalid_input(format!("インポート形式が不正です: {e}")))?;
         let changed = db_owned.import_dump(&dump)?;
         let pip_fit_raw = db_owned.setting_get(crate::mpv::SETTING_PIP_FIT_ASPECT)?;
+        let ytapi_key = db_owned.setting_get(crate::ytapi::SETTING_YOUTUBE_API_KEY)?;
         Ok(ImportOutcome {
             changed,
             pip_fit_raw,
+            ytapi_key,
         })
     })
     .await
     .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??;
 
+    ytapi.on_key_changed(outcome.ytapi_key.as_deref());
     // 稼働中プレイヤーの PiP アスペクト比追従を最新設定（未設定時は既定 true）へ同期する。
     // settings://changed 送出前に配って画面表示と窓の実態を揃える（settings_set と同順）。
     players
@@ -274,6 +314,7 @@ mod tests {
             crate::yt::SETTING_YTDLP_PATH,
             crate::mpv::SETTING_MPV_EXTRA_ARGS,
             crate::deps::SETTING_SETUP_DEPS_SHOWN,
+            crate::ytapi::SETTING_YOUTUBE_API_KEY,
         ];
         assert_eq!(crate::db::export::LOCAL_PROTECTED_SETTINGS, expected);
     }
