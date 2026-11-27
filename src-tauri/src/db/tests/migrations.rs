@@ -91,6 +91,7 @@ fn migrate_v4_normalizes_uc_less_channel_ids() {
     let db = Db {
         conn: Arc::new(Mutex::new(conn)),
         history_suppressed: Arc::new(Mutex::new(HashSet::new())),
+        import_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     db.migrate().unwrap();
 

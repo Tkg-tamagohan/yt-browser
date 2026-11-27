@@ -181,10 +181,21 @@ impl Db {
         Ok(out)
     }
 
-    /// プレイリスト 1 件取得（FR-101）。存在しない場合は `None`。
+    /// プレイリスト 1 件取得（FR-101、テスト検証用）。存在しない場合は `None`。
+    #[cfg(test)]
     pub fn playlist_get(&self, playlist_id: i64) -> Result<Option<Playlist>, DbError> {
         let conn = self.lock()?;
         Self::playlist_get_conn(&conn, playlist_id)
+    }
+
+    /// プレイリスト 1 件と現在の復元世代（`import_epoch`）を同一ロック内で取得する（FR-101）。
+    pub fn playlist_get_with_epoch(
+        &self,
+        playlist_id: i64,
+    ) -> Result<Option<(Playlist, u64)>, DbError> {
+        let conn = self.lock()?;
+        let epoch = self.import_epoch.load(Ordering::Acquire);
+        Ok(Self::playlist_get_conn(&conn, playlist_id)?.map(|pl| (pl, epoch)))
     }
 
     fn playlist_get_conn(conn: &Connection, playlist_id: i64) -> Result<Option<Playlist>, DbError> {
@@ -423,15 +434,27 @@ impl Db {
 
     /// 既存プレイリストへ未登録動画のみを末尾（`MAX(position) + 1`）へ非破壊追記し、
     /// `videos` メタ（`published_at` を含む）を補強し、`synced_at` を更新する（FR-101、仕様決定 EG）。
+    /// 適用直前の同一トランザクション内で復元世代（`expected_import_epoch`）と
+    /// `source_list_id`（`expected_source_list_id`）の一致を検証し、同期中のバックアップ復元等で
+    /// 別プレイリストへ混入することを防ぐ。
     /// 戻り値は更新後の `Playlist` と今回新規追加された件数。
     pub fn playlist_sync_apply(
         &self,
         playlist_id: i64,
+        expected_source_list_id: &str,
+        expected_import_epoch: u64,
         items: &[PlaylistImportItem],
         synced_at: &str,
     ) -> Result<(Playlist, usize), DbError> {
         let mut conn = self.lock()?;
+        if self.import_epoch.load(Ordering::Acquire) != expected_import_epoch {
+            return Err(DbError::StaleSync);
+        }
         let tx = conn.transaction()?;
+        let current = Self::playlist_get_conn(&tx, playlist_id)?.ok_or(DbError::NotFound)?;
+        if current.source_list_id.as_deref().map(str::trim) != Some(expected_source_list_id) {
+            return Err(DbError::StaleSync);
+        }
         let added_count = Self::playlist_add_many_tx(
             &tx,
             playlist_id,

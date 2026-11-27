@@ -481,6 +481,29 @@ async fn import_playlist_with(
     .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))?
 }
 
+fn build_playlist_sync_url(source_list_id: &str) -> String {
+    let id = source_list_id.trim();
+    let upper = id.to_ascii_uppercase();
+    if upper.starts_with("RD") {
+        // 動画 ID 起点のミックス（RD<11文字> / RDAMVM<11文字>）は /playlist?list= だと
+        // 再生起点 v= が欠落するため、視聴 URL 形式で同期する
+        let seed = if id.len() == 13 && crate::model::is_video_id(&id[2..]) {
+            Some(&id[2..])
+        } else if upper.starts_with("RDAMVM")
+            && id.len() == 17
+            && crate::model::is_video_id(&id[6..])
+        {
+            Some(&id[6..])
+        } else {
+            None
+        };
+        if let Some(vid) = seed {
+            return format!("https://www.youtube.com/watch?v={vid}&list={id}");
+        }
+    }
+    format!("https://www.youtube.com/playlist?list={id}")
+}
+
 async fn sync_playlist_with(
     playlist_id: i64,
     ytapi: &YtApi,
@@ -491,10 +514,11 @@ async fn sync_playlist_with(
         return Err(UiError::invalid_input("playlist_id が不正です"));
     }
     let db_get = db.clone();
-    let playlist = tokio::task::spawn_blocking(move || db_get.playlist_get(playlist_id))
-        .await
-        .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??
-        .ok_or(crate::db::DbError::NotFound)?;
+    let (playlist, import_epoch) =
+        tokio::task::spawn_blocking(move || db_get.playlist_get_with_epoch(playlist_id))
+            .await
+            .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??
+            .ok_or(crate::db::DbError::NotFound)?;
     let source_list_id = playlist
         .source_list_id
         .as_deref()
@@ -503,14 +527,20 @@ async fn sync_playlist_with(
         .ok_or_else(|| UiError::invalid_input("このプレイリストには同期元 ID がありません"))?
         .to_string();
 
-    let url = format!("https://www.youtube.com/playlist?list={source_list_id}");
+    let url = build_playlist_sync_url(&source_list_id);
     let (_title, items) =
         fetch_remote_playlist(&url, Some(&source_list_id), false, ytapi, resolver, db).await?;
 
     let synced_at = now_utc_iso();
     let db_apply = db.clone();
     let (updated_playlist, added_count) = tokio::task::spawn_blocking(move || {
-        db_apply.playlist_sync_apply(playlist_id, &items, &synced_at)
+        db_apply.playlist_sync_apply(
+            playlist_id,
+            &source_list_id,
+            import_epoch,
+            &items,
+            &synced_at,
+        )
     })
     .await
     .map_err(|e| UiError::internal(format!("ワーカーが中断しました: {e}")))??;
@@ -1255,6 +1285,24 @@ mod tests {
         assert_eq!(outcome_500.added_count, 0);
 
         // 8) WL / RD... 取り込み時は source_list_id 保存、同期時も ytapi バイパスで yt-dlp 直行
+        //    動画 ID 起点の RD... は watch?v=<id>&list=RD<id> を組み立てて渡すこと
+        assert_eq!(
+            build_playlist_sync_url("WL"),
+            "https://www.youtube.com/playlist?list=WL"
+        );
+        assert_eq!(
+            build_playlist_sync_url("RDfbVid000001"),
+            "https://www.youtube.com/watch?v=fbVid000001&list=RDfbVid000001"
+        );
+        assert_eq!(
+            build_playlist_sync_url("RDAMVMfbVid000001"),
+            "https://www.youtube.com/watch?v=fbVid000001&list=RDAMVMfbVid000001"
+        );
+        assert_eq!(
+            build_playlist_sync_url("RDCLAK5uy_abc123"),
+            "https://www.youtube.com/playlist?list=RDCLAK5uy_abc123"
+        );
+
         let reqs_before_wl = recorded.lock().unwrap().len();
         let wl_pl = import_playlist_with(
             "https://www.youtube.com/playlist?list=WL",
@@ -1271,6 +1319,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(wl_sync.added_count, 0);
+        assert_eq!(recorded.lock().unwrap().len(), reqs_before_wl);
+
+        // 動画 ID を含む RD 系ミックス URL の取り込みと同期（引数 URL 検証付き偽 yt-dlp）
+        let rd_script = write_fake_ytdlp(
+            "ld47_rd_url",
+            "@echo off\r\nif \"%~1\"==\"https://www.youtube.com/watch?v=fbVid000001&list=RDfbVid000001\" (\r\n  echo {\"title\":\"RD\",\"entries\":[{\"id\":\"rdMixVid001\",\"title\":\"RD Mix\",\"channel_id\":\"UCfb00000000000000000001\",\"channel\":\"RD CH\"}]}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n",
+            "#!/bin/sh\nif [ \"$1\" = \"https://www.youtube.com/watch?v=fbVid000001&list=RDfbVid000001\" ]; then\n  printf '%s\\n' '{\"title\":\"RD\",\"entries\":[{\"id\":\"rdMixVid001\",\"title\":\"RD Mix\",\"channel_id\":\"UCfb00000000000000000001\",\"channel\":\"RD CH\"}]}'\n  exit 0\nfi\nexit 1\n",
+        );
+        db.setting_set(crate::yt::SETTING_YTDLP_PATH, rd_script.0.to_str().unwrap())
+            .unwrap();
+        let rd_pl = import_playlist_with(
+            "https://www.youtube.com/watch?v=fbVid000001&list=RDfbVid000001",
+            Some("Radio Mix Sync"),
+            &ytapi,
+            &resolver,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rd_pl.source_list_id.as_deref(), Some("RDfbVid000001"));
+        let rd_sync = sync_playlist_with(rd_pl.id, &ytapi, &resolver, &db)
+            .await
+            .unwrap();
+        assert_eq!(rd_sync.added_count, 0);
         assert_eq!(recorded.lock().unwrap().len(), reqs_before_wl);
 
         srv.abort();

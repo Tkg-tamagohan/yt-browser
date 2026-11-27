@@ -796,7 +796,7 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
   - 手動作成したプレイリスト（`playlist_create` や `queue_save_as_playlist`）および `list` パラメータを欠く URL 由来の取り込みは両列を `NULL` のまま保つ
 - 新規コマンド `playlist_sync(playlist_id)` を設け、取り込み済みプレイリストの `source_list_id` を用いて Phase 94 の取得経路（`ytapi::playlist_items`（`fetch_title = false` で `playlists.list` の 1 unit 消費を省略）を優先し、`WL` や `HL` や `LM` や `LL` で始まる ID や `RD` で始まる ID および API 障害時は `yt::playlist_meta` へフォールバック）でリモート項目を再取得する
   - 取得した項目のうち、対象プレイリストにまだ登録されていない `video_id` のみを `MAX(position) + 1` から末尾へ `INSERT OR IGNORE` で非破壊追記し、`videos` テーブルの表示メタ（`published_at` を含む）を補強したうえで `synced_at` を更新し、更新後の `Playlist` と追加件数 `addedCount` を返す
-  - ローカルで並び替えた順序（FR-11）、手動で追加した項目、ローカルから削除済みの動画位置、既存の非 NULL `published_at`（`COALESCE` 保護）、および `queue_state.current_index` は同期によって破壊せず維持する
+  - ローカルで並び替えた順序（FR-11）、手動で追加した項目、既存行の位置（削除による空き番を含む）、既存の非 NULL `published_at`（`COALESCE` 保護）、および `queue_state.current_index` は同期によって破壊せず維持する（削除履歴テーブルは持たないため、YouTube 側に残っている動画をローカルから削除していた場合は未登録扱いとして末尾へ再追加される）
   - `playlist_id` 不正または `source_list_id` 未設定の手動作成プレイリストは外部通信や `yt-dlp` 呼び出しを行わず `invalid_input` エラーを返し、不在のプレイリストは `NotFound` エラーを返し、標準リストに対する公式 API の `HTTP 404` は `yt-dlp` へフォールバックせず `invalid_input` エラーを返す
   - リモート側が `HTTP 200` で有効項目 0 件（空または全件非公開および削除済み）を返した場合はエラーやローカル削除を行わず、`addedCount = 0` と `synced_at` 更新のみの非破壊完了とする
 - エクスポートおよびインポート（`ExportPlaylist`）は既存の `EXPORT_FORMAT_VERSION = 1` を維持したまま任意フィールド `source_list_id` と `synced_at` を引き継ぎ、`validate_dump` で `source_list_id` 形式（空でない 128 バイト以下の ASCII 英数字と `_` と `-`）と `synced_at` 形式（64 バイト以下の有効な ISO 8601 日時）を検証する

@@ -3,6 +3,7 @@
 // PS-02: syncPlaylist は addedCount===0 で再取得せず最新トーストを出し、plHasMore===true 時は再取得をスキップする
 // PS-03: syncPlaylist は多重実行ガード・選択切替時の上書き防止・エラー時の syncingId 解除・削除および一括操作との競合抑止を行う
 // PS-04: syncPlaylist は大量追加（>100 件）でページングを維持し、空一覧からの同期でも全件または先頭ページを反映する
+// PS-05: 100 件ちょうどのプレイリストで末尾削除後に syncPlaylist した場合も既読範囲を再取得して同期行を表示する
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { invokeMock, notifyMock, loadLibraryMock } = vi.hoisted(() => ({
@@ -374,6 +375,63 @@ describe("library-page playlist sync", () => {
 
     await lib.loadMoreItems();
     expect(lib.playlistItems).toHaveLength(120);
+    expect(lib.plHasMore).toBe(false);
+    lib.dispose();
+  });
+
+  it("PS-05 100 件ちょうどのプレイリストで末尾削除後に同期した行が一覧に表示される", async () => {
+    const initial100 = Array.from({ length: 100 }, (_, i) =>
+      makeEntry(i, `exact${String(i).padStart(7, "0")}`),
+    );
+    const syncedNew = makeEntry(99, "syncedAtPos99");
+    const afterDelete99 = initial100.slice(0, 99);
+    const afterSync100 = [...afterDelete99, syncedNew];
+
+    const plBefore = makePlaylist({ id: 40, itemCount: 100 });
+    const plAfter = makePlaylist({
+      id: 40,
+      itemCount: 100,
+      syncedAt: "2026-11-27T17:00:00+00:00",
+    });
+
+    let synced = false;
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null; limit?: number | null }) => {
+        if (cmd === "playlist_items") {
+          if (args?.afterPosition === null && !synced) {
+            return Promise.resolve(initial100);
+          }
+          if (args?.afterPosition === null && synced) {
+            return Promise.resolve(afterSync100);
+          }
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_remove") {
+          return Promise.resolve(initial100[99]);
+        }
+        if (cmd === "playlist_sync") {
+          synced = true;
+          return Promise.resolve({ playlist: plAfter, addedCount: 1 });
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const lib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    lib.va.playlists = [plBefore];
+    await lib.selectPlaylist(plBefore);
+    expect(lib.playlistItems).toHaveLength(100);
+    expect(lib.plHasMore).toBe(true);
+
+    // 末尾（position=99）を削除したあと同期を実行し、同じ position=99 に追記された行が表示されること
+    await lib.removeItem(initial100[99]);
+    expect(lib.playlistItems).toHaveLength(99);
+    expect(lib.plHasMore).toBe(true);
+
+    await lib.syncPlaylist();
+
+    expect(lib.playlistItems).toHaveLength(100);
+    expect(lib.playlistItems[99]).toEqual(syncedNew);
     expect(lib.plHasMore).toBe(false);
     lib.dispose();
   });

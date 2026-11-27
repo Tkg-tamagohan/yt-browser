@@ -734,8 +734,15 @@ fn playlist_sync_apply_appends_non_destructively_and_preserves_order_and_queue()
         },
     ];
 
+    let (_, epoch0) = db.playlist_get_with_epoch(pl.id).unwrap().unwrap();
     let (updated, added) = db
-        .playlist_sync_apply(pl.id, &incoming, "2026-05-10T12:00:00+00:00")
+        .playlist_sync_apply(
+            pl.id,
+            "PLsync0001",
+            epoch0,
+            &incoming,
+            "2026-05-10T12:00:00+00:00",
+        )
         .unwrap();
     assert_eq!(added, 2);
     assert_eq!(updated.item_count, 5);
@@ -786,7 +793,13 @@ fn playlist_sync_apply_appends_non_destructively_and_preserves_order_and_queue()
 
     // リモート 0 件同期は非破壊で added_count=0、synced_at のみ更新
     let (updated_empty, added_empty) = db
-        .playlist_sync_apply(pl.id, &[], "2026-05-11T00:00:00+00:00")
+        .playlist_sync_apply(
+            pl.id,
+            "PLsync0001",
+            epoch0,
+            &[],
+            "2026-05-11T00:00:00+00:00",
+        )
         .unwrap();
     assert_eq!(added_empty, 0);
     assert_eq!(updated_empty.item_count, 5);
@@ -796,11 +809,74 @@ fn playlist_sync_apply_appends_non_destructively_and_preserves_order_and_queue()
     );
     assert_eq!(db.playlist_items(pl.id).unwrap().len(), 5);
 
+    // source_list_id 不一致時は StaleSync で拒否し、項目も synced_at も変更しない
+    assert!(matches!(
+        db.playlist_sync_apply(
+            pl.id,
+            "PLother0002",
+            epoch0,
+            &[PlaylistImportItem {
+                video: vref("shouldSkip1", "混入禁止"),
+                published_at: None,
+            }],
+            "2026-05-12T00:00:00+00:00",
+        ),
+        Err(DbError::StaleSync)
+    ));
+    assert_eq!(db.playlist_items(pl.id).unwrap().len(), 5);
+    assert_eq!(
+        db.playlist_get(pl.id)
+            .unwrap()
+            .unwrap()
+            .synced_at
+            .as_deref(),
+        Some("2026-05-11T00:00:00+00:00")
+    );
+
+    // import_dump 実行後は同一 ID・同一 source_list_id の復元先に対しても古い epoch の同期適用を拒否する
+    let mut dump = db.export_dump().unwrap();
+    let imported_pl = dump.playlists[0].clone();
+    dump.playlists = vec![crate::model::ExportPlaylist {
+        id: imported_pl.id,
+        name: "復元先リスト".to_string(),
+        sort_order: 0,
+        items: vec![],
+        source_list_id: Some("PLsync0001".to_string()),
+        synced_at: Some("2026-04-01T00:00:00+00:00".to_string()),
+    }];
+    db.import_dump(&dump).unwrap();
+    assert!(matches!(
+        db.playlist_sync_apply(
+            pl.id,
+            "PLsync0001",
+            epoch0,
+            &[PlaylistImportItem {
+                video: vref("staleLeak01", "復元先への混入"),
+                published_at: None,
+            }],
+            "2026-05-13T00:00:00+00:00",
+        ),
+        Err(DbError::StaleSync)
+    ));
+    assert!(db.playlist_items(pl.id).unwrap().is_empty());
+    assert_eq!(
+        db.playlist_get(pl.id)
+            .unwrap()
+            .unwrap()
+            .synced_at
+            .as_deref(),
+        Some("2026-04-01T00:00:00+00:00")
+    );
+
+    // 新しい epoch では再び同期適用できる
+    let (_, epoch1) = db.playlist_get_with_epoch(pl.id).unwrap().unwrap();
+    assert!(epoch1 > epoch0);
+
     // playlist_get と不在 ID の DbError::NotFound
     let fetched = db.playlist_get(pl.id).unwrap().unwrap();
     assert_eq!(
         fetched.synced_at.as_deref(),
-        Some("2026-05-11T00:00:00+00:00")
+        Some("2026-04-01T00:00:00+00:00")
     );
     assert!(db.playlist_get(9999).unwrap().is_none());
     assert!(matches!(
@@ -808,7 +884,7 @@ fn playlist_sync_apply_appends_non_destructively_and_preserves_order_and_queue()
         Err(DbError::NotFound)
     ));
     assert!(matches!(
-        db.playlist_sync_apply(9999, &[], "2026-05-11T00:00:00+00:00"),
+        db.playlist_sync_apply(9999, "PLx", epoch1, &[], "2026-05-11T00:00:00+00:00"),
         Err(DbError::NotFound)
     ));
 }

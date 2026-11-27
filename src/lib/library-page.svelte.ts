@@ -87,9 +87,12 @@ export function createLibraryPageState(opts: Options) {
   // playlistItems の末尾要素が入れ替わってもカーソルは動かないため、
   // 応答の末尾 position だけで別管理する
   const PL_PAGE = 100;
-  let plTailPos = $state(0);
+  let plTailPos = $state<number | null>(null);
   let plHasMore = $state(false);
   let plLoadingMore = $state(false);
+  // plHasMore===true の状態で末尾要素が削除され、syncPlaylist が同じ位置番号を
+  // 再利用し得る状態。次の syncPlaylist 追記時に既読範囲を再取得して解消する
+  let plTailDirty = false;
   let newPlaylistName = $state("");
   let renamingId = $state<number | null>(null);
   let renameText = $state("");
@@ -428,7 +431,9 @@ export function createLibraryPageState(opts: Options) {
     selectedId = pl.id;
     renamingId = null;
     playlistItems = [];
+    plTailPos = null;
     plHasMore = false;
+    plTailDirty = false;
     const req = ++itemsReq;
     try {
       const items = await invoke<PlaylistEntry[]>("playlist_items", {
@@ -440,8 +445,9 @@ export function createLibraryPageState(opts: Options) {
       if (req !== itemsReq || selectedId !== pl.id) return;
       playlistItems = items;
       const last = items[items.length - 1];
-      if (last) plTailPos = last.position;
+      plTailPos = last ? last.position : null;
       plHasMore = items.length >= PL_PAGE;
+      plTailDirty = false;
     } catch (e) {
       if (req === itemsReq) notify(t("library.failed", { message: asErrorMessage(e) }));
     }
@@ -472,6 +478,7 @@ export function createLibraryPageState(opts: Options) {
       const last = res[res.length - 1];
       if (last) plTailPos = last.position;
       plHasMore = res.length >= PL_PAGE;
+      plTailDirty = false;
     } catch (e) {
       if (req === itemsReq) {
         notify(t("library.failed", { message: asErrorMessage(e) }));
@@ -497,7 +504,10 @@ export function createLibraryPageState(opts: Options) {
       ...playlistItems,
       ...res.filter((i) => !seen.has(i.videoId)),
     ];
+    const last = res[res.length - 1];
+    if (last) plTailPos = last.position;
     plHasMore = false;
+    plTailDirty = false;
     return true;
   }
 
@@ -569,8 +579,9 @@ export function createLibraryPageState(opts: Options) {
         if (itemReq === itemsReq && selectedId === playlistId) {
           playlistItems = items;
           const last = items[items.length - 1];
-          if (last) plTailPos = last.position;
+          plTailPos = last ? last.position : null;
           plHasMore = false;
+          plTailDirty = false;
         }
       }
     } catch (e) {
@@ -647,11 +658,11 @@ export function createLibraryPageState(opts: Options) {
               name: res.playlist.name,
             }),
       );
-      if (selectedId === plId && res.addedCount > 0 && !plHasMore) {
+      if (selectedId === plId && res.addedCount > 0 && (!plHasMore || plTailDirty)) {
         const req = ++itemsReq;
         const prevLen = playlistItems.length;
         const pageLimit =
-          res.addedCount <= PL_PAGE
+          !plHasMore && res.addedCount <= PL_PAGE
             ? null
             : prevLen === 0
               ? PL_PAGE
@@ -664,8 +675,9 @@ export function createLibraryPageState(opts: Options) {
         if (req !== itemsReq || selectedId !== plId) return;
         playlistItems = items;
         const last = items[items.length - 1];
-        plTailPos = last ? last.position : 0;
+        plTailPos = last ? last.position : null;
         plHasMore = pageLimit !== null && items.length >= pageLimit;
+        plTailDirty = false;
       }
     } catch (e) {
       notify(t("library.playlist.syncFailed", { message: asErrorMessage(e) }));
@@ -733,8 +745,9 @@ export function createLibraryPageState(opts: Options) {
                 if (req === itemsReq && selectedId === plId) {
                   playlistItems = items;
                   const last = items[items.length - 1];
-                  if (last) plTailPos = last.position;
+                  plTailPos = last ? last.position : null;
                   plHasMore = false;
+                  plTailDirty = false;
                 }
               } catch {
                 // 取り直しの失敗は既存表示のまま
@@ -928,8 +941,9 @@ export function createLibraryPageState(opts: Options) {
       if (req !== itemsReq || selectedId !== plId) return;
       playlistItems = items;
       const last = items[items.length - 1];
-      if (last) plTailPos = last.position;
+      plTailPos = last ? last.position : null;
       plHasMore = false;
+      plTailDirty = false;
       notify(t(doneKey));
     } catch (e) {
       notify(
@@ -1045,6 +1059,17 @@ export function createLibraryPageState(opts: Options) {
         playlistItems = playlistItems.filter(
           (i) => i.videoId !== entry.videoId,
         );
+        const removedPos = removed?.position ?? entry.position;
+        if (plTailPos !== null && removedPos >= plTailPos) {
+          if (plHasMore) plTailDirty = true;
+          plTailPos =
+            playlistItems.length === 0
+              ? null
+              : playlistItems.reduce(
+                  (max, i) => Math.max(max, i.position),
+                  -Infinity,
+                );
+        }
       }
       va.playlists = va.playlists.map((p) =>
         p.id === playlistId ? { ...p, itemCount: p.itemCount - 1 } : p,
@@ -1083,6 +1108,9 @@ export function createLibraryPageState(opts: Options) {
                   at < 0
                     ? [...rest, restored]
                     : [...rest.slice(0, at), restored, ...rest.slice(at)];
+                if (plTailPos === null || restored.position > plTailPos) {
+                  plTailPos = restored.position;
+                }
               }
               va.playlists = va.playlists.map((p) =>
                 p.id === playlistId

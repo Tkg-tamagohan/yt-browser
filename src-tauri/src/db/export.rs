@@ -286,6 +286,8 @@ impl Db {
             }
         }
         tx.commit()?;
+        // 復元コミットと同じ conn ロック区間内で世代を更新し、進行中の非同期同期を抑止する
+        self.import_epoch.fetch_add(1, Ordering::Release);
         let mut all_keys = BTreeSet::new();
         for k in before_settings.keys() {
             if !is_local_protected_setting(k) {
