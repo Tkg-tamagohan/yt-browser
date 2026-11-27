@@ -1417,5 +1417,71 @@ describe("library-page playlist sync", () => {
     expect(ordLib.va.playlists.map((p) => p.id)).toEqual([56, 55]);
     expect(ordLib.va.playlists[1].name).toBe("Renamed");
     ordLib.dispose();
+
+    // 7. 削除取り消し中に syncPlaylist で一覧更新が起きた場合も、
+    // 一覧並べ替え保存（playlist_reorder_lists）完了を待ってから playlist_list を呼ぶ
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const uoPl1Before = makePlaylist({ id: 57, name: "U1", sortOrder: 0, itemCount: 2 });
+    const uoPl2 = makePlaylist({ id: 58, name: "U2", sortOrder: 1, itemCount: 0 });
+    const uoPl1AfterSync = makePlaylist({
+      id: 57,
+      name: "U1",
+      sortOrder: 0,
+      itemCount: 1,
+      syncedAt: "2026-11-27T19:40:00+00:00",
+    });
+    const uoPl1AfterBoth = makePlaylist({
+      id: 57,
+      name: "U1",
+      sortOrder: 1,
+      itemCount: 2,
+      syncedAt: "2026-11-27T19:40:00+00:00",
+    });
+    const uoEntryA = makeEntry(0, "uoA00000001");
+    const uoEntryB = makeEntry(1, "uoB00000002");
+    const uoSyncDef = deferred<PlaylistSyncOutcome>();
+    const uoRestoreDef = deferred<PlaylistEntry>();
+    const uoReorderDef = deferred<void>();
+    let uoListCalls = 0;
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") return Promise.resolve([uoEntryA, uoEntryB]);
+      if (cmd === "playlist_remove") return Promise.resolve(uoEntryB);
+      if (cmd === "playlist_sync") return uoSyncDef.promise;
+      if (cmd === "playlist_item_restore") return uoRestoreDef.promise;
+      if (cmd === "playlist_reorder_lists") return uoReorderDef.promise;
+      if (cmd === "playlist_list") {
+        uoListCalls += 1;
+        return Promise.resolve([uoPl2, uoPl1AfterBoth]);
+      }
+      return Promise.resolve(null);
+    });
+
+    const uoLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    uoLib.va.playlists = [uoPl1Before, uoPl2];
+    await uoLib.selectPlaylist(uoPl1Before);
+    await uoLib.removeItem(uoEntryB);
+    const uoUndo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { run?: () => void }
+      | undefined;
+
+    const uoSyncTask = uoLib.syncPlaylist();
+    uoUndo!.run!();
+    uoSyncDef.resolve({ playlist: uoPl1AfterSync, addedCount: 0 });
+    await uoSyncTask;
+
+    uoLib.moveList(0, 1);
+    uoRestoreDef.resolve(uoEntryB);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(uoListCalls).toBe(0);
+
+    uoReorderDef.resolve();
+    await vi.waitFor(() => expect(uoLib.restoring).toBe(false));
+    expect(uoListCalls).toBe(1);
+    expect(uoLib.va.playlists.map((p) => p.id)).toEqual([58, 57]);
+    expect(uoLib.va.playlists[1].itemCount).toBe(2);
+    uoLib.dispose();
   });
 });
