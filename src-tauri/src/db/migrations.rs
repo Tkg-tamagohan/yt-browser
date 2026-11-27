@@ -543,4 +543,12 @@ pub const MIGRATIONS: &[Migration] = &[
                    (kind IN ('live', 'premiere') AND (first_seen_at >= datetime('now', '-1 day') OR datetime(published_at) >= datetime('now', '-1 day')))
                  );",
     },
+    // Phase 96: 取り込み済みプレイリストの差分追記同期（FR-101、仕様決定 EG）。
+    // playlists テーブルへ同期元リスト ID（source_list_id）と最終同期時刻（synced_at）を追加する。
+    Migration {
+        version: 26,
+        name: "playlists_sync_meta",
+        sql: "ALTER TABLE playlists ADD COLUMN source_list_id TEXT;
+              ALTER TABLE playlists ADD COLUMN synced_at TEXT;",
+    },
 ];

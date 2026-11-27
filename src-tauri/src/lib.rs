@@ -337,6 +337,7 @@ pub fn run() {
             commands::playlist_remove,
             commands::playlist_item_restore,
             commands::playlist_import,
+            commands::playlist_sync,
             commands::playlist_reorder,
             commands::playlist_reorder_lists,
             commands::playlist_sort,

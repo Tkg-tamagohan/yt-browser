@@ -524,3 +524,110 @@ fn export_and_import_protect_youtube_api_key() {
     clean.import_dump(&evil_dump).unwrap();
     assert_eq!(clean.setting_get("youtube.api_key").unwrap(), None);
 }
+
+/// DB-LD-46: `ExportPlaylist` の `sourceListId` / `syncedAt` 往復（`Some` 時の保持と `None` 時の JSON 省略、
+/// 旧 v1 JSON 互換読込、`EXPORT_FORMAT_VERSION == 1` 維持）および `validate_dump` による不正
+/// `source_list_id` / 不正 `synced_at` の拒否を検証する（FR-101、仕様決定 EG）。
+#[test]
+fn export_playlist_sync_meta_roundtrip_and_validation() {
+    let db = Db::connect_in_memory().unwrap();
+    let pl_sync = db.playlist_create("同期リスト").unwrap();
+    db.playlist_set_sync_meta(pl_sync.id, "PLsync_123-abc", "2026-05-01T12:34:56+00:00")
+        .unwrap();
+    db.playlist_add(pl_sync.id, &vref("aaaaaaaaaa1", "A"))
+        .unwrap();
+    let pl_manual = db.playlist_create("手動リスト").unwrap();
+
+    let dump = db.export_dump().unwrap();
+    assert_eq!(dump.version, 1);
+    assert_eq!(dump.playlists.len(), 2);
+    assert_eq!(
+        dump.playlists[0].source_list_id.as_deref(),
+        Some("PLsync_123-abc")
+    );
+    assert_eq!(
+        dump.playlists[0].synced_at.as_deref(),
+        Some("2026-05-01T12:34:56+00:00")
+    );
+    assert_eq!(dump.playlists[1].source_list_id, None);
+    assert_eq!(dump.playlists[1].synced_at, None);
+
+    // None の場合は JSON にキーが出力されないこと
+    let json = serde_json::to_string(&dump).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let arr = val["playlists"].as_array().unwrap();
+    assert_eq!(arr[0]["sourceListId"], "PLsync_123-abc");
+    assert_eq!(arr[0]["syncedAt"], "2026-05-01T12:34:56+00:00");
+    assert!(arr[1].get("sourceListId").is_none());
+    assert!(arr[1].get("syncedAt").is_none());
+
+    // 別 DB への往復で復元されること
+    let dst = Db::connect_in_memory().unwrap();
+    let parsed: ExportDump = serde_json::from_str(&json).unwrap();
+    dst.import_dump(&parsed).unwrap();
+    let restored = dst.playlist_list().unwrap();
+    assert_eq!(
+        restored[0].source_list_id.as_deref(),
+        Some("PLsync_123-abc")
+    );
+    assert_eq!(
+        restored[0].synced_at.as_deref(),
+        Some("2026-05-01T12:34:56+00:00")
+    );
+    assert_eq!(restored[1].source_list_id, None);
+    assert_eq!(restored[1].synced_at, None);
+
+    // 旧 v1 JSON（sourceListId / syncedAt フィールド欠落）をデシリアライズ・インポートできること
+    let legacy_json = r#"{
+        "version": 1,
+        "exportedAt": "2026-01-01 00:00:00",
+        "channels": [],
+        "categories": [],
+        "settings": [],
+        "playlists": [
+            {"id": 10, "name": "旧形式", "sortOrder": 0, "items": []}
+        ]
+    }"#;
+    let legacy_dump: ExportDump = serde_json::from_str(legacy_json).unwrap();
+    let dst_legacy = Db::connect_in_memory().unwrap();
+    dst_legacy.import_dump(&legacy_dump).unwrap();
+    let legacy_lists = dst_legacy.playlist_list().unwrap();
+    assert_eq!(legacy_lists.len(), 1);
+    assert_eq!(legacy_lists[0].name, "旧形式");
+    assert_eq!(legacy_lists[0].source_list_id, None);
+    assert_eq!(legacy_lists[0].synced_at, None);
+
+    // 不正 source_list_id の拒否（空・129 バイト・許可外文字）
+    for bad_src in [
+        String::new(),
+        "a".repeat(129),
+        "PL bad space".to_string(),
+        "https://youtube.com/?list=PL1".to_string(),
+    ] {
+        let mut bad = dump.clone();
+        bad.playlists[0].source_list_id = Some(bad_src);
+        assert!(matches!(dst.import_dump(&bad), Err(DbError::Import(_))));
+    }
+    // 境界 128 バイトの source_list_id は受理
+    let mut ok_128 = dump.clone();
+    ok_128.playlists[0].source_list_id = Some("A".repeat(128));
+    dst.import_dump(&ok_128).unwrap();
+
+    // 不正 synced_at の拒否（空・65 バイト・非 ISO 日時）
+    for bad_ts in [
+        String::new(),
+        "2".repeat(65),
+        "not-a-timestamp".to_string(),
+        "2026/05/01 12:00:00".to_string(),
+    ] {
+        let mut bad = dump.clone();
+        bad.playlists[0].synced_at = Some(bad_ts);
+        assert!(matches!(dst.import_dump(&bad), Err(DbError::Import(_))));
+    }
+
+    // 境界: SQLite datetime('now') 形式（空白区切り）も iso8601_ms で受理される
+    let mut ok_sqlite_ts = dump;
+    ok_sqlite_ts.playlists[0].synced_at = Some("2026-05-01 12:00:00".to_string());
+    dst.import_dump(&ok_sqlite_ts).unwrap();
+    let _ = pl_manual;
+}

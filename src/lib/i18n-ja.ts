@@ -405,6 +405,12 @@ export const ja = {
   "library.playlist.importing": "取り込み中…",
   "library.playlist.imported": "「{name}」を取り込みました（{count} 件）",
   "library.playlist.importFailed": "取り込みに失敗: {message}",
+  "library.playlist.sync": "同期",
+  "library.playlist.syncing": "同期中…",
+  "library.playlist.synced": "「{name}」を同期しました（+{count} 件）",
+  "library.playlist.syncedNoChanges": "「{name}」は最新です（新規追加なし）",
+  "library.playlist.syncFailed": "同期に失敗: {message}",
+  "library.playlist.lastSynced": "最終同期: {time}",
   "library.playlist.sort": "投稿日時で並べ替え",
   "library.playlist.sorted": "投稿日時順に並べ替えました",
   "library.playlist.reverse": "逆順にする",
@@ -677,11 +683,11 @@ export const ja = {
   "settings.deps.poToken.placeholder": "未設定（空欄）",
   "settings.deps.poToken.desc":
     "形式: mweb.gvs+<token> 等（yt-dlp PO Token Guide 準拠）。保存後の次回呼び出しから反映",
-  // Phase 92–95: YouTube Data API v3 キー（FR-97〜FR-100、仕様決定 EC〜EF）
+  // Phase 92–96: YouTube Data API v3 キー（FR-97〜FR-101、仕様決定 EC〜EG）
   "settings.deps.youtubeApiKey": "YouTube Data API v3 キー",
   "settings.deps.youtubeApiKeyPlaceholder": "未設定（空欄で従来方式）",
   "settings.deps.youtubeApiKeyDesc":
-    "任意設定（OAuth 不要・無料枠）。設定するとキーワード検索、メタ遅延解決、ライブ待機巡回、概要欄、動画情報・チャンネル解決、@handle チャンネル購読、再生リスト取込で公式 API を優先し、上限到達やエラー時は従来方式へ自動切替します",
+    "任意設定（OAuth 不要・無料枠）。設定するとキーワード検索、メタ遅延解決、ライブ待機巡回、概要欄、動画情報・チャンネル解決、@handle チャンネル購読、再生リスト取込・同期で公式 API を優先し、上限到達やエラー時は従来方式へ自動切替します",
   "settings.deps.youtubeApiKeyShow": "表示",
   "settings.deps.youtubeApiKeyHide": "隠す",
   "settings.deps.youtubeApiKeyTest": "接続テスト",

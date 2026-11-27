@@ -410,6 +410,12 @@ export const en = {
   "library.playlist.importing": "Importing…",
   "library.playlist.imported": "Imported \"{name}\" ({count} items)",
   "library.playlist.importFailed": "Import failed: {message}",
+  "library.playlist.sync": "Sync",
+  "library.playlist.syncing": "Syncing…",
+  "library.playlist.synced": "Synced \"{name}\" (+{count} items)",
+  "library.playlist.syncedNoChanges": "\"{name}\" is already up to date",
+  "library.playlist.syncFailed": "Sync failed: {message}",
+  "library.playlist.lastSynced": "Last synced: {time}",
   "library.playlist.sort": "Sort by published date",
   "library.playlist.sorted": "Sorted by published date",
   "library.playlist.reverse": "Reverse order",
@@ -690,11 +696,11 @@ export const en = {
   "settings.deps.poToken.placeholder": "Not set (empty)",
   "settings.deps.poToken.desc":
     "Format: e.g. mweb.gvs+<token> (per yt-dlp PO Token Guide). Takes effect on the next call after saving",
-  // Phase 92–95: YouTube Data API v3 キー（FR-97〜FR-100、仕様決定 EC〜EF）
+  // Phase 92–96: YouTube Data API v3 キー（FR-97〜FR-101、仕様決定 EC〜EG）
   "settings.deps.youtubeApiKey": "YouTube Data API v3 key",
   "settings.deps.youtubeApiKeyPlaceholder": "Not set (empty uses legacy mode)",
   "settings.deps.youtubeApiKeyDesc":
-    "Optional (no OAuth, free tier). Prioritizes the official API for keyword search, metadata resolution, live wait polling, descriptions, video/channel lookup, @handle channel subscription, and playlist import with automatic legacy fallback",
+    "Optional (no OAuth, free tier). Prioritizes the official API for keyword search, metadata resolution, live wait polling, descriptions, video/channel lookup, @handle channel subscription, and playlist import and sync with automatic legacy fallback",
   "settings.deps.youtubeApiKeyShow": "Show",
   "settings.deps.youtubeApiKeyHide": "Hide",
   "settings.deps.youtubeApiKeyTest": "Test connection",

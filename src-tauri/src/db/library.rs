@@ -160,7 +160,8 @@ impl Db {
     pub fn playlist_list(&self) -> Result<Vec<Playlist>, DbError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
-            "SELECT p.id, p.name, p.sort_order, COUNT(i.video_id) AS item_count
+            "SELECT p.id, p.name, p.sort_order, COUNT(i.video_id) AS item_count,
+                    p.source_list_id, p.synced_at
              FROM playlists p LEFT JOIN playlist_items i ON i.playlist_id = p.id
              GROUP BY p.id
              ORDER BY p.sort_order, p.id",
@@ -173,9 +174,39 @@ impl Db {
                 name: row.get(1)?,
                 sort_order: row.get(2)?,
                 item_count: row.get(3)?,
+                source_list_id: row.get(4)?,
+                synced_at: row.get(5)?,
             });
         }
         Ok(out)
+    }
+
+    /// プレイリスト 1 件取得（FR-101）。存在しない場合は `None`。
+    pub fn playlist_get(&self, playlist_id: i64) -> Result<Option<Playlist>, DbError> {
+        let conn = self.lock()?;
+        Self::playlist_get_conn(&conn, playlist_id)
+    }
+
+    fn playlist_get_conn(conn: &Connection, playlist_id: i64) -> Result<Option<Playlist>, DbError> {
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, p.sort_order, COUNT(i.video_id) AS item_count,
+                    p.source_list_id, p.synced_at
+             FROM playlists p LEFT JOIN playlist_items i ON i.playlist_id = p.id
+             WHERE p.id = ?1
+             GROUP BY p.id",
+        )?;
+        let mut rows = stmt.query([playlist_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_order: row.get(2)?,
+                item_count: row.get(3)?,
+                source_list_id: row.get(4)?,
+                synced_at: row.get(5)?,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// プレイリスト作成（FR-7）。一覧の末尾に置くため `sort_order` は
@@ -196,7 +227,31 @@ impl Db {
             name: name.to_string(),
             sort_order,
             item_count: 0,
+            source_list_id: None,
+            synced_at: None,
         })
+    }
+
+    /// プレイリストの同期メタ（`source_list_id` と `synced_at`）を設定する（FR-101、仕様決定 EG）。
+    /// 対象プレイリストが存在しない場合は `DbError::NotFound`。
+    pub fn playlist_set_sync_meta(
+        &self,
+        playlist_id: i64,
+        source_list_id: &str,
+        synced_at: &str,
+    ) -> Result<Playlist, DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE playlists SET source_list_id = ?2, synced_at = ?3 WHERE id = ?1",
+            rusqlite::params![playlist_id, source_list_id, synced_at],
+        )?;
+        if changed == 0 {
+            return Err(DbError::NotFound);
+        }
+        let playlist = Self::playlist_get_conn(&tx, playlist_id)?.ok_or(DbError::NotFound)?;
+        tx.commit()?;
+        Ok(playlist)
     }
 
     /// プレイリスト一覧の並べ替え（FR-35、仕様決定 BF）。`playlist_ids` が
@@ -361,6 +416,43 @@ impl Db {
     ) -> Result<(), DbError> {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
+        Self::playlist_add_many_tx(&tx, playlist_id, items)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 既存プレイリストへ未登録動画のみを末尾（`MAX(position) + 1`）へ非破壊追記し、
+    /// `videos` メタ（`published_at` を含む）を補強し、`synced_at` を更新する（FR-101、仕様決定 EG）。
+    /// 戻り値は更新後の `Playlist` と今回新規追加された件数。
+    pub fn playlist_sync_apply(
+        &self,
+        playlist_id: i64,
+        items: &[PlaylistImportItem],
+        synced_at: &str,
+    ) -> Result<(Playlist, usize), DbError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let added_count = Self::playlist_add_many_tx(
+            &tx,
+            playlist_id,
+            items
+                .iter()
+                .map(|it| (&it.video, it.published_at.as_deref())),
+        )?;
+        tx.execute(
+            "UPDATE playlists SET synced_at = ?2 WHERE id = ?1",
+            rusqlite::params![playlist_id, synced_at],
+        )?;
+        let playlist = Self::playlist_get_conn(&tx, playlist_id)?.ok_or(DbError::NotFound)?;
+        tx.commit()?;
+        Ok((playlist, added_count))
+    }
+
+    fn playlist_add_many_tx<'a>(
+        tx: &Connection,
+        playlist_id: i64,
+        items: impl IntoIterator<Item = (&'a crate::model::VideoRef, Option<&'a str>)>,
+    ) -> Result<usize, DbError> {
         let exists: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM playlists WHERE id = ?1)",
             [playlist_id],
@@ -375,8 +467,9 @@ impl Db {
             [playlist_id],
             |r| r.get(0),
         )?;
+        let mut added_count = 0usize;
         for (v, published_at) in items {
-            Self::video_upsert_with_published(&tx, v, published_at)?;
+            Self::video_upsert_with_published(tx, v, published_at)?;
             let inserted = tx.execute(
                 "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id, position)
                  VALUES (?1, ?2, ?3)",
@@ -384,10 +477,10 @@ impl Db {
             )?;
             if inserted > 0 {
                 next_pos += 1;
+                added_count += 1;
             }
         }
-        tx.commit()?;
-        Ok(())
+        Ok(added_count)
     }
 
     /// 項目順の一括書き換え（仕様決定 T）。`video_ids` が現項目と

@@ -49,7 +49,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
-| `ytapi` | YouTube Data API v3 クライアント（`videos.list`、`channels.list`、`playlists.list`、`playlistItems.list`、`search.list` と `SearchSession` の取得を含む）、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、FR-98、FR-99、FR-100、§4.24、§4.25、§4.26、§4.27） |
+| `ytapi` | YouTube Data API v3 クライアント（`videos.list`、`channels.list`、`playlists.list`、`playlistItems.list`、`search.list` と `SearchSession` の取得を含む）、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、FR-98、FR-99、FR-100、FR-101、§4.24、§4.25、§4.26、§4.27、§4.28） |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回（`ytapi` 優先と `InnerTube` フォールバック）、開始と終了と自動解除の検出、および `live_wait.action` に応じた動作（FR-44、FR-98、§4.16） |
 | `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時、説明文、未確定や失敗の kind を `ytapi` `videos.list` 優先（フォールバック時は InnerTube `player`）で後から埋める（FR-53、FR-56、FR-57、FR-85、FR-96、FR-98、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
@@ -102,7 +102,8 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `playlist_add` | `playlist_id`, `video`（`VideoRef`） | `Result<()>` |
 | `playlist_remove` | `playlist_id`, `video_id` | `Result<Option<PlaylistEntry>>`（削除した行のスナップショット。対象行が無ければ null。FR-54、仕様決定 CE） |
 | `playlist_item_restore` | `playlist_id`, `entry`（`playlist_remove` が返した `PlaylistEntry`） | `Result<PlaylistEntry>`（実際に登録された行。FR-54、仕様決定 CE） |
-| `playlist_import` | `url`, `name?` | `Result<Playlist>`（FR-10、FR-99、仕様決定 R、DZ、EE、§4.26：標準プレイリストは `ytapi` の `playlists.list` と `playlistItems.list` を優先し、個人用リストや障害時は `yt-dlp` へフォールバック） |
+| `playlist_import` | `url`, `name?` | `Result<Playlist>`（FR-10、FR-99、FR-101、仕様決定 R、DZ、EE、EG、§4.26、§4.28：標準プレイリストは `ytapi` の `playlists.list` と `playlistItems.list` を優先し、個人用リストや障害時は `yt-dlp` へフォールバックし、同期元メタを保存） |
+| `playlist_sync` | `playlist_id` | `Result<PlaylistSyncOutcome>`（FR-101、仕様決定 EG、§4.28：取り込み済みプレイリストの `source_list_id` で差分を再取得し未登録動画のみ末尾追記） |
 | `playlist_reorder` | `playlist_id`, `video_ids` | `Result<()>` |
 | `playlist_reorder_lists` | `playlist_ids`（プレイリスト全件の新しい表示順） | `Result<()>` |
 | `playlist_sort` | `playlist_id` | `Result<()>` |
@@ -181,11 +182,14 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 一時停止中は `player://state` が流れないため（§3.2）、ページ再読み込み後のカード復元はこの一覧で行う。
 `player_set_queue` は連続再生の武装キューを登録する。`items` は今後再生する項目の順序列で、各項目は `uid`＋`video_id` の対（`QueueArmItem`、空列は武装の解除）。`uid` はフロント側のキュー項目のユニーク ID で、継続時に `player://ended` の `continuedUid` としてそのまま返す（BG-10、仕様決定 BK）。`loop_all` は取り出し分を末尾へ戻して巡回させるフラグ（仕様決定 AD）。`base_seq` はフロントが計画した時点の取り出し世代（`player://ended` の `armedSeq`）で、指定時は世代が一致するときだけ置き換え、食い違い（その間に別項目を取り出した）では適用せず false を返す。古い置換で消費済み項目が復活する順序ずれを防ぐための束縛で、拒否はエラーではない。
 登録済み項目は次の終端（自然終了・途中失敗）で同一 mpv が先頭から読み込む。
-`playlist_import` は YouTube プレイリストを取り込み、各項目を `videos` テーブルへ集約したうえで新規プレイリストへ登録する（FR-10、FR-99、仕様決定 R、DZ、EE、§4.26）。
+`playlist_import` は YouTube プレイリストを取り込み、各項目を `videos` テーブルへ集約したうえで新規プレイリストへ登録する（FR-10、FR-99、FR-101、仕様決定 R、DZ、EE、EG、§4.26、§4.28）。
 `url` は YouTube 系ホスト（youtube.com、youtu.be、music.youtube.com、www.youtube.com）のみ受け付け、`list` クエリを持つ標準プレイリストでは `ytapi` の `playlists.list`（`name` 省略時のみ）と `playlistItems.list`（最大 100 ページ、5,000 件、非公開と削除済み項目を除外）を優先する。
 個人用または自動生成リスト（`WL`、`HL`、`LM`、`LL` で始まる ID、`RD` で始まる ID）と公式 API 障害時は `yt-dlp --flat-playlist` へフォールバックし、登録は `playlist_add_many_with_published` により `+00:00` 正規化済みの投稿日時を既存の非 NULL 値を保持したまま補完する。
-項目登録に失敗したときは作成済みの空プレイリストを削除してからエラーを返す。
+さらに、`list` パラメータから `is_playlist_source_id` を満たす同期元 ID を抽出できた場合は、`playlists.source_list_id` と `+00:00` UTC 形式の `playlists.synced_at` を保存する。
+項目登録や同期メタ保存に失敗したときは作成済みの空プレイリストを削除してからエラーを返す。
 プレイリスト名の上限は YouTube 本家と同じ 150 文字（Unicode スカラ値単位）とし、`name` 省略時は取り込んだプレイリストのタイトルの前後空白をトリムして 150 文字超のみ省略記号なしで単純切り詰めし、空のときは「取り込みプレイリスト」とする（仕様決定 DZ、回帰テスト DB-LD-37）。
+`playlist_sync` は取り込み済みプレイリストの `source_list_id` を用いてリモート項目を再取得し、未登録の動画だけを末尾へ非破壊追記する（FR-101、仕様決定 EG、§4.28）。
+`fetch_title = false` で `playlists.list` を省いて再取得し、単一トランザクションで `INSERT OR IGNORE` による末尾追加と `videos` メタ補強および `synced_at` 更新を行い、更新後 `Playlist` と `addedCount` を `PlaylistSyncOutcome` として返す（`library://playlists_changed` は送出しない）。
 `playlist_reorder` は項目順の一括書き換え（FR-11、仕様決定 T）。渡した `video_ids` が
 現在の項目と同一集合でない場合は変更せずエラーとする（並行編集の誤適用防止。
 検証は `playlist_items` の更新と同じ書き込みトランザクション内で行う）。
@@ -1329,6 +1333,25 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 
 回帰テストは `DB-YA-17` 〜 `DB-YA-21`（`search.list` パラメータ規約と `videos.list` 併用・`relatedToVideoId` 非送信、ページネーションと 2 ページ上限と `enough` 打ち切りと `HashSet` 重複排除、TTL 境界とクエリ切替と `on_key_changed` 無効化と `session_epoch` 通信中書き戻し保護、および独立テスト `search_session_inflight_key_change_prevents_stale_cache_writeback`、`Search` と `Shared` 独立遮断器、`statistics.viewCount` 境界と `to_search_result` の非 `UC` 除外）および `SR-01` 〜 `SR-04`（短応答での継続、取得先切替時の増分・上限管理、バッファ消費、ブロック除外）。
 
+### 4.28 取り込み済みプレイリストの差分追記手動同期（FR-101、仕様決定 EG）
+
+DB マイグレーション `v26` で `playlists` テーブルに `source_list_id TEXT` と `synced_at TEXT` を追加し、`Playlist`（`model/mod.rs` および `players.svelte.ts`）へ `sourceListId` と `syncedAt` を公開する。
+`playlist_import`（`commands/library.rs` の `import_playlist_with`）は `extract_list_id` で抽出した値が `is_playlist_source_id`（空でない 128 バイト以下の ASCII 英数字と `_` と `-`）を満たす場合、項目登録後に `db.playlist_set_sync_meta` で `source_list_id` と `+00:00` UTC 形式の `synced_at` を永続化する。
+手動作成したプレイリストおよび `list` パラメータのない URL からの取り込みでは両列とも `NULL` を保つ。
+
+- リモート取得の共有と `playlist_sync`：`import_playlist_with` と新設の `sync_playlist_with` は共通ヘルパ `fetch_remote_playlist(url, list_id, fetch_title, ytapi, resolver, db)` を共有する。
+  `playlist_sync(playlist_id)` は最初に `playlist_id > 0` と `playlist.source_list_id` の存在（手動作成リストは外部通信や `yt-dlp` を呼ばずに `invalid_input`、不在 ID は `DbError::NotFound`）を検証し、`fetch_title = false` で `playlists.list` の 1 unit を省略したまま `ytapi.playlist_items`（`WL` や `HL` や `LM` や `LL` 系や `RD` 系および障害時は `yt::playlist_meta` フォールバック、公式 API の `HTTP 404` は非フォールバック `invalid_input`）を呼ぶ。
+  `HTTP 200` で有効項目 0 件（空または全件非公開および削除済み）を受け取った場合は非破壊とし、エラーにせず `added_count = 0` と `synced_at` 更新のみで完了する。
+  `playlist_sync` は画面遷移や再選択を起こさないよう `library://playlists_changed` を送出しない。
+- 非破壊差分追記トランザクション（`db/library.rs`）：`playlist_sync_apply` は単一 SQLite トランザクション内で `playlist_add_many_tx`（`playlist_add_many_inner` と共有）を呼び、既存最大の次位置 `COALESCE(MAX(position) + 1, 0)` から未登録の `video_id` のみを `INSERT OR IGNORE` で末尾追記し、`video_upsert_with_published`（`COALESCE` により既存の非 NULL `published_at` を保持）でメタを補強したうえで `playlists.synced_at` を更新する。
+  この方式により、ローカルの並べ替え順（FR-11）、手動で追加した動画、ローカル削除済みの位置、および `queue_state.current_index` は書き換わらない。
+- エクスポート互換性と検証（`db/export.rs`）：`ExportPlaylist` へ `#[serde(default, skip_serializing_if = "Option::is_none")]` 付きで `source_list_id` と `synced_at` を追加し、`EXPORT_FORMAT_VERSION = 1` を維持して旧形式 JSON との相互運用を保つ。
+  `validate_dump` では `source_list_id` の `is_playlist_source_id` 判定と `synced_at` の長さ上限（1〜64 バイト）および `util::iso8601_ms` 解析可能性を検査して不正値を拒否する。
+- フロントエンド UI とページング整合（`src/lib/LibraryPlaylists.svelte`、`src/lib/library-page.svelte.ts`）：右ペインに `class:hidden={selectedPlaylist === null || selectedPlaylist.sourceListId === null}` による常時マウント（FR-80）の詳細ヘッダを配置し、項目をすべてローカル削除した後の空表示状態でも「同期」ボタンと `fmtDateTime(selectedPlaylist?.syncedAt)` による最終同期日時を表示する。
+  `syncPlaylist` は `syncingId` による二重実行抑止と `listsReq` / `itemsReq` 世代ガードを持ち、`selectedId === plId && res.addedCount > 0 && !plHasMore` の場合のみ `afterPosition: null` から安全に再取得する（`removeItem` が `plTailPos` を巻き戻さないため末尾追加を取りこぼさず、`addedCount > PL_PAGE` 時は `limit` 指定で `plHasMore` を維持する）。
+
+回帰テストは `DB-LD-44`（`v26` マイグレーションと既存行 `NULL` 維持）、`DB-LD-45`（非破壊追記と既存順および手動追加と `queue_state` 保持）、`DB-LD-46`（`ExportPlaylist` の前後互換と `validate_dump` 境界検証）、`DB-LD-47`（`playlist_import` 同期メタ保存、`playlist_sync` の 1 unit 節約と非破壊追記と空 `HTTP 200` と `404` 非フォールバックと手動リスト拒否）、`DB-YA-22` および `DB-YA-23`（同期モード `fetch_title = false` のページネーションと空 200 とエラーおよび部分ページ失敗）、`PS-01` 〜 `PS-04`（フロント状態同期、再取得条件、多重抑止と選択変更、100 件超ページング）、`LN-05`（日英同期キーとプレースホルダー検証）。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1338,7 +1361,7 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 | 動画詳細 | `yt-dlp -J <url>` |
 | 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む仕様で、任意 API キー設定時は `ytapi` `SearchSession` 優先のフォールバック経路、§4.27） |
 | チャンネル一覧の補完 | `yt-dlp <channel_url> --flat-playlist --dump-json` |
-| プレイリスト取り込み | `yt-dlp <playlist_url> --flat-playlist --dump-single-json`（任意 API キー設定時は `ytapi` 優先、`WL`、`HL`、`LM`、`LL` 系、`RD` 系と障害時のフォールバック経路、§4.26） |
+| プレイリスト取り込みと差分同期 | `yt-dlp <playlist_url> --flat-playlist --dump-single-json`（任意 API キー設定時は `ytapi` 優先、`WL`、`HL`、`LM`、`LL` 系、`RD` 系と障害時のフォールバック経路、§4.26、§4.28） |
 | チャンネルの過去動画（バックフィル） | `yt-dlp <channel>/videos`・`<channel>/streams`・`<channel>/shorts` を `--flat-playlist` で区間取得（仕様決定 AN。1 回各タブ 100 件・暫定。`/shorts` は FR-55・仕様決定 CF で追加） |
 
 運用面の決定を次に置く（Phase 1 確定事項）。
@@ -1545,7 +1568,9 @@ CREATE TABLE favorites (
 CREATE TABLE playlists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  sort_order INTEGER NOT NULL DEFAULT 0
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  source_list_id TEXT,
+  synced_at TEXT
 );
 
 CREATE TABLE playlist_items (
@@ -1652,6 +1677,8 @@ CREATE INDEX idx_videos_feed_broadcast
 - `live_waits` はライブ配信の待機リスト（FR-44、仕様決定 BT、§4.16）。`video_id` を主キーにして同一動画の重複待機を抑止し、表示メタは項目行へ持たせて `videos` 台帳を汚染しない（queue_items と同じ方針）。`scheduled_start_ms` は InnerTube の放送予定時刻（epoch ms）で、ポーラーが InnerTube 側の予定変更を検知したとき追随更新する。`registered_ms` は予定時刻を持たない項目の自動解除期限の起点（暫定解釈）
 - `video_bookmarks` は動画内ブックマーク（FR-49、仕様決定 BZ、§4.17）。自動採番の `id` を個別削除・ラベル編集の対象 ID とし、UNIQUE (video_id, position_sec) で同位置の重複保存を抑止する（暫定解釈）。表示用タイトルは行に持たず、一覧取得時に `videos` 台帳 → `watch_history` の順で解決する（`video_meta_lookup` と同じ規則）
 - `watch_later` は「あとで見る」（FR-59、仕様決定 CJ）。`favorites` と同じく `video_id` 主キーと登録日時だけを持ち、表示メタは `videos` 台帳へ `watch_later_add` が登録して一覧取得時に JOIN で取る。同一動画の再登録は `INSERT OR IGNORE` で追加日時を変えない冪等とする
+- `playlists` はマイグレーション `v26` で同期元リスト ID `source_list_id` と最終同期日時 `synced_at`（`+00:00` UTC）を追加した（FR-101、仕様決定 EG）。
+  手動作成プレイリストは両列とも `NULL` のまま保ち、ダンプ型 `ExportPlaylist` は `#[serde(default, skip_serializing_if = "Option::is_none")]` により `EXPORT_FORMAT_VERSION = 1` の前方および後方互換を保ったまま `validate_dump` で形式を検証する
 
 ## 9. エラーハンドリングと変更耐性
 
@@ -1769,7 +1796,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・search-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic・playback-error-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryPlaylists・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater・library-page の各 .svelte.ts、library-page.test.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・search-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic・playback-error-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   scripts/            # 開発・CI・リリース補助（docs 整合チェック・変更ファイル判定・バージョン更新・latest.json 生成とリリース成果物検証・単体テスト）と CDP 検証基盤（FR-84。cdp_client/e2e_dev/e2e_smoke と README.md の手順書）
   package.json

@@ -152,12 +152,20 @@ export type FavoriteEntry = {
   addedAt: string;
 };
 
-/// `playlist_list` の 1 行（FR-7）。
+/// `playlist_list` の 1 行（FR-7・FR-101）。
 export type Playlist = {
   id: number;
   name: string;
   sortOrder: number;
   itemCount: number;
+  sourceListId: string | null;
+  syncedAt: string | null;
+};
+
+/// `playlist_sync` の戻り値（FR-101、仕様決定 EG）。
+export type PlaylistSyncOutcome = {
+  playlist: Playlist;
+  addedCount: number;
 };
 
 /// `playlist_items` の 1 行（FR-7）。

@@ -684,5 +684,78 @@ fn migrate_v25_adds_broadcast_columns_and_selective_backfill() {
     }
 
     let fresh = Db::connect_in_memory().unwrap();
-    assert_eq!(fresh.schema_version().unwrap(), 25);
+    assert!(fresh.schema_version().unwrap() >= 25);
+}
+
+/// DB-LD-44: v25 からの v26 マイグレーション（FR-101、仕様決定 EG）。
+/// `playlists` へ `source_list_id` と `synced_at` 列が追加され、既存行は NULL で保持されること、
+/// 新列への読み書きと `fresh.schema_version() == 26` を検証する。
+#[test]
+fn migrate_v26_adds_playlist_sync_columns() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+    for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 25) {
+        conn.execute_batch(m.sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [m.version],
+        )
+        .unwrap();
+    }
+
+    conn.execute(
+        "INSERT INTO playlists (name, sort_order) VALUES ('既存リスト', 0)",
+        [],
+    )
+    .unwrap();
+
+    let v26 = migrations::MIGRATIONS
+        .iter()
+        .find(|m| m.version == 26)
+        .expect("v26 マイグレーションが存在すること");
+    {
+        let tx = conn.transaction().unwrap();
+        tx.execute_batch(v26.sql).unwrap();
+        tx.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [v26.version],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    let (existing_src, existing_synced): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT source_list_id, synced_at FROM playlists WHERE name = '既存リスト'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(existing_src, None);
+    assert_eq!(existing_synced, None);
+
+    conn.execute(
+        "INSERT INTO playlists (name, sort_order, source_list_id, synced_at)
+         VALUES ('同期リスト', 1, 'PLv26test_01', '2026-05-01T00:00:00+00:00')",
+        [],
+    )
+    .unwrap();
+    let (src, synced): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT source_list_id, synced_at FROM playlists WHERE name = '同期リスト'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(src.as_deref(), Some("PLv26test_01"));
+    assert_eq!(synced.as_deref(), Some("2026-05-01T00:00:00+00:00"));
+
+    let fresh = Db::connect_in_memory().unwrap();
+    assert_eq!(fresh.schema_version().unwrap(), 26);
 }

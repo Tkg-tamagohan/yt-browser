@@ -587,6 +587,16 @@ pub struct Playlist {
     pub name: String,
     pub sort_order: i64,
     pub item_count: i64,
+    pub source_list_id: Option<String>,
+    pub synced_at: Option<String>,
+}
+
+/// `playlist_sync` の戻り値（FR-101、仕様決定 EG）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistSyncOutcome {
+    pub playlist: Playlist,
+    pub added_count: usize,
 }
 
 /// `playlist_items` 一覧の 1 行（登録順の position 付き）。
@@ -776,6 +786,10 @@ pub struct ExportPlaylist {
     pub name: String,
     pub sort_order: i64,
     pub items: Vec<ExportPlaylistItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_list_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_at: Option<String>,
 }
 
 /// `playlist_items` 1 行分のダンプ（表示メタ付き）。
@@ -1014,6 +1028,15 @@ pub(crate) fn is_video_id(s: &str) -> bool {
     s.len() == 11
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// プレイリスト同期元 ID（`source_list_id`）の形式チェック（FR-101、仕様決定 EG）。
+/// 空でない 128 バイト以下の ASCII 英数字・`_`・`-` のみを許可する。
+pub fn is_playlist_source_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// 放送状態（FR-44・FR-97、仕様決定 BT・EC）。InnerTube `player` と

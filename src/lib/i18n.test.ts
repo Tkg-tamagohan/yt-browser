@@ -3,6 +3,7 @@
 // LN-02: resolveMessage のロケール別解決・ja フォールバック・未知キー
 // LN-03: setLocale / currentLocale の反映と t() のプレースホルダー置換
 // LN-04: Phase 92 の YouTube Data API キー関連メッセージ解決と protectedNote 5 キー記載
+// LN-05: Phase 96 のプレイリスト同期関連メッセージ解決とプレースホルダー整合
 import { describe, expect, test } from "vitest";
 import { en } from "./i18n-en";
 import {
@@ -162,6 +163,58 @@ describe("LN-04 YouTube Data API キーの i18n キーと保護対象案内", ()
       expect(
         t("settings.deps.youtubeApiKeyResetAt", { time: "11/28 17:01" }),
       ).toContain("11/28 17:01");
+    } finally {
+      setLocale("ja");
+    }
+  });
+});
+
+describe("LN-05 Phase 96 プレイリスト同期の i18n キーとプレースホルダー", () => {
+  test("library.playlist.sync 系キーが ja/en で解決されプレースホルダーを置換できる", () => {
+    const keys: MessageKey[] = [
+      "library.playlist.sync",
+      "library.playlist.syncing",
+      "library.playlist.synced",
+      "library.playlist.syncedNoChanges",
+      "library.playlist.syncFailed",
+      "library.playlist.lastSynced",
+    ];
+    for (const locale of LOCALES) {
+      for (const key of keys) {
+        const msg = resolveMessage(locale, key);
+        expect(msg).not.toBe(key);
+        expect(msg.trim()).not.toBe("");
+      }
+    }
+
+    try {
+      setLocale("ja");
+      expect(
+        t("library.playlist.synced", { name: "お気に入り音楽", count: 3 }),
+      ).toContain("+3");
+      expect(
+        t("library.playlist.syncedNoChanges", { name: "お気に入り音楽" }),
+      ).toContain("お気に入り音楽");
+      expect(
+        t("library.playlist.syncFailed", { message: "timeout" }),
+      ).toContain("timeout");
+      expect(
+        t("library.playlist.lastSynced", { time: "2026/11/28 00:00" }),
+      ).toContain("2026/11/28 00:00");
+
+      setLocale("en");
+      expect(
+        t("library.playlist.synced", { name: "Mix", count: 3 }),
+      ).toContain("+3");
+      expect(
+        t("library.playlist.syncedNoChanges", { name: "Mix" }),
+      ).toContain("Mix");
+      expect(
+        t("library.playlist.syncFailed", { message: "timeout" }),
+      ).toContain("timeout");
+      expect(
+        t("library.playlist.lastSynced", { time: "11/28/2026" }),
+      ).toContain("11/28/2026");
     } finally {
       setLocale("ja");
     }
