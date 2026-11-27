@@ -1179,11 +1179,14 @@ impl MpvPlayer {
                     self.end_loading();
                     return Err(MpvError::Ipc(e));
                 }
-                // 適用済みの画質式と読み込み中状態を反映する（EOF 後の Ended 残存も解消する）
+                // 適用済みの画質式を反映し、EOF 後の Ended 状態から再読み込みする場合のみ Idle へ戻す
+                // （一時停止中の画質変更で Paused が Idle に上書きされて残るのを防ぐ）
                 {
                     let mut st = lock(&self.state);
                     st.format = format.clone();
-                    st.state = PlayStatus::Idle;
+                    if st.state == PlayStatus::Ended {
+                        st.state = PlayStatus::Idle;
+                    }
                 }
             }
             PlayerAction::FrameStep => {

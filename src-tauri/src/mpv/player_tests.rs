@@ -828,9 +828,32 @@ fn prepare_replace_handles_unloaded_error_and_retry_windows() {
         "アンロード済み状態へのロールバック後も不要な pending_replaces を積まないべき"
     );
 
-    // 5. 自動再送の実行可否（can_execute_load_retry）は世代一致と未切断のみで判定し、
-    //    --keep-open=no の EOF 後画質変更などで残存する PlayStatus に阻まれない
+    // 5. --keep-open=no の EOF 後に画質変更して初回ロードが失敗した場合の一連の遷移:
+    //    end-file(eof) → rearm_after_eof → prepare_replace(false) → arm → 初回失敗
+    //    → 1 回だけ再送予約・実行許可（can_execute_load_retry + spec_for）→ 2 回目は再送打ち切り
+    let t5 = TerminalTracker::default();
+    let mut retry = super::LoadRetryState::default();
+    assert!(t5.on_end_file("eof"));
+    t5.rearm_after_eof();
+    assert!(
+        !t5.prepare_replace(),
+        "--keep-open=no の EOF 後はアンロード済みのため pending_replaces を積まない"
+    );
+    let url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    let opts = serde_json::json!({ "start": "0" });
+    retry.arm(url, opts.clone());
+    assert!(t5.on_end_file("error"));
+    let retry_gen = retry
+        .begin_retry()
+        .expect("初回ロード失敗で 1 回だけ自動再送を予約できるべき");
+    t5.clear_ended_reason();
     assert!(super::can_execute_load_retry(3, 3, false));
+    assert_eq!(retry.spec_for(retry_gen), Some((url.to_string(), opts)));
+    t5.mark_loading_started();
+    // 世代不一致または IPC 切断時は再送を実行しない
     assert!(!super::can_execute_load_retry(4, 3, false));
     assert!(!super::can_execute_load_retry(3, 3, true));
+    // 再送も失敗した場合は 2 回目の再送を行わず終端へ進む
+    assert!(t5.on_end_file("error"));
+    assert!(retry.begin_retry().is_none());
 }
