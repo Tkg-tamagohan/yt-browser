@@ -606,6 +606,7 @@ describe("library-page playlist sync", () => {
     notifyMock.mockReset();
     const undoFirstSyncDef = deferred<PlaylistSyncOutcome>();
     const undoFirstRestoreDef = deferred<PlaylistEntry>();
+    let undoFirstSyncCalls = 0;
     let undoFirstRestoreCalls = 0;
 
     invokeMock.mockImplementation((cmd: string) => {
@@ -616,6 +617,7 @@ describe("library-page playlist sync", () => {
         return Promise.resolve(midB);
       }
       if (cmd === "playlist_sync") {
+        undoFirstSyncCalls += 1;
         return undoFirstSyncDef.promise;
       }
       if (cmd === "playlist_item_restore") {
@@ -634,6 +636,7 @@ describe("library-page playlist sync", () => {
       | undefined;
 
     const undoFirstSyncTask = undoFirstLib.syncPlaylist();
+    await vi.waitFor(() => expect(undoFirstSyncCalls).toBe(1));
     undoFirstAction!.run!();
     await vi.waitFor(() => expect(undoFirstRestoreCalls).toBe(1));
 
@@ -656,6 +659,7 @@ describe("library-page playlist sync", () => {
     ]);
     expect(undoFirstLib.playlistItems.map((i) => i.position)).toEqual([0, 1, 2]);
     expect(undoFirstLib.va.playlists[0].itemCount).toBe(3);
+    expect(undoFirstLib.va.playlists[0].syncedAt).toBe(midPlAfterSync.syncedAt);
     undoFirstLib.dispose();
   });
 });
