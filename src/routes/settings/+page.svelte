@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { beforeNavigate, goto, replaceState } from "$app/navigation";
+  import {
+    afterNavigate,
+    beforeNavigate,
+    goto,
+    replaceState,
+  } from "$app/navigation";
   import { page } from "$app/state";
   import { onDestroy, onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -158,7 +163,6 @@
   const hasChanges = $derived(changes.length > 0);
 
   let disposed = false;
-  let mounted = $state(false);
   let loadSeq = 0;
   const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -1146,21 +1150,18 @@
   }
 
   onMount(async () => {
-    mounted = true;
     await initPlayerEvents();
     await loadSettings();
   });
 
   // 再生失敗通知の「依存コマンド設定を開く」等から /settings?section=deps で
-  // 遷移してきたとき、節フィルタを解除して依存コマンド節へスクロールする
-  // （FR-95、仕様決定 EA）。既に /settings にいる状態での再押下にも反応できるよう、
-  // スクロール後にクエリを静かに消費する
-  $effect(() => {
-    if (!mounted) return;
-    const target = page.url.searchParams.get("section");
-    if (target !== "deps") return;
+  // 遷移してきたとき、SvelteKit の遷移後スクロールリセット（scrollTo(0, 0)）の
+  // 完了後に節フィルタを解除して依存コマンド節へスクロールする（FR-95、仕様決定 EA）。
+  // 既に /settings にいる状態での再押下にも反応できるよう、スクロール後にクエリを消費する
+  afterNavigate(({ to }) => {
+    if (!to || to.url.searchParams.get("section") !== "deps") return;
     sectionQuery = "";
-    const cleanUrl = new URL(page.url);
+    const cleanUrl = new URL(to.url);
     cleanUrl.searchParams.delete("section");
     void tick().then(() => {
       if (disposed) return;

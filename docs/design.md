@@ -1238,22 +1238,24 @@ mpv との IPC 接続直後（`observe_property` 後、`loadfile` 前、ウォ�
 `file-loaded` 到達前に `end-file`（`reason: "error"`）を受けると、`event_pump` 自体は止めず別タスク（`handle_load_error`）を起動する。
 同タスクは終端印が未到着であれば最大 200 ミリ秒待機し（新規読み込みやポンプ停止による `load_gen` 更新時は打ち切り、IPC 切断時は即時終了）、スナップショットを次の優先順位表（大文字小文字区別なし）で分類する。
 
-1. `video_unavailable`：`Private video`（`private`）、`Video unavailable` または `This video is unavailable`（`unavailable`）、`members-only`（`members_only`）、`This live event will begin`（`upcoming`）
+1. `video_unavailable`：`Private video`（`private`）、`Video unavailable` または `This video is unavailable`（`unavailable`。一時的なレート制限 `try again later` と地域制限 `available in your country` を含む行は誤断定と再送省略を防ぐため除外）、`members-only`（`members_only`）、`This live event will begin`（`upcoming`）
 2. `cookie_failed`：`could not (?:copy|find) .*cookie` または `failed to decrypt`
 3. `blocked`：`^ERROR:` で始まり、かつ `Sign in to confirm you.re not a bot` または `HTTP Error 403` に一致する行
-4. `js_challenge`：`challenge solving failed`
+4. `js_challenge`：`challenge solving failed` または `signature solving failed`
 5. `no_format`：`Requested format is not available` または `No video formats found`
 6. `network`：`timed out`、`Connection reset`、`Unable to download`
 7. `unknown`：上記のいずれにも一致しない、またはスナップショットが空
 
-アプリログと UI 補助詳細（`errorDetail`）へ渡す文字列は、URL（`https?://\S+`）、引用符内文字列（`"[^"]*"` と `'[^']*'`）、最初のパス表記（`[A-Za-z]:\\`、`\\\\`、`~/`、行頭または空白直後の `/` から行末まで）、`=` 右辺（`=\S+`）の順に伏せ字処理を施し、先頭 200 文字へ切り詰める。
+アプリログと UI 補助詳細（`errorDetail`）へ渡す文字列は、URL（`http`/`https`/`socks4`/`socks5`/`socks5h`/`ftp`、認証付きプロキシを含む）、引用符内文字列（`"[^"]*"` と `'[^']*'`）、最初のパス表記（`file://`、`[A-Za-z]:[\\/]`、`\\\\`、`~/`、行頭または空白直後の `/` から行末まで）、`=` 右辺（`=\S+`）の順に伏せ字処理を施し、先頭 200 文字へ切り詰める。
 `errorDetail` は許可リスト方式で作り、`video_unavailable` は上記の理由列挙値、`unknown` は最初の `ERROR:` 行のサニタイズ済み本体を入れ、他カテゴリには付けない。
-分類のたびにカテゴリとサニタイズ済みスナップショットをアプリログへ記録し、`video_unavailable` のときは自動再送を省略して即座に `EndedSignal` から `player://ended` へ載せる。
+分類のたびにカテゴリとサニタイズ済みスナップショットをアプリログへ記録し、`video_unavailable` または IPC 切断済みのときは自動再送を省略して即座に `EndedSignal` から `player://ended` へ載せる。
+エラー終端から連続再生の次項目へ進む際は、次項目も `file-loaded` 前に失敗した場合に終端と診断が落ちないよう `clear_ended_reason_for_next` で前項目の終端理由を解除してから次項目を読み込む。
+mpv 自身の `mpv-*.log` は `diag_export` から除外したうえで、Unix 環境では起動前に `0600` 権限で事前作成して他ユーザーからの参照を防ぐ（`prepare_mpv_log_file`）。
 
 フロントエンドの純粋モジュール `src/lib/playback-error-logic.ts` は `errorKind` と `errorDetail` から日英の文言とアクション種別を解決する（`errorKind` 未指定時は従来の汎用文言、未知値は `unknown` へフォールバック）。
-`PlayerCards.svelte` は再生失敗通知を 12 秒表示かつ手動の閉じるボタン（`×`）付きで発行し、`blocked`、`js_challenge`、`no_format` では `/settings?section=deps` へ遷移して依存コマンド節へスクロールする「依存コマンド設定を開く」ボタンを、`unknown` では専用コマンド `diag_open_log_dir` を呼ぶ「ログフォルダを開く」ボタンを添える。
+`PlayerCards.svelte` は再生失敗通知を 12 秒表示かつ手動の閉じるボタン（`×`）付きで発行し、`blocked`、`js_challenge`、`no_format` では `/settings?section=deps` へ遷移して `afterNavigate` 経由で節フィルタ解除と依存コマンド節へのスクロールを行う「依存コマンド設定を開く」ボタンを、`unknown` では専用コマンド `diag_open_log_dir` を呼ぶ「ログフォルダを開く」ボタンを添える。
 
-回帰テストは DB-ED-01 〜 DB-ED-13（選別、優先順位、PO Token 破棄、伏せ字処理、上限破棄、終端印待機と世代打ち切り、再送合算と再送省略、IPC コマンド送出と退避）と PE-01 〜 PE-05（全 7 カテゴリ、理由列挙、後方互換、未知値フォールバック、英語ロケール）。
+回帰テストは DB-ED-01 〜 DB-ED-15（選別、優先順位、レート制限と地域制限の除外、署名解決失敗の分類、PO Token 破棄、認証付きプロキシ URL を含む伏せ字処理、上限破棄、終端印待機と世代打ち切り、再送合算と再送省略、連続失敗キューの終端受理、mpv ログ `0600` 権限保護、IPC コマンド送出と退避）と PE-01 〜 PE-05（全 7 カテゴリ、理由列挙、後方互換、未知値フォールバック、英語ロケール）。
 
 ## 5. yt-dlp の呼び出し（技術方針 P）
 

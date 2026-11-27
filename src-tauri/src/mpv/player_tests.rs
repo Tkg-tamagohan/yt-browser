@@ -404,7 +404,10 @@ async fn wait_for_load_error_snapshot_handles_marker_generation_and_disconnect()
     {
         let mut g = super::lock(&buf);
         g.push_log_message("ytdl_hook", "ERROR: Requested format is not available\n");
-        g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+        g.push_log_message(
+            "ytdl_hook",
+            "youtube-dl failed: unexpected error occurred\n",
+        );
     }
     let snap = wait_for_load_error_snapshot(&buf, &sig_tx, &gen, 1, Duration::from_secs(5))
         .await
@@ -427,7 +430,10 @@ async fn wait_for_load_error_snapshot_handles_marker_generation_and_disconnect()
             "ytdl_hook",
             "[debug] WARNING: [youtube] abcdefghijk: n challenge solving failed\n",
         );
-        assert!(g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n"));
+        assert!(g.push_log_message(
+            "ytdl_hook",
+            "youtube-dl failed: unexpected error occurred\n"
+        ));
     }
     sig_tx2_bg.send_modify(|v| *v = v.wrapping_add(1));
     let snap2 = waiter
@@ -495,7 +501,10 @@ async fn retry_combines_first_and_second_attempt_logs() {
             "ytdl_hook",
             "ERROR: Unable to download API page: timed out\n",
         );
-        g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+        g.push_log_message(
+            "ytdl_hook",
+            "youtube-dl failed: unexpected error occurred\n",
+        );
     }
     let first_snap = wait_for_load_error_snapshot(&buf, &sig_tx, &gen, 1, Duration::from_secs(1))
         .await
@@ -518,7 +527,10 @@ async fn retry_combines_first_and_second_attempt_logs() {
             "[debug] WARNING: [youtube] jNQXAC9IVRw: n challenge solving failed\n",
         );
         g.push_log_message("ytdl_hook", "ERROR: Requested format is not available\n");
-        g.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+        g.push_log_message(
+            "ytdl_hook",
+            "youtube-dl failed: unexpected error occurred\n",
+        );
     }
     let combined_snap =
         wait_for_load_error_snapshot(&buf, &sig_tx, &gen, 1, Duration::from_secs(1))
@@ -529,7 +541,10 @@ async fn retry_combines_first_and_second_attempt_logs() {
     assert!(combined_snap
         .iter()
         .any(|l| l.contains("challenge solving failed")));
-    assert_eq!(classify(&combined_snap).kind, PlaybackErrorKind::JsChallenge);
+    assert_eq!(
+        classify(&combined_snap).kind,
+        PlaybackErrorKind::JsChallenge
+    );
     // 2 回目の再送予約は拒否され最終失敗となる
     assert!(retry.begin_retry().is_none());
 }
@@ -540,7 +555,9 @@ fn video_unavailable_skips_auto_retry_while_other_kinds_retry() {
     use super::super::error_diag::PlaybackErrorKind;
     use super::should_retry_load_error;
 
-    assert!(!should_retry_load_error(PlaybackErrorKind::VideoUnavailable));
+    assert!(!should_retry_load_error(
+        PlaybackErrorKind::VideoUnavailable
+    ));
     for kind in [
         PlaybackErrorKind::CookieFailed,
         PlaybackErrorKind::Blocked,
@@ -553,5 +570,45 @@ fn video_unavailable_skips_auto_retry_while_other_kinds_retry() {
             should_retry_load_error(kind),
             "{kind:?} は自動再送の対象であるべき"
         );
+    }
+}
+
+/// DB-ED-14: 連続再生キューで読み込み失敗が 2 件続いたとき、1 件目のエラー終端後に
+/// 終端理由を解除しておけば 2 件目の `file-loaded` 前エラーも診断・キュー進行へ届く（FR-95）。
+#[test]
+fn consecutive_error_queue_items_both_trigger_terminal() {
+    use super::super::terminal::TerminalTracker;
+
+    let tracker = TerminalTracker::default();
+    // 1 件目が file-loaded 前にエラー終端（例: video_unavailable）
+    assert!(tracker.on_end_file("error"));
+    assert!(!tracker.completed());
+    // 連続再生で次項目へ進む前に終端理由を解除する（manager.rs の reason == "error" 経路）
+    tracker.clear_ended_reason();
+    // 2 件目も file-loaded 前にエラー終端 → 抑止されず受理される
+    assert!(tracker.on_end_file("error"));
+    assert!(!tracker.completed());
+}
+
+/// DB-ED-15: `prepare_mpv_log_file` が親ディレクトリを用意し、Unix 環境では
+/// 他ユーザーから読めない `0600` 権限で mpv ログファイルを事前作成・引き締めする（FR-95）。
+#[test]
+fn prepare_mpv_log_file_restricts_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nested").join("mpv-1-1-1.log");
+    super::prepare_mpv_log_file(&path);
+    assert!(path.parent().unwrap().is_dir());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "新規作成された mpv ログは 0600 であるべき");
+
+        // 既に 0644 で存在していても 0600 へ引き締める
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::prepare_mpv_log_file(&path);
+        let mode2 = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode2, 0o600, "既存の mpv ログも 0600 へ引き締めるべき");
     }
 }

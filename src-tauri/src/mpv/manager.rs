@@ -650,6 +650,13 @@ impl PlayerManager {
                         let mut continued_uid: Option<i64> = None;
                         if let Some(next) = player.take_next() {
                             let next_id = next.video_id.clone();
+                            // エラー終端は既に前項目の end-file を消費してアイドル状態なので、
+                            // 次項目も file-loaded 前に失敗した場合に終端と診断が落ちないよう
+                            // ここで終端理由を解除する（keep-open の eof は replace 由来 end-file を
+                            // 伴うため従来どおり file-loaded まで維持する）
+                            if reason == "error" {
+                                player.clear_ended_reason_for_next();
+                            }
                             match player.load_video(&next_id, 0.0).await {
                                 Ok(()) => {
                                     continued = true;

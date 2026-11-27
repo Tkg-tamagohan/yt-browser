@@ -434,6 +434,55 @@ fn log_file_path(opts: &SpawnOptions, instance_id: u32, generation: u32) -> Opti
     })
 }
 
+/// mpv ログファイルを事前に所有者限定権限（Unix: `0600`）で用意する（FR-95、仕様決定 EA）。
+/// `--verbose` 付きの yt-dlp 出力には認証付きプロキシ URL や PO Token が含まれ得るため、
+/// mpv が既定 umask で他ユーザーから読めるログファイルを作るのを防ぐ。
+/// 失敗時は mpv 自体の起動を止めず警告ログのみ残す。
+fn prepare_mpv_log_file(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                path = %parent.display(),
+                error = %e,
+                "mpv ログディレクトリの作成に失敗"
+            );
+            return;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(file) => {
+                if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "mpv ログファイルの権限設定に失敗"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "mpv ログファイルの事前作成に失敗"
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
 /// アプリ起動時に残しておく mpv ログの世代数（仕様決定 BE）。
 /// 再生・再起動のたびに新ファイルができるため、起動ごとに古い分を掃除して
 /// 無制限の蓄積を防ぐ。稼働中インスタンスのログを誤って消さないよう、
@@ -488,7 +537,11 @@ impl MpvPlayer {
         // 同名ソケットが残っていれば掃除する（前回プロセスの残骸対策）
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        let args = mpv_args(&opts, &socket_path, log_file_path(&opts, instance_id, 1));
+        let log_file = log_file_path(&opts, instance_id, 1);
+        if let Some(ref path) = log_file {
+            prepare_mpv_log_file(path);
+        }
+        let args = mpv_args(&opts, &socket_path, log_file);
         let (child, ipc, ev_rx) = launch(&socket_path, &args, OBSERVED_PROPERTIES).await?;
 
         let (ended_tx, _) = broadcast::channel(8);
@@ -598,6 +651,13 @@ impl MpvPlayer {
     /// （FR-43、仕様決定 BS）。終端理由を解除して後続の終端を受理させる。
     pub(crate) fn rearm_after_eof(&self) {
         self.terminal.rearm_after_eof();
+    }
+
+    /// エラー終端（`end-file` 消費済み）から連続再生の次項目へ進む直前に呼ぶ。
+    /// 前項目の `ended_reason` を解除しておき、次項目も `file-loaded` 前に
+    /// 失敗した場合にその終端が診断とキュー進行へ届くようにする（FR-95）。
+    pub(crate) fn clear_ended_reason_for_next(&self) {
+        self.terminal.clear_ended_reason();
     }
 
     /// SponsorBlock 状態・シークの現在世代番号を返す。
@@ -845,11 +905,11 @@ impl MpvPlayer {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PIP_GEOMETRY.to_string())
         });
-        let args = mpv_args(
-            &opts,
-            &self.socket_path,
-            log_file_path(&opts, self.instance_id, generation),
-        );
+        let log_file = log_file_path(&opts, self.instance_id, generation);
+        if let Some(ref path) = log_file {
+            prepare_mpv_log_file(path);
+        }
+        let args = mpv_args(&opts, &self.socket_path, log_file);
 
         let (child, ipc, ev_rx) = launch(&self.socket_path, &args, OBSERVED_PROPERTIES).await?;
         let _switch = self.video_switch_op.lock().await;

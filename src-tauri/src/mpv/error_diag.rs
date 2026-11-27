@@ -150,9 +150,9 @@ fn truncate_utf8_bytes(s: &str, max_bytes: usize) -> &str {
 }
 
 /// UI やアプリログへ渡す文字列の伏せ字処理（仕様決定 EA）。
-/// 1. URL（`https?://\S+`）→ `***`
+/// 1. URL（`http` / `https` / `socks4` / `socks5` / `socks5h` / `ftp`、認証情報付きプロキシを含む）→ `***`
 /// 2. 引用符で囲まれた文字列（`"[^"]*"`・`'[^']*'`）→ `***`
-/// 3. パス（最初の `[A-Za-z]:\\`・`\\\\`・`~/`・行頭または空白直後の `/` から行末まで）→ `***`
+/// 3. パス（最初の `file://`・`[A-Za-z]:[\\/]`・`\\\\`・`~/`・行頭または空白直後の `/` から行末まで）→ `***`
 /// 4. `=` の右辺（`=\S+`）→ `=***`
 /// 5. 先頭 200 文字へ切り詰め
 pub(crate) fn sanitize_line(line: &str) -> String {
@@ -161,7 +161,8 @@ pub(crate) fn sanitize_line(line: &str) -> String {
     static RE_PATH: OnceLock<Regex> = OnceLock::new();
     static RE_KV: OnceLock<Regex> = OnceLock::new();
 
-    let re_url = RE_URL.get_or_init(|| Regex::new(r"https?://\S+").unwrap());
+    let re_url =
+        RE_URL.get_or_init(|| Regex::new(r"(?i)(?:https?|socks[45]h?|ftp)://\S+").unwrap());
     let re_quoted = RE_QUOTED.get_or_init(|| Regex::new(r#""[^"]*"|'[^']*'"#).unwrap());
     let re_path = RE_PATH.get_or_init(|| {
         Regex::new(r"(?P<ws>^|\s)/.*|(?:file://|[A-Za-z]:[\\/]|\\\\|~/).*").unwrap()
@@ -187,6 +188,7 @@ pub(crate) fn sanitize_lines(lines: &[String]) -> Vec<String> {
 pub(crate) fn classify(lines: &[String]) -> PlaybackErrorSummary {
     static RE_PRIVATE: OnceLock<Regex> = OnceLock::new();
     static RE_UNAVAILABLE: OnceLock<Regex> = OnceLock::new();
+    static RE_UNAVAILABLE_EXCLUDE: OnceLock<Regex> = OnceLock::new();
     static RE_MEMBERS: OnceLock<Regex> = OnceLock::new();
     static RE_UPCOMING: OnceLock<Regex> = OnceLock::new();
     static RE_COOKIE: OnceLock<Regex> = OnceLock::new();
@@ -198,16 +200,22 @@ pub(crate) fn classify(lines: &[String]) -> PlaybackErrorSummary {
     let re_private = RE_PRIVATE.get_or_init(|| Regex::new(r"(?i)private video").unwrap());
     let re_unavailable = RE_UNAVAILABLE
         .get_or_init(|| Regex::new(r"(?i)video unavailable|this video is unavailable").unwrap());
+    // 一時的なレート制限（try again later）や地域制限（available in your country）を
+    // 「削除済み」と誤断定して自動再送まで省略するのを防ぐ
+    let re_unavailable_exclude = RE_UNAVAILABLE_EXCLUDE
+        .get_or_init(|| Regex::new(r"(?i)try again later|available in your country").unwrap());
     let re_members = RE_MEMBERS.get_or_init(|| Regex::new(r"(?i)members-only").unwrap());
     let re_upcoming =
         RE_UPCOMING.get_or_init(|| Regex::new(r"(?i)this live event will begin").unwrap());
-    let re_cookie = RE_COOKIE
-        .get_or_init(|| Regex::new(r"(?i)could not (?:copy|find) .*cookie|failed to decrypt").unwrap());
+    let re_cookie = RE_COOKIE.get_or_init(|| {
+        Regex::new(r"(?i)could not (?:copy|find) .*cookie|failed to decrypt").unwrap()
+    });
     let re_blocked = RE_BLOCKED.get_or_init(|| {
         Regex::new(r"(?i)^ERROR:.*(?:sign in to confirm you.re not a bot|http error 403)").unwrap()
     });
-    let re_js_challenge =
-        RE_JS_CHALLENGE.get_or_init(|| Regex::new(r"(?i)challenge solving failed").unwrap());
+    let re_js_challenge = RE_JS_CHALLENGE.get_or_init(|| {
+        Regex::new(r"(?i)challenge solving failed|signature solving failed").unwrap()
+    });
     let re_no_format = RE_NO_FORMAT.get_or_init(|| {
         Regex::new(r"(?i)requested format is not available|no video formats found").unwrap()
     });
@@ -222,7 +230,7 @@ pub(crate) fn classify(lines: &[String]) -> PlaybackErrorSummary {
                 detail: Some("private".to_string()),
             };
         }
-        if re_unavailable.is_match(line) {
+        if re_unavailable.is_match(line) && !re_unavailable_exclude.is_match(line) {
             return PlaybackErrorSummary {
                 kind: PlaybackErrorKind::VideoUnavailable,
                 detail: Some("unavailable".to_string()),
@@ -328,7 +336,10 @@ mod tests {
                 "ytdl_hook",
                 "ERROR: [youtube] 00000000000: This video is unavailable\r\n",
             ),
-            ("ytdl_hook", "youtube-dl failed: unexpected error occurred\n"),
+            (
+                "ytdl_hook",
+                "youtube-dl failed: unexpected error occurred\n",
+            ),
         ]);
         assert!(buf.is_ready_to_classify());
         assert_eq!(buf.snapshot().len(), 2);
@@ -350,6 +361,17 @@ mod tests {
             let (_, s) = feed_and_classify(&[("ytdl_hook", line)]);
             assert_eq!(s.kind, PlaybackErrorKind::VideoUnavailable);
             assert_eq!(s.detail.as_deref(), Some(expected_detail));
+        }
+
+        // 1c. レート制限（try again later）と地域制限（available in your country）は
+        // 「削除済み」（video_unavailable）と誤断定せず、再送可能な unknown へ落とす
+        for line in [
+            "ERROR: [youtube] abcdefghijk: Video unavailable. This content isn't available, try again later.\n",
+            "ERROR: [youtube] abcdefghijk: Video unavailable. The uploader has not made this video available in your country\n",
+        ] {
+            let (_, s) = feed_and_classify(&[("ytdl_hook", line)]);
+            assert_eq!(s.kind, PlaybackErrorKind::Unknown, "誤分類された行: {line}");
+            assert!(s.detail.is_some());
         }
 
         // 2. cookie_failed（yt-dlp 2026.11.23 実出力 + Chrome ロック / 復号失敗）
@@ -389,7 +411,7 @@ mod tests {
         ]);
         assert_eq!(warning_only_403.kind, PlaybackErrorKind::NoFormat);
 
-        // 4. js_challenge（yt-dlp 2026.11.23 `--no-js-runtimes --verbose` 実出力）
+        // 4. js_challenge（yt-dlp 2026.11.23 `--no-js-runtimes --verbose` 実出力 + Signature solving failed）
         let (_, jsc) = feed_and_classify(&[
             (
                 "ytdl_hook",
@@ -403,6 +425,19 @@ mod tests {
         ]);
         assert_eq!(jsc.kind, PlaybackErrorKind::JsChallenge);
         assert_eq!(jsc.detail, None);
+
+        let (_, jsc_sig) = feed_and_classify(&[
+            (
+                "ytdl_hook",
+                "[debug] WARNING: [youtube] jNQXAC9IVRw: Signature solving failed: Some formats may be missing.\n",
+            ),
+            (
+                "ytdl_hook",
+                "ERROR: [youtube] jNQXAC9IVRw: Requested format is not available.\n",
+            ),
+        ]);
+        assert_eq!(jsc_sig.kind, PlaybackErrorKind::JsChallenge);
+        assert_eq!(jsc_sig.detail, None);
 
         // 5. no_format（yt-dlp 2026.11.23 実出力）
         let (_, no_fmt) = feed_and_classify(&[
@@ -480,13 +515,20 @@ mod tests {
         assert!(!s1.contains("SUPER_SECRET_12345"), "got: {s1}");
         assert!(s1.contains("po_token=***"), "got: {s1}");
 
-        // googlevideo の署名付き URL
+        // googlevideo の署名付き URL および認証付きプロキシ URL（http / socks5）
         let s2 = sanitize_line(
             "ERROR: failed https://rr1---sn-abc.googlevideo.com/videoplayback?expire=123&sig=SECRET_SIG&id=1",
         );
         assert!(!s2.contains("googlevideo.com"), "got: {s2}");
         assert!(!s2.contains("SECRET_SIG"), "got: {s2}");
         assert!(s2.contains("***"), "got: {s2}");
+
+        let s_proxy = sanitize_line(
+            "ERROR: proxy http://alice:s3cr3t@proxy.example:8080 and socks5://bob:pw99@127.0.0.1:1080 failed",
+        );
+        for secret in ["alice", "s3cr3t", "proxy.example", "bob", "pw99"] {
+            assert!(!s_proxy.contains(secret), "got: {s_proxy}");
+        }
 
         // 空白を含むユーザー名のある Windows パス
         let s3 = sanitize_line(
@@ -503,7 +545,8 @@ mod tests {
         assert_eq!(s4, "ERROR: failed at ***");
 
         // Unix パス（空白直後と行頭）およびチルダパス
-        let s5 = sanitize_line("ERROR: failed reading /home/alice smith/.config/yt-dlp/cookies.txt");
+        let s5 =
+            sanitize_line("ERROR: failed reading /home/alice smith/.config/yt-dlp/cookies.txt");
         assert!(!s5.contains("alice smith"), "got: {s5}");
         assert_eq!(s5, "ERROR: failed reading ***");
 
@@ -529,7 +572,9 @@ mod tests {
         assert_eq!(s_ratio, "WARNING: Retrying (1/3) due to error");
 
         // 引用符内の値
-        let s8 = sanitize_line(r#"ERROR: bad header "Authorization: Bearer TOPSECRET" and 'cookie=XYZ'"#);
+        let s8 = sanitize_line(
+            r#"ERROR: bad header "Authorization: Bearer TOPSECRET" and 'cookie=XYZ'"#,
+        );
         assert!(!s8.contains("TOPSECRET"), "got: {s8}");
         assert!(!s8.contains("XYZ"), "got: {s8}");
 
@@ -548,13 +593,24 @@ mod tests {
         ];
         let summary = classify(&lines);
         assert_eq!(summary.kind, PlaybackErrorKind::Unknown);
-        let detail = summary.detail.expect("unknown は先頭 ERROR 行から detail を作る");
+        let detail = summary
+            .detail
+            .expect("unknown は先頭 ERROR 行から detail を作る");
         for secret in ["SECRET_PO", "googlevideo", "Bob Jones", "cookies.txt"] {
-            assert!(!detail.contains(secret), "detail に {secret} が残った: {detail}");
+            assert!(
+                !detail.contains(secret),
+                "detail に {secret} が残った: {detail}"
+            );
         }
         let logged = sanitize_lines(&lines);
         for line in &logged {
-            for secret in ["SECRET_PO", "googlevideo", "Bob Jones", "cookies.txt", "/home/bob"] {
+            for secret in [
+                "SECRET_PO",
+                "googlevideo",
+                "Bob Jones",
+                "cookies.txt",
+                "/home/bob",
+            ] {
                 assert!(!line.contains(secret), "ログに {secret} が残った: {line}");
             }
         }
@@ -601,11 +657,17 @@ mod tests {
         let mut buf_b = YtdlErrorBuffer::default();
 
         buf_a.push_log_message("ytdl_hook", "ERROR: Requested format is not available\n");
-        buf_a.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+        buf_a.push_log_message(
+            "ytdl_hook",
+            "youtube-dl failed: unexpected error occurred\n",
+        );
         buf_b.push_log_message("ytdl_hook", "ERROR: [youtube] xyz: Private video\n");
 
         // インスタンス間で混ざらない
-        assert_eq!(classify(&buf_a.snapshot()).kind, PlaybackErrorKind::NoFormat);
+        assert_eq!(
+            classify(&buf_a.snapshot()).kind,
+            PlaybackErrorKind::NoFormat
+        );
         assert_eq!(
             classify(&buf_b.snapshot()).kind,
             PlaybackErrorKind::VideoUnavailable
@@ -619,7 +681,10 @@ mod tests {
             "ytdl_hook",
             "[debug] WARNING: [youtube] abc: n challenge solving failed\n",
         );
-        buf_a.push_log_message("ytdl_hook", "youtube-dl failed: unexpected error occurred\n");
+        buf_a.push_log_message(
+            "ytdl_hook",
+            "youtube-dl failed: unexpected error occurred\n",
+        );
         assert!(buf_a.is_ready_to_classify());
         // 初回（no_format）と再送（js_challenge）の合算で優先順位の高い js_challenge になる
         assert_eq!(
