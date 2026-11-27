@@ -145,6 +145,29 @@ impl Matcher {
         &self.invalid
     }
 
+    fn has_target_ng_rules(&self, target: &str) -> bool {
+        self.literal
+            .get(target)
+            .is_some_and(|ac| ac.patterns_len() > 0)
+            || self.regex.get(target).is_some_and(|set| !set.is_empty())
+    }
+
+    /// `video_desc` 対象の有効な NG ルール（literal / 非空 regex）が存在するか（FR-100、仕様決定 EF）。
+    /// 不正正規表現のみが除外されて空集合となった `RegexSet` と `highlight` 種別は含めない。
+    pub fn has_video_desc_rules(&self) -> bool {
+        self.has_target_ng_rules("video_desc")
+    }
+
+    /// `channel_id` 対象の有効な NG ルールが存在するか。
+    pub fn has_channel_id_rules(&self) -> bool {
+        self.has_target_ng_rules("channel_id")
+    }
+
+    /// `channel_title` 対象の有効な NG ルールが存在するか。
+    pub fn has_channel_title_rules(&self) -> bool {
+        self.has_target_ng_rules("channel_title")
+    }
+
     /// 動画系 target の NG 判定（FR-9・FR-85、仕様決定 DJ）。一覧の表示経路
     /// （フィード・検索・関連動画）で `is_video_ng` に渡せる値を評価する。
     /// `desc` は `videos.description` の遅延解決済み説明文（v22 以降）で、
@@ -367,5 +390,39 @@ mod tests {
         // None（説明文を持たない経路・未解決行）と空文字は評価しない
         assert!(!m.is_video_ng("無害", None, None, None));
         assert!(!m.is_video_ng("無害", None, None, Some("")));
+    }
+
+    #[test]
+    fn has_video_desc_rules_checks_literal_and_nonempty_regex_only() {
+        assert!(!Matcher::empty().has_video_desc_rules());
+        assert!(!Matcher::empty().has_channel_id_rules());
+        assert!(!Matcher::empty().has_channel_title_rules());
+
+        // 他 target・無効化行・highlight 行・不正 regex のみ（空 RegexSet）は false
+        let mut disabled = f("video_desc", "literal", "スポンサー");
+        disabled.enabled = false;
+        let only_non_ng = Matcher::rebuild(&[
+            f("video_title", "literal", "切り抜き"),
+            disabled,
+            f("video_desc", "highlight", "注目"),
+            f("video_desc", "regex", "(unclosed"),
+        ]);
+        assert!(!only_non_ng.has_video_desc_rules());
+        assert!(!only_non_ng.has_channel_id_rules());
+        assert!(!only_non_ng.has_channel_title_rules());
+
+        // 有効な literal / regex は true
+        let lit = Matcher::rebuild(&[f("video_desc", "literal", "提供")]);
+        assert!(lit.has_video_desc_rules());
+
+        let reg = Matcher::rebuild(&[
+            f("video_desc", "regex", "(unclosed"),
+            f("video_desc", "regex", r"https?://example\.com"),
+            f("channel_id", "literal", "UCbad0000000000000000001"),
+            f("channel_title", "regex", r"公式$"),
+        ]);
+        assert!(reg.has_video_desc_rules());
+        assert!(reg.has_channel_id_rules());
+        assert!(reg.has_channel_title_rules());
     }
 }

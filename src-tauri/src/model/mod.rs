@@ -392,6 +392,16 @@ pub struct SearchResult {
     pub thumbnail_url: Option<String>,
 }
 
+/// `search` コマンドの 1 ページ応答（FR-25・FR-100、仕様決定 EF）。
+/// `SearchSession` の 2 ページ上限やフィルタで `items.len() < count` になった場合でも
+/// 次ページやバッファ残余があれば `has_more: true` を返す。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPage {
+    pub items: Vec<SearchResult>,
+    pub has_more: bool,
+}
+
 /// `blocked_channels` テーブルの 1 行（設計書 §8）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

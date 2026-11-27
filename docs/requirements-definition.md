@@ -223,7 +223,8 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
 ### FR-25 一覧のページング
 
 - 検索結果、フィード一覧、プレイリスト項目の各一覧末尾に「さらに読み込む」ボタンを設ける（仕様決定 AR）
-- 検索は `ytsearch` に継続が無いため、件数上限を段階的に増やして再取得し、既表示に差分だけを追記する
+- 検索は任意設定 `youtube.api_key` が有効な間は `SearchSession`（`search.list` `maxResults=50` と `nextPageToken`、1 呼び出し最大 2 ページ、10 分 TTL）でキャッシュ済み件数を増やしながら先頭 `count` 件まで返す（FR-100、仕様決定 EF）
+  `ytsearch` フォールバック時は継続が無いため、件数上限を段階的に増やして再取得し、既表示に差分だけを追記する
 - フィード一覧は投稿日時と動画 ID のカーソルで次の 500 件を追記する
   投稿日時が NULL の項目は末尾側にまとめ、同時刻の並びは `video_id` で安定化する（カーソルの境界判定もこの順序に従う）
 - プレイリスト項目は `position` の範囲で分割して取得・追記する
@@ -668,9 +669,12 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
 
 ### FR-85 video_desc フィルタの評価対象化
 
-- InnerTube `player` 応答の `videoDetails.shortDescription` を `videos` の説明列へ遅延解決で保存し、NG フィルタ `video_desc` の評価対象に加える（仕様決定 DJ）
-  遅延解決基盤は FR-53・FR-56 と共用する。FR-33・仕様決定 BB の「`video_desc` の評価対象化は対象外」を改訂する
-- 説明文を持つ項目で `video_desc` フィルタが評価されることを受け入れ条件とする
+- InnerTube `player` 応答の `videoDetails.shortDescription`（および `youtube.api_key` 設定時は Data API v3 `videos.list` の `snippet.description`）を `videos` の説明列へ遅延解決で保存し、NG フィルタ `video_desc` の評価対象に加える（仕様決定 DJ、ED）
+  遅延解決基盤は FR-53 と FR-56 と共用する
+  FR-33 と仕様決定 BB の「`video_desc` の評価対象化は対象外」を改訂する
+- キーワード検索でも `youtube.api_key` が有効かつ `video_desc` の NG ルールが存在する場合は説明文を取得して `video_desc` を評価する（FR-100、仕様決定 EF）
+  関連動画および API キー未設定またはフォールバック時の無補強項目は説明文を持たないため未評価のまま通す
+- 説明文を持つ項目および API キー有効時のキーワード検索で `video_desc` フィルタが評価されることを受け入れ条件とする
 
 ### FR-86 PO Token の伝達
 
@@ -773,6 +777,18 @@ FR-36 以降は 2026-11 の拡張要求で確定した要件であり、実装�
   - `playlistItems.list`（`part=snippet,contentDetails,status`、`maxResults=50`）を重複トークンループ抑止付きで最大 100 ページ（5,000 件）まで巡回し、`status.privacyStatus` が `public` または `unlisted` の項目のみを採用する
   - 各項目では動画の投稿者チャンネル ID として `snippet.videoOwnerChannelId`（`UC` 形式検証済み、プレイリスト所有者 `snippet.channelId` は不使用）を抽出し、`contentDetails.videoPublishedAt` を `iso8601_ms` と `iso_utc` により `+00:00` 形式へ正規化して保存する（既存の非 NULL `published_at` は `COALESCE` で上書きしない）
   - 非公開または削除済み項目の除外後に有効項目が 0 件となった場合および公式 API が `HTTP 404`（プレイリスト不在）を返した場合は `yt-dlp` へフォールバックせず `invalid_input` を返し、未設定や無効キーやクォータ上限や一時障害時のみ `yt::playlist_meta`（`yt-dlp`）へフォールバックする
+
+### FR-100 YouTube Data API v3 によるキーワード検索と動画説明文フィルタ補完
+
+- 任意設定 `youtube.api_key` が有効な場合に、`YtApi` 内の `SearchSession`（`search.list` と `videos.list` 併用、10 分 TTL）を用いてキーワード検索を優先し、`yt-dlp` 不在環境でも検索が動作するとともに、未設定、無効キー、タイムアウト、クォータ上限、通信失敗時は `yt::search`（`yt-dlp`）へ透過的にフォールバックする（仕様決定 EF、FR-25 と FR-85 を改訂）
+- `SearchSession` はトリム後クエリの一致および 10 分 TTL（600 秒未満）で維持し、`settings_set` と `data_import` による `on_key_changed` ではトリム後のキー文字列が変化したときだけセッションを無効化する
+  累積 `count` 増加による「さらに読み込む」では、キャッシュ済みのフィルタ通過後生存数が `count` を満たすか終端に到達済みであれば追加 API 呼び出しを行わず先頭 `count` 件を返し、2 ページ上限やフィルタで `count` 未満しか返せなくても次ページ残余があれば継続可否 `hasMore` を `true` として次ページ取得を継続できる
+  公式 API から `yt::search` フォールバックへ切り替わって重複が部分的になった場合も、画面側の追記は 1 回の増分（20 件）と最大表示上限（500 件）に制限し、余剰候補は未表示バッファから次回の操作で消費する
+- 各ページは `search.list`（`part=id`、`type=video`、`maxResults=50`、`q`、任意 `pageToken`、`QuotaBucket::Search` 日次 100 回枠、廃止済みの `relatedToVideoId` は送信しない）で動画 ID 列を取得し、`videos.list`（`QuotaBucket::Shared` 日次 10,000 units 枠、`part=snippet,contentDetails,liveStreamingDetails,statistics`）を 1 バッチ併用して非エスケープ文字列、説明文、`duration_sec`、`statistics.viewCount`、`+00:00` 正規化済み `published_at`、および正規 `UC` 形式（`is_channel_id`）の `channel_id` を得る
+  1 回の呼び出しあたり最大 2 ページまで巡回し、フィルタ通過後生存数が `count` に達した場合またはページ終端に達した場合は早期打ち切りし、重複 `pageToken` はループ抑止する
+- `SearchSession` と `yt::search` の双方で `truncate(count)` より前に `HashSet` により `video_id` を初回出現順維持のまま重複排除し、検索専用枠（`search_quota_until`）と共通枠（`shared_quota_until`）の遮断器は独立させて `/search` のクォータ超過で `shared` 枠の他機能を止めない
+- `filter::Matcher` に `has_video_desc_rules`（有効な `literal` または空でない `RegexSet` のみを対象とし、`highlight` と不正正規表現のみの空集合は除外）を設け、`yt::search` フォールバック時も `QuotaBucket::Shared` が利用可能かつ `video_desc` の NG ルール有効時、または `channel_id` や `channel_title` が未解決で対応するブロックや NG ルールが有効な場合は、事前フィルタ通過後の候補を最大 50 件チャンクの `videos.list` で条件付き補強する
+  補強はフィルタ通過後生存数が `count` に達した時点で以降のチャンクを打ち切り、補強呼び出しが失敗した場合は無補強のまま続行する
 
 ## 5. 非機能要件
 

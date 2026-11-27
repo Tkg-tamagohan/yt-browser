@@ -523,6 +523,7 @@ fn is_uc_channel_id(s: &str) -> bool {
 /// パース不能な行は捨てる（1 行の腐敗で全体を失敗させない暫定仕様）。
 fn parse_search_jsonl(bytes: &[u8]) -> Vec<crate::model::SearchResult> {
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in bytes.split(|&b| b == b'\n') {
         let line = line.trim_ascii();
         if line.is_empty() {
@@ -534,6 +535,9 @@ fn parse_search_jsonl(bytes: &[u8]) -> Vec<crate::model::SearchResult> {
         let Some(id) = v.get("id").and_then(|s| s.as_str()) else {
             continue;
         };
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
         // flat エントリの id は動画 ID。プレイリスト等は _type=url で url 側を見るべきだが、
         // ytsearch のエントリは動画なので id のみ採用する。
         let title = v
@@ -635,6 +639,21 @@ mod tests {
         let out = parse_search_jsonl(input);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].video_id, "abc123def45");
+    }
+
+    #[test]
+    fn search_jsonl_deduplicates_duplicate_video_ids_preserving_order() {
+        let input = br#"{"id":"vid00000001","title":"First A"}
+{"id":"vid00000002","title":"Second B"}
+{"id":"vid00000001","title":"Duplicate A"}
+{"id":"vid00000003","title":"Third C"}
+{"id":"vid00000002","title":"Duplicate B"}
+"#;
+        let out = parse_search_jsonl(input);
+        let ids: Vec<&str> = out.iter().map(|r| r.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["vid00000001", "vid00000002", "vid00000003"]);
+        assert_eq!(out[0].title, "First A");
+        assert_eq!(out[1].title, "Second B");
     }
 
     #[test]

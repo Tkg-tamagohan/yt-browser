@@ -285,6 +285,11 @@ export type SearchResult = {
   thumbnailUrl: string | null;
 };
 
+export type SearchPage = {
+  items: SearchResult[];
+  hasMore: boolean;
+};
+
 export type BlockedChannel = {
   channelId: string;
   title: string;

@@ -49,11 +49,11 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `yt` | yt-dlp 子プロセスの呼び出し層。検索、動画情報、チャンネル動画一覧（`YoutubeBackend` トレイト抽象化は現状未導入。§9.2） |
 | `feed` | チャンネル RSS のポーラー。新着の検出と未読への積み上げ、新規投入アイテムの shorts 非同期判定、新着のデスクトップ通知（FR-58）と自動既読（FR-64）の適用 |
 | `innertube` | ytcfg の取得と InnerTube への POST。`chat` と `related` が共用する |
-| `ytapi` | YouTube Data API v3 クライアント（`videos.list`、`channels.list`、`playlists.list`、`playlistItems.list` の取得を含む）、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、FR-98、FR-99、§4.24、§4.25、§4.26） |
+| `ytapi` | YouTube Data API v3 クライアント（`videos.list`、`channels.list`、`playlists.list`、`playlistItems.list`、`search.list` と `SearchSession` の取得を含む）、日次 2 系統サーキットブレーカー、接続テスト、状態管理（FR-97、FR-98、FR-99、FR-100、§4.24、§4.25、§4.26、§4.27） |
 | `livewait` | ライブ配信待機のポーラー。待機リストの巡回（`ytapi` 優先と `InnerTube` フォールバック）、開始と終了と自動解除の検出、および `live_wait.action` に応じた動作（FR-44、FR-98、§4.16） |
 | `metaresolve` | メタの遅延解決ワーカー。`videos` の欠けた投稿日時、説明文、未確定や失敗の kind を `ytapi` `videos.list` 優先（フォールバック時は InnerTube `player`）で後から埋める（FR-53、FR-56、FR-57、FR-85、FR-96、FR-98、§4.18） |
 | `chat` | get_live_chat ポーラーと renderer → `ChatEvent` への正規化 |
-| `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャ |
+| `filter` | NG フィルタのモデルと、Aho-Corasick / RegexSet によるマッチャおよび対象別有効ルール判定（`has_video_desc_rules` 等、§4.27） |
 | `sponsor` | SponsorBlock API クライアントとスキップ判定 |
 | `ui` | 表示設定（`ui.*` キー）の解釈の正。配色・一覧密度・UI 言語はフロントだけで使う（FR-76・FR-77・FR-81、仕様決定 DA・DB・DF） |
 | `db` | 接続、マイグレーション、クエリ |
@@ -127,7 +127,7 @@ WebView の描画パイプラインに動画を通さないため、WebKitGTK �
 | `mark_read` | `video_ids?`, `all?` | `Result<u64>`（`all` 指定時は既読化した件数、個別指定時は入力した ID 数） |
 | `feed_refresh` | `channel_id?` | `Result<()>`（`FeedPoller::force_refresh` に加えて `MetaResolver::wake_manual` を呼ぶ、FR-96） |
 | `feed_backfill` | `channel_id`（購読中の 1 件。`/videos`・`/streams`・`/shorts` タブを遡る手動バックフィル。1 回各タブ 100 件・暫定、仕様決定 AN。`/shorts` は FR-55・仕様決定 CF） | `Result<BackfillOutcome>`（`inserted`、タブ別の次回開始位置（`videos_pos`・`streams_pos`・`shorts_pos`）、`errors`） |
-| `search` | `query`, `count?`（返す表示件数の上限。省略時 20・上限 500。ytsearch に継続が無いため、「さらに読み込む」は count を増やした再取得＋画面側の差分追記とする（仕様決定 AR）） | `Result<Vec<SearchResult>>` |
+| `search` | `query`, `count?`（返す表示件数の上限で省略時 20、上限 500、累積 `count` を増やした再取得および画面側の増分上限と未表示バッファ管理とし、任意 API キー有効時は `ytapi` `SearchSession` 10 分 TTL を優先、未設定や障害時は `yt::search` と条件付き `videos.list` 補強へフォールバック、FR-25、FR-100、仕様決定 AR、EF、§4.27） | `Result<SearchPage>`（`items` と継続可否 `hasMore`） |
 | `get_related` | `video_id` | `Result<Vec<SearchResult>>` |
 | `get_description` | `video_id` | `Result<String>`（`ytapi` `videos.list` の `snippet.description` を優先し、未設定や失敗や欠落時は InnerTube `player` の `videoDetails.shortDescription` へフォールバック。空や未設定は空文字列。FR-33、FR-98、仕様決定 BB、ED） |
 | `block_channel` | `channel_id`, `title` | `Result<()>` |
@@ -1307,6 +1307,28 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 
 回帰テストは `DB-YA-13` 〜 `DB-YA-16`（`@handle` 解決の正常系と空 `items` と `HTTP 404`、プレイリストのページネーションと `seen_tokens` と `fetch_title=false` 時の `playlists.list` 省略、非公開と削除済み項目の除外と `videoOwnerChannelId` と `+00:00` 正規化、`playlists.list` 空 `items` 時の `NotFound` と非巡回）、`DB-PF-14`（`subscribe_channel` の `yt-dlp` 不在成功、不在時非フォールバック、クォータ上限時フォールバック）、`DB-LD-43`（`playlist_import` の公式 API 優先と `+00:00` 保存および既存非 NULL 保持、`NotFound` と有効 0 件の非フォールバック、`WL` と `RD` の直行、`yt-dlp` フォールバック）。
 
+### 4.27 YouTube Data API v3 によるキーワード検索と動画説明文フィルタ補完（FR-100、仕様決定 EF）
+
+`ytapi/mod.rs` は純粋リーフモジュール（`crate::model` と `crate::util` のみ参照）のまま、`YtApiState` 内に `SearchSession`（10 分 TTL = `600` 秒、`SEARCH_MAX_PAGES_PER_CALL = 2`、`SEARCH_LIST_PAGE_SIZE = 50`）と `YtApi::search_videos`（決定論的テスト用の `search_videos_at`）を提供する。
+`commands/search.rs`（`search` およびテスト可能な `search_with`）が `ytapi`、`yt`、`filter` を調停し、フロントエンドの累積 `count` プロトコルを維持したまま `search` コマンドは `SearchPage`（`items` と継続可否 `hasMore`）を返す。
+検索画面（`src/routes/search/+page.svelte` と純粋ロジック `src/lib/search-page-logic.ts`）は `hasMore` により 2 ページ上限やフィルタ通過後の短応答でも次ページ残余があれば「さらに読み込む」を維持し、重複排除後の追記は 1 回の増分（20 件）と最大表示上限（500 件）に制限して余剰候補を `pending` バッファへ繰り越す。
+
+- `SearchSession` と `search.list` 併用：`search_videos` は空白トリム後のクエリが一致し、同一 `session_epoch` かつ経過時間 `now_sec - created_at_sec < 600` の `SearchSession` が存在するときキャッシュを再利用し、呼び出し元の `enough(&sess.items)`（フィルタ通過後生存数が `count` 以上）または `sess.exhausted` が真であれば追加通信なしで `YtSearchOutcome`（`items` と `!sess.exhausted`）を返す。
+  `on_key_changed` ではトリム後のキー文字列が変化したときだけ `search_session = None` として `session_epoch` を進め、`.await` 跨ぎの古いセッション書き戻しを抑止する。
+  追加取得時は 1 ページごとに `GET {api_base}/search?part=id&type=video&maxResults=50&q=...`（`QuotaBucket::Search`、次ページがある場合は `pageToken` を付与、廃止済みの `relatedToVideoId` は送信しない）を呼び、重複 `pageToken` は `seen_tokens` で抑止する。
+  取得した新規 `video_id` 列は `sess.seen_ids`（`HashSet`）で初回出現順を保ったまま重複排除したうえで `videos_list`（`QuotaBucket::Shared`）へ 1 バッチで渡し、非エスケープ文字列、説明文、`duration_sec`、`statistics.viewCount`、`+00:00` 正規化済み `published_at` を得る。
+  1 呼び出しの巡回上限は 2 ページとし、`enough` 到達または終端到達で打ち切る。
+  `commands/search.rs` は `has_buffered_more`（フィルタ後生存数が `count` を超えたか）または `outcome.has_more` が真で `count < 500` のときに `SearchPage.has_more = true` を返し、`yt::search` フォールバック時も生存数到達または取得上限到達かつ `count < 500` のとき `has_more = true` を返す。
+- `view_count` と `channel_id` 検証：`parse_video_item` は `statistics.viewCount`（文字列または非負整数）を `YtVideoItem.view_count` へ解析し、既存メタ補完互換（`DB-YA-10`）を保ちつつ `YtVideoItem::to_search_result()` が `model::is_channel_id`（`UC` 始まり 24 文字）を満たす `channel_id` のみを `SearchResult` へ載せる。
+- 独立サーキットブレーカー：`search_videos` は `/search` 送信前に `Search` と `Shared` 双方の遮断器を確認して片側枯渇時の不要な検索枠消費を防ぎつつ、`/search` のクォータ超過は `search_quota_until` のみを遮断し、`shared_quota_until` には影響させない。
+- `yt::search` フォールバックと条件付き `videos.list` 補強：`ytapi.search_videos` が未設定、キー無効、クォータ超過、クールダウン、タイムアウト、通信エラー等で失敗した場合は `yt::search` へ透過的にフォールバックする。
+  `yt/mod.rs` の `parse_search_jsonl` でも `HashSet` により `truncate(count)` より前に重複 `video_id` を排除する。
+  `commands/search.rs` は事前フィルタ後の候補に対して、`ytapi.can_use(QuotaBucket::Shared)` が真かつ、いずれかの条件を満たす場合に限り `VIDEOS_BATCH_MAX`（50 件）チャンク単位で `ytapi.videos_list` を呼び出して補強後に再評価する（`filter::Matcher` の `has_video_desc_rules` が真、または `channel_id` 欠落かつブロック登録か `has_channel_id_rules` が真、または `channel_title` 欠落かつ `has_channel_title_rules` が真のとき）。
+  `has_video_desc_rules` 等は有効な `literal` または空でない `RegexSet` のみを対象とし、`highlight` や不正正規表現のみで空になった集合は除外する。
+  補強は通過した生存数が `count` に達した時点で以降のチャンクを打ち切り、補強呼び出し自体が失敗した場合は無補強のまま残りを返して検索失敗にしない。
+
+回帰テストは `DB-YA-17` 〜 `DB-YA-21`（`search.list` パラメータ規約と `videos.list` 併用・`relatedToVideoId` 非送信、ページネーションと 2 ページ上限と `enough` 打ち切りと `HashSet` 重複排除、TTL 境界とクエリ切替と `on_key_changed` 無効化と `session_epoch` 通信中書き戻し保護、および独立テスト `search_session_inflight_key_change_prevents_stale_cache_writeback`、`Search` と `Shared` 独立遮断器、`statistics.viewCount` 境界と `to_search_result` の非 `UC` 除外）および `SR-01` 〜 `SR-04`（短応答での継続、取得先切替時の増分・上限管理、バッファ消費、ブロック除外）。
+
 ## 5. yt-dlp の呼び出し（技術方針 P）
 
 用途はメタデータ取得と検索で、ストリーム解決そのものは mpv の `ytdl_hook` に委譲する。
@@ -1314,7 +1336,7 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 | 用途 | 呼び出し |
 |---|---|
 | 動画詳細 | `yt-dlp -J <url>` |
-| 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む） |
+| 検索 | `yt-dlp "ytsearch<N>:<query>" --dump-json --flat-playlist`（行単位の JSONL をストリーム的に読む仕様で、任意 API キー設定時は `ytapi` `SearchSession` 優先のフォールバック経路、§4.27） |
 | チャンネル一覧の補完 | `yt-dlp <channel_url> --flat-playlist --dump-json` |
 | プレイリスト取り込み | `yt-dlp <playlist_url> --flat-playlist --dump-single-json`（任意 API キー設定時は `ytapi` 優先、`WL`、`HL`、`LM`、`LL` 系、`RD` 系と障害時のフォールバック経路、§4.26） |
 | チャンネルの過去動画（バックフィル） | `yt-dlp <channel>/videos`・`<channel>/streams`・`<channel>/shorts` を `--flat-playlist` で区間取得（仕様決定 AN。1 回各タブ 100 件・暫定。`/shorts` は FR-55・仕様決定 CF で追加） |
@@ -1329,7 +1351,7 @@ HTTP クライアントのタイムアウトは接続 5 秒、全体 8 秒とし
 - **PO Token**：要求される環境では yt-dlp 側の手順（`--cookies-from-browser` や外部プロバイダ）を利用する。
   アプリからの伝達経路は FR-86・仕様決定 DK で追加した。設定 `ytdlp.po_token`（空・未設定は未指定）の値を、
   YouTube へ問い合わせる yt-dlp 呼び出しへ `--extractor-args "youtube:po_token=<値>"` として自動構成する。
-  対象は検索、チャンネル ID 解決（`@handle` は任意 API キー設定時 `ytapi` 優先のフォールバック、§4.26）、再生中動画のチャンネル解決、バックフィル、プレイリスト取り込み（任意 API キー設定時 `ytapi` 優先のフォールバック、§4.26）の各呼び出しと、
+  対象は検索（任意 API キー設定時は `ytapi` 優先のフォールバック、§4.27）、チャンネル ID 解決（`@handle` は任意 API キー設定時 `ytapi` 優先のフォールバック、§4.26）、再生中動画のチャンネル解決、バックフィル、プレイリスト取り込み（任意 API キー設定時 `ytapi` 優先のフォールバック、§4.26）の各呼び出しと、
   ストリーム解決を担う mpv の ytdl_hook が起動する yt-dlp（`--ytdl-raw-options=extractor-args=<値>` で伝達、§4.1）。
   `--version` と `-U`（更新）は extractor を走らせないため対象外とする（暫定解釈）。
   値はトリムしてそのまま埋め込み、`<client>.<context>+<token>` 形式や `;` 以降の併記の解釈は yt-dlp 側に委ねる。
@@ -1441,7 +1463,8 @@ NG メッセージも送信自体は行い、UI 側の表示だけをフィル�
 - literal はパターン集合を Aho-Corasick で 1 回走査
 - regex は `RegexSet` でプリコンパイルし、ヒットした集合だけ個別 `Regex` で詳細を取る
 - highlight（FR-69、仕様決定 CT）は literal と同じ部分一致の照合を使うが、NG とは別の照合集合を持ち、マッチしたチャット発言を除去ではなく強調表示に使う。適用対象は `chat_text`（本文）と `chat_author`（投稿者名・チャンネル ID）で、NG と同じフィールド解決を踏襲する。動画系 target の highlight 行は登録できるが現行の評価経路では使わない（暫定解釈）
-- `video_desc` は `videos.description`（遅延解決で保存した説明文、FR-85・仕様決定 DJ・§4.18）へ評価する。一覧の表示経路のうちフィード一覧だけが説明文を持つため、評価するのはフィード経路のみ（検索・関連動画の取得結果は説明文フィールドを持たず `video_desc` は未評価のまま通す暫定解釈）。説明未解決（`description` が NULL）の行は `video_desc` の評価対象にしない暫定解釈（説明文が取れるまで NG にならない）
+- `video_desc` はフィード経路の `videos.description`（遅延解決で保存した説明文、FR-85、仕様決定 DJ、§4.18）に加え、キーワード検索で `youtube.api_key` が有効かつ `Matcher::has_video_desc_rules()` が真のとき（`ytapi` `SearchSession` またはフォールバック時の条件付き `videos.list` 補強、FR-100、仕様決定 EF、§4.27）にも評価する。
+  関連動画（`get_related`）および説明未解決または API キー未設定や補強失敗で説明文を持たない項目は `video_desc` の評価対象にしない暫定解釈（説明文が取れるまで NG にならない）
 - フィルタ変更時にマッチャ全体を再構築する単純な方式にし、増分更新は行わない
 
 `chat_author` フィルタは設定画面の「NG ユーザー」節（仕様決定 CU、FR-70）からも管理でき、そこでは NG 系種別（literal / regex）の `chat_author` 行だけを一覧・追加（部分一致で固定）・解除する。
@@ -1726,13 +1749,13 @@ yt-browser/
       mpv/            # プロセス管理・IPC・プロパティ監視・mpv 窓の前面化（foreground.rs）・再生開始失敗診断（error_diag.rs）
       yt/             # yt-dlp 呼び出し層（バックエンド差し替え面）
       innertube/      # ytcfg 取得・post_json
-      ytapi/          # YouTube Data API v3 クライアント、2 系統サーキットブレーカー、videos.list と channels.list と playlists.list と playlistItems.list の照会（§4.24、§4.25、§4.26）
+      ytapi/          # YouTube Data API v3 クライアント、2 系統サーキットブレーカー、videos.list と channels.list と playlists.list と playlistItems.list と search.list（SearchSession）の照会（§4.24、§4.25、§4.26、§4.27）
       chat/           # get_live_chat ポーラー・正規化・ポップアップ窓の位置保存と表示設定の解釈（popup.rs）
       feed/           # RSS ポーラー
       livewait/       # ライブ配信待機のポーラー（§4.16）
       metaresolve/    # メタの遅延解決ワーカー（§4.18）
       sponsor/        # SponsorBlock
-      filter/         # NG エンジン
+      filter/         # NG エンジン（literal、regex、highlight、対象ルール判定 §4.27）
       db/             # rusqlite・マイグレーション
       model/
       deep_link.rs    # yt-browser:// スキーム受信・保留バッファ・take_open_urls
@@ -1746,7 +1769,7 @@ yt-browser/
     tests/fixtures/   # golden fixture
   src/                # Svelte 5 + TypeScript（SvelteKit の静的出力）
     routes/           # 各画面（トップ・feed・search・library・settings・chat ポップアップ専用画面）
-    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic・playback-error-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
+    lib/              # 画面部品（PlayerCards・ChatPanel・RelatedPanel・QueuePanel・QueueButtons・VideoActions・VideoActionsMenu・VideoContextMenu・VideoRow・SeekBar・LibraryStats・SettingsCategoriesSection・SettingsOpsSection・SettingsNoticesSection・SettingsDepsSection・SettingsDiagSection・DepsDiagList・SetupWizard・SettingsUiSection・SettingsShortcutsSection の各 .svelte）・i18n 基盤（i18n.ts・辞書の i18n-ja.ts / i18n-en.ts・現行ロケールの i18n-locale.svelte.ts）・共有状態（players・chat・notices・queue・updater の各 .svelte.ts）・共有関数（library.ts）・行アクション配線（video-actions.svelte.ts）・deep link の解析と振り分け（deeplink.svelte.ts）・キーボードショートカット配線（shortcuts.svelte.ts）・表示フォーマッタ（format.ts）・PiP の UI 側定数（pip.ts）・画面別の純粋ロジック（chat-logic・chat-popup-logic・queue-logic・feed-page-logic・search-page-logic・deeplink-logic・feed-settings・quality・seek-logic・ab-logic・pip-tile-logic・focus-logic・livewait-logic・bookmark-logic・history-logic・library-search-logic・stats-logic・nguser-logic・remount-logic・settings-filter・settings-diff-logic・settings-save-logic・ui-logic・context-menu-logic・shortcuts-logic・notice-logic・diag-logic・playback-error-logic の各 .ts。対応する *.test.ts と init-retry.test.ts を併置）・表示設定の適用（ui-prefs.ts）
   extension/          # MV3 拡張（Native Messaging で本体ホストへ URL を渡して yt-browser:// を開く。manifest.json + background.js + popup.html/popup.js + 再生位置取得の content.js + 共有の純粋ロジック shared.js と shared.test.js）
   scripts/            # 開発・CI・リリース補助（docs 整合チェック・変更ファイル判定・バージョン更新・latest.json 生成とリリース成果物検証・単体テスト）と CDP 検証基盤（FR-84。cdp_client/e2e_dev/e2e_smoke と README.md の手順書）
   package.json
