@@ -1126,9 +1126,7 @@ export function createLibraryPageState(opts: Options) {
                 awaitedSyncReload = true;
                 try {
                   await reloadToAwait;
-                } catch {
-                  // syncPlaylist already notifies on playlist_items reload failure
-                }
+                } catch {}
               }
               const syncUpdatedDuringRestore =
                 hadActiveSync && listsReq !== listsBefore;

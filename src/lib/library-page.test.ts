@@ -748,6 +748,77 @@ describe("library-page playlist sync", () => {
     expect(bigLib.plHasMore).toBe(false);
     bigLib.dispose();
 
+    // 逆順（Undo 開始後に再取得が復元より先に完了し syncReloadPromise === null に戻ったあと復元が完了）でも
+    // initialReload により plTailPos を 249 へ進めず、loadMoreItems() で 199..248 を飛ばさないこと
+    const bigRevReloadDef = deferred<PlaylistEntry[]>();
+    const bigRevRestoreDef = deferred<PlaylistEntry>();
+    let bigRevSynced = false;
+    let bigRevRestoreCalls = 0;
+
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          if (args?.afterPosition === null && !bigRevSynced) {
+            return Promise.resolve(bigInitial);
+          }
+          if (args?.afterPosition === null && bigRevSynced) {
+            return bigRevReloadDef.promise;
+          }
+          if (args?.afterPosition === 198) {
+            return Promise.resolve(bigTailPage);
+          }
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_remove") {
+          return Promise.resolve(bigOrig99);
+        }
+        if (cmd === "playlist_sync") {
+          bigRevSynced = true;
+          return Promise.resolve({ playlist: bigPlAfterSync, addedCount: 150 });
+        }
+        if (cmd === "playlist_item_restore") {
+          bigRevRestoreCalls += 1;
+          return bigRevRestoreDef.promise;
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const bigRevLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    bigRevLib.va.playlists = [bigPlBefore];
+    await bigRevLib.selectPlaylist(bigPlBefore);
+    await bigRevLib.removeItem(bigOrig99);
+    const bigRevUndo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { label?: string; run?: () => void }
+      | undefined;
+
+    const bigRevSyncTask = bigRevLib.syncPlaylist();
+    await vi.waitFor(() => expect(bigRevSynced).toBe(true));
+
+    bigRevUndo!.run!();
+    await vi.waitFor(() => expect(bigRevRestoreCalls).toBe(1));
+
+    bigRevReloadDef.resolve(bigReloadPage);
+    await bigRevSyncTask;
+    expect(bigRevLib.syncingId).toBeNull();
+
+    bigRevRestoreDef.resolve(bigRestoredOrig99);
+    await vi.waitFor(() => expect(bigRevLib.restoring).toBe(false));
+
+    expect(bigRevLib.playlistItems).toHaveLength(199);
+    expect(bigRevLib.playlistItems[198].position).toBe(198);
+    expect(bigRevLib.plHasMore).toBe(true);
+    expect(bigRevLib.va.playlists[0].itemCount).toBe(250);
+
+    await bigRevLib.loadMoreItems();
+    expect(bigRevLib.playlistItems).toHaveLength(250);
+    expect(bigRevLib.playlistItems[199].position).toBe(199);
+    expect(bigRevLib.playlistItems[249]).toEqual(bigRestoredOrig99);
+    expect(bigRevLib.plHasMore).toBe(false);
+    bigRevLib.dispose();
+
     // syncReloadPromise が失敗しても、playlist_item_restore 成功分のローカル一覧反映と件数更新は維持され、
     // restoreFailed トーストを出さないこと
     invokeMock.mockReset();
