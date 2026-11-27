@@ -155,7 +155,10 @@
           <button
             type="button"
             class="link"
-            disabled={lib.syncingId !== null || lib.sortBusy || lib.restoring}
+            disabled={lib.syncingId !== null ||
+              lib.sortBusy ||
+              lib.restoring ||
+              lib.plLoadingMore}
             onclick={() => void lib.syncPlaylist()}
           >
             {lib.syncingId !== null && lib.syncingId === lib.selectedId
@@ -289,7 +292,8 @@
             class="link load-more"
             class:hidden={!lib.plHasMore}
             onclick={() => void lib.loadMoreItems()}
-            disabled={lib.plLoadingMore}
+            disabled={lib.plLoadingMore ||
+              (lib.syncingId !== null && lib.syncingId === lib.selectedId)}
           >
             {lib.plLoadingMore
               ? t("related.loading")

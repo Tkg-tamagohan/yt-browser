@@ -613,12 +613,15 @@ fn export_playlist_sync_meta_roundtrip_and_validation() {
     ok_128.playlists[0].source_list_id = Some("A".repeat(128));
     dst.import_dump(&ok_128).unwrap();
 
-    // 不正 synced_at の拒否（空・65 バイト・非 ISO 日時）
+    // 不正 synced_at の拒否（空・65 バイト・非 ISO 日時・時刻範囲外・末尾ゴミ）
     for bad_ts in [
         String::new(),
         "2".repeat(65),
         "not-a-timestamp".to_string(),
         "2026/05/01 12:00:00".to_string(),
+        "2026-05-01T99:00:00Z".to_string(),
+        "2026-05-01T12:00:00Z_junk".to_string(),
+        "2026-05-01T12:00:00+09:00_junk".to_string(),
     ] {
         let mut bad = dump.clone();
         bad.playlists[0].synced_at = Some(bad_ts);

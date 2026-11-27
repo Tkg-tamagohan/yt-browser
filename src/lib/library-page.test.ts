@@ -4,6 +4,7 @@
 // PS-03: syncPlaylist は多重実行ガード・選択切替時の上書き防止・エラー時の syncingId 解除・削除および一括操作との競合抑止を行う
 // PS-04: syncPlaylist は大量追加（>100 件）でページングを維持し、空一覧からの同期でも全件または先頭ページを反映する
 // PS-05: 100 件ちょうどのプレイリストで末尾削除後に syncPlaylist した場合も既読範囲を再取得して同期行を表示し、再取得中・取得中の Undo も整合する
+// PS-06: loadMoreItems と syncPlaylist の競合抑止、syncPlaylist と Undo の完了順逆転時の件数維持、selectPlaylist 後の Undo 件数維持、createPlaylist 時のページング状態初期化を検証する
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { invokeMock, notifyMock, loadLibraryMock } = vi.hoisted(() => ({
@@ -1082,5 +1083,281 @@ describe("library-page playlist sync", () => {
     expect(directUndoLib.playlistItems).toHaveLength(199);
     expect(directUndoLib.plHasMore).toBe(false);
     directUndoLib.dispose();
+  });
+
+  it("PS-06 ページング競合・削除復元完了逆転・再選択後復元・新規作成時の状態初期化", async () => {
+    // 1. PROBE-B: loadMoreItems 実行中の syncPlaylist 抑止と、syncPlaylist 実行中の loadMoreItems 抑止
+    const page100 = Array.from({ length: 100 }, (_, i) =>
+      makeEntry(i, `pb${String(i).padStart(9, "0")}`),
+    );
+    const pageTail50 = Array.from({ length: 50 }, (_, i) =>
+      makeEntry(100 + i, `pb${String(100 + i).padStart(9, "0")}`),
+    );
+    const syncedExtra5 = Array.from({ length: 5 }, (_, i) =>
+      makeEntry(150 + i, `pb${String(150 + i).padStart(9, "0")}`),
+    );
+    const pbPlBefore = makePlaylist({ id: 50, itemCount: 150 });
+    const pbPlAfter = makePlaylist({
+      id: 50,
+      itemCount: 155,
+      syncedAt: "2026-11-27T19:00:00+00:00",
+    });
+
+    const loadMoreDef = deferred<PlaylistEntry[]>();
+    const syncDef = deferred<PlaylistSyncOutcome>();
+    let pbSyncCalls = 0;
+    let pbTailLoaded = false;
+
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          if (args?.afterPosition === null) return Promise.resolve(page100);
+          if (args?.afterPosition === 99 && !pbTailLoaded) {
+            pbTailLoaded = true;
+            return loadMoreDef.promise;
+          }
+          if (args?.afterPosition === 99) {
+            return Promise.resolve([...pageTail50, ...syncedExtra5]);
+          }
+          return Promise.resolve([]);
+        }
+        if (cmd === "playlist_sync") {
+          pbSyncCalls += 1;
+          return syncDef.promise;
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const pbLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    pbLib.va.playlists = [pbPlBefore];
+    await pbLib.selectPlaylist(pbPlBefore);
+    expect(pbLib.plHasMore).toBe(true);
+
+    const loadTask = pbLib.loadMoreItems();
+    expect(pbLib.plLoadingMore).toBe(true);
+    // loadMoreItems 実行中の syncPlaylist はスキップされる
+    await pbLib.syncPlaylist();
+    expect(pbSyncCalls).toBe(0);
+
+    loadMoreDef.resolve(pageTail50);
+    await loadTask;
+    expect(pbLib.plLoadingMore).toBe(false);
+    expect(pbLib.playlistItems).toHaveLength(150);
+    expect(pbLib.plHasMore).toBe(false);
+
+    // 逆方向: syncPlaylist 実行中の loadMoreItems はスキップされ、完了後に追記分を取り込める
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const pb2SyncDef = deferred<PlaylistSyncOutcome>();
+    let pb2LoadMoreCalls = 0;
+    let pb2Synced = false;
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { afterPosition?: number | null }) => {
+        if (cmd === "playlist_items") {
+          if (args?.afterPosition === null) return Promise.resolve(page100);
+          pb2LoadMoreCalls += 1;
+          return Promise.resolve(
+            pb2Synced ? [...pageTail50, ...syncedExtra5] : pageTail50,
+          );
+        }
+        if (cmd === "playlist_sync") {
+          pb2Synced = true;
+          return pb2SyncDef.promise;
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const pb2Lib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    pb2Lib.va.playlists = [pbPlBefore];
+    await pb2Lib.selectPlaylist(pbPlBefore);
+    const pb2SyncTask = pb2Lib.syncPlaylist();
+    expect(pb2Lib.syncingId).toBe(50);
+    await pb2Lib.loadMoreItems();
+    expect(pb2LoadMoreCalls).toBe(0);
+
+    pb2SyncDef.resolve({ playlist: pbPlAfter, addedCount: 5 });
+    await pb2SyncTask;
+    expect(pb2Lib.plHasMore).toBe(true);
+    await pb2Lib.loadMoreItems();
+    expect(pb2LoadMoreCalls).toBe(1);
+    expect(pb2Lib.playlistItems).toHaveLength(155);
+    expect(pb2Lib.plHasMore).toBe(false);
+    pbLib.dispose();
+    pb2Lib.dispose();
+
+    // 2. PROBE-A1: syncPlaylist (addedCount=0) 待機中に Undo が先了しても stale itemCount で巻き戻らない
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const a1Items = Array.from({ length: 10 }, (_, i) =>
+      makeEntry(i, `pa1_${String(i).padStart(7, "0")}`),
+    );
+    const a1PlInitial = makePlaylist({ id: 51, itemCount: 10 });
+    const a1PlStale = makePlaylist({
+      id: 51,
+      itemCount: 9,
+      syncedAt: "2026-11-27T19:10:00+00:00",
+    });
+    const a1PlFresh = makePlaylist({
+      id: 51,
+      itemCount: 10,
+      syncedAt: "2026-11-27T19:10:00+00:00",
+    });
+    const a1SyncDef = deferred<PlaylistSyncOutcome>();
+    const a1RestoreDef = deferred<PlaylistEntry>();
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") return Promise.resolve(a1Items);
+      if (cmd === "playlist_remove") return Promise.resolve(a1Items[9]);
+      if (cmd === "playlist_item_restore") return a1RestoreDef.promise;
+      if (cmd === "playlist_sync") return a1SyncDef.promise;
+      if (cmd === "playlist_list") return Promise.resolve([a1PlFresh]);
+      return Promise.resolve(null);
+    });
+
+    const a1Lib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    a1Lib.va.playlists = [a1PlInitial];
+    await a1Lib.selectPlaylist(a1PlInitial);
+    await a1Lib.removeItem(a1Items[9]);
+    expect(a1Lib.va.playlists[0].itemCount).toBe(9);
+    const a1Undo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { run?: () => void }
+      | undefined;
+
+    const a1SyncTask = a1Lib.syncPlaylist();
+    a1Undo!.run!();
+    a1RestoreDef.resolve(a1Items[9]);
+    await vi.waitFor(() => expect(a1Lib.restoring).toBe(false));
+    expect(a1Lib.va.playlists[0].itemCount).toBe(10);
+
+    a1SyncDef.resolve({ playlist: a1PlStale, addedCount: 0 });
+    await a1SyncTask;
+    expect(a1Lib.playlistItems).toHaveLength(10);
+    expect(a1Lib.va.playlists[0].itemCount).toBe(10);
+    expect(a1Lib.va.playlists[0].syncedAt).toBe(a1PlFresh.syncedAt);
+    a1Lib.dispose();
+
+    // 3. PROBE-A2: syncPlaylist (addedCount=1) 待機中に Undo が先了しても playlist_list で 11 件へ収束する
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const a2Added = makeEntry(10, "pa2_added01");
+    const a2PlStale = makePlaylist({
+      id: 52,
+      itemCount: 10,
+      syncedAt: "2026-11-27T19:20:00+00:00",
+    });
+    const a2PlFresh = makePlaylist({
+      id: 52,
+      itemCount: 11,
+      syncedAt: "2026-11-27T19:20:00+00:00",
+    });
+    const a2SyncDef = deferred<PlaylistSyncOutcome>();
+    const a2RestoreDef = deferred<PlaylistEntry>();
+    let a2Synced = false;
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") {
+        return Promise.resolve(a2Synced ? [...a1Items, a2Added] : a1Items);
+      }
+      if (cmd === "playlist_remove") return Promise.resolve(a1Items[9]);
+      if (cmd === "playlist_item_restore") return a2RestoreDef.promise;
+      if (cmd === "playlist_sync") {
+        a2Synced = true;
+        return a2SyncDef.promise;
+      }
+      if (cmd === "playlist_list") return Promise.resolve([a2PlFresh]);
+      return Promise.resolve(null);
+    });
+
+    const a2Lib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    const a2PlInitial = makePlaylist({ id: 52, itemCount: 10 });
+    a2Lib.va.playlists = [a2PlInitial];
+    await a2Lib.selectPlaylist(a2PlInitial);
+    await a2Lib.removeItem(a1Items[9]);
+    const a2Undo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { run?: () => void }
+      | undefined;
+
+    const a2SyncTask = a2Lib.syncPlaylist();
+    a2Undo!.run!();
+    a2RestoreDef.resolve(a1Items[9]);
+    await vi.waitFor(() => expect(a2Lib.restoring).toBe(false));
+    expect(a2Lib.va.playlists[0].itemCount).toBe(10);
+
+    a2SyncDef.resolve({ playlist: a2PlStale, addedCount: 1 });
+    await a2SyncTask;
+    expect(a2Lib.playlistItems).toHaveLength(11);
+    expect(a2Lib.va.playlists[0].itemCount).toBe(11);
+    a2Lib.dispose();
+
+    // 4. PROBE-I: Undo 飛行中に selectPlaylist で復元済み項目を再読込しても itemCount + 1 を抑止しない
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const iItems = Array.from({ length: 5 }, (_, i) =>
+      makeEntry(i, `pi_${String(i).padStart(8, "0")}`),
+    );
+    const iPl = makePlaylist({ id: 53, itemCount: 5 });
+    const iRestoreDef = deferred<PlaylistEntry>();
+    let iRestoredInDb = false;
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") {
+        return Promise.resolve(iRestoredInDb ? iItems : iItems.slice(0, 4));
+      }
+      if (cmd === "playlist_remove") return Promise.resolve(iItems[4]);
+      if (cmd === "playlist_item_restore") return iRestoreDef.promise;
+      return Promise.resolve(null);
+    });
+
+    const iLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    iLib.va.playlists = [iPl];
+    iRestoredInDb = true;
+    await iLib.selectPlaylist(iPl);
+    iRestoredInDb = false;
+    await iLib.removeItem(iItems[4]);
+    expect(iLib.va.playlists[0].itemCount).toBe(4);
+    const iUndo = notifyMock.mock.calls.at(-1)?.[1] as
+      | { run?: () => void }
+      | undefined;
+
+    iUndo!.run!();
+    iRestoredInDb = true;
+    await iLib.selectPlaylist(iPl);
+    expect(iLib.playlistItems).toHaveLength(5);
+
+    iRestoreDef.resolve(iItems[4]);
+    await vi.waitFor(() => expect(iLib.restoring).toBe(false));
+    expect(iLib.playlistItems).toHaveLength(5);
+    expect(iLib.va.playlists[0].itemCount).toBe(5);
+    iLib.dispose();
+
+    // 5. PROBE-C: ページング中のプレイリスト選択後に createPlaylist したら plHasMore が false へ戻る
+    invokeMock.mockReset();
+    notifyMock.mockReset();
+    const createdPl = makePlaylist({
+      id: 54,
+      name: "New Empty PL",
+      itemCount: 0,
+      sourceListId: null,
+      syncedAt: null,
+    });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "playlist_items") return Promise.resolve(page100);
+      if (cmd === "playlist_create") return Promise.resolve(createdPl);
+      return Promise.resolve(null);
+    });
+
+    const cLib = createLibraryPageState({ goToPlaylistsTab: vi.fn() });
+    cLib.va.playlists = [pbPlBefore];
+    await cLib.selectPlaylist(pbPlBefore);
+    expect(cLib.plHasMore).toBe(true);
+
+    cLib.newPlaylistName = "New Empty PL";
+    await cLib.createPlaylist();
+    expect(cLib.selectedId).toBe(54);
+    expect(cLib.playlistItems).toEqual([]);
+    expect(cLib.plHasMore).toBe(false);
+    cLib.dispose();
   });
 });

@@ -82,6 +82,15 @@ export function createLibraryPageState(opts: Options) {
   // 取得中の応答を無効化しない
   let itemsReq = 0;
   let listsReq = 0;
+  // プレイリスト ID ごとのローカル更新世代（削除・復元・名前変更・削除）。
+  // syncPlaylist がリモート同期中に同一プレイリストへの競合更新を検知する
+  const playlistMutSeq = new Map<number, number>();
+  function bumpPlaylistMut(id: number): void {
+    playlistMutSeq.set(id, (playlistMutSeq.get(id) ?? 0) + 1);
+  }
+  // バックエンドの最新スナップショット（playlist_list / playlist_sync / loadLibrary）で
+  // va.playlists を更新した世代。削除取り消しや同期中の並列更新を判定する
+  let listsSnapshotSeq = 0;
   // 「さらに読み込む」の状態（FR-25、仕様決定 AR）。
   // plTailPos は取得済み末尾の position。ローカル並べ替えで
   // playlistItems の末尾要素が入れ替わってもカーソルは動かないため、
@@ -234,6 +243,7 @@ export function createLibraryPageState(opts: Options) {
   async function loadFavorites(): Promise<void> {
     const lib = await loadLibrary();
     va.favIds = lib.favIds;
+    ++listsSnapshotSeq;
     va.playlists = lib.playlists;
     va.watchLaterIds = lib.watchLaterIds;
     favorites = await invoke<FavoriteEntry[]>("favorite_list");
@@ -380,10 +390,15 @@ export function createLibraryPageState(opts: Options) {
     try {
       const pl = await invoke<Playlist>("playlist_create", { name });
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       va.playlists = [...va.playlists, pl];
       newPlaylistName = "";
+      ++itemsReq;
       selectedId = pl.id;
       playlistItems = [];
+      plTailPos = null;
+      plHasMore = false;
+      plTailDirty = false;
       notify(t("library.playlist.created", { name: pl.name }));
     } catch (e) {
       notify(t("library.playlist.createFailed", { message: asErrorMessage(e) }));
@@ -404,6 +419,7 @@ export function createLibraryPageState(opts: Options) {
     try {
       await invoke("playlist_rename", { playlistId: pl.id, name });
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       va.playlists = va.playlists.map((p) =>
         p.id === pl.id ? { ...p, name } : p,
       );
@@ -420,10 +436,15 @@ export function createLibraryPageState(opts: Options) {
       // 対象プレイリストのキューは消滅させる（FR-26）
       discardQueue(pl.id);
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       va.playlists = va.playlists.filter((p) => p.id !== pl.id);
       if (selectedId === pl.id) {
+        ++itemsReq;
         selectedId = null;
         playlistItems = [];
+        plTailPos = null;
+        plHasMore = false;
+        plTailDirty = false;
       }
       notify(t("library.playlist.deleted"));
     } catch (e) {
@@ -461,7 +482,7 @@ export function createLibraryPageState(opts: Options) {
   /// 取得済み分を置き換えず、応答の末尾 position でカーソルを進める
   async function loadMoreItems(): Promise<void> {
     const plId = selectedId;
-    if (plId === null || plLoadingMore) return;
+    if (plId === null || plLoadingMore || syncingId === plId) return;
     plLoadingMore = true;
     // 世代は進めない。選択の切替や再読み込みが始まれば
     // この追記は自動で失効し、古いプレイリストの続きが
@@ -539,7 +560,10 @@ export function createLibraryPageState(opts: Options) {
           while (listReorderRun) await listReorderRun;
           const req = ++listsReq;
           const list = await invoke<Playlist[]>("playlist_list");
-          if (req === listsReq) va.playlists = list;
+          if (req === listsReq) {
+            ++listsSnapshotSeq;
+            va.playlists = list;
+          }
           // 最新の応答を反映でき、かつ飛行中に新しい要求も無ければ終了。
           // どちらかが成り立たなければもう一周する
           if (req === listsReq && !listAgain) return;
@@ -607,6 +631,7 @@ export function createLibraryPageState(opts: Options) {
         name: name === "" ? null : name,
       });
       ++listsReq;
+      bumpPlaylistMut(pl.id);
       // バックエンドの emit が invoke 応答より先に届くと、イベント側の
       // refreshPlaylists が新しいプレイリストを含む一覧で上書き済みになる。
       // その場合に無条件で追加すると同 ID の行が重複するため、未登録の
@@ -631,7 +656,8 @@ export function createLibraryPageState(opts: Options) {
 
   /// 取り込み済みプレイリストの差分追記手動同期（FR-101、仕様決定 EG）。
   /// `playlist_sync` は `library://playlists_changed` を送出しないため、
-  /// 応答の `res.playlist` で `va.playlists` を直接更新し、選択維持中・
+  /// 応答の `res.playlist` で `va.playlists` を直接更新（同期中に同一プレイリストの
+  /// 変更やスナップショット更新が起きていた場合は `playlist_list` で再取得）し、選択維持中・
   /// 新規追記あり・末尾まで読み込み済みのときだけ `playlist_items` を再取得する
   async function syncPlaylist(): Promise<void> {
     const plId = selectedId;
@@ -639,20 +665,51 @@ export function createLibraryPageState(opts: Options) {
       plId === null ||
       syncingId !== null ||
       sortBusy ||
+      plLoadingMore ||
       (removingIds.get(plId) ?? 0) > 0 ||
       (restoringIds.get(plId) ?? 0) > 0
     ) {
       return;
     }
     syncingId = plId;
+    const plMutBefore = playlistMutSeq.get(plId) ?? 0;
+    const snapshotBefore = listsSnapshotSeq;
     try {
       const res = await invoke<PlaylistSyncOutcome>("playlist_sync", {
         playlistId: plId,
       });
-      ++listsReq;
-      va.playlists = va.playlists.map((p) =>
-        p.id === res.playlist.id ? res.playlist : p,
-      );
+      if (
+        (playlistMutSeq.get(plId) ?? 0) !== plMutBefore ||
+        listsSnapshotSeq !== snapshotBefore
+      ) {
+        const refreshReq = ++listsReq;
+        let refreshed = false;
+        try {
+          const fresh = await invoke<Playlist[]>("playlist_list");
+          if (Array.isArray(fresh)) {
+            if (refreshReq === listsReq) {
+              ++listsSnapshotSeq;
+              va.playlists = fresh;
+            }
+            refreshed = true;
+          }
+        } catch {
+          // 取り直し失敗時は同期日時のみ反映し、競合中の件数は保持する
+        }
+        if (!refreshed && refreshReq === listsReq) {
+          va.playlists = va.playlists.map((p) =>
+            p.id === res.playlist.id
+              ? { ...p, syncedAt: res.playlist.syncedAt }
+              : p,
+          );
+        }
+      } else {
+        ++listsReq;
+        ++listsSnapshotSeq;
+        va.playlists = va.playlists.map((p) =>
+          p.id === res.playlist.id ? res.playlist : p,
+        );
+      }
       notify(
         res.addedCount > 0
           ? t("library.playlist.synced", {
@@ -1067,6 +1124,7 @@ export function createLibraryPageState(opts: Options) {
       });
       // 件数が変わるので飛行中の一覧・項目応答は無効化する
       ++listsReq;
+      bumpPlaylistMut(playlistId);
       let loweredTailOnRemove = false;
       if (selectedId === playlistId) {
         ++itemsReq;
@@ -1103,7 +1161,7 @@ export function createLibraryPageState(opts: Options) {
         label: t("library.undo"),
         run: () => {
           void (async () => {
-            const listsBefore = listsReq;
+            const snapshotBefore = listsSnapshotSeq;
             const hadActiveSync = syncingId === playlistId;
             const initialReload = hadActiveSync ? syncReloadPromise : null;
             restoringIds.set(
@@ -1130,10 +1188,11 @@ export function createLibraryPageState(opts: Options) {
                   await reloadToAwait;
                 } catch {}
               }
-              const syncUpdatedDuringRestore =
-                hadActiveSync && listsReq !== listsBefore;
+              const refreshedDuringRestore =
+                listsSnapshotSeq !== snapshotBefore;
               // 件数が変わるので飛行中の一覧応答は無効化する
               const listReqAfterRestore = ++listsReq;
+              bumpPlaylistMut(playlistId);
               let alreadyPresent = false;
               // 表示中のプレイリストが変わっていなければ項目一覧へ
               // 挿し直す（別プレイリスト表示中なら DB のみ復元済みで
@@ -1167,15 +1226,16 @@ export function createLibraryPageState(opts: Options) {
                   }
                 }
               }
-              if (syncUpdatedDuringRestore) {
+              if (refreshedDuringRestore) {
                 const fresh = await invoke<Playlist[]>("playlist_list");
                 if (
                   Array.isArray(fresh) &&
                   listReqAfterRestore === listsReq
                 ) {
+                  ++listsSnapshotSeq;
                   va.playlists = fresh;
                 }
-              } else if (!alreadyPresent) {
+              } else {
                 va.playlists = va.playlists.map((p) =>
                   p.id === playlistId
                     ? { ...p, itemCount: p.itemCount + 1 }
