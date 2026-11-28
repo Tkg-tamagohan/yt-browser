@@ -18,24 +18,37 @@ Phase 38（PR #102）で CI が一度赤になり、自己レビューで 5 件�
   `python3 scripts/bump_version.py --check`、
   `python3 scripts/e2e_dev.py --dry-run`
 - frontend: `pnpm check`（`svelte-check` と `check:js`）・`pnpm test`・`pnpm build`
-- rust / windows: `cargo fmt --check`、
-  `cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked`
+- rust / windows: `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked --lib`（Windows は Common Controls v6 マニフェスト付与）、`cargo test --locked --bin yt-browser`、`cargo test --locked --doc`、`scripts\test_windows_signing_ci.ps1`
 
-push 前（最後の編集のあと）にローカルで回す:
+push 前（最後の編集のあと）にローカルで回す（PowerShell 5.1 向け、`pnpm.cmd` で実行ポリシーを回避し、`PYTHONUTF8=1` と `PYTHONIOENCODING="utf-8"` で文字化けを防ぐ）:
 
-```bash
-cd src-tauri && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cd ..
-pnpm check && pnpm test && pnpm build
-PYTHONUTF8=1 python -m py_compile scripts/*.py
-PYTHONUTF8=1 python -m unittest discover -s scripts -p "test_*.py" -v
-PYTHONUTF8=1 python scripts/check_docs_consistency.py
-python scripts/bump_version.py --check
+- `tauri-build` は Common Controls v6 マニフェストを `[[bin]]` にのみ埋め込むため、`cargo test --locked --lib` では `[char]0x1f` 区切りの `CARGO_ENCODED_RUSTFLAGS`（`/MANIFEST:EMBED` + `Microsoft.Windows.Common-Controls` 6.0.0.0）を付与する（省略すると `0xc0000139` で失敗）。そのまま残すと `--bin yt-browser` でリソース重複（`CVT1100`）を起こすため、`--lib` 直後に必ず `Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue` で解除してから `--bin yt-browser` と `--doc` を実行する。
+- PowerShell 5.1 は外部コマンド引数中のワイルドカードを展開しないため、`py_compile` は `python -m py_compile (Get-ChildItem scripts\*.py).FullName` として展開済みパスを渡す。
+- `scripts\test_windows_signing_ci.ps1` は Windows SDK（`C:\Program Files (x86)\Windows Kits\10\bin` 配下の `*\x64\signtool.exe`）を要求し、見つからない環境では失敗する。
+
+```powershell
+$env:PYTHONUTF8="1"; $env:PYTHONIOENCODING="utf-8"
+Set-Location src-tauri
+cargo fmt --check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+cargo clippy --locked --all-targets -- -D warnings; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$sep = [char]0x1f
+$env:CARGO_ENCODED_RUSTFLAGS = "-Clink-arg=/MANIFEST:EMBED${sep}-Clink-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+cargo test --locked --lib; $rc = $LASTEXITCODE
+Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
+if ($rc -ne 0) { exit $rc }
+cargo test --locked --bin yt-browser; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+cargo test --locked --doc; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Set-Location ..
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'scripts\test_windows_signing_ci.ps1'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+pnpm.cmd check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+pnpm.cmd test; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+pnpm.cmd build; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+python -m py_compile (Get-ChildItem scripts\*.py).FullName; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+python -m unittest discover -s scripts -p "test_*.py" -v; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+python scripts/check_docs_consistency.py; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+python scripts/bump_version.py --check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 python scripts/e2e_dev.py --dry-run
 ```
-
-Windows の python 出力は cp932 で文字化けするため `PYTHONUTF8=1` を付ける
-（出力の可読性のためで、判定挙動は変わらない）。
-Windows PowerShell で `pnpm.ps1` が実行ポリシーで拒否される場合は `pnpm.cmd check` や `pnpm.cmd test`、`pnpm.cmd build` を使う。
 `extension/shared.js` は `extension/shared.test.js`（`pnpm test` の一部）で単体検証され、`manifest.json`・`popup.html/js`・`./shared.js` の export 整合も `CB-04` で自動検証される。
 `extension/*.js`・`svelte.config.js`・`vite.config.js` は `pnpm check`（`check:js`）で `node --check` による構文検証を行う（型検査は無いため、意図や仕様の妥当性は目視でも確認する）。
 

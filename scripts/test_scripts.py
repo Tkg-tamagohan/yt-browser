@@ -1902,6 +1902,99 @@ jobs:
                         "\n".join(m for _, m in res_non_shadow.items),
                     )
 
+    def test_sc06_test_ids_non_test_prefixes(self) -> None:
+        for prefix in ("ISO", "RFC", "HTTP"):
+            self.assertIn(prefix, cdc.NON_TEST_ID_PREFIXES)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            docs = root / "docs"
+            src_rs = root / "src-tauri" / "src"
+            src_tests = root / "src-tauri" / "tests"
+            _write_text(
+                src_rs / "lib.rs",
+                "/// DB-OK-01\n#[test]\nfn db_ok_01() {}\n",
+            )
+            _write_text(
+                docs / "spec.md",
+                "日時形式は ISO-8601 および RFC-3339 とし、HTTP-403 を扱う。\n"
+                "関連テスト: DB-OK-01, LP-01\n",
+            )
+            ok_res = cdc.check_test_ids(
+                {"LP-01"},
+                docs_dir=docs,
+                src_tauri=src_rs,
+                src_tauri_tests=src_tests,
+            )
+            self.assertEqual(ok_res.worst(), cdc.OK, ok_res.items)
+
+            _write_text(
+                docs / "spec.md",
+                "ISO-8601 / RFC-3339 / HTTP-403 / DB-OK-01 / DB-NO-99\n",
+            )
+            err_res = cdc.check_test_ids(
+                {"LP-01"},
+                docs_dir=docs,
+                src_tauri=src_rs,
+                src_tauri_tests=src_tests,
+            )
+            self.assertEqual(err_res.worst(), cdc.ERROR)
+            err_msgs = "\n".join(msg for _, msg in err_res.items)
+            self.assertIn("DB-NO-99", err_msgs)
+
+    def test_sc06_decision_tables_escaped_pipe(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            decisions = Path(td) / "decision-records.md"
+            _write_text(
+                decisions,
+                "## 仕様決定\n"
+                "| ID | 決定事項 | 理由 |\n"
+                "| --- | --- | --- |\n"
+                "| 仕様決定 1 | `a \\| b` を許容 | `x \\| y` と `p \\| q` の複数エスケープ |\n\n"
+                "## 技術方針\n"
+                "| ID | 方針 | 備考 |\n"
+                "| --- | --- | --- |\n"
+                "| 技術方針 1 | `cmd \\| arg` | `foo \\| bar \\| baz` |\n",
+            )
+            ok_res = cdc.check_decision_tables(decisions)
+            self.assertEqual(ok_res.worst(), cdc.OK, ok_res.items)
+
+            negative_cases = [
+                (
+                    "four_cols",
+                    "## 仕様決定\n| ID | 決定 | 理由 |\n| --- | --- | --- |\n| A | B | C | D |\n\n"
+                    "## 技術方針\n| ID | 方針 | 備考 |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n",
+                    "表の列数が 3 ではない（4 列）",
+                ),
+                (
+                    "four_cols_with_escaped_pipe",
+                    "## 仕様決定\n| ID | 決定 | 理由 |\n| --- | --- | --- |\n| A | B \\| C | D | E |\n\n"
+                    "## 技術方針\n| ID | 方針 | 備考 |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n",
+                    "表の列数が 3 ではない（4 列）",
+                ),
+                (
+                    "two_cols",
+                    "## 仕様決定\n| ID | 決定 | 理由 |\n| --- | --- | --- |\n| A | B |\n\n"
+                    "## 技術方針\n| ID | 方針 | 備考 |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n",
+                    "表の列数が 3 ではない（2 列）",
+                ),
+                (
+                    "blank_line_split",
+                    "## 仕様決定\n| ID | 決定 | 理由 |\n| --- | --- | --- |\n\n| A | B | C |\n\n"
+                    "## 技術方針\n| ID | 方針 | 備考 |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n",
+                    "表の途中に空行があり表が分断されている",
+                ),
+            ]
+            for name, content, expected_msg in negative_cases:
+                with self.subTest(case=name):
+                    _write_text(decisions, content)
+                    err_res = cdc.check_decision_tables(decisions)
+                    self.assertEqual(err_res.worst(), cdc.ERROR)
+                    self.assertIn(
+                        expected_msg,
+                        "\n".join(msg for _, msg in err_res.items),
+                    )
+
 
 def _ws_send_frame(conn: socket.socket, opcode: int, payload: bytes) -> None:
     n = len(payload)
