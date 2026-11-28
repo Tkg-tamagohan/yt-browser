@@ -24,6 +24,7 @@ push 前（最後の編集のあと）にローカルで回す（PowerShell 5.1 
 
 - `tauri-build` は Common Controls v6 マニフェストを `[[bin]]` にのみ埋め込むため、`cargo test --locked --lib` では `[char]0x1f` 区切りの `CARGO_ENCODED_RUSTFLAGS`（`/MANIFEST:EMBED` + `Microsoft.Windows.Common-Controls` 6.0.0.0）を付与する（省略すると `0xc0000139` で失敗）。そのまま残すと `--bin yt-browser` でリソース重複（`CVT1100`）を起こすため、`--lib` 直後に必ず `Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue` で解除してから `--bin yt-browser` と `--doc` を実行する。
 - PowerShell 5.1 は外部コマンド引数中のワイルドカードを展開しないため、`py_compile` は `python -m py_compile (Get-ChildItem scripts\*.py).FullName` として展開済みパスを渡す。
+- `scripts\test_windows_signing_ci.ps1` は Windows SDK（`C:\Program Files (x86)\Windows Kits\10\bin` 配下の `*\x64\signtool.exe`）を要求し、見つからない環境では失敗する。
 
 ```powershell
 $env:PYTHONUTF8="1"; $env:PYTHONIOENCODING="utf-8"
