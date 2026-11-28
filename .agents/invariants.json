@@ -19,6 +19,26 @@
       "path_globs": ["src-tauri/src/**/*.rs"],
       "threshold": 0.70,
       "warn_threshold": 0.40
+    },
+    "library_async_mutation_and_cursor_guards": {
+      "instructions": "Does ANY added or modified non-test code in the Git diff for async playlist operations (sync, loadMore, remove, Undo restore, reorder, create, or delete) violate the library async mutation, mutual exclusion, or paging cursor guards? Unit test files (such as *.test.ts or *.spec.ts) and test-only code are explicitly out of scope and must NOT be flagged. Specifically, in non-test files under src/lib/library-page*.ts or src/lib/components/Library*.svelte, answer Yes if the diff introduces ANY of: (1) an async playlist operation that bypasses playlistMutSeq / listsSnapshotSeq generation guards or refreshPlaylists() serialized refetch, (2) a single ad-hoc boolean flag instead of the existing mutual exclusion state (syncingId / plLoadingMore / removingIds / restoringIds) paired with matching UI disabled states in Library*.svelte, or (3) an update to plTailPos or plHasMore that drops plTailDirty tracking or omits cursor / hasMore reset on playlist create or delete. Answer Yes if even a single non-test hunk violates any of (1), (2), or (3).",
+      "criteria": {
+        "true_description": "At least one added or modified non-test hunk in async playlist operations (sync, loadMore, remove, Undo restore, reorder, create, or delete) either: (1) bypasses playlistMutSeq / listsSnapshotSeq or refreshPlaylists(), (2) uses a single ad-hoc boolean instead of mutual exclusion (syncingId / plLoadingMore / removingIds / restoringIds) paired with matching UI disabled states in Library*.svelte, or (3) updates plTailPos / plHasMore while dropping plTailDirty tracking or omitting cursor/hasMore reset on playlist create or delete.",
+        "false_description": "All added or modified non-test async playlist operations preserve playlistMutSeq / listsSnapshotSeq and refreshPlaylists() serialized refetch, preserve mutual exclusion (syncingId / plLoadingMore / removingIds / restoringIds) with matching UI disabled states in Library*.svelte, and preserve plTailDirty tracking and cursor/hasMore reset on playlist create/delete; or the diff only touches unit test files (*.test.ts / *.spec.ts) or does not modify src/lib/library-page*.ts or src/lib/components/Library*.svelte."
+      },
+      "path_globs": ["src/lib/library-page*.ts", "src/lib/components/Library*.svelte"],
+      "threshold": 0.70,
+      "warn_threshold": 0.40
+    },
+    "rust_db_import_epoch_toctou": {
+      "instructions": "Does ANY added or modified non-test Rust write path in the Git diff release Db::lock() across an .await or a deferred Undo snapshot and then write to SQLite by integer row ID (e.g. playlist.id) without capturing Db::import_epoch before lock release and re-verifying it inside the final write transaction? Test-only code (#[cfg(test)], #[cfg(all(test, ...))], tests/*) and single unbroken DB-lock writes (that do not release Db::lock() across .await or a deferred Undo snapshot) are explicitly out of scope and must NOT be flagged. Specifically, in non-test code under src-tauri/src/db/**/*.rs or src-tauri/src/commands/**/*.rs, answer Yes if a write path releases Db::lock() across .await or a deferred Undo snapshot and performs an integer-row-ID SQLite write without: (1) reading Db::import_epoch before releasing the lock, AND (2) re-verifying import_epoch equality inside the final write transaction and aborting with DbError::StaleSync (or equivalent) on mismatch.",
+      "criteria": {
+        "true_description": "At least one added or modified non-test Rust write path under src-tauri/src/db/**/*.rs or src-tauri/src/commands/**/*.rs releases Db::lock() across an .await or a deferred Undo snapshot and then writes to SQLite by integer row ID (e.g. playlist.id) without capturing Db::import_epoch before lock release and re-verifying import_epoch inside the final write transaction (aborting with DbError::StaleSync or equivalent on mismatch).",
+        "false_description": "Every added or modified non-test Rust write path that releases Db::lock() across an .await or a deferred Undo snapshot before writing to SQLite by integer row ID captures Db::import_epoch before lock release and re-verifies equality inside the final write transaction (aborting with DbError::StaleSync or equivalent on mismatch); or the diff only modifies single unbroken DB-lock writes, test-only code (#[cfg(test)] / tests/*), or files outside src-tauri/src/db/**/*.rs and src-tauri/src/commands/**/*.rs."
+      },
+      "path_globs": ["src-tauri/src/db/**/*.rs", "src-tauri/src/commands/**/*.rs"],
+      "threshold": 0.70,
+      "warn_threshold": 0.40
     }
   }
 }

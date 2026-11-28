@@ -668,24 +668,30 @@ def check_i18n(setting_keys: set[str]) -> Findings:
 TEST_ID_DOC_COMMENT_RE = re.compile(r"^\s*///.*?\b(DB-[A-Z]+-\d+)\b")
 TEST_ATTR_RE = re.compile(r"^\s*#\[(?:tokio::)?test\]")
 # docs が引用するテスト ID トークン（`DB-LD-05`・`LP-01` 双方の形を拾う）。
-# FR-20 / BG-3 / INV-1 / UTF-8 などの非テスト ID は除外プレフィクスで弾く。
+# FR-20 / BG-3 / INV-1 / UTF-8 / ISO-8601 / RFC-3339 / HTTP-403 などの非テスト ID は除外プレフィクスで弾く。
 DOC_TEST_ID_TOKEN_RE = re.compile(r"\b([A-Z]{2,3}-[A-Z]*-?\d+)\b")
-NON_TEST_ID_PREFIXES = {"FR", "BG", "INV", "UTF"}
+NON_TEST_ID_PREFIXES = {"FR", "BG", "INV", "UTF", "ISO", "RFC", "HTTP"}
 
 
-def check_test_ids(ts_test_ids: set[str]) -> Findings:
+def check_test_ids(
+    ts_test_ids: set[str],
+    docs_dir: Path = DOCS_DIR,
+    src_tauri: Path = SRC_TAURI,
+    src_tauri_tests: Path = SRC_TAURI_TESTS,
+) -> Findings:
     f = Findings([])
 
-    rs_files = iter_files(SRC_TAURI, (".rs",))
-    if SRC_TAURI_TESTS.is_dir():
-        rs_files += iter_files(SRC_TAURI_TESTS, (".rs",))
+    rs_files = iter_files(src_tauri, (".rs",))
+    if src_tauri_tests.is_dir():
+        rs_files += iter_files(src_tauri_tests, (".rs",))
 
     code_ids: dict[str, list[str]] = {}
     for path in rs_files:
         lines = read_text(path).splitlines()
+        rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path.name
         for i, line in enumerate(lines):
             for test_id in TEST_ID_DOC_COMMENT_RE.findall(line):
-                loc = f"{path.relative_to(ROOT)}:{i + 1}"
+                loc = f"{rel}:{i + 1}"
                 code_ids.setdefault(test_id, []).append(loc)
                 # ID コメントの直後は `///` の続行を挟んで #[test] /
                 # #[tokio::test] が続く規約
@@ -704,7 +710,7 @@ def check_test_ids(ts_test_ids: set[str]) -> Findings:
 
     # docs 引用は .rs 側（DB-XX-NN）と .test.ts 側（LP-NN 系）の
     # 両方の ID 集合と照合する。除外プレフィクスに無い形だけ比較する。
-    for doc in iter_files(DOCS_DIR, (".md",)):
+    for doc in iter_files(docs_dir, (".md",)):
         for token in sorted(set(DOC_TEST_ID_TOKEN_RE.findall(read_text(doc)))):
             if token.split("-", 1)[0] in NON_TEST_ID_PREFIXES:
                 continue
@@ -1509,9 +1515,9 @@ def check_repo_tree() -> Findings:
 # ---------------------------------------------------------------------------
 
 
-def check_decision_tables() -> Findings:
+def check_decision_tables(decisions_md: Path = DECISIONS_MD) -> Findings:
     f = Findings([])
-    text = read_text(DECISIONS_MD)
+    text = read_text(decisions_md)
     checked_rows = 0
     for heading in (r"^仕様決定", r"^技術方針"):
         section_text = extract_section(text, heading)
@@ -1536,7 +1542,7 @@ def check_decision_tables() -> Findings:
                         "行頭に余分な `|`（`||`）がある"
                     )
                     continue
-                cells = [c.strip() for c in s.strip("|").split("|")]
+                cells = [c.strip() for c in re.split(r"(?<!\\)\|", s.strip("|"))]
                 if len(cells) != 3:
                     f.error(
                         f"decision-records.md（{heading} 節内 +{i} 行目）: "
