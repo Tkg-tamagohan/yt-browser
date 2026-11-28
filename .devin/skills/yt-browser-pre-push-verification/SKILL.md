@@ -18,7 +18,7 @@ Phase 38（PR #102）で CI が一度赤になり、自己レビューで 5 件�
   `python3 scripts/bump_version.py --check`、
   `python3 scripts/e2e_dev.py --dry-run`
 - frontend: `pnpm check`（`svelte-check` と `check:js`）・`pnpm test`・`pnpm build`
-- rust / windows: `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked --lib`（Windows は Common Controls v6 マニフェスト付与）、`cargo test --locked --bin yt-browser`、`cargo test --locked --doc`
+- rust / windows: `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked --lib`（Windows は Common Controls v6 マニフェスト付与）、`cargo test --locked --bin yt-browser`、`cargo test --locked --doc`、`scripts\test_windows_signing_ci.ps1`
 
 push 前（最後の編集のあと）にローカルで回す（PowerShell 5.1 向け、`pnpm.cmd` で実行ポリシーを回避し、`PYTHONUTF8=1` と `PYTHONIOENCODING="utf-8"` で文字化けを防ぐ）:
 
@@ -38,6 +38,7 @@ if ($rc -ne 0) { exit $rc }
 cargo test --locked --bin yt-browser; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --locked --doc; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Set-Location ..
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'scripts\test_windows_signing_ci.ps1'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 pnpm.cmd check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 pnpm.cmd test; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 pnpm.cmd build; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
